@@ -209,6 +209,65 @@ fn plugin_deletion_disables_hardcoded_owner_fallback_across_subset_exports() {
 }
 
 #[test]
+fn typed_owner_restoration_respects_authored_zero_and_rank() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let owner = |id| [sub(b"XOWN", &le(id)), sub(b"XRNK", &le(7))];
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", CRATE),
+            interior(
+                &[
+                    reference(CHEST, &owner(FACTION)),
+                    reference(LEVER, &owner(0)),
+                    reference(TRAP, &owner(FACTION)),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let paths = [base];
+    let db_path = dir.path().join("pack.db");
+    EsmParser::convert_plugins_with_reader(&paths, &db_path, RecordReader::Inhouse, dir.path())
+        .unwrap();
+    let db = Connection::open(db_path).unwrap();
+    let owner_rank = |id| {
+        db.query_row(
+            "SELECT owner_id,owner_rank FROM reference_details WHERE reference_id=?1",
+            [id],
+            |r| Ok((r.get::<_, Option<u32>>(0)?, r.get::<_, i32>(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(owner_rank(CHEST), (None, 7));
+    let mut trap = EsmParser::merge_plugins(&paths)
+        .unwrap()
+        .remove(&TRAP)
+        .unwrap();
+    trap.subrecords
+        .iter_mut()
+        .find(|(tag, _)| tag == b"XOWN")
+        .unwrap()
+        .1
+        .fill(0);
+    super::exporter::export_to_db(&db, &HashMap::from([(TRAP, trap)])).unwrap();
+    let mut target = EsmParser::merge_plugins(&paths)
+        .unwrap()
+        .remove(&CRATE)
+        .unwrap();
+    target.form_id = FACTION;
+    target.record_type = *b"FACT";
+    super::exporter::export_to_db(&db, &HashMap::from([(FACTION, target)])).unwrap();
+    assert_eq!(owner_rank(CHEST), (Some(FACTION), 7));
+    assert_eq!(owner_rank(LEVER), (None, 7));
+    assert_eq!(owner_rank(TRAP), (None, 7));
+}
+
+#[test]
 fn malformed_placement_enable_parent_keeps_predecessor() {
     use super::placement_edits::{PlacementSource, apply};
 

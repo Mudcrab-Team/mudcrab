@@ -205,13 +205,12 @@ impl DecodedRecord {
     }
 
     fn has_placement_transform(&self) -> bool {
-        !self.rejected_fields.contains(b"DATA")
-            && crate::esm::valid_placement_transform(
-                self.fields
-                    .iter()
-                    .filter(|field| field.signature == *b"DATA")
-                    .map(|field| field.canonical_bytes.as_slice()),
-            )
+        crate::esm::valid_placement_transform(
+            self.fields
+                .iter()
+                .filter(|field| field.signature == *b"DATA")
+                .map(|field| field.canonical_bytes.as_slice()),
+        )
     }
 
     pub(crate) fn framed_source_subrecords(&self) -> Option<Vec<([u8; 4], &[u8])>> {
@@ -698,7 +697,7 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 
 pub(crate) use decoder::{
     DeletedBases, PlacementFailure, PreparedSchemas, localized_field_bank, prepare_runtime_schema,
-    string_table_with_prepared, validate_placement_targets,
+    string_table_with_prepared, unique_source_subrecord, validate_placement_targets,
 };
 
 fn validate_live_candidate(

@@ -3,7 +3,10 @@
 use crate::{
     asset_path::{AssetKind, canonical_asset_path, canonical_literal_asset_path},
     esm::projection_omissions::ProjectionOmissions,
-    mesh::{glb_bounds_from_document, room_bounds::encloses_native_scene},
+    mesh::{
+        glb_bounds_from_document,
+        room_bounds::{encloses_native_scene, native_sphere_eligible},
+    },
 };
 use color_eyre::{
     Result,
@@ -559,8 +562,16 @@ fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds
     let mut file =
         fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
     let file_length = file.metadata()?.len();
-    let mut prefix = read_glb_prefix(&mut file, file_length)
-        .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))?;
+    read_glb_bounds_from_reader(&mut file, file_length, source)
+        .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))
+}
+
+fn read_glb_bounds_from_reader(
+    file: &mut impl Read,
+    file_length: u64,
+    source: ModelBoundsSource,
+) -> Result<ModelBounds> {
+    let mut prefix = read_glb_prefix(file, file_length)?;
     let document: serde_json::Value = serde_json::from_slice(&prefix[20..])?;
     let metadata = &document["extras"]["mudcrabRoomSphere"];
     let mut sphere = (metadata["version"].as_u64() == Some(1))
@@ -569,8 +580,12 @@ fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds
         .flatten()
         .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
     if let (ModelBoundsSource::NativeReplacement, Some(candidate)) = (source, sphere) {
-        file.read_to_end(&mut prefix)?;
-        sphere = encloses_native_scene(&prefix, &document, candidate).then_some(candidate);
+        sphere = if native_sphere_eligible(&document) {
+            file.read_to_end(&mut prefix)?;
+            encloses_native_scene(&prefix, candidate).then_some(candidate)
+        } else {
+            None
+        };
     }
     let render = match source {
         ModelBoundsSource::Converter => glb_bounds_from_document(&document)?,
@@ -580,14 +595,6 @@ fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds
         render,
         room: sphere,
     })
-}
-
-#[cfg(test)]
-fn read_glb_bounds_from_reader(
-    reader: &mut impl Read,
-    file_length: u64,
-) -> Result<shared::Bounds3> {
-    crate::mesh::glb_bounds_from_bytes(&read_glb_prefix(reader, file_length)?)
 }
 
 fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {
@@ -813,7 +820,13 @@ mod tests {
         let glb = bounded_glb([-2.0, -3.0, -4.0], [5.0, 6.0, 7.0], [3.0, 4.0, 5.0]);
         let json_length = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
         let mut reader = std::io::Cursor::new(&glb);
-        let bounds = read_glb_bounds_from_reader(&mut reader, glb.len() as u64).unwrap();
+        let bounds = read_glb_bounds_from_reader(
+            &mut reader,
+            glb.len() as u64,
+            ModelBoundsSource::Converter,
+        )
+        .unwrap()
+        .render;
         assert_eq!(bounds.min, [1.0, 1.0, 1.0]);
         assert_eq!(bounds.max, [8.0, 10.0, 12.0]);
         assert_eq!(reader.position(), (20 + json_length) as u64);
@@ -821,12 +834,38 @@ mod tests {
     }
 
     #[test]
+    fn animated_native_sphere_is_rejected_without_reading_the_binary() {
+        let rigid = bounded_glb([0.; 3], [1.; 3], [0.; 3]);
+        let mut json = crate::mesh::glb_json_from_bytes(&rigid).unwrap();
+        json["extras"] =
+            serde_json::json!({"mudcrabRoomSphere":{"version":1,"center":[0,0,0],"radius":2}});
+        json["animations"] = serde_json::json!([{}]);
+        let glb = glb_with_json(serde_json::to_vec(&json).unwrap(), &[0; 4096]);
+        let mut reader = std::io::Cursor::new(&glb);
+        let bounds = read_glb_bounds_from_reader(
+            &mut reader,
+            glb.len() as u64,
+            ModelBoundsSource::NativeReplacement,
+        )
+        .unwrap();
+        assert!(bounds.room.is_none());
+        assert_eq!(
+            reader.position(),
+            20 + u64::from(u32::from_le_bytes(glb[12..16].try_into().unwrap()))
+        );
+    }
+
+    #[test]
     fn rejects_invalid_or_truncated_glb_json() {
         let valid = bounded_glb([0.0; 3], [1.0; 3], [0.0; 3]);
         let json_end = 20 + u32::from_le_bytes(valid[12..16].try_into().unwrap()) as usize;
         assert!(
-            read_glb_bounds_from_reader(&mut std::io::Cursor::new(&valid), valid.len() as u64,)
-                .is_ok()
+            read_glb_bounds_from_reader(
+                &mut std::io::Cursor::new(&valid),
+                valid.len() as u64,
+                ModelBoundsSource::Converter
+            )
+            .is_ok()
         );
         let mut bad_magic = valid.clone();
         bad_magic[..4].copy_from_slice(b"nope");
@@ -845,8 +884,12 @@ mod tests {
             impossible_length,
         ] {
             assert!(
-                read_glb_bounds_from_reader(&mut std::io::Cursor::new(&bytes), bytes.len() as u64)
-                    .is_err()
+                read_glb_bounds_from_reader(
+                    &mut std::io::Cursor::new(&bytes),
+                    bytes.len() as u64,
+                    ModelBoundsSource::Converter
+                )
+                .is_err()
             );
         }
     }

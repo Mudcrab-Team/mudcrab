@@ -4557,6 +4557,7 @@ pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool
 /// Sort archives by their longest matching active stem's load order, then lowercase stem.
 /// Priority retains the legacy space/dash/underscore suffixes; unmatched archives sort last
 /// and same-stem plugins retain the first owner's priority.
+/// Ties follow normalized path order, with the raw path deciding normalized collisions.
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     archives.sort_by_cached_key(|archive| {
         (
@@ -4564,6 +4565,7 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
             crate::esm::load_order::normalize_plugin_name(
                 &archive.file_stem().unwrap_or_default().to_string_lossy(),
             ),
+            normalize_separators(archive).to_ascii_lowercase(),
             archive.clone(),
         )
     });
@@ -11437,6 +11439,25 @@ mod tests {
                 PathBuf::from("A/Update.bsa"),
                 PathBuf::from("b/update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
+            ]
+        );
+    }
+
+    #[test]
+    fn equal_priority_and_stem_archives_sort_by_normalized_data_path_then_raw_path() {
+        let plugins = [PathBuf::from("Update.esm")];
+        let mut archives = [
+            PathBuf::from("Data/Z/update.bsa"),
+            PathBuf::from("Data/a/update.bsa"),
+            PathBuf::from("Data/A/Update.bsa"),
+        ];
+        sort_archives_by_load_order(&mut archives, &plugins);
+        assert_eq!(
+            archives,
+            [
+                PathBuf::from("Data/A/Update.bsa"),
+                PathBuf::from("Data/a/update.bsa"),
+                PathBuf::from("Data/Z/update.bsa"),
             ]
         );
     }

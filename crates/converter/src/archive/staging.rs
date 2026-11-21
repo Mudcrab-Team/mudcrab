@@ -7,7 +7,7 @@ use std::{
 
 use color_eyre::{
     Result,
-    eyre::{ContextCompat, ensure},
+    eyre::{ContextCompat, bail, ensure},
 };
 use tempfile::{NamedTempFile, TempDir};
 
@@ -17,51 +17,117 @@ const FILE_PREFIX: &str = ".mudcrab-staged-";
 const OWNER: &str = "owner";
 const SIGNATURE: &[u8] = b"Mudcrab archive staging v2\n";
 const STATE_DIR: &str = ".mudcrab-extraction-state";
+const FALLBACK_PREFIX: &str = ".mudcrab-extraction-state-";
 
 pub(super) fn reserved(component: &std::ffi::OsStr) -> bool {
     let name = component.as_encoded_bytes();
     name.eq_ignore_ascii_case(STATE_DIR.as_bytes())
-        || name
-            .get(..PAYLOAD_PREFIX.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PAYLOAD_PREFIX.as_bytes()))
+        || [PAYLOAD_PREFIX, FALLBACK_PREFIX].iter().any(|prefix| {
+            name.get(..prefix.len())
+                .is_some_and(|name| name.eq_ignore_ascii_case(prefix.as_bytes()))
+        })
 }
 
-fn state_path() -> Option<PathBuf> {
-    let base = std::env::var_os(if cfg!(windows) {
+fn state_paths() -> impl Iterator<Item = PathBuf> {
+    let preferred = std::env::var_os(if cfg!(windows) {
         "LOCALAPPDATA"
     } else {
         "XDG_STATE_HOME"
     })
     .map(PathBuf::from)
     .filter(|path| path.is_absolute())
-    .or_else(std::env::home_dir)?;
-    Some(base.join(STATE_DIR))
+    .or_else(std::env::home_dir)
+    .map(|base| base.join(STATE_DIR));
+    #[cfg(unix)]
+    let fallback = Some(std::env::temp_dir().join(format!(
+        "{FALLBACK_PREFIX}{}",
+        rustix::process::geteuid().as_raw()
+    )));
+    #[cfg(not(unix))]
+    let fallback = None;
+    [preferred, fallback].into_iter().flatten()
 }
 
-fn state_directory() -> Result<PathBuf> {
-    let path = state_path().wrap_err("archive staging needs a per-user state directory")?;
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+fn new_registry(root: &Path) -> Result<TempDir> {
+    let prefix = run_prefix(root);
+    let mut errors = Vec::new();
+    for path in state_paths() {
+        let result = (|| -> Result<TempDir> {
+            check_state_path(root, &path)?;
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.recursive(true).create(&path)?;
+            let state = check_state_directory(root, &path)?;
+            Ok(tempfile::Builder::new()
+                .prefix(&prefix)
+                .rand_bytes(16)
+                .tempdir_in(state)?)
+        })();
+        match result {
+            Ok(registry) => return Ok(registry),
+            Err(error) => errors.push(format!("{} ({error:#})", path.display())),
+        }
     }
-    builder.recursive(true).create(&path)?;
-    check_state_directory(path.symlink_metadata()?)?;
-    Ok(path)
+    if errors.is_empty() {
+        bail!("archive staging needs a per-user state directory");
+    }
+    bail!(
+        "archive staging needs a writable private state directory. Tried {}",
+        errors.join(", ")
+    );
 }
 
-fn check_state_directory(metadata: fs::Metadata) -> Result<()> {
-    ensure!(metadata.is_dir(), "invalid archive staging state directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+fn check_state_path(root: &Path, path: &Path) -> Result<()> {
+    ensure!(
+        path.is_absolute() && !path.starts_with(root),
+        "archive staging state must be outside the extraction root"
+    );
+    let parent = path
+        .parent()
+        .wrap_err("archive staging state has no parent")?;
+    if let Ok(parent) = parent.canonicalize() {
         ensure!(
-            metadata.permissions().mode() & 0o077 == 0,
-            "archive staging state must be private to the current user"
+            !parent.starts_with(root),
+            "archive staging state must be outside the extraction root"
+        );
+    }
+    #[cfg(unix)]
+    if path.file_name().is_some_and(|name| {
+        name.as_encoded_bytes()
+            .starts_with(FALLBACK_PREFIX.as_bytes())
+    }) {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = parent.metadata()?;
+        ensure!(
+            (metadata.uid() == 0 || metadata.uid() == rustix::process::geteuid().as_raw())
+                && (metadata.mode() & 0o022 == 0 || metadata.mode() & 0o1000 != 0),
+            "the archive staging fallback requires a private or sticky temporary directory"
         );
     }
     Ok(())
+}
+
+fn check_state_directory(root: &Path, path: &Path) -> Result<PathBuf> {
+    let metadata = path.symlink_metadata()?;
+    ensure!(metadata.is_dir(), "invalid archive staging state directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            metadata.uid() == rustix::process::geteuid().as_raw() && metadata.mode() & 0o077 == 0,
+            "archive staging state must be private to the current user"
+        );
+    }
+    let path = path.canonicalize()?;
+    ensure!(
+        !path.starts_with(root),
+        "archive staging state must be outside the extraction root"
+    );
+    Ok(path)
 }
 
 fn run_prefix(root: &Path) -> String {
@@ -84,15 +150,11 @@ impl Run {
         let root = std::env::current_dir()?.join(root);
         fs::create_dir_all(&root)?;
         let root = root.canonicalize()?;
-        let state = state_directory()?;
         ensure!(
             !root.iter().any(reserved),
             "cannot extract into archive staging state"
         );
-        let registry = tempfile::Builder::new()
-            .prefix(&run_prefix(&root))
-            .rand_bytes(16)
-            .tempdir_in(&state)?;
+        let registry = new_registry(&root)?;
         let run_name = registry
             .path()
             .file_name()
@@ -151,6 +213,39 @@ impl Run {
         })
     }
 
+    fn check_staging_space<K: Ord>(
+        &self,
+        required: &BTreeMap<&Path, u64>,
+        space: impl Fn(&Path) -> io::Result<(K, u64)>,
+    ) -> Result<()> {
+        let mut volumes = BTreeMap::new();
+        for (parent, bytes) in required {
+            let directory = self.directories[*parent].path();
+            let (device, available) = space(directory)?;
+            let (total, free, _) = volumes
+                .entry(device)
+                .or_insert((0u64, available, directory));
+            *free = (*free).min(available);
+            *total = total
+                .checked_add(*bytes)
+                .wrap_err("archive staging size overflow")?;
+        }
+        for (total, available, directory) in volumes.into_values() {
+            ensure!(
+                total <= available,
+                "insufficient archive staging space at {}: need at least {} bytes, {} available",
+                directory.display(),
+                total,
+                available
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_space(&self, required: &BTreeMap<&Path, u64>) -> Result<()> {
+        self.check_staging_space(required, filesystem_space)
+    }
+
     pub(super) fn new_file(&self, parent: &Path) -> io::Result<NamedTempFile> {
         let directory = self
             .directories
@@ -165,6 +260,40 @@ impl Run {
         }
         builder.tempfile_in(directory.path())
     }
+}
+
+#[cfg(unix)]
+fn filesystem_space(path: &Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let stats = rustix::fs::statvfs(path)?;
+    Ok((
+        path.metadata()?.dev(),
+        stats.f_bavail.saturating_mul(stats.f_frsize),
+    ))
+}
+
+#[cfg(windows)]
+fn filesystem_space(path: &Path) -> io::Result<(Vec<u16>, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetVolumePathNameW};
+    let path: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut volume = vec![0u16; 32768];
+    let mut available = 0;
+    // SAFETY: path is NUL-terminated and both APIs receive writable buffers of the stated size.
+    unsafe {
+        if GetVolumePathNameW(path.as_ptr(), volume.as_mut_ptr(), 32768) == 0
+            || GetDiskFreeSpaceExW(
+                path.as_ptr(),
+                &mut available,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    volume.truncate(volume.iter().position(|&c| c == 0).unwrap_or(volume.len()));
+    Ok((volume, available))
 }
 
 fn payload_name(run_name: &str, index: usize) -> String {
@@ -183,25 +312,42 @@ pub(super) fn reclaim_abandoned(root: &Path) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     let prefix = run_prefix(&root);
-    let Some(state) = state_path() else {
-        return Ok(());
-    };
-    let metadata = match state.symlink_metadata() {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+    for path in state_paths() {
+        // A retry can use a different state location if home becomes writable again.
+        let Ok(state) =
+            check_state_path(&root, &path).and_then(|()| check_state_directory(&root, &path))
+        else {
+            continue;
+        };
+        reclaim_state(&root, &state, &prefix)?;
+    }
+    Ok(())
+}
+
+fn state_unavailable(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+fn reclaim_state(root: &Path, state: &Path, prefix: &str) -> Result<()> {
+    let entries = match fs::read_dir(state) {
+        Ok(entries) => entries,
+        Err(error) if state_unavailable(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    check_state_directory(metadata)?;
-    let entries = fs::read_dir(state)?;
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with(&prefix) {
+        if !name.starts_with(prefix) {
             continue;
         }
         match entry.file_type() {
-            Ok(kind) if kind.is_dir() => reclaim(&root, &entry.path(), &name)?,
+            Ok(kind) if kind.is_dir() => reclaim(root, &entry.path(), &name)?,
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -215,14 +361,7 @@ fn reclaim(root: &Path, registry: &Path, run_name: &str) -> Result<()> {
     let mut owner = match open_marker(&marker) {
         Ok(Some(owner)) => owner,
         Ok(None) => return Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            return Ok(());
-        }
+        Err(error) if state_unavailable(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     match owner.try_lock() {
@@ -288,15 +427,12 @@ fn reclaim(root: &Path, registry: &Path, run_name: &str) -> Result<()> {
     // Only the marker belongs to the registry. Preserve files added after a crash.
     match fs::remove_file(marker) {
         Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if state_unavailable(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     }
     match fs::remove_dir(registry) {
         Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
-            ) =>
+            if state_unavailable(&error) || error.kind() == io::ErrorKind::DirectoryNotEmpty =>
         {
             Ok(())
         }
@@ -331,6 +467,61 @@ fn remove_payload(path: &Path, witness: &str) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::archive::ArchiveExtractor;
+
+    #[test]
+    fn staging_space_is_shared_only_within_a_volume() {
+        let root = tempfile::tempdir().unwrap();
+        let a = Path::new("a");
+        let b = Path::new("b");
+        let run = Run::new(root.path(), BTreeSet::from([a, b])).unwrap();
+        let required = BTreeMap::from([(a, 60), (b, 60)]);
+        assert!(
+            run.check_staging_space(&required, |_| Ok((1, 100)))
+                .is_err()
+        );
+        run.check_staging_space(&required, |dir| Ok((dir.parent().unwrap().to_owned(), 100)))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_home_allows_extraction_and_retry() {
+        use std::{os::unix::fs::PermissionsExt, process::Command};
+
+        let uid = rustix::process::geteuid();
+        if uid.is_root() {
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let scratch = fixture.path().join("scratch");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&scratch).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "archive::staging::tests::extraction_retry_reclaims_abandoned_payloads_but_keeps_a_live_run",
+            ])
+            .env("HOME", &home)
+            .env("TMPDIR", &scratch)
+            .env_remove("XDG_STATE_HOME")
+            .output()
+            .unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!home.join(STATE_DIR).exists());
+        let state = scratch.join(format!("{FALLBACK_PREFIX}{}", uid.as_raw()));
+        assert_eq!(
+            state.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
 
     #[cfg(unix)]
     #[test]
@@ -429,10 +620,12 @@ mod tests {
         let stale_registry = _registry.keep();
         drop(_owner);
 
-        let unrelated = output.join(format!("{RUN_PREFIX}unrelated"));
+        let state = tempfile::tempdir().unwrap();
+        let prefix = run_prefix(&output.canonicalize().unwrap());
+        let unrelated = state.path().join(format!("{prefix}unrelated"));
         fs::create_dir(&unrelated).unwrap();
         fs::write(unrelated.join(OWNER), b"unrelated data").unwrap();
-        let interrupted = output.join(format!("{RUN_PREFIX}interrupted"));
+        let interrupted = state.path().join(format!("{prefix}interrupted"));
         fs::create_dir(&interrupted).unwrap();
         fs::write(interrupted.join(OWNER), SIGNATURE).unwrap();
         fs::write(interrupted.join("retained"), b"independent file").unwrap();
@@ -446,10 +639,11 @@ mod tests {
         )
         .unwrap();
 
+        reclaim_state(&output.canonicalize().unwrap(), state.path(), &prefix).unwrap();
         let empty = ArchiveExtractor::extract_matching(&archive, &output, |_| false).unwrap();
         assert!(empty.is_empty());
-        assert!(!output.join("meshes/test.nif").exists());
         assert!(!stale_registry.exists());
+        assert!(!output.join("meshes/test.nif").exists());
         assert!(
             stale_payloads
                 .iter()
@@ -471,7 +665,7 @@ mod tests {
         );
         assert_eq!(fs::read(live_file.path()).unwrap(), b"staged by live run");
         assert_eq!(fs::read(unrelated.join(OWNER)).unwrap(), b"unrelated data");
-        assert_eq!(fs::read(interrupted.join(OWNER)).unwrap(), SIGNATURE);
+        assert!(!interrupted.join(OWNER).exists());
         assert_eq!(
             fs::read(interrupted.join("retained")).unwrap(),
             b"independent file"

@@ -568,6 +568,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS record_overrides;
         DROP TABLE IF EXISTS room_placement_edits;
         DROP TABLE IF EXISTS room_placement_layers;
+        DROP TABLE IF EXISTS reference_link_subset_sources;
         DROP TABLE IF EXISTS subset_nonplacement_deletions;
         DROP TABLE IF EXISTS inhouse_schema_addons;
         DROP TABLE IF EXISTS inhouse_unresolved_terrain_textures;
@@ -708,6 +709,9 @@ fn export_records(
                 )))
             })?;
         }
+    }
+    if order.is_none() && runtime_views {
+        tx.execute_batch(super::reference_links::SUBSET_SOURCES_SQL)?;
     }
     tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     if let Some(ids) = deleted_ids {
@@ -865,6 +869,10 @@ fn export_records(
             super::object_materials::insert(&tx, master, record, &view)?;
         }
         if order.is_none() && super::is_placed_record_type(&record.record_type) {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO reference_link_subset_sources(form_id) VALUES(?1)",
+            )?
+            .execute([form_id])?;
             // A subset cannot rebuild the cell graph. Invalidate the old and new cells.
             tx.prepare_cached(
                 "INSERT INTO room_graph_cells(cell_id,complete)
@@ -1243,8 +1251,7 @@ fn write_static_model(
         let previous = previous.as_deref();
         let unchanged = previous == model
             || previous.zip(model).is_some_and(|(old, new)| {
-                // silent-ok: Both paths need valid asset keys to reuse the stored model bounds.
-                let key = |path| canonical_asset_path(path, AssetKind::Mesh, "glb").ok();
+                let key = shared::world_assets::streamed_model_path;
                 key(old).is_some_and(|old_key| Some(old_key) == key(new))
             });
         if unchanged && model.is_some() {
@@ -4946,6 +4953,28 @@ mod tests {
     }
 
     #[test]
+    fn deleted_portal_does_not_connect_rooms() {
+        let live = portal(0x104, 7, Some((0x101, 0x102)));
+        let mut deleted = live.clone();
+        deleted.form_id = 0x105;
+        deleted.flags |= 0x20;
+        let (db, _) = export_rooms(vec![
+            interior_cell(7),
+            room(0x101, 7, [0.; 3], [0.; 3], [10.; 3], vec![]),
+            room(0x102, 7, [20.; 3], [0.; 3], [10.; 3], vec![]),
+            live,
+            deleted,
+        ]);
+        assert_eq!(
+            db.query_row("SELECT count(*),min(ref_id) FROM room_portals", [], |r| Ok(
+                (r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)
+            ))
+            .unwrap(),
+            (1, 0x104)
+        );
+    }
+
+    #[test]
     fn skips_non_box_rooms_and_exterior_markers() {
         let mut sphere = room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]);
         sphere.subrecords.retain(|(tag, _)| tag != b"XPRM");
@@ -5133,7 +5162,8 @@ mod tests {
         for kind in [b"STAT", b"LIGH"] {
             for (replacement, unchanged) in [
                 (Some("A.nif"), true),
-                (Some(r"Meshes\%41.NIF"), true),
+                (Some(r"Meshes\A.NIF"), true),
+                (Some(r"Meshes\%41.NIF"), false),
                 (Some("B.nif"), false),
                 (None, false),
             ] {

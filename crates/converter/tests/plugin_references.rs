@@ -3211,6 +3211,55 @@ fn malformed_authored_assignments_stay_unknown_in_both_readers() {
 }
 
 #[test]
+fn rejected_assignment_correction_rolls_back_the_graph_on_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    let source = room_graph_review_fixture_with_fields(
+        &data,
+        None,
+        None,
+        vec![placement(0x820, 0x999, 0, 0., sub(b"XMBR", &[1, 2, 3]))],
+    );
+    let database = dir.path().join("world.db");
+    let export = || {
+        EsmParser::convert_plugins_with_reader(
+            std::slice::from_ref(&source),
+            &database,
+            converter::config::RecordReader::Inhouse,
+            &data,
+        )
+    };
+    export().unwrap();
+    let db = rusqlite::Connection::open(&database).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT assignment FROM room_reference_rules WHERE reference_id=0x820",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "unknown"
+    );
+    db.execute_batch("INSERT INTO room_graph_stats(name,value) VALUES('previous',19);
+        CREATE TRIGGER fail_correction BEFORE UPDATE ON room_reference_rules WHEN NEW.assignment='unknown'
+        BEGIN SELECT RAISE(ABORT,'test correction failure'); END;").unwrap();
+    let err = export().unwrap_err();
+    assert!(
+        format!("{err:#}").contains("test correction failure"),
+        "{err:#}"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='previous'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        19
+    );
+}
+
+#[test]
 fn public_load_order_export_requires_exact_multibound_target_width() {
     use converter::esm::{binary, exporter};
 
@@ -7291,6 +7340,56 @@ fn first_placement_with_nonfinite_transform_keeps_valid_neighbors() {
             "{reader:?}"
         );
     }
+}
+
+#[test]
+fn typed_placement_admission_uses_the_retained_transform() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let mut ignored = [0; 24];
+    ignored[..4].copy_from_slice(&f32::NAN.to_le_bytes());
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x1f, 0, 2., sub(b"DATA", &ignored)),
+                    placement(0x851, 0x1f, 0, 3., vec![]),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let patch = plugin(
+        data,
+        "Update.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x900, placement(0x851, 0x1f, 0, 4., sub(b"DATA", &ignored))),
+    );
+    let output = data.join("world.db");
+    EsmParser::convert_plugins_with_reader(
+        &[base, patch],
+        &output,
+        converter::config::RecordReader::Inhouse,
+        data,
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(output).unwrap();
+    let position = |id| {
+        db.query_row("SELECT pos_x FROM [references] WHERE id=?1", [id], |r| {
+            r.get::<_, f64>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(position(0x850), 2.);
+    assert_eq!(position(0x851), 4.);
 }
 
 #[tokio::test]

@@ -69,6 +69,25 @@ pub(super) struct BsaEntry {
 }
 
 impl BsaEntry {
+    pub(super) fn decoded_size(&self, source: &ArchiveSource<'_>) -> Result<usize> {
+        if !self.is_compressed {
+            return Ok(self.stored_size);
+        }
+        ensure!(
+            self.stored_size >= 4,
+            "compressed BSA payload is truncated: {}",
+            self.name
+        );
+        let header = source.read(self.offset, 4)?;
+        let bytes = u32_at(&header, 0)? as usize;
+        ensure!(
+            bytes <= expansion_limit(self.stored_size - 4),
+            "compressed BSA entry {} declares {bytes} decompressed bytes, over the safety limit",
+            self.name
+        );
+        Ok(bytes)
+    }
+
     pub(super) fn staging_bytes(&self, source: &ArchiveSource<'_>) -> Result<usize> {
         if !self.is_compressed || self.stored_size < 4 {
             return Ok(self.stored_size);

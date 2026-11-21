@@ -1387,13 +1387,6 @@ fn convert_plugins_with_text_sources_report_impl(
         for cell in damage.affected_cells(&master) {
             incomplete.execute([cell])?;
         }
-        super::rooms::restore_rejected_room_fields(
-            &tx,
-            decoded
-                .records
-                .values()
-                .filter(|record| super::is_placed_record_type(&record.record_type)),
-        )?;
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
             [],
@@ -1513,7 +1506,13 @@ fn validate_candidate_with_string_sources(
 ) -> std::result::Result<(), String> {
     if super::is_placed_record_type(&record.record_type) {
         record.validate_placement_base()?;
-        let valid_transform = if record.rejected_fields.contains(b"DATA") {
+        let kept_transform = record
+            .fields
+            .iter()
+            .find(|field| field.signature == *b"DATA");
+        let valid_transform = if let Some(field) = kept_transform {
+            super::valid_initial_placement_transform(Some(&field.canonical_bytes))
+        } else if record.rejected_fields.contains(b"DATA") {
             // Rejected nonfinite coordinates disappear from the typed projection. A short
             // source field can still carry a canonical record with no spatial row.
             record.framed_source_subrecords().is_some_and(|fields| {
@@ -1523,13 +1522,7 @@ fn validate_candidate_with_string_sources(
                     .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
             })
         } else {
-            let data = record
-                .fields
-                .iter()
-                .find(|field| field.signature == *b"DATA");
-            super::valid_initial_placement_transform(
-                data.map(|field| field.canonical_bytes.as_slice()),
-            )
+            true
         };
         if !valid_transform {
             return Err("invalid placement transform".into());
