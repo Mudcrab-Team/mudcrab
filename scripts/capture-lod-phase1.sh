@@ -82,7 +82,7 @@ capture() {
     local log="$output/$name.log"
     local -a command=(
         cargo run --locked --manifest-path "$repo/Cargo.toml" -p engine --bin engine --
-        --assets "$assets" --worldspace 1 --grid-x 0 --grid-y 0
+        --no-grass --assets "$assets" --worldspace 1 --grid-x 0 --grid-y 0
         --stream-radius "$radius" --benchmark-duration 8
         --benchmark-warmup-frames 0 --benchmark-output "$output/$name-benchmark.json"
         --accept-min-fps 0 --accept-p95-ms 100000

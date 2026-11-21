@@ -1,0 +1,11 @@
+Private source: <operator-home>/.cache/mudcrab-221/cadence-campaign/heldout-30hz-1x-1-attempt-1/steam-489830.log
+1074: info:  DXVK: v3.1.1-97-ga78a467cadb22be
+1076: info:  Found config env: dxvk.maxFrameRate = 30
+1077: info:  Effective configuration:
+1078: info:    dxvk.maxFrameRate = 30
+3825: info:  DXVK: v3.1.1-97-ga78a467cadb22be
+3827: info:  Found config env: dxvk.maxFrameRate = 30
+3830: info:  Effective configuration:
+3832: info:    dxvk.maxFrameRate = 30
+4279: info:    Present mode:    VK_PRESENT_MODE_IMMEDIATE_KHR (dynamic: yes)
+4289: info:    Present mode:    VK_PRESENT_MODE_IMMEDIATE_KHR (dynamic: yes)

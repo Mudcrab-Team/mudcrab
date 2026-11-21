@@ -25,8 +25,13 @@ native_radius = authored_radius if authored_radius > 0 else 0.1
 backend_range = min(native_radius, 8192)
 ```
 
+The additive rule follows xEdit's
+[`wbREFRRadiusToStr`](https://github.com/TES5Edit/TES5Edit/blob/cce1c42403b279957e1e78bfe38100b29f39f72c/Core/wbDefinitionsCommon.pas#L5404)
+at revision `cce1c424`.
+
 An XRDS offset above 8192 is an outlier. The registered pack (`user-testing-main-b5259d33`) holds
-ten such `LIGH` references. Nine are retail: seven in Skyrim.esm and two in Dragonborn.esm, with
+ten such `LIGH` references. Nine are in the shipped masters: seven in Skyrim.esm and two in
+Dragonborn.esm, with
 offsets from 15,967 up to
 3,736,737. One is Creation Club: 9,505.58 on a `BleakFallsSunlight01` reference in
 `ccbgssse031-advcyrus.esm`. The engine ignored these before XRDS became additive, so each light kept its record

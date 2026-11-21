@@ -101,6 +101,12 @@ expression: snapshot
       "record_type": "GMST"
     },
     {
+      "form_id": 12,
+      "internal_id": 12,
+      "plugin_name": "skyrim.esm",
+      "record_type": "DOBJ"
+    },
+    {
       "form_id": 16,
       "internal_id": 16,
       "plugin_name": "skyrim.esm",

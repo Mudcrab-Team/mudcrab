@@ -138,7 +138,7 @@ impl LightEvaluation {
 /// such references: nine in retail data (Skyrim.esm and Dragonborn.esm, 15,967 up to 3,736,737
 /// units) and one in a Creation Club plugin (9,505.58, ccbgssse031-advcyrus.esm). The pre-additive code ignored it and kept the record radius; that
 /// is preserved so those lights do not jump to the range cap. Native 1.7.104 evidence is pinned in
-/// the spec.
+/// [point-lights.md](../../../docs/specs/engine/point-lights.md).
 pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEvaluation {
     let radius_offset_ignored =
         radius_offset.is_some_and(|offset| offset.is_finite() && offset > MAX_RADIUS_OVERRIDE);

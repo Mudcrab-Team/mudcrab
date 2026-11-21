@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "runtime_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+  "fixture": {
+    "schema": 1,
+    "name": "courtyard-jump",
+    "kind": "jump",
+    "position": [24828, -3000, -2900],
+    "yaw_degrees": 90,
+    "hold_ms": 500,
+    "modifier": "jump",
+    "time_multiplier": 1.0
+  },
+  "training": [{"frame_cap": 60, "time_multiplier": 1.0}],
+  "heldout": [
+    {"frame_cap": 30, "time_multiplier": 1.0},
+    {"frame_cap": 120, "time_multiplier": 1.0},
+    {"frame_cap": 60, "time_multiplier": 0.5}
+  ],
+  "repeats": 3,
+  "height_rmse_limit": 1.0,
+  "height_peak_limit": 3.0,
+  "scope": "One save, courtyard, actor and executable. Fresh process for each run. Frame caps are requests; report observed cadence. No production constants change."
+}

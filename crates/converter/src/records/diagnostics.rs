@@ -193,6 +193,18 @@ impl EventRow {
 }
 
 impl EventLog {
+    /// A fuzz-only sink that records a permanent journal failure, so no row is written
+    /// and no temporary database is opened. Counters and examples are unaffected.
+    #[cfg(fuzzing)]
+    pub(crate) fn summary_only() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(LogState {
+                journal: None,
+                failure: Some("journal disabled while fuzzing".into()),
+            })),
+        }
+    }
+
     /// Record every distinct event; failure is retained for the publication boundary.
     pub(crate) fn append(&self, context: &EventContext, category: &str, reason: &str) {
         let mut state = self.lock();

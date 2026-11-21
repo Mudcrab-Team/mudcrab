@@ -7,6 +7,8 @@ pub mod actor_skin_tone;
 pub mod actors;
 pub mod app;
 mod background_window;
+#[cfg(test)]
+mod bevy_source;
 pub mod bug_report;
 mod capture_frame;
 pub mod cell_commands;
@@ -21,6 +23,9 @@ pub mod extensions;
 pub mod fingerprint;
 mod focus_pause;
 pub mod frame_budget;
+pub mod grass;
+pub mod grass_render;
+pub mod grass_tuning;
 pub mod hdr_probe;
 pub mod indirect_metrics;
 pub mod lights;
@@ -31,6 +36,7 @@ pub mod metrics;
 pub mod nif_depth;
 pub mod nif_material;
 pub mod object_materials;
+pub mod output_scale;
 pub mod pacing;
 pub mod papyrus_runtime;
 pub mod physics;
@@ -47,6 +53,8 @@ mod scene_evidence;
 pub mod schedule_timing;
 pub mod settings;
 pub mod settings_ui;
+#[cfg(test)]
+mod shader_validation;
 pub mod shots;
 pub mod skin_material;
 pub mod sky;
@@ -65,6 +73,10 @@ pub mod texture_fallback;
 pub mod tone_mapping;
 mod underwater;
 mod underwater_pass;
+#[cfg(test)]
+mod vendored_bevy_patches;
+#[cfg(test)]
+mod vendored_morph_shader;
 pub mod visibility_optimization;
 pub mod visual_profile;
 mod water_depth;

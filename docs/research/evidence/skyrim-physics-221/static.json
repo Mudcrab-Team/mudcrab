@@ -1,0 +1,105 @@
+{
+  "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "constants": {
+    "havok_to_game": {
+      "rva": "0x17f423c",
+      "float32": 69.99124908447266
+    },
+    "game_to_havok": {
+      "rva": "0x17fde5c",
+      "float32": 0.014287499710917473
+    },
+    "fall_multiplier": {
+      "rva": "0x20d2558",
+      "float32": 1.350000023841858
+    },
+    "ordinary_multiplier": {
+      "rva": "0x1b5be28",
+      "float32": 1.0
+    },
+    "launch_factor": {
+      "rva": "0x1b5be44",
+      "float32": 2.0
+    }
+  },
+  "callbacks": {
+    "air": {
+      "slot_rva": "0x1a92608",
+      "function_rva": "0x10c7cc0"
+    },
+    "launch": {
+      "slot_rva": "0x1a92680",
+      "function_rva": "0x10c8030"
+    }
+  },
+  "checks": [
+    {
+      "fact": "height comparison",
+      "rva": "0x10c7ee3",
+      "verified": true
+    },
+    {
+      "fact": "gravity scale read",
+      "rva": "0x10c7f1d",
+      "verified": true
+    },
+    {
+      "fact": "controller timestep read",
+      "rva": "0x10c7f25",
+      "verified": true
+    },
+    {
+      "fact": "launch height read",
+      "rva": "0x10c80bb",
+      "verified": true
+    },
+    {
+      "fact": "launch square root",
+      "rva": "0x10c815e",
+      "verified": true
+    },
+    {
+      "fact": "actor process read",
+      "rva": "0x66ffa7",
+      "verified": true
+    },
+    {
+      "fact": "jump setting load",
+      "rva": "0x7cf220",
+      "verified": true
+    },
+    {
+      "fact": "jump setting times reference scale",
+      "rva": "0x7cf23c",
+      "verified": true
+    },
+    {
+      "fact": "jump height conversion",
+      "rva": "0x10645e0",
+      "verified": true
+    },
+    {
+      "fact": "jump height store",
+      "rva": "0x10645f2",
+      "verified": true
+    },
+    {
+      "fact": "reference scale read",
+      "rva": "0x2e6f34",
+      "verified": true
+    },
+    {
+      "fact": "NPC base height times race height",
+      "rva": "0x3c65f6",
+      "verified": true
+    }
+  ],
+  "scope": "Static identity and field-consumer evidence. Runtime trajectories and scheduling are not verified.",
+  "jump_height_setting": {
+    "name": "fJumpHeightMin",
+    "value_rva": "0x20a8960",
+    "file_initializer_only": 64.0,
+    "path": "setting times reference scale, with NPC/race height and conditional swimming factor, then game-to-Havok conversion",
+    "limitation": "The runtime setting value and individual scale inputs were not captured."
+  }
+}

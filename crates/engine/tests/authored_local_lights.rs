@@ -143,7 +143,7 @@ fn authored_fade_changes_actual_light_power_without_changing_range_or_colour() {
 #[test]
 fn signed_offsets_zero_and_backend_limits_survive_storage() {
     // (offset, backend range, authored radius, backend-limited). A sum above the cap clamps; the
-    // base radius is 512. An offset above the cap (retail outliers) is ignored: base radius stays.
+    // base radius is 512. An offset above the cap (pack outliers) is ignored: base radius stays.
     for (offset, expected, authored, limited) in [
         (-400.0, 112.0, 112.0, false),
         (0.0, 512.0, 512.0, false),

@@ -5,8 +5,11 @@
 //! check that they exist before reading them. Nothing here reads raw
 //! `records.data`; the caller hands the merged record map in and gets rows back.
 
-use crate::esm::{extractors::SubrecordView, load_order::StableId, records::RawRecord};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::{
+    animation::authoring::{RaceAuthoring, read_race_authoring_fields},
+    esm::{extractors::SubrecordView, load_order::StableId, records::RawRecord},
+};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// `DefaultRace`, the armature race every humanoid body is shared through.
 pub const DEFAULT_RACE_FORM_ID: u32 = 25;
@@ -177,6 +180,9 @@ pub struct ActorModelCatalog {
     pub parts: Vec<ActorModelPartRow>,
     /// Diagnostics, sorted by `(npc_id, reason)`.
     pub diagnostics: Vec<ActorModelDiagnostic>,
+    /// Read failures for live RACE records keyed by FormID, including races without NPCs.
+    /// Full exports persist these as omissions.
+    pub race_authoring_errors: BTreeMap<u32, String>,
 }
 
 /// Resolves every `NPC_` base in `records` into a body/head catalog.
@@ -190,12 +196,40 @@ pub fn resolve_actor_models(
     records: &HashMap<u32, RawRecord>,
     plugin_ids: &HashMap<u32, StableId>,
 ) -> ActorModelCatalog {
+    resolve_actor_models_with_race_authoring(records, plugin_ids).0
+}
+
+/// Decodes the animation authoring of every live RACE once, for omissions and animation
+/// source rows. Body resolution still reads other RACE fields per NPC.
+pub(crate) fn resolve_actor_models_with_race_authoring(
+    records: &HashMap<u32, RawRecord>,
+    plugin_ids: &HashMap<u32, StableId>,
+) -> (ActorModelCatalog, BTreeMap<u32, RaceAuthoring>) {
     let mut catalog = ActorModelCatalog::default();
-    let mut npc_ids: Vec<u32> = records
-        .iter()
-        .filter(|(_, record)| &record.record_type == b"NPC_" && !record.is_deleted())
-        .map(|(id, _)| *id)
-        .collect();
+    let mut race_authoring = BTreeMap::new();
+    let mut npc_ids = Vec::new();
+    for (&id, record) in records {
+        match &record.record_type {
+            b"RACE" if !record.is_deleted() => {
+                let fields = record
+                    .subrecords
+                    .iter()
+                    .map(|(tag, data)| (tag.as_slice(), data.as_slice()));
+                match read_race_authoring_fields(fields) {
+                    Ok(authoring) => {
+                        race_authoring.insert(id, authoring);
+                    }
+                    Err(error) => {
+                        catalog
+                            .race_authoring_errors
+                            .insert(id, format!("{error:#}"));
+                    }
+                }
+            }
+            b"NPC_" if !record.is_deleted() => npc_ids.push(id),
+            _ => {}
+        }
+    }
     npc_ids.sort_unstable();
 
     for id in npc_ids {
@@ -256,18 +290,13 @@ pub fn resolve_actor_models(
         let race_view = SubrecordView::new(&race.subrecords);
 
         let skin_id = effective_skin(records, &view, &race_view, id, &mut catalog);
-        let authoring = crate::animation::authoring::read_race_authoring_fields(
-            race.subrecords
-                .iter()
-                .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
-        )
-        .ok();
-        let creature_project = authoring
+        let creature_project = race_authoring
+            .get(&race_id)
             .and_then(|row| {
                 if female {
-                    row.female_project
+                    row.female_project.as_deref()
                 } else {
-                    row.male_project
+                    row.male_project.as_deref()
                 }
             })
             .is_some_and(|project| !project.starts_with("meshes/actors/character/"));
@@ -311,7 +340,7 @@ pub fn resolve_actor_models(
     catalog
         .diagnostics
         .sort_by_key(|diagnostic| (diagnostic.npc_id, diagnostic.reason));
-    catalog
+    (catalog, race_authoring)
 }
 
 fn unresolved_row(id: u32, weight: Option<f32>) -> ActorModelRow {

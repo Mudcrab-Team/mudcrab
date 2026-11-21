@@ -1,5 +1,7 @@
 # Local validation — 2026-10-31
 
+> Historical log. The source fingerprints below are past values. Since the CI-generated inventory change, no committed file holds a source fingerprint; see the README.
+
 Source: `64108a1c38b0a854d4f82d7031ea50b57c336a5a` plus this worktree's local changes.
 Owner: Taylor; task `issue298`, worktree `t3-d3471fd5`. Pre-existing untracked `AGENTS.md`
 was not changed.

@@ -37,7 +37,9 @@ pub fn assert_reader_warning_publication(report: &PipelineReport, output: &Path)
             .warnings
             .iter()
             .all(|warning| warning.contains("in-house reader")
-                || warning.contains("inhouse adapter")),
+                || warning.contains("inhouse adapter")
+                || (warning.starts_with("grass cache omitted ")
+                    && warning.contains(" malformed LAND selection items; first cell "))),
         "unexpected non-reader failure: {report:?}"
     );
     let manifest: serde_json::Value =
