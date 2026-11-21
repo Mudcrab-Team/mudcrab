@@ -231,40 +231,83 @@ fn typed_owner_restoration_respects_authored_zero_and_rank() {
     )
     .unwrap();
     let paths = [base];
-    let db_path = dir.path().join("pack.db");
-    EsmParser::convert_plugins_with_reader(&paths, &db_path, RecordReader::Inhouse, dir.path())
-        .unwrap();
-    let db = Connection::open(db_path).unwrap();
-    let owner_rank = |id| {
-        db.query_row(
-            "SELECT owner_id,owner_rank FROM reference_details WHERE reference_id=?1",
-            [id],
-            |r| Ok((r.get::<_, Option<u32>>(0)?, r.get::<_, i32>(1)?)),
-        )
-        .unwrap()
-    };
-    assert_eq!(owner_rank(CHEST), (None, 7));
-    let mut trap = EsmParser::merge_plugins(&paths)
-        .unwrap()
-        .remove(&TRAP)
-        .unwrap();
+    let mut records = EsmParser::merge_plugins(&paths).unwrap();
+    let mut trap = records.remove(&TRAP).unwrap();
     trap.subrecords
         .iter_mut()
         .find(|(tag, _)| tag == b"XOWN")
         .unwrap()
         .1
         .fill(0);
-    super::exporter::export_to_db(&db, &HashMap::from([(TRAP, trap)])).unwrap();
-    let mut target = EsmParser::merge_plugins(&paths)
-        .unwrap()
-        .remove(&CRATE)
-        .unwrap();
+    let mut target = records.remove(&CRATE).unwrap();
     target.form_id = FACTION;
     target.record_type = *b"FACT";
-    super::exporter::export_to_db(&db, &HashMap::from([(FACTION, target)])).unwrap();
-    assert_eq!(owner_rank(CHEST), (Some(FACTION), 7));
-    assert_eq!(owner_rank(LEVER), (None, 7));
-    assert_eq!(owner_rank(TRAP), (None, 7));
+    let subset = HashMap::from([(TRAP, trap)]);
+    let addition = HashMap::from([(FACTION, target)]);
+    for (name, has_legacy_column) in [("current.db", false), ("old.db", true)] {
+        let db_path = dir.path().join(name);
+        let publish = || {
+            EsmParser::convert_plugins_with_reader(
+                &paths,
+                &db_path,
+                RecordReader::Inhouse,
+                dir.path(),
+            )
+            .unwrap();
+        };
+        publish();
+        let db = Connection::open(&db_path).unwrap();
+        let columns = || {
+            db.query_row(
+                "SELECT count(*) FROM pragma_table_info('reference_link_subset_sources')",
+                [],
+                |row| row.get::<_, usize>(0),
+            )
+            .unwrap()
+        };
+        let owner_rank = |id| {
+            db.query_row(
+                "SELECT owner_id,owner_rank FROM reference_details WHERE reference_id=?1",
+                [id],
+                |r| Ok((r.get::<_, Option<u32>>(0)?, r.get::<_, i32>(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(columns(), 0);
+        if has_legacy_column {
+            db.execute_batch(
+                "CREATE TABLE reference_link_subset_sources(form_id INTEGER PRIMARY KEY, data BLOB)",
+            )
+            .unwrap();
+        }
+        assert_eq!(owner_rank(CHEST), (None, 7));
+        super::exporter::export_to_db(&db, &subset).unwrap();
+        assert_eq!(columns(), 1 + usize::from(has_legacy_column));
+        assert_eq!(
+            db.query_row(
+                "SELECT form_id FROM reference_link_subset_sources",
+                [],
+                |row| { row.get::<_, u32>(0) }
+            )
+            .unwrap(),
+            TRAP
+        );
+        super::exporter::export_to_db(&db, &addition).unwrap();
+        assert_eq!(owner_rank(CHEST), (Some(FACTION), 7));
+        assert_eq!(owner_rank(LEVER), (None, 7));
+        assert_eq!(owner_rank(TRAP), (None, 7));
+        drop(db);
+        publish();
+        let db = Connection::open(&db_path).unwrap();
+        assert!(
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='reference_link_subset_sources')",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap()
+        );
+    }
 }
 
 #[test]

@@ -924,6 +924,11 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Unusable placement DATA omits detail rows owned by that reference. Field-level semantics remain deferred."
     },
+    "reference_link_subset_sources": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Marks placed sources edited by a subset export so incoming owner-link restoration skips the superseded native source payload."
+    },
     "reference_linked_refs": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",

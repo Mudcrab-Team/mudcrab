@@ -14,7 +14,8 @@ pub(super) const SUBSET_NONPLACEMENT_DELETIONS_SQL: &str =
     "CREATE TABLE IF NOT EXISTS subset_nonplacement_deletions (form_id INTEGER PRIMARY KEY)";
 
 // A subset replacement supersedes the source retained in the full snapshot.
-pub(super) const SUBSET_SOURCES_SQL: &str = "CREATE TABLE IF NOT EXISTS reference_link_subset_sources (form_id INTEGER PRIMARY KEY, data BLOB)";
+pub(super) const SUBSET_SOURCES_SQL: &str =
+    "CREATE TABLE IF NOT EXISTS reference_link_subset_sources (form_id INTEGER PRIMARY KEY)";
 
 /// Tables this module owns. A complete export drops and recreates them.
 pub(crate) const REFERENCE_LINK_TABLES: [&str; 3] = [
