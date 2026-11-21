@@ -155,7 +155,7 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
         &tx,
         &master,
         None,
-        &HashSet::new(),
+        &HashMap::new(),
         &mut ProjectionOmissions::default(),
     )?;
     tx.commit()
@@ -224,18 +224,30 @@ fn seed_roomless_cell(tx: &Transaction<'_>, cell: u32) -> Result<()> {
     Ok(())
 }
 
-/// Replaces only supplied placements' occluder facts. Returns edits confined to
-/// occluders, for which the existing room/portal and object assignments still hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::esm) enum ImportedOccluderSource {
+    Damaged,
+    AuthoredNullLinks,
+}
+
+#[derive(Default)]
+pub(in crate::esm) struct SubsetUpdate {
+    /// Edits for which the existing room, portal and object assignments still hold.
+    pub only_occluders: HashSet<u32>,
+    pub invalidated_cells: HashSet<u32>,
+}
+
+/// Replaces the supplied placements' occluder facts and invalidates linked cells.
 pub(in crate::esm) fn update_subset(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     sources: Option<(&HashMap<u32, DecodedRecord>, &LoadOrder)>,
-    damaged_occluders: &HashSet<u32>,
+    imported_sources: &HashMap<u32, ImportedOccluderSource>,
     omissions: &mut ProjectionOmissions,
-) -> Result<HashSet<u32>> {
-    let mut only_occluders = HashSet::new();
+) -> Result<SubsetUpdate> {
+    let mut update = SubsetUpdate::default();
     if !master.values().any(|record| record.record_type == *b"REFR") || !tables_present(tx)? {
-        return Ok(only_occluders);
+        return Ok(update);
     }
     let mut affected = HashSet::new();
     let mut markers = Vec::new();
@@ -286,7 +298,7 @@ pub(in crate::esm) fn update_subset(
         if marker && old_base.is_none_or(|base| base == OCCLUSION_MARKER_BASE)
             || record.is_deleted() && old_occluder
         {
-            only_occluders.insert(id);
+            update.only_occluders.insert(id);
         }
         if old_occluder {
             for cell in collect_targets.query_map([id], |row| row.get::<_, u32>(0))? {
@@ -323,11 +335,12 @@ pub(in crate::esm) fn update_subset(
             .execute([id])?;
         if *marker {
             let mut result = Exported::default();
+            let imported = imported_sources.get(&id).copied();
             project(
                 tx,
                 record,
                 *interior,
-                if damaged_occluders.contains(&id) {
+                if imported == Some(ImportedOccluderSource::Damaged) {
                     MarkerSource::DamagedPlugin
                 } else {
                     MarkerSource::from_typed(*source)
@@ -349,8 +362,9 @@ pub(in crate::esm) fn update_subset(
                 )?
                 .execute([])?;
             }
-            // Remapped legacy XORD bytes cannot distinguish authored nulls from failed links.
+            // A remapped null needs source evidence to rule out a failed link.
             let unverified_links = source.is_none()
+                && imported != Some(ImportedOccluderSource::AuthoredNullLinks)
                 && SubrecordView::new(&record.subrecords)
                     .find(b"XORD")
                     .is_some();
@@ -369,12 +383,16 @@ pub(in crate::esm) fn update_subset(
         }
     }
     for cell in affected {
-        tx.prepare_cached(
-            "INSERT INTO room_graph_cells(cell_id,complete)
+        let updated = tx
+            .prepare_cached(
+                "INSERT INTO room_graph_cells(cell_id,complete)
              SELECT id,0 FROM cells WHERE id=?1
              ON CONFLICT(cell_id) DO UPDATE SET complete=0",
-        )?
-        .execute([cell])?;
+            )?
+            .execute([cell])?;
+        if updated != 0 {
+            update.invalidated_cells.insert(cell);
+        }
     }
-    Ok(only_occluders)
+    Ok(update)
 }

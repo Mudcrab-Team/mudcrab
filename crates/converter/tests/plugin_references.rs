@@ -8838,6 +8838,95 @@ fn discarded_occluder_override_revokes_plugin_import_link_certificate() {
 }
 
 #[test]
+fn plugin_occluder_import_reports_linked_cells_and_keeps_authored_null_links_local() {
+    use converter::{
+        config::RecordReader,
+        esm::placement_edits::{PlacementSource, apply},
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", 0x17, 0, sub(b"EDID", b"PlaneMarker\0")),
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            placement_group(
+                0x900,
+                [
+                    placement_marker(0x801, 0x17, Vec::new()),
+                    placement_marker(0x803, 0x17, Vec::new()),
+                ]
+                .concat(),
+            ),
+            record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+            placement_group(0x901, placement_marker(0x802, 0x17, Vec::new())),
+        ]
+        .concat(),
+    );
+    let mut failures = Vec::new();
+    for (name, slots, affected, complete, verified) in [
+        ("null", vec![0; 16], vec![0x900], [true, true], true),
+        (
+            "linked",
+            [0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+            vec![0x900, 0x901],
+            [false, false],
+            true,
+        ),
+        ("malformed", vec![0; 12], vec![0x900], [false, true], false),
+        (
+            "unresolved",
+            [0x9900_0802u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+            vec![0x900],
+            [false, true],
+            false,
+        ),
+    ] {
+        let assets = data.join(name);
+        fs::create_dir(&assets).unwrap();
+        let path = assets.join("skyrim_world.db");
+        EsmParser::convert_plugins_with_reader(
+            std::slice::from_ref(&base),
+            &path,
+            RecordReader::Inhouse,
+            data,
+        )
+        .unwrap();
+        let source = plugin(
+            data,
+            &format!("{name}.esp"),
+            &["Skyrim.esm"],
+            0,
+            placement_group(0x900, placement_marker(0x801, 0x17, sub(b"XORD", &slots))),
+        );
+        let report = apply(&assets, PlacementSource::SkyrimPlugin(&source)).unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        let certificates = [0x900, 0x901].map(|cell| placement_certificate(&db, cell));
+        let links_verified = db
+            .query_row(
+                "SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap();
+        if report.affected_cells != affected
+            || certificates != complete
+            || links_verified != verified
+        {
+            failures.push(format!(
+                "{name}: affected {:?} (expected {affected:?}), certificates {certificates:?} (expected {complete:?}), links verified {links_verified} (expected {verified})",
+                report.affected_cells
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn placement_layers_refresh_incoming_links_for_changed_targets() {
     use converter::esm::{
         exporter::export_to_db,
@@ -9353,6 +9442,8 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
                 live(0x830),
                 live(0x831),
                 live(0x832),
+                live(0x833),
+                live(0x834),
                 dependent(0x850, 0x830),
                 dependent(0x851, 0x831),
             ]
@@ -9367,6 +9458,8 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
                 dependent(0x831, 0x1f),
                 deleted(0x831),
                 deleted(0x832),
+                deleted(0x833),
+                deleted(0x834),
             ]
             .concat(),
         ),
@@ -9374,9 +9467,21 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
             "Gap.esp",
             [deleted(0x830), deleted(0x831), dependent(0x853, 0x832)].concat(),
         ),
-        ("Restore.esp", live(0x832)),
+        (
+            "EarlyRestores.esp",
+            [dependent(0x833, 0x888), dependent(0x834, 0x1f)].concat(),
+        ),
+        ("RejectedGap.esp", dependent(0x855, 0x833)),
+        ("AcceptedGap.esp", dependent(0x856, 0x834)),
+        (
+            "Restore.esp",
+            [live(0x832), live(0x833), live(0x834)].concat(),
+        ),
         ("Live.esp", dependent(0x854, 0x832)),
-        ("DeleteAgain.esp", deleted(0x832)),
+        (
+            "DeleteAgain.esp",
+            [deleted(0x832), deleted(0x833), deleted(0x834)].concat(),
+        ),
     ];
     let list = dir.path().join("plugins.txt");
     let mut names = Vec::new();
@@ -9409,6 +9514,8 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
             (0x852, true),
             (0x853, false),
             (0x854, true),
+            (0x855, false),
+            (0x856, true),
         ] {
             let id = format!("{id:08X}");
             if notices.contains(&id) != retired || warnings.contains(&id) == retired {
@@ -9420,7 +9527,7 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
         let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
         assert_eq!(
             db.query_row(
-                "SELECT count(*) FROM records WHERE form_id BETWEEN 0x830 AND 0x832",
+                "SELECT count(*) FROM records WHERE form_id BETWEEN 0x830 AND 0x834",
                 [],
                 |row| row.get::<_, u32>(0)
             )
@@ -9429,6 +9536,58 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
         );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn inhouse_first_placement_keeps_short_transform_before_a_truncated_field() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let mut truncated = sub(b"EDID", b"unfinished\0");
+    truncated.truncate(8);
+    let short = |id, tail: &[u8]| {
+        record(
+            b"REFR",
+            id,
+            0,
+            [
+                sub(b"NAME", &0x830u32.to_le_bytes()),
+                sub(b"DATA", &[0; 20]),
+                tail.to_vec(),
+            ]
+            .concat(),
+        )
+    };
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"Static\0")),
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            placement_group(
+                0x900,
+                [
+                    short(0x850, &[]),
+                    short(0x851, &truncated),
+                    placement(0x852, 0x830, 0, f32::NAN, truncated.clone()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let path = data.join("world.db");
+    let records =
+        EsmParser::convert_plugins_with_reader(&[base], &path, RecordReader::Inhouse, data)
+            .unwrap();
+    let db = rusqlite::Connection::open(path).unwrap();
+    for (id, canonical) in [(0x850, true), (0x851, true), (0x852, false)] {
+        assert_eq!(records.contains_key(&id), canonical, "{id:08X}");
+        assert_eq!(placement_winner_cell(&db, id), None, "{id:08X}");
+    }
 }
 
 #[test]

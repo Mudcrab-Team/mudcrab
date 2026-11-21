@@ -536,14 +536,12 @@ impl EsmParser {
                     room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
-                    let prior_kind = merged.get(&id).and_then(|prior| {
-                        legacy_prior_kind(
-                            prior,
-                            placement_candidates.get(&id),
-                            &merged,
-                            &deleted_ids,
-                        )
-                    });
+                    let prior_kind = settle_legacy_predecessor(
+                        id,
+                        placement_candidates.get(&id),
+                        &merged,
+                        &mut deleted_ids,
+                    );
                     deleted_ids.record(id, record.load_order, record.record_type, prior_kind);
                     merged.remove(&id);
                     placement_candidates.remove(&id);
@@ -554,8 +552,21 @@ impl EsmParser {
                     {
                         merge_default_objects(previous, &mut record);
                     }
-                    deleted_ids.restored(id, record.load_order);
                     let placed = is_placed_record_type(&record.record_type);
+                    if !placed {
+                        // An earlier placement can close the interval once its targets are valid.
+                        if deleted_ids.needs_restoration(id)
+                            && placement_candidates.contains_key(&id)
+                        {
+                            settle_legacy_predecessor(
+                                id,
+                                placement_candidates.get(&id),
+                                &merged,
+                                &mut deleted_ids,
+                            );
+                        }
+                        deleted_ids.restored(id, record.load_order);
+                    }
                     let previous = merged.insert(id, record);
                     if placed {
                         let previous_candidate = placement_candidates.remove(&id);
@@ -612,31 +623,40 @@ impl EsmParser {
     }
 }
 
-fn legacy_prior_kind<'a>(
-    mut record: &'a RawRecord,
-    mut candidate: Option<&'a LegacyPlacementCandidate>,
+fn settle_legacy_predecessor(
+    id: u32,
+    candidate: Option<&LegacyPlacementCandidate>,
     winners: &HashMap<u32, RawRecord>,
-    deleted: &crate::records::DeletedBases,
+    deleted: &mut crate::records::DeletedBases,
 ) -> Option<[u8; 4]> {
-    while let Some(placement) = candidate {
-        if crate::records::validate_placement_targets(
-            None,
-            &record.record_type,
-            record.load_order,
-            &legacy_dependencies(record, placement),
-            None,
-            |target| winners.get(&target).map(|record| record.record_type),
-            deleted,
-        )
-        .is_ok()
-        {
-            break;
-        }
-        let predecessor = placement.predecessor.as_ref()?;
-        record = predecessor.previous.as_ref()?;
-        candidate = predecessor.previous_candidate.as_ref();
+    let latest = winners.get(&id)?;
+    let versions = std::iter::successors(Some((latest, candidate)), |&(_, candidate)| {
+        let predecessor = candidate?.predecessor.as_ref()?;
+        Some((
+            predecessor.previous.as_ref()?,
+            predecessor.previous_candidate.as_ref(),
+        ))
+    });
+    let mut accepted = versions.filter(|&(record, candidate)| {
+        candidate.is_none_or(|placement| {
+            crate::records::validate_placement_targets(
+                None,
+                &record.record_type,
+                record.load_order,
+                &legacy_dependencies(record, placement),
+                None,
+                |target| winners.get(&target).map(|record| record.record_type),
+                deleted,
+            )
+            .is_ok()
+        })
+    });
+    let (latest, _) = accepted.next()?;
+    if deleted.needs_restoration(id) {
+        let earliest = accepted.last().map_or(latest, |(record, _)| record);
+        deleted.restored(id, earliest.load_order);
     }
-    Some(record.record_type)
+    Some(latest.record_type)
 }
 
 fn legacy_dependencies(

@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 mod subset;
 
-pub(in crate::esm) use subset::update_subset;
+pub(in crate::esm) use subset::{ImportedOccluderSource, update_subset};
 pub use subset::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
 
 #[derive(Default)]
