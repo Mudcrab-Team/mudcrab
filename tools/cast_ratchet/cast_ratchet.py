@@ -1,38 +1,42 @@
 #!/usr/bin/env python3
-"""Ratchet the count of lossy casts and exact float comparisons that Clippy reports.
+"""Fail Clippy's lossy-cast lints on the lines a change adds.
 
-Clippy finds `as` casts that truncate, change sign or wrap, and `==` on floats. A
-truncating cast of a form ID, an offset or a count silently changes data, so the
-count may not rise. `baseline.json` holds the committed count per crate and lint.
-A fall is reported with the new number, and `--update` lowers the baseline.
-
-The ratchet reads the JSON log of the normal Clippy pass:
+Clippy finds `as` casts that truncate, change sign or wrap, and `==` on floats.
+A truncating cast of a form ID, an offset or a count silently changes data. This
+gate reads the JSON log of one Clippy pass and fails only when one of the four
+lints fires on a line the change adds, in the `converter` or `shared` crate:
 
   cargo clippy --workspace --all-targets --all-features --message-format=json \\
     -- -W clippy::cast_possible_truncation -W clippy::cast_sign_loss \\
        -W clippy::cast_possible_wrap -W clippy::float_cmp > clippy.json
-  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json clippy.json
+  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json clippy.json --base origin/main
+
+The added lines come from `git diff --unified=0 -M -C <merge-base>...HEAD`. An
+added line whose exact text was also deleted in the same diff is a move, not a
+new line; the match is a multiset, as in `scripts/check_retail_claims.py`. A
+diagnostic counts when its primary span is on a new line, or, for a macro
+expansion, when the call site is. An existing cast on an unchanged line is
+reported in one information line and never fails a pull request.
+
+There is no count file. A committed count would be a merge-conflict hotspot:
+every change that adds or removes a cast would edit the same line, and two
+changes that each add one cast could both pass alone and still leave the count
+on main wrong.
 
 The pass runs no `-D warnings`. The four lints are allow-by-default, and `-W`
-raises them to warnings. `-D warnings` cannot stay: it denies the four, and `-W`
-cannot lower a deny from a lint group, while `--force-warn` overrides
-`#[allow(..., reason = "...")]` and would hide the approved sites. Clippy exits
-0 when the tree has only warnings, so this script is the gate for every
-diagnostic outside the four lints: it prints each one and fails. A hard error
-still makes Clippy exit nonzero, and the workflow keeps that status.
+raises them. `-D warnings` cannot stay: it denies the four as well, and a
+specific `-W` cannot lower a deny from the `warnings` group. `--force-warn`
+overrides `#[allow(..., reason = "...")]`, which would hide the approved sites.
+Clippy exits 0 when the tree has only warnings, so this script also fails on
+every warning outside the four lints; a hard error still makes Clippy exit
+nonzero, and the workflow keeps that status.
 
-The count covers the `lib` and `bin` targets of the ratcheted crates.
-`--all-targets` also builds the test harness of every lib and bin, and a message
-record has no `profile` field, so unit-test casts count too. Integration tests,
-benches and examples are excluded by `target.kind`. Only messages whose crate is
-in `CRATES` are counted; path dependencies such as `mo2` and the vendored
-parsers report their own hits, which are outside this ratchet.
-
-The baseline comes from the Linux CI run. A cast under `#[cfg(windows)]` or
-another platform `cfg` is not in the Linux log. No ratcheted cast is under a
-platform `cfg` today. A cast added there will not raise the Linux count, and a
-`--update` on another platform would commit a different baseline; keep the
-baseline measured on Linux only.
+The gate covers the `lib` and `bin` targets of the two crates. `--all-targets`
+also builds the test harness of every lib and bin, and a message record has no
+`profile` field, so unit-test casts count too. Integration tests, benches and
+examples are excluded by `target.kind`. Only messages whose crate is in
+`CRATES` are considered; path dependencies such as `mo2` and the vendored
+parsers report their own hits, which are outside this gate.
 
 An exception needs a reason at the site, so the reason stays with the cast:
 
@@ -43,20 +47,21 @@ No lint enforces the reason (`clippy::allow_attributes_without_reason` is off),
 so an allow without one is a review finding, not a CI failure.
 
 Usage:
-  python3 tools/cast_ratchet/cast_ratchet.py --lint-flags          # flags for the Clippy run
-  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json log     # check against the baseline
-  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json log --update
-  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json log --crate shared
-  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json log --strict
+  python3 tools/cast_ratchet/cast_ratchet.py --lint-flags         # flags for the Clippy run
+  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json log --base origin/main
+  python3 tools/cast_ratchet/cast_ratchet.py --clippy-json log --base <sha>
 
-Exit codes: 0 = at or below the baseline, 1 = a count rose (or a fall with
-`--strict`, or a diagnostic outside the four lints), 2 = usage, log or baseline
-error.
+Exit codes: 0 = no new hit and no other warning, 1 = a new hit or a warning
+outside the four lints, 2 = usage, log, diff or required-artifact error.
 """
 
 import argparse
 import json
+import re
+import subprocess
 import sys
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 # Keep this list in step with the Clippy command: `--lint-flags` prints it, and
@@ -71,16 +76,27 @@ CRATES = ("converter", "shared")
 TARGET_KINDS = {"lib", "bin"}
 # A log that lacks one of these undercounts the crate, so the run is an error.
 REQUIRED_KINDS = {"converter": ("lib", "bin"), "shared": ("lib",)}
-DEFAULT_BASELINE = Path("tools/cast_ratchet/baseline.json")
 COUNTING_LEVELS = {"warning", "error"}
+HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 class LogError(Exception):
     """The Clippy log is missing, malformed or incomplete."""
 
 
-class BaselineError(Exception):
-    """The baseline file is missing or does not cover every crate and lint."""
+class DiffError(Exception):
+    """The range to compare is missing, or its diff cannot be read."""
+
+
+@dataclass(frozen=True)
+class Hit:
+    """One Clippy diagnostic in a gated crate, with its effective locations."""
+
+    crate: str
+    lint: str
+    message: str
+    rendered: str
+    locations: tuple
 
 
 def crate_of(record):
@@ -104,43 +120,34 @@ def call_site_of(span):
     return expansion.get("call_site") or expansion.get("span") or {}
 
 
-def span_key(message):
-    """A stable key for the primary spans of a diagnostic, so duplicates collapse.
+def locations_of(message):
+    """The file and line of every primary span, or its macro call site.
 
-    A local `macro_rules!` reports every use at the definition span. The call site
-    keeps those uses apart while the lib and lib-test reports of one cast still
-    share a key.
+    A local `macro_rules!` reports every use at the definition span, so the call
+    site is the line that the change can add. Without a primary span the
+    diagnostic cannot be placed, and the caller fails closed.
     """
     spans = message.get("spans") or []
     primary = [span for span in spans if span.get("is_primary")] or spans
-    key = []
+    locations = []
     for span in primary:
-        call_site = call_site_of(span)
-        key.append(
-            (
-                span.get("file_name"),
-                span.get("line_start"),
-                span.get("column_start"),
-                call_site.get("file_name"),
-                call_site.get("line_start"),
-                call_site.get("column_start"),
-            )
-        )
-    return tuple(key)
+        site = call_site_of(span) or span
+        path = site.get("file_name")
+        line = site.get("line_start")
+        if path is None or line is None:
+            continue
+        locations.append((path, int(line)))
+    return tuple(locations)
 
 
-def read_log(path, expected=CRATES):
-    """Count each lint per crate in a Cargo Clippy JSON log.
+def read_log(path):
+    """Read a Cargo Clippy JSON log.
 
-    Returns the counts, a list of problems, and a list of diagnostics outside the
-    four lints. A problem means the log is incomplete: no successful
-    `build-finished` record, or a required crate target missing. The caller
-    prints the table, then fails. A diagnostic outside the four lints is also a
-    failure, because the Clippy pass no longer denies warnings in the compiler.
-    A malformed record or an unattributable diagnostic raises LogError, because
-    the counts are then not trustworthy at all.
+    Returns the in-scope diagnostics, the warnings outside the four lints and a
+    list of problems that make the log incomplete. A malformed record raises
+    LogError, because no count from it is trustworthy.
     """
-    counts = {crate: {lint: 0 for lint in LINTS} for crate in CRATES}
+    diagnostics = []
     artifacts = set()
     seen = set()
     reported = set()
@@ -180,7 +187,7 @@ def read_log(path, expected=CRATES):
             crate = crate_of(record)
             if level not in COUNTING_LEVELS:
                 continue
-            key = (crate, code, message.get("message"), level, span_key(message))
+            key = (crate, code, message.get("message"), level, locations_of(message))
             if level == "error" and message.get("rendered") and key not in reported:
                 reported.add(key)
                 print(message["rendered"], file=sys.stderr)
@@ -198,28 +205,42 @@ def read_log(path, expected=CRATES):
                 continue
             if crate is None:
                 raise LogError(f"{path}:{number}: {code} has no crate manifest path")
-            if crate not in counts:
+            if crate not in CRATES:
                 continue
             kinds = set((record.get("target") or {}).get("kind") or [])
             if not kinds:
                 raise LogError(
                     f"{path}:{number}: {code} in {crate} has no target kind, so the "
-                    "count cannot attribute it; check the Cargo JSON format"
+                    "span cannot be attributed; check the Cargo JSON format"
                 )
             if not (kinds & TARGET_KINDS):
                 continue
-            key = (crate, code, message.get("message"), span_key(message))
+            locations = locations_of(message)
+            if not locations:
+                raise LogError(
+                    f"{path}:{number}: {code} in {crate} has no span, so the gate cannot "
+                    "tell whether the line is new; check the Cargo JSON format"
+                )
+            key = (crate, code, message.get("message"), locations)
             if key in seen:
                 continue
             seen.add(key)
-            counts[crate][code] += 1
+            diagnostics.append(
+                Hit(
+                    crate=crate,
+                    lint=code,
+                    message=message.get("message") or "",
+                    rendered=message.get("rendered") or "",
+                    locations=locations,
+                )
+            )
     if not finished:
         problems.append(
             f"{path}: no successful build-finished record; the Clippy run did not finish"
         )
     missing = [
         f"{crate} {kind}"
-        for crate in expected
+        for crate in CRATES
         for kind in REQUIRED_KINDS[crate]
         if (crate, kind) not in artifacts
     ]
@@ -227,81 +248,142 @@ def read_log(path, expected=CRATES):
         problems.append(
             f"{path}: no compiler-artifact record for "
             + ", ".join(missing)
-            + "; check that the Clippy command selects every ratcheted target"
+            + "; check that the Clippy command selects every gated target"
         )
-    return counts, problems, ungated
+    return diagnostics, ungated, problems
 
 
-def read_baseline(path):
-    """The per-crate, per-lint counts. Raises BaselineError when an entry is missing."""
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as error:
-        raise BaselineError(f"cannot read {path}: {error}") from error
-    except ValueError as error:
-        raise BaselineError(f"{path}: not valid JSON: {error}") from error
-    counts = document.get("counts") if isinstance(document, dict) else None
-    if not isinstance(counts, dict):
-        raise BaselineError(f"{path}: no counts object")
-    for crate in counts:
-        if crate not in CRATES:
-            raise BaselineError(f"{path}: unknown crate {crate}")
-        if not isinstance(counts[crate], dict):
-            raise BaselineError(f"{path}: counts for {crate} are not an object")
-        for lint in counts[crate]:
-            if lint not in LINTS:
-                raise BaselineError(f"{path}: unknown lint {lint}")
-    for crate in CRATES:
-        if crate not in counts:
-            raise BaselineError(f"{path}: no counts for {crate}; run --update")
-        for lint in LINTS:
-            if lint not in counts[crate]:
-                raise BaselineError(f"{path}: no count for {crate} {lint}; run --update")
-            value = counts[crate][lint]
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise BaselineError(
-                    f"{path}: count for {crate} {lint} is not an integer"
-                )
-    return counts
+def git(root, *args):
+    """Run git in the repository and return stdout, or raise DiffError."""
+    command = ["git", "-C", str(root), "-c", "core.quotePath=false", *args]
+    result = subprocess.run(
+        command,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        message = result.stderr.strip() or result.stdout.strip()
+        raise DiffError(f"{' '.join(command)}: {message}")
+    return result.stdout
 
 
-def write_baseline(path, counts):
-    """Write LF newlines on every host, so `--update` on Windows does not rewrite the file."""
-    document = {
-        "counts": {
-            crate: {lint: counts[crate][lint] for lint in LINTS} for crate in CRATES
-        }
-    }
-    text = json.dumps(document, indent=2, sort_keys=True) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(text)
+def read_diff(root, base, head="HEAD"):
+    """Return the added lines per path and the texts of the deleted lines."""
+    # `git diff A...B` needs a merge base. Ask for it first: an empty answer
+    # would compare with the empty tree and treat every line as new.
+    merge_base = git(root, "merge-base", base, head).splitlines()
+    if not merge_base or not merge_base[0].strip():
+        raise DiffError(f"{base} and {head} have no merge base")
+    diff = git(
+        root,
+        "diff",
+        "--unified=0",
+        "-M",
+        "-C",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        f"{merge_base[0].strip()}...{head}",
+    )
+    return parse_diff(diff)
+
+
+def parse_diff(text):
+    """Return added lines per path and the multiset of deleted line texts."""
+    added = {}
+    removed = Counter()
+    path = None
+    new_line = None
+    in_hunk = False
+    for raw in text.splitlines():
+        if raw.startswith("diff --git "):
+            path = None
+            new_line = None
+            in_hunk = False
+        elif not in_hunk and raw.startswith("+++ "):
+            target = raw[4:]
+            if target == "/dev/null":
+                path = None
+            else:
+                path = target[2:] if target.startswith("b/") else target
+                added.setdefault(path, {})
+        elif raw.startswith("@@"):
+            match = HUNK_RE.match(raw)
+            if match is None:
+                raise DiffError(f"cannot parse diff hunk: {raw}")
+            new_line = int(match.group(1))
+            in_hunk = path is not None
+        elif in_hunk and new_line is not None:
+            if raw.startswith("+"):
+                added[path][new_line] = raw[1:]
+                new_line += 1
+            elif raw.startswith("-"):
+                removed[raw[1:]] += 1
+            elif raw.startswith("\\"):
+                continue
+            else:
+                new_line += 1
+    return added, removed
+
+
+def new_lines(added, removed):
+    """Drop added lines whose exact text was also deleted: they moved, not new."""
+    kept = {}
+    for path in sorted(added):
+        lines = {}
+        for line in sorted(added[path]):
+            text = added[path][line]
+            if removed[text] > 0:
+                removed[text] -= 1
+                continue
+            lines[line] = text
+        if lines:
+            kept[path] = lines
+    return kept
+
+
+def relative_to_root(path, root):
+    """A repository-relative POSIX path for a span or diff file name."""
+    candidate = Path(path)
+    if candidate.is_absolute():
+        try:
+            candidate = candidate.relative_to(root)
+        except ValueError:
+            return path
+    return candidate.as_posix()
+
+
+def added_location(locations, added, root):
+    """The first location that sits on a new added line, or None."""
+    for path, line in locations:
+        relative = relative_to_root(path, root)
+        if line in added.get(relative, ()):
+            return relative, line
+    return None
 
 
 def print_ungated(ungated):
     """Report the diagnostics outside the four lints that make the pass fail."""
     print(
-        f"cast ratchet: {len(ungated)} diagnostic(s) outside the four ratchet lints. "
+        f"cast gate: {len(ungated)} diagnostic(s) outside the four gate lints. "
         "The Clippy pass does not deny warnings, so this gate does; fix them.",
         file=sys.stderr,
     )
     for label in ungated:
-        print(f"cast ratchet:   {label}", file=sys.stderr)
+        print(f"cast gate:   {label}", file=sys.stderr)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--clippy-json", type=Path, help="Cargo Clippy JSON log")
-    parser.add_argument("--baseline", type=Path, help=f"default: {DEFAULT_BASELINE}")
-    parser.add_argument("--root", type=Path, default=Path("."), help="repository root")
     parser.add_argument(
-        "--crate",
-        action="append",
-        choices=CRATES,
-        help="check one crate; the default is every ratcheted crate",
+        "--base",
+        help="commit or ref to compare with; the diff uses its merge base with HEAD",
     )
-    parser.add_argument("--update", action="store_true", help="write the measured counts")
-    parser.add_argument("--strict", action="store_true", help="also fail when a count fell")
+    parser.add_argument("--root", type=Path, default=Path("."), help="repository root")
     parser.add_argument(
         "--lint-flags",
         action="store_true",
@@ -314,98 +396,58 @@ def main(argv=None):
         return 0
     if args.clippy_json is None:
         parser.error("--clippy-json is required unless --lint-flags is given")
+    if args.base is None:
+        parser.error("--base is required unless --lint-flags is given")
 
     root = args.root.resolve()
-    baseline_path = args.baseline or root / DEFAULT_BASELINE
-    expected = args.crate or list(CRATES)
-
     try:
-        measured, problems, ungated = read_log(args.clippy_json, expected)
+        diagnostics, ungated, problems = read_log(args.clippy_json)
     except LogError as error:
-        print(f"cast ratchet: {error}", file=sys.stderr)
+        print(f"cast gate: {error}", file=sys.stderr)
         return 2
-
-    if args.update:
-        if problems:
-            for problem in problems:
-                print(f"cast ratchet: {problem}", file=sys.stderr)
-            print(
-                "cast ratchet: baseline not written from an incomplete log",
-                file=sys.stderr,
-            )
-            return 2
-        if ungated:
-            print_ungated(ungated)
-            print(
-                "cast ratchet: baseline not written while diagnostics outside the four "
-                "lints remain",
-                file=sys.stderr,
-            )
-            return 1
-        try:
-            write_baseline(baseline_path, measured)
-        except OSError as error:
-            print(f"cast ratchet: cannot write {baseline_path}: {error}", file=sys.stderr)
-            return 2
-        print(f"cast ratchet: wrote {baseline_path}")
-        return 0
-
     try:
-        baseline = read_baseline(baseline_path)
-    except BaselineError as error:
-        print(f"cast ratchet: {error}", file=sys.stderr)
+        added, removed = read_diff(root, args.base)
+    except DiffError as error:
+        print(f"cast gate: {error}", file=sys.stderr)
         return 2
 
-    raised, lowered = [], []
-    if problems:
-        print("cast ratchet: the log is incomplete; the counts below may be low", file=sys.stderr)
-    print(f"{'crate':10} {'lint':34} {'count':>6} / {'baseline':>8}  state")
-    for crate in expected:
-        for lint in LINTS:
-            count = measured[crate][lint]
-            limit = baseline[crate][lint]
-            if count > limit:
-                state = "RAISED"
-                raised.append((crate, lint, count, limit))
-            elif count < limit:
-                state = "below baseline"
-                lowered.append((crate, lint, count, limit))
-            else:
-                state = "ok"
-            print(f"{crate:10} {lint:34} {count:6} / {limit:8}  {state}")
+    added = new_lines(added, removed)
+    hits = []
+    existing = 0
+    for hit in diagnostics:
+        where = added_location(hit.locations, added, root)
+        if where is None:
+            existing += 1
+        else:
+            hits.append((where, hit))
+    hits.sort(key=lambda item: (item[0][0], item[0][1], item[1].lint))
 
-    sys.stdout.flush()
+    print(
+        f"cast gate: {existing} existing hit(s) on unchanged lines; only added lines "
+        "are gated."
+    )
+    for (path, line), hit in hits:
+        print(f"{path}:{line}: {hit.lint}: {hit.message}")
+        if hit.rendered:
+            print(hit.rendered, file=sys.stderr)
+
     if problems:
+        print("cast gate: the log is incomplete; the count above may be low", file=sys.stderr)
         for problem in problems:
-            print(f"cast ratchet: {problem}", file=sys.stderr)
+            print(f"cast gate: {problem}", file=sys.stderr)
         return 2
 
-    for crate, lint, count, limit in raised:
+    if hits:
         print(
-            f"cast ratchet: {crate} {lint} rose from {limit} to {count}. Replace the lossy "
-            f'cast with a checked conversion, or allow the site with '
-            f'`#[allow({lint}, reason = "...")]`.',
+            f"cast gate: {len(hits)} new Clippy hit(s) on added lines. Replace a lossy "
+            "cast with a checked conversion or an exact float comparison with a "
+            "tolerance, or allow the site with "
+            '`#[allow(<lint>, reason = "...")]`.',
             file=sys.stderr,
         )
-    if raised:
-        print(
-            "cast ratchet: a justified rise also needs a baseline update with `--update` "
-            "and an explanation in the pull request.",
-            file=sys.stderr,
-        )
-
-    for crate, lint, count, limit in lowered:
-        print(
-            f"cast ratchet: {crate} {lint} fell from {limit} to {count}. Lower the baseline "
-            f"with `python3 tools/cast_ratchet/cast_ratchet.py --clippy-json <log> --update`; "
-            f"it writes {count}.",
-            file=sys.stderr,
-        )
-
     if ungated:
         print_ungated(ungated)
-
-    if raised or ungated or (lowered and args.strict):
+    if hits or ungated:
         return 1
     return 0
 

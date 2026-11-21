@@ -371,6 +371,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
+          # The gate needs the merge base with origin/main (or the previous tip on a
+          # push). Full history also gives origin/main to a manual run.
+          fetch-depth: 0
 
       - name: Install Linux build dependencies
         run: |
@@ -394,13 +397,16 @@ jobs:
       - name: Setup kache compiler cache
         uses: kunobi-ninja/kache-action@v1
 
-      - name: Clippy check and lossy-cast ratchet
+      - name: Clippy check and added-line cast gate
         # One pass, so the job keeps the cost of the plain `cargo clippy` run. The pass cannot
-        # use `-D warnings`: it denies the four allow-by-default ratchet lints, and `-W` cannot
+        # use `-D warnings`: it denies the four allow-by-default gate lints, and `-W` cannot
         # lower a deny from a lint group. `--force-warn` also overrides
-        # `#[allow(..., reason = ...)]` exceptions. So the ratchet is the gate for every warning
-        # outside the four lints, and Clippy's exit code still gates hard errors. The workflow
-        # and the script must agree on the flag list.
+        # `#[allow(..., reason = ...)]` exceptions. So the gate fails on every warning outside
+        # the four lints, and Clippy's exit code still gates hard errors. The workflow and the
+        # script must agree on the flag list, and the gate fails when they do not.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -uo pipefail
           lint_flags=(
@@ -416,18 +422,25 @@ jobs:
             echo "script: $scripted_flags"
             exit 2
           fi
+          # A pull request runs on the merge commit, so its merge base with origin/main is the
+          # base it merges into. A push compares with the previous tip of its branch. A manual
+          # run compares with origin/main.
+          base="$PUSH_BEFORE"
+          if [[ "$EVENT_NAME" == "pull_request" || -z "$base" || "$base" =~ ^0+$ ]]; then
+            base="origin/main"
+          fi
           clippy_status=0
           cargo clippy --workspace --all-targets --all-features --message-format=json \
             -- "${lint_flags[@]}" > "$RUNNER_TEMP/clippy-casts.json" || clippy_status=$?
-          ratchet_status=0
+          gate_status=0
           python3 tools/cast_ratchet/cast_ratchet.py \
-            --clippy-json "$RUNNER_TEMP/clippy-casts.json" || ratchet_status=$?
-          # Run the ratchet even when Clippy failed, so its table and the rendered errors
-          # appear. A hard error keeps Clippy's status; the ratchet gates every warning.
+            --clippy-json "$RUNNER_TEMP/clippy-casts.json" --base "$base" || gate_status=$?
+          # Run the gate even when Clippy failed, so its output and the rendered errors
+          # appear. A hard error keeps Clippy's status; the gate checks every warning.
           if (( clippy_status != 0 )); then
             exit "$clippy_status"
           fi
-          exit "$ratchet_status"
+          exit "$gate_status"
 
   test_build:
     needs: [orchestrate]

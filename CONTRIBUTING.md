@@ -139,19 +139,21 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    when a number does not change), and explain the reason in the pull request. A baseline that your pull
    request did not change never raises the limit.
 
-   CI also ratchets four Clippy lints that find lossy numeric casts and exact float comparisons
+   CI also gates four Clippy lints that find lossy numeric casts and exact float comparisons
    (`cast_possible_truncation`, `cast_sign_loss`, `cast_possible_wrap`, `float_cmp`) in the
-   `converter` and `shared` crates. The count per crate and lint may not rise above
-   `tools/cast_ratchet/baseline.json`. The ratchet reads the JSON log of the normal Clippy pass, so
-   it adds no second build. The count includes the lib and bin test builds, because `--all-targets`
-   compiles them; integration tests, benches and examples are excluded. A fall prints the new
-   number; run `python3 tools/cast_ratchet/cast_ratchet.py --clippy-json <log> --update` to lower
-   the baseline. The baseline is measured on Linux CI. No ratcheted cast is under a platform `cfg`
-   today; a cast in `#[cfg(windows)]` code does not appear in the Linux count. An exception needs a
-   reason at the cast site, for example
+   `converter` and `shared` crates. The gate fails only when one of them fires on a line your pull
+   request adds; an existing site on an unchanged line is reported as one total and never fails.
+   The gate reads the JSON log of the normal Clippy pass, so it adds no second build. A moved or
+   renamed line is not new: an added line whose exact text is also deleted in the same diff is
+   skipped. A macro site is judged by where the macro is called. The gate covers the lib and bin
+   targets, because `--all-targets` compiles their test harnesses too; integration tests, benches
+   and examples are excluded. The pass does not use `-D warnings`, because that would deny the four
+   lints; the gate fails on every other warning instead. An exception needs a reason at the cast
+   site, for example
    `#[allow(clippy::cast_possible_truncation, reason = "the form ID is below 2^24")]`.
    No lint checks the reason, so an allow without `reason =` is a review finding.
-   `python3 tools/cast_ratchet/cast_ratchet.py --lint-flags` prints the Clippy flags for a local run.
+   `python3 tools/cast_ratchet/cast_ratchet.py --lint-flags` prints the Clippy flags for a local run;
+   add `--base origin/main` and `--clippy-json <log>` to run the gate itself.
 
    The byte-level parsers (ESM subrecords and record framing) also have `cargo-fuzz`
    targets in `fuzz/`. They run on a schedule, not on pull requests.
