@@ -12,13 +12,11 @@ fn load_order_reports_earlier_fault_before_opening_later_plugins() {
     let missing = data.join("Unreadable.esp");
     let error =
         converter::esm::load_order::LoadOrder::read(&[data.join("Patch.esp"), missing.clone()])
-            .err()
-            .expect("missing earlier master must be rejected");
+            .expect_err("missing earlier master must be rejected");
     assert!(error.to_string().contains("must precede"), "{error}");
     let base = data.join("Skyrim.esm");
     let error = converter::esm::load_order::LoadOrder::read(&[base.clone(), base, missing])
-        .err()
-        .expect("earlier duplicate must be rejected");
+        .expect_err("earlier duplicate must be rejected");
     assert!(error.to_string().contains("duplicate plugin"), "{error}");
 }
 

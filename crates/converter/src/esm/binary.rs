@@ -7,7 +7,7 @@ use crate::esm::{
 use crate::records::{DiscardedFrameScope, TruncatedPlacement};
 use color_eyre::{
     Result,
-    eyre::{WrapErr, eyre},
+    eyre::{WrapErr, ensure, eyre},
 };
 use flate2::{Decompress, FlushDecompress, Status};
 use nom::{
@@ -15,7 +15,12 @@ use nom::{
     bytes::complete::take,
     number::complete::{le_f32, le_i32, le_u16, le_u32},
 };
-use std::path::Path;
+use std::{
+    borrow::Cow,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+};
 
 pub(super) const FLAG_COMPRESSED: u32 = 0x00040000;
 
@@ -34,14 +39,17 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
 /// Bound TES4 decoding before extracting the master dependency list.
 fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
     let reader = EsmReader::open(path)?;
-    plugin_metadata_from_bytes(reader.as_slice())
+    let metadata = plugin_metadata_from_bytes(reader.as_slice())?;
+    reader.verify_source()?;
+    Ok(metadata)
 }
 
-pub(super) fn plugin_metadata_from_bytes(data: &[u8]) -> Result<PluginMetadata> {
+/// Decode admission facts from the same checked view the caller will scan or hash.
+pub(crate) fn plugin_metadata_from_bytes(data: &[u8]) -> Result<PluginMetadata> {
     let (rest, header) =
         parse_record_header(data).map_err(|error| eyre!("failed to parse TES4 header: {error}"))?;
     if &header.type_tag != b"TES4" || header.data_size as usize > rest.len() {
-        return Err(eyre!("invalid TES4 record"));
+        return Err(eyre!("invalid or truncated TES4 record"));
     }
     let payload = &rest[..header.data_size as usize];
     let decoded = if header.flags & FLAG_COMPRESSED != 0 {
@@ -53,9 +61,9 @@ pub(super) fn plugin_metadata_from_bytes(data: &[u8]) -> Result<PluginMetadata> 
         if output.len() != expected {
             return Err(eyre!("TES4 decompressed size mismatch"));
         }
-        output
+        Cow::Owned(output)
     } else {
-        payload.to_vec()
+        Cow::Borrowed(payload)
     };
     let masters = extract_subrecords(&decoded)?
         .into_iter()
@@ -71,6 +79,141 @@ pub(super) fn plugin_metadata_from_bytes(data: &[u8]) -> Result<PluginMetadata> 
         masters,
         flags: header.flags,
     })
+}
+
+/// Require the original master order and flags used for slot assignment/localized decoding.
+/// Compression is a physical encoding detail, not an admission fact; names are case-insensitive.
+pub(crate) fn verify_admitted_metadata(data: &[u8], admitted: &PluginMetadata) -> Result<()> {
+    let current = plugin_metadata_from_bytes(data)
+        .wrap_err("changed after load order was read: unreadable TES4 metadata")?;
+    const ADMISSION_FLAGS: u32 = 0x1 | 0x80 | 0x200;
+    let flags_match = (current.flags ^ admitted.flags) & ADMISSION_FLAGS == 0;
+    let masters_match = current.masters.len() == admitted.masters.len()
+        && current
+            .masters
+            .iter()
+            .zip(&admitted.masters)
+            .all(|(current, admitted)| {
+                shared::plugin_selection::normalize_plugin_name(current)
+                    == shared::plugin_selection::normalize_plugin_name(admitted)
+            });
+    if !flags_match || !masters_match {
+        return Err(eyre!(
+            "changed after load order was read: master list or ESM/ESL/localized flags differ"
+        ));
+    }
+    Ok(())
+}
+
+/// Bind an optional cache proof to admitted header facts on one checked source view.
+/// Its callers treat failure as absent proof, not a conversion-wide error.
+/// Production uses the streamed proof; this mapped form is the reference its tests compare with.
+#[cfg(test)]
+pub(crate) fn admitted_plugin_proof(
+    path: &Path,
+    admitted: &PluginMetadata,
+) -> Result<(u64, [u8; 32])> {
+    let reader = EsmReader::open(path)?;
+    let mut data = reader.as_slice();
+    verify_admitted_metadata(data, admitted)?;
+    let size = data.len() as u64;
+    let checksum = super::plugin_checksum(&mut data)?;
+    reader.verify_source()?;
+    Ok((size, checksum))
+}
+
+/// The largest TES4 payload an admission read accepts; real plugin headers are far smaller.
+/// Room for 255 long master names; a larger header only disables the optional cache proof.
+const MAX_TES4_HEADER_PAYLOAD: usize = 1024 * 1024;
+
+/// Optional proofs read one file handle instead of mapping the plugin. Streaming keeps a
+/// concurrent truncation or short read a declined proof, where a large direct mapping would
+/// fault the process. The bounded header still checks the admitted metadata, and the digest
+/// and the final stamp use that same handle.
+pub(crate) fn admitted_plugin_stream_proof(
+    path: &Path,
+    admitted: &PluginMetadata,
+) -> Result<(u64, [u8; 32])> {
+    let mut file = File::open(path)?;
+    let stamp = crate::source_input::SourceStamp::capture(&file)?;
+    let size = file.metadata()?.len();
+    #[cfg(test)]
+    stream_proof_after_open_for_test();
+    let mut header = [0u8; 24];
+    file.read_exact(&mut header)
+        .map_err(|error| eyre!("unreadable TES4 record header: {error}"))?;
+    let (_, parsed) = parse_record_header(&header)
+        .map_err(|error| eyre!("failed to parse TES4 header: {error}"))?;
+    ensure!(
+        &parsed.type_tag == b"TES4",
+        "invalid or truncated TES4 record"
+    );
+    let payload_length = parsed.data_size as usize;
+    ensure!(
+        payload_length <= MAX_TES4_HEADER_PAYLOAD,
+        "TES4 header payload of {payload_length} bytes exceeds the {MAX_TES4_HEADER_PAYLOAD}-byte admission limit"
+    );
+    let mut header_bytes = Vec::with_capacity(24 + payload_length);
+    header_bytes.extend_from_slice(&header);
+    header_bytes.resize(24 + payload_length, 0);
+    file.read_exact(&mut header_bytes[24..])
+        .map_err(|error| eyre!("truncated TES4 record header: {error}"))?;
+    verify_admitted_metadata(&header_bytes, admitted)?;
+    file.seek(SeekFrom::Start(0))?;
+    let checksum = super::plugin_checksum(&mut file)?;
+    stamp.verify(&file, path)?;
+    Ok((size, checksum))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after an optional proof opened its file handle.
+    static AFTER_STREAM_PROOF_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn stream_proof_after_open_for_test() {
+    let hook = AFTER_STREAM_PROOF_OPEN.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change made partway through the digest of a decode view.
+    static DURING_PLUGIN_DIGEST: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only reader that makes its pending source change after the first read, so the
+/// digest spans the edit and only the source stamp checked after the hash can catch it.
+#[cfg(test)]
+struct MidDigestChange<R> {
+    inner: R,
+    change: Option<Box<dyn FnOnce()>>,
+}
+
+#[cfg(test)]
+impl<R: Read> Read for MidDigestChange<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        if let Some(change) = self.change.take() {
+            change();
+        }
+        Ok(read)
+    }
+}
+
+/// Hash the exact checked view; tests may interpose one source edit partway through.
+fn decode_view_checksum(data: &[u8]) -> std::io::Result<[u8; 32]> {
+    #[cfg(test)]
+    if let Some(change) = DURING_PLUGIN_DIGEST.with(|slot| slot.borrow_mut().take()) {
+        return super::plugin_checksum(&mut MidDigestChange {
+            inner: data,
+            change: Some(change),
+        });
+    }
+    super::plugin_checksum(&mut &data[..])
 }
 
 /// Cap decompressed output so a corrupt size cannot reserve gigabytes up front.
@@ -236,7 +379,7 @@ pub fn parse_group(
     Ok(())
 }
 
-pub(super) enum ParsedRecord {
+pub(crate) enum ParsedRecord {
     Usable(RawRecord),
     /// A known header with no usable payload.
     DamagedRecord(RawRecord),
@@ -435,14 +578,16 @@ fn decode_record_subrecords_inner(
 
 /// Parse usable records once, retaining the existing terminal skip summaries.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
-    let mut records = Vec::new();
-    parse_plugin_file_inner(path, |candidate| {
-        if let ParsedRecord::Usable(record) = candidate {
-            records.push(record);
-        }
-    })
-    .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
-    Ok(records)
+    let (records, _) = parse_plugin_file_with_warnings(path)?;
+    Ok(records
+        .into_iter()
+        .filter_map(|candidate| match candidate {
+            ParsedRecord::Usable(record) => Some(record),
+            ParsedRecord::DamagedRecord(_)
+            | ParsedRecord::DiscardedFrame(_)
+            | ParsedRecord::TruncatedPlacement(_) => None,
+        })
+        .collect())
 }
 
 /// Keep usable records, damaged headers, and discarded frames in source order.
@@ -450,22 +595,49 @@ pub(super) fn parse_plugin_file_with_warnings(
     path: &Path,
 ) -> Result<(Vec<ParsedRecord>, Vec<String>)> {
     let mut records = Vec::new();
-    let warnings = parse_plugin_file_inner(path, |record| records.push(record))
+    let (warnings, _) = parse_plugin_file_inner(path, None, |record| records.push(record))
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
     Ok((records, warnings))
 }
 
-/// Keep header checks and local recovery unchanged while returning their bounded summary.
-fn parse_plugin_file_inner(path: &Path, visit: impl FnMut(ParsedRecord)) -> Result<Vec<String>> {
+/// Parse only bytes whose master/flag interpretation still matches the captured admission.
+/// The returned digest covers the exact view the records were decoded from.
+pub(crate) fn parse_admitted_plugin_file_with_warnings(
+    path: &Path,
+    admitted: &PluginMetadata,
+) -> Result<(Vec<ParsedRecord>, Vec<String>, [u8; 32])> {
+    let mut records = Vec::new();
+    let (warnings, checksum) =
+        parse_plugin_file_inner(path, Some(admitted), |record| records.push(record))
+            .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok((records, warnings, checksum))
+}
+
+/// Keep corruption local after checking any supplied admission authority on this view.
+fn parse_plugin_file_inner(
+    path: &Path,
+    admitted: Option<&PluginMetadata>,
+    visit: impl FnMut(ParsedRecord),
+) -> Result<(Vec<String>, [u8; 32])> {
     let reader = EsmReader::open(path)?;
-    parse_plugin_bytes(
-        reader.as_slice(),
+    let data = reader.as_slice();
+    if let Some(admitted) = admitted {
+        verify_admitted_metadata(data, admitted)?;
+    }
+    let warnings = parse_plugin_bytes(
+        data,
         &path
             .file_name()
             .unwrap_or(path.as_os_str())
             .to_string_lossy(),
         visit,
-    )
+    )?;
+    // Digest the same view the records were decoded from, never a later reopen, and check
+    // the source stamp last so a change made while the digest streams makes the stamp fail
+    // (the order `admitted_plugin_proof` uses).
+    let checksum = decode_view_checksum(data)?;
+    reader.verify_source()?;
+    Ok((warnings, checksum))
 }
 
 pub(super) fn parse_plugin_bytes(
@@ -601,6 +773,95 @@ mod tests {
         }
         let mut records = Vec::new();
         parse_group(&rest[header.data_size as usize..], None, None, &mut records)
+    }
+
+    /// The streamed optional proof returns the mapped proof's size and digest.
+    #[test]
+    fn stream_proof_matches_the_mapped_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Proof.esp");
+        std::fs::write(&path, plugin_bytes()).unwrap();
+        let admitted = parse_plugin_metadata(&path).unwrap();
+        assert_eq!(
+            admitted_plugin_stream_proof(&path, &admitted).unwrap(),
+            admitted_plugin_proof(&path, &admitted).unwrap()
+        );
+    }
+
+    /// Truncating an opened source declines the proof instead of faulting a mapping.
+    #[test]
+    fn stream_proof_reads_the_source_as_a_stream() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Mutable.esp");
+        std::fs::write(&path, plugin_bytes()).unwrap();
+        let admitted = parse_plugin_metadata(&path).unwrap();
+        let truncate = path.clone();
+        AFTER_STREAM_PROOF_OPEN.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&truncate)
+                    .unwrap()
+                    .set_len(0)
+                    .unwrap();
+            }));
+        });
+        let error = admitted_plugin_stream_proof(&path, &admitted).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("TES4"),
+            "a truncated source is declined by the bounded header read: {error:#}"
+        );
+    }
+
+    /// A plugin above the snapshot limit, so it is mapped directly from the live file.
+    fn large_plugin_bytes() -> Vec<u8> {
+        let chunk = vec![b'x'; 60 * 1024];
+        let mut payload = Vec::new();
+        while payload.len() <= crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize {
+            payload.extend_from_slice(b"EDID");
+            payload.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&chunk);
+        }
+        let mut bytes = b"TES4".to_vec();
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    /// A change made while the decode-view digest streams must fail the source stamp.
+    /// The old order (stamp, then digest) let such a change through unnoticed.
+    #[test]
+    fn a_source_change_during_the_decode_digest_is_rejected() {
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Large.esp");
+        let bytes = large_plugin_bytes();
+        assert!(
+            (bytes.len() as u64) > crate::source_input::MEMORY_SNAPSHOT_LIMIT,
+            "the direct-map path needs an input above the snapshot limit"
+        );
+        std::fs::write(&path, &bytes).unwrap();
+        parse_plugin_file(&path).expect("the unchanged large plugin must decode");
+
+        let edited = path.clone();
+        DURING_PLUGIN_DIGEST.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut file = File::options().write(true).open(&edited).unwrap();
+                file.seek(SeekFrom::End(-1)).unwrap();
+                file.write_all(&[0xff]).unwrap();
+            }));
+        });
+        let error = parse_plugin_file(&path)
+            .expect_err("a change during the decode digest must be rejected");
+        assert!(
+            format!("{error:#}").contains("input changed during conversion"),
+            "the stamp checked after the digest must report the change: {error:#}"
+        );
     }
 
     #[test]

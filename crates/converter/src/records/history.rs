@@ -110,6 +110,16 @@ pub(crate) fn write_tables_with_schemas(
     paths: &[PathBuf],
     schemas: &RuntimeSchemas,
 ) -> Result<()> {
+    ensure!(
+        paths.len() == order.names.len(),
+        "plugin/source path length mismatch"
+    );
+    // Admission already established these paths' slot metadata. A later missing or
+    // unreadable input still needs its original source position, not another open.
+    let source_paths = paths
+        .iter()
+        .map(|path| path.canonicalize().or_else(|_| std::path::absolute(path)))
+        .collect::<std::io::Result<Vec<_>>>()?;
     // Complete conversion replaces this owned tooling snapshot atomically with provenance.
     // Recreate the owned tables so retained history and add-on bytes cannot become stale.
     conn.execute_batch("DROP TABLE IF EXISTS inhouse_schema_addons;
@@ -133,6 +143,7 @@ pub(crate) fn write_tables_with_schemas(
         CREATE INDEX record_overrides_chain ON record_overrides(form_id,chain_position);
         CREATE INDEX record_overrides_source ON record_overrides(original_owner,full_local,plugin_id,source_record_offset);")?;
     write_master_table(conn, order)?;
+    write_input_table(conn, order, &source_paths)?;
     let mut addon_insert = conn.prepare(
         "INSERT INTO inhouse_schema_addons(ordinal,name,sha256,schema_json) VALUES(?1,?2,?3,?4)",
     )?;
@@ -149,10 +160,6 @@ pub(crate) fn write_tables_with_schemas(
             bytes
         ])?;
     }
-    let source_paths = paths
-        .iter()
-        .map(|p| p.canonicalize())
-        .collect::<std::io::Result<Vec<_>>>()?;
     let mut sorted: Vec<_> = (0..entries.len()).collect();
     sorted.sort_by_key(|&index| {
         let entry = &entries[index];
@@ -227,7 +234,26 @@ pub(crate) fn write_tables_with_schemas(
     Ok(())
 }
 
-/// Preserve native MAST order as scalar rows; a zero-master plugin has only its TES4 row.
+/// Preserve admission facts even when a source supplies no readable TES4 history row.
+fn write_input_table(conn: &Connection, order: &LoadOrder, paths: &[PathBuf]) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS inhouse_plugin_inputs;
+        CREATE TABLE inhouse_plugin_inputs(
+            plugin_id INTEGER PRIMARY KEY, flags INTEGER NOT NULL,
+            source_path TEXT NOT NULL);",
+    )?;
+    let mut insert = conn.prepare("INSERT INTO inhouse_plugin_inputs VALUES(?1,?2,?3)")?;
+    for (plugin_id, (metadata, path)) in order.metadata.iter().zip(paths).enumerate() {
+        insert.execute(params![
+            i64::try_from(plugin_id)?,
+            metadata.flags,
+            path.to_string_lossy()
+        ])?;
+    }
+    Ok(())
+}
+
+/// Preserve native MAST order as scalar rows, including metadata for skipped inputs.
 fn write_master_table(conn: &Connection, order: &LoadOrder) -> Result<()> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS inhouse_plugin_masters;
@@ -291,12 +317,27 @@ pub(crate) fn stored_order(conn: &Connection) -> Result<(LoadOrder, Vec<PluginSo
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='inhouse_plugin_masters')",
         [], |r| r.get(0),
     )?;
+    let admitted_inputs: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='inhouse_plugin_inputs')",
+        [], |r| r.get(0),
+    )?;
+    ensure!(
+        !admitted_inputs || normalized,
+        "stored admission metadata lacks its ordered master table"
+    );
     let legacy_column = if normalized {
         "NULL"
     } else {
         "h.plugin_masters"
     };
-    let mut statement = conn.prepare(&format!("SELECT h.plugin_id,p.name,h.flags,h.source_path,p.checksum,{legacy_column} FROM plugins p JOIN record_overrides h ON h.plugin_id=p.id AND h.record_type='TES4' AND h.source_record_offset=0 ORDER BY p.priority,p.id"))?;
+    let source_sql = if admitted_inputs {
+        "SELECT p.id,p.name,a.flags,a.source_path,p.checksum,NULL FROM plugins p LEFT JOIN inhouse_plugin_inputs a ON a.plugin_id=p.id ORDER BY p.priority,p.id".to_owned()
+    } else {
+        format!(
+            "SELECT h.plugin_id,p.name,h.flags,h.source_path,p.checksum,{legacy_column} FROM plugins p JOIN record_overrides h ON h.plugin_id=p.id AND h.record_type='TES4' AND h.source_record_offset=0 ORDER BY p.priority,p.id"
+        )
+    };
+    let mut statement = conn.prepare(&source_sql)?;
     let mut master_statement = normalized.then(|| conn.prepare(
         "SELECT master_index,master_name FROM inhouse_plugin_masters WHERE plugin_id=?1 ORDER BY master_index"
     )).transpose()?;
@@ -304,8 +345,8 @@ pub(crate) fn stored_order(conn: &Connection) -> Result<(LoadOrder, Vec<PluginSo
         Ok((
             r.get::<_, u32>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, u32>(2)?,
-            r.get::<_, String>(3)?,
+            r.get::<_, Option<u32>>(2)?,
+            r.get::<_, Option<String>>(3)?,
             r.get::<_, Vec<u8>>(4)?,
             r.get::<_, Option<String>>(5)?,
         ))
@@ -315,6 +356,17 @@ pub(crate) fn stored_order(conn: &Connection) -> Result<(LoadOrder, Vec<PluginSo
     let mut sources = Vec::new();
     for row in rows {
         let (plugin_id, name, flags, source, checksum, legacy_masters) = row?;
+        ensure!(
+            usize::try_from(plugin_id).is_ok_and(|index| index == sources.len()),
+            "stored plugin index {plugin_id} is not contiguous; expected {}",
+            sources.len()
+        );
+        let flags = flags.ok_or_else(|| {
+            color_eyre::eyre::eyre!("plugin {plugin_id}: missing stored admission flags")
+        })?;
+        let source = source.ok_or_else(|| {
+            color_eyre::eyre::eyre!("plugin {plugin_id}: missing stored source path")
+        })?;
         let masters = if let Some(statement) = &mut master_statement {
             read_normalized_masters(statement, plugin_id)?
         } else {
@@ -327,6 +379,13 @@ pub(crate) fn stored_order(conn: &Connection) -> Result<(LoadOrder, Vec<PluginSo
         metadata.push(PluginMetadata { flags, masters });
         sources.push((name, source.into(), checksum));
     }
+    let plugin_count: usize =
+        conn.query_row("SELECT count(*) FROM plugins", [], |row| row.get(0))?;
+    ensure!(
+        sources.len() == plugin_count,
+        "stored plugin metadata is incomplete: {} sources for {plugin_count} admitted plugins",
+        sources.len()
+    );
     Ok((LoadOrder::from_metadata(names, metadata)?, sources))
 }
 
@@ -357,6 +416,10 @@ fn decode_version(
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<DecodedRecord> {
     let (schemas, prepared) = runtime;
+    ensure!(
+        expected.len() == 32,
+        "source checksum is unavailable; version not decoded"
+    );
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -922,6 +985,163 @@ mod normalized_masters_tests {
         );
         let (stored, sources) = stored_order(&conn).unwrap();
         assert_authority(&stored, &sources);
+    }
+
+    /// Independent framing supplies one valid lazy-decodable record after the admitted holes.
+    fn native_frame(tag: &[u8; 4], id: u32, flags: u32, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = tag.to_vec();
+        bytes.extend(u32::try_from(payload.len()).unwrap().to_le_bytes());
+        bytes.extend(flags.to_le_bytes());
+        bytes.extend(id.to_le_bytes());
+        bytes.extend([0; 4]);
+        bytes.extend(44u16.to_le_bytes());
+        bytes.extend([0; 2]);
+        bytes.extend(payload);
+        bytes
+    }
+
+    /// A missing full plugin or light plugin must not compact any later provenance position.
+    #[test]
+    fn missing_admitted_sources_preserve_full_and_light_history_slots() {
+        for missing in [1usize, 2] {
+            let conn = metadata_database(false);
+            let order = fixture_order();
+            let temp = tempfile::tempdir().unwrap();
+            let mut entries = Vec::new();
+            let mut paths = Vec::new();
+            let mut following = None;
+            for (index, name) in order.names.iter().enumerate() {
+                let path = temp.path().join(name);
+                let mut bytes = native_frame(b"TES4", 0, order.metadata[index].flags, &[]);
+                if index != missing {
+                    entries.push(header_entry(
+                        scanner::ObservedHeader {
+                            record_type: *b"TES4",
+                            source_form_id: 0,
+                            flags: order.metadata[index].flags,
+                            source_record_offset: 0,
+                            source_record_size: 0,
+                            source_group_end: bytes.len() as u64,
+                            frame_complete: true,
+                            cell_form_id: None,
+                            worldspace_form_id: None,
+                            source_topic_form_id: None,
+                            topic_group_offset: None,
+                            failure: None,
+                        },
+                        &order,
+                        index,
+                    ));
+                }
+                if index == 3 {
+                    let text = b"HistoryNeighbor\0";
+                    let mut payload = b"EDID".to_vec();
+                    payload.extend(u16::try_from(text.len()).unwrap().to_le_bytes());
+                    payload.extend(text);
+                    let offset = bytes.len() as u64;
+                    let size = payload.len() as u32;
+                    bytes.extend(native_frame(b"KYWD", 0x0300_0812, 0, &payload));
+                    let mut entry = header_entry(
+                        scanner::ObservedHeader {
+                            record_type: *b"KYWD",
+                            source_form_id: 0x0300_0812,
+                            flags: 0,
+                            source_record_offset: offset,
+                            source_record_size: size,
+                            source_group_end: bytes.len() as u64,
+                            frame_complete: true,
+                            cell_form_id: None,
+                            worldspace_form_id: None,
+                            source_topic_form_id: None,
+                            topic_group_offset: None,
+                            failure: None,
+                        },
+                        &order,
+                        index,
+                    );
+                    entry.accepted = true;
+                    following = Some(entry.clone());
+                    entries.push(entry);
+                }
+                std::fs::write(&path, &bytes).unwrap();
+                let checksum = if index == missing {
+                    Vec::new()
+                } else {
+                    Sha256::digest(&bytes).to_vec()
+                };
+                conn.execute(
+                    "UPDATE plugins SET checksum=?1 WHERE id=?2",
+                    params![checksum, index as u32],
+                )
+                .unwrap();
+                if index == missing {
+                    // Retain bytes for evidence while making the admitted pathname unavailable.
+                    std::fs::rename(&path, temp.path().join("removed-source.retained")).unwrap();
+                }
+                paths.push(path);
+            }
+            write_tables(&conn, &entries, &order, &paths).unwrap();
+            let (stored, sources) = stored_order(&conn).unwrap();
+            assert_authority(&stored, &sources);
+            assert_eq!(stored.metadata[2].flags, 0x200);
+            assert_eq!(stored.normal["patch.esp"], 2);
+            assert_eq!(stored.light["light.esl"], 0);
+            assert!(sources[missing].2.is_empty());
+            assert_eq!(sources[3].0, "patch.esp");
+            let entry = following.unwrap();
+            assert_eq!(entry.form_id, Some(0x0200_0812));
+            let schemas = RuntimeSchemas::from_addon_bytes(&[]).unwrap();
+            let prepared = decoder::prepare_runtime_schema(&schemas);
+            let kinds = HashMap::from([(0x0200_0812, *b"KYWD")]);
+            let decoded = decode_version(
+                &sources[3].1,
+                &sources[3].2,
+                &entry,
+                &stored,
+                &kinds,
+                (&schemas, &prepared),
+                &mut PluginDiagnostics::default(),
+            )
+            .unwrap();
+            assert_eq!(decoded.form_id, 0x0200_0812);
+            assert_eq!(decoded.record_type, *b"KYWD");
+            let error = decode_version(
+                &sources[missing].1,
+                &sources[missing].2,
+                &entry,
+                &stored,
+                &kinds,
+                (&schemas, &prepared),
+                &mut PluginDiagnostics::default(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("source checksum is unavailable"), "{error}");
+        }
+    }
+
+    /// Missing stored facts fail closed instead of silently shifting later source indices.
+    #[test]
+    fn missing_admission_metadata_and_legacy_header_holes_are_rejected() {
+        for missing in [1u32, 3] {
+            let conn = metadata_database(true);
+            conn.execute("DELETE FROM record_overrides WHERE plugin_id=?1", [missing])
+                .unwrap();
+            let error = stored_order(&conn).err().unwrap().to_string();
+            assert!(
+                error.contains("not contiguous") || error.contains("incomplete"),
+                "{error}"
+            );
+        }
+        let conn = metadata_database(false);
+        let order = fixture_order();
+        let paths: Vec<_> = order.names.iter().map(PathBuf::from).collect();
+        write_master_table(&conn, &order).unwrap();
+        write_input_table(&conn, &order, &paths).unwrap();
+        conn.execute("DELETE FROM inhouse_plugin_inputs WHERE plugin_id=1", [])
+            .unwrap();
+        let error = stored_order(&conn).err().unwrap().to_string();
+        assert!(error.contains("plugin 1: missing stored admission flags"));
     }
 
     /// Normalized ordinals determine authority even when scalar rows were inserted in reverse order.

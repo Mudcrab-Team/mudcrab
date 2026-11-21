@@ -12,9 +12,10 @@ use crate::{
     records::ReadResult,
 };
 use rusqlite::{Connection, Result, Statement, ToSql, Transaction, params};
+#[cfg(test)]
+use std::path::PathBuf;
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    path::PathBuf,
     str::from_utf8,
 };
 
@@ -480,7 +481,7 @@ pub(super) fn export_plugins_to_db(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
-    plugin_paths: &[PathBuf],
+    plugins: super::PluginRows<'_>,
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     damaged_placement_cells: &HashSet<u32>,
     room_link_layouts: &HashMap<u32, RoomLinkLayout>,
@@ -489,7 +490,7 @@ pub(super) fn export_plugins_to_db(
         conn,
         master,
         Some(order),
-        Some(plugin_paths),
+        Some(plugins),
         Some(unresolved_fields),
         None,
         ExportOptions {
@@ -503,11 +504,11 @@ pub(super) fn export_plugins_to_db(
 }
 
 /// Export canonical decoded fields with Skyrim's texture slots and byte-wide XESP flags.
-pub(crate) fn export_inhouse_to_db(
+pub(crate) fn export_inhouse_with_plugins_to_db(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
-    plugin_paths: &[PathBuf],
+    plugins: super::PluginRows<'_>,
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     terrain_offsets: &HashMap<u32, u64>,
     decoded: &ReadResult,
@@ -516,7 +517,7 @@ pub(crate) fn export_inhouse_to_db(
         conn,
         master,
         Some(order),
-        Some(plugin_paths),
+        Some(plugins),
         Some(unresolved_fields),
         Some(terrain_offsets),
         ExportOptions {
@@ -531,17 +532,17 @@ pub(crate) fn export_inhouse_to_db(
 
 /// Fresh diagnostic bundles only: archive canonical records and identities without runtime views.
 /// The shared loop writes identical records/formid_map SQL before its explicit deferral branch.
-pub(crate) fn export_inhouse_record_archive_to_db(
+pub(crate) fn export_inhouse_record_archive_with_plugins_to_db(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
-    plugin_paths: &[PathBuf],
+    plugins: super::PluginRows<'_>,
 ) -> Result<()> {
     export_records(
         conn,
         master,
         Some(order),
-        Some(plugin_paths),
+        Some(plugins),
         None,
         None,
         ExportOptions {
@@ -554,11 +555,59 @@ pub(crate) fn export_inhouse_record_archive_to_db(
     )
 }
 
+/// Test callers without reader recovery prepare healthy source rows through the same path.
+#[cfg(test)]
+fn export_inhouse_to_db(
+    conn: &Connection,
+    master: &HashMap<u32, RawRecord>,
+    order: &LoadOrder,
+    paths: &[PathBuf],
+    unresolved: &HashMap<u32, BTreeSet<usize>>,
+    offsets: &HashMap<u32, u64>,
+    decoded: &ReadResult,
+) -> Result<()> {
+    let checksums =
+        super::prepare_plugin_checksums_for_test(paths, &mut BTreeSet::new(), &mut Vec::new());
+    export_inhouse_with_plugins_to_db(
+        conn,
+        master,
+        order,
+        super::PluginRows {
+            paths,
+            checksums: &checksums,
+        },
+        unresolved,
+        offsets,
+        decoded,
+    )
+}
+
+#[cfg(test)]
+fn export_inhouse_record_archive_to_db(
+    conn: &Connection,
+    master: &HashMap<u32, RawRecord>,
+    order: &LoadOrder,
+    paths: &[PathBuf],
+) -> Result<()> {
+    let checksums =
+        super::prepare_plugin_checksums_for_test(paths, &mut BTreeSet::new(), &mut Vec::new());
+    export_inhouse_record_archive_with_plugins_to_db(
+        conn,
+        master,
+        order,
+        super::PluginRows {
+            paths,
+            checksums: &checksums,
+        },
+    )
+}
+
 /// Recreate reader-owned outputs while preserving caller tables and asset-cache proofs.
 /// DDL participates in the export transaction, so an export error restores the old snapshot.
 fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         r#"DROP TABLE IF EXISTS record_diagnostics;
+        DROP TABLE IF EXISTS inhouse_plugin_inputs;
         DROP TABLE IF EXISTS inhouse_plugin_masters;
         DROP TABLE IF EXISTS record_overrides;
         DROP TABLE IF EXISTS room_placement_edits;
@@ -676,7 +725,7 @@ fn export_records(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: Option<&LoadOrder>,
-    plugin_paths: Option<&[PathBuf]>,
+    plugins: Option<super::PluginRows<'_>>,
     unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
     terrain_offsets: Option<&HashMap<u32, u64>>,
     options: ExportOptions<'_>,
@@ -694,13 +743,9 @@ fn export_records(
     let mut omissions = ProjectionOmissions::default();
     if order.is_some() {
         replace_complete_snapshot(&tx)?;
-        if let Some(paths) = plugin_paths {
+        if let Some(plugins) = plugins {
             tx.execute("DELETE FROM plugins", [])?;
-            super::insert_plugins(&tx, paths).map_err(|error| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
-                    error.to_string(),
-                )))
-            })?;
+            super::insert_plugins(&tx, plugins)?;
         }
     } else {
         tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;

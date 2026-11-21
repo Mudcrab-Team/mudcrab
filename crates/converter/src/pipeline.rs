@@ -80,6 +80,10 @@ mod rv_b_tests;
 #[path = "pipeline/recovery_tests.rs"]
 mod recovery_tests;
 
+#[cfg(test)]
+#[path = "pipeline/decoded_plugin_hash_tests.rs"]
+mod decoded_plugin_hash_tests;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineReport {
     pub complete: bool,
@@ -728,7 +732,7 @@ impl AssetPipeline {
             .filter(|(_, source)| extension(source, &["bsa", "ba2"]))
             .map(|(relative, source)| (source.clone(), relative.clone()))
             .collect();
-        let plugins = match mo2_plugins {
+        let (plugins, admitted_order) = match mo2_plugins {
             Some(plugins) => {
                 let profile = &config
                     .mo2
@@ -755,24 +759,35 @@ impl AssetPipeline {
                     !plugins.is_empty(),
                     "MO2 profile {profile}: no usable active plugins remain"
                 );
-                crate::esm::load_order::LoadOrder::read(&plugins).wrap_err_with(|| {
-                    format!("MO2 profile {profile}: invalid plugin/master order")
-                })?;
-                plugins
+                let admitted =
+                    crate::esm::load_order::LoadOrder::read(&plugins).wrap_err_with(|| {
+                        format!("MO2 profile {profile}: invalid plugin/master order")
+                    })?;
+                // A source deleted or replaced after this validation reaches reader recovery:
+                // that keeps its admitted slot and warns instead of aborting.
+                (plugins, admitted)
             }
-            None => plugin_paths_with_diagnostics(
-                config,
-                &files,
-                &mut report.notices,
-                &mut report.skipped_plugins,
-                &mut report.selection_warnings,
-            )?,
+            None => {
+                let plugins = plugin_paths_with_diagnostics(
+                    config,
+                    &files,
+                    &mut report.notices,
+                    &mut report.skipped_plugins,
+                    &mut report.selection_warnings,
+                )?;
+                let admitted = crate::esm::load_order::LoadOrder::read(&plugins)?;
+                (plugins, admitted)
+            }
         };
+        // Preserve admission flags, master lists and slot positions across archive extraction
+        // and parsing. A later header reopen must not compact or reject this admitted order.
+        #[cfg(test)]
+        crate::esm::after_plugin_admission_for_test();
         report.load_order = plugins
             .iter()
             .map(|path| {
                 path.file_name()
-                    .unwrap_or_default()
+                    .unwrap_or(path.as_os_str())
                     .to_string_lossy()
                     .into_owned()
             })
@@ -805,10 +820,7 @@ impl AssetPipeline {
             )
             .await;
         }
-        let plugin_hashes = plugins
-            .iter()
-            .map(|plugin| hash_file(plugin))
-            .collect::<Result<Vec<_>>>()?;
+        let mut plugin_hashes = admitted_plugin_hashes(&plugins);
         let archives: Vec<_> = files
             .iter()
             .filter(|path| extension(path, &["bsa", "ba2"]))
@@ -1142,14 +1154,33 @@ impl AssetPipeline {
                 language: &config.language,
             };
             let identity_started = Instant::now();
-            let cache_identity =
-                database_cache::identity(config, &plugins, string_sources, cancellation)?;
+            let cache_identity = if plugin_hashes.iter().any(String::is_empty) {
+                None
+            } else {
+                let identity = database_cache::identity_with_admitted_order(
+                    config,
+                    &plugins,
+                    string_sources,
+                    cancellation,
+                    &admitted_order,
+                )?;
+                if identity.is_none() {
+                    report.notices.push(
+                        "base database cache is unused for this run because its cache proofs \
+                         could not be read; converted data is unaffected"
+                            .into(),
+                    );
+                }
+                identity
+            };
             report.database_cache_key =
                 cache_identity.as_ref().map(|identity| identity.key.clone());
             report.phase_elapsed_ms.insert(
                 "database_cache_identity".into(),
                 identity_started.elapsed().as_millis(),
             );
+            #[cfg(test)]
+            after_database_cache_identity_for_test();
             let database_cache_root = config.ingestion_cache_dir().join(".database-cache");
             let lookup_started = Instant::now();
             // Merged terrain reads the records of a fresh conversion, so it never restores a database.
@@ -1178,12 +1209,13 @@ impl AssetPipeline {
                 .insert("database_cache_lookup".into(), restore_ms);
             if restored.is_some() {
                 let recheck_started = Instant::now();
-                let unchanged = database_cache::inputs_unchanged(
+                let unchanged = database_cache::inputs_unchanged_with_admitted_order(
                     cache_identity.as_ref().unwrap(),
                     config,
                     &plugins,
                     string_sources,
                     cancellation,
+                    &admitted_order,
                 )?;
                 report.phase_elapsed_ms.insert(
                     "database_cache_restore_input_recheck".into(),
@@ -1191,6 +1223,7 @@ impl AssetPipeline {
                 );
                 if !unchanged {
                     restored = None;
+                    report.database_cache_key = None;
                     report
                         .phase_elapsed_ms
                         .insert("database_cache_rejected_validation".into(), validation_ms);
@@ -1237,14 +1270,20 @@ impl AssetPipeline {
                 // SQLite writes in place. Every fresh build unlinks old names, and a restored
                 // bundle uses private copies, so neither can mutate the previous pack or cache.
                 database_cache::clear_outputs(staging)?;
-                let conversion =
-                    EsmParser::convert_plugins_with_reader_and_schemas_with_string_sources(
-                        &plugins,
-                        &db_path,
-                        config.record_reader,
-                        string_sources,
-                        Some(config.schemas()?.as_ref()),
-                    )?;
+                let conversion = EsmParser::convert_plugins_with_admitted_order_and_string_sources(
+                    &plugins,
+                    &db_path,
+                    config.record_reader,
+                    string_sources,
+                    Some(config.schemas()?.as_ref()),
+                    admitted_order.clone(),
+                )?;
+                apply_decoded_plugin_hashes(
+                    &mut plugin_hashes,
+                    &conversion.plugin_checksums,
+                    &plugins,
+                    &mut report.notices,
+                );
                 database_cache::write_conversion_notes(
                     staging,
                     &database_cache::ConversionNotes {
@@ -1306,34 +1345,65 @@ impl AssetPipeline {
                 interrupt(cancellation)?;
                 if let Some(identity) = &cache_identity {
                     let recheck_started = Instant::now();
-                    let current =
-                        database_cache::identity(config, &plugins, string_sources, cancellation)?;
+                    let current = if conversion.skipped_inputs.is_empty() {
+                        database_cache::identity_with_admitted_order(
+                            config,
+                            &plugins,
+                            string_sources,
+                            cancellation,
+                            &admitted_order,
+                        )?
+                    } else {
+                        // The reader already reported these inputs. Do not reopen or warn again.
+                        report.database_cache_key = None;
+                        None
+                    };
                     report.phase_elapsed_ms.insert(
                         "database_cache_input_recheck".into(),
                         recheck_started.elapsed().as_millis(),
                     );
                     if current
                         .as_ref()
+                        .is_none_or(|current| current.key != identity.key)
+                    {
+                        report.database_cache_key = None;
+                    }
+                    if current
+                        .as_ref()
                         .is_some_and(|current| current.key == identity.key)
                     {
-                        let store_started = Instant::now();
-                        if let Err(error) = database_cache::store(
-                            &database_cache_root,
-                            identity,
-                            staging,
-                            cancellation,
+                        // A same-header replacement can be decoded under the original's key:
+                        // the recheck above reads whatever is on disk now, not the decode view.
+                        if !decoded_plugin_digests_match_identity(
+                            &identity.inputs,
+                            &conversion.plugin_checksums,
                         ) {
-                            if error.downcast_ref::<Interrupted>().is_some() {
-                                return Err(error);
+                            report.database_cache_key = None;
+                            report.notices.push(
+                                "base database cache was not stored because a decoded plugin \
+                                 digest differs from its proved input"
+                                    .into(),
+                            );
+                        } else {
+                            let store_started = Instant::now();
+                            if let Err(error) = database_cache::store(
+                                &database_cache_root,
+                                identity,
+                                staging,
+                                cancellation,
+                            ) {
+                                if error.downcast_ref::<Interrupted>().is_some() {
+                                    return Err(error);
+                                }
+                                report
+                                    .notices
+                                    .push(format!("base database cache was not stored: {error:#}"));
                             }
-                            report
-                                .notices
-                                .push(format!("base database cache was not stored: {error:#}"));
+                            report.phase_elapsed_ms.insert(
+                                "database_cache_persistence".into(),
+                                store_started.elapsed().as_millis(),
+                            );
                         }
-                        report.phase_elapsed_ms.insert(
-                            "database_cache_persistence".into(),
-                            store_started.elapsed().as_millis(),
-                        );
                     } else if current.is_some() {
                         report.notices.push("base database cache was not stored because its inputs changed during conversion".into());
                     } else {
@@ -1785,11 +1855,11 @@ impl AssetPipeline {
         // once the world database and converted textures are in staging. Ordinary default
         // images are published independently of this optional merged-terrain stage.
         if config.merged_terrain {
-            crate::terrain_pipeline::run_merged_terrain_stage(
+            crate::terrain_pipeline::run_merged_terrain_stage_with_order(
                 staging,
                 merged_terrain_records.take(),
                 std::mem::take(&mut merged_terrain_offsets),
-                &plugins,
+                &admitted_order,
                 &crate::terrain_pipeline::TerrainOptions::from_config(terrain_config),
                 progress_tx,
                 &mut report,
@@ -5209,7 +5279,10 @@ async fn compile_lod_chunks_inline(
     let prior_package = reuse_root.join("conversion-manifest.json").exists()
         || reuse_root.join("lod-manifest.json").exists()
         || reuse_root.join("skyrim_world.db").exists();
-    let reuse = if config.invalidate_cache || !prior_package {
+    let reuse = if config.invalidate_cache
+        || !prior_package
+        || plugin_hashes.iter().any(String::is_empty)
+    {
         None
     } else {
         match LodReuse::open(reuse_root) {
@@ -5658,14 +5731,12 @@ async fn compile_lod_chunks_inline(
         report.notices.push(message);
     }
     chunk_hashes.sort();
-    let current_plugin_hashes = plugins
-        .iter()
-        .map(|plugin| hash_file(plugin))
-        .collect::<Result<Vec<_>>>()?;
-    color_eyre::eyre::ensure!(
-        current_plugin_hashes == plugin_hashes,
-        "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation"
-    );
+    let current_plugin_hashes = recheck_lod_plugin_hashes(plugins, plugin_hashes, report)?;
+    if current_plugin_hashes.iter().any(String::is_empty) {
+        // A build can still publish usable neighboring terrain, but unavailable source
+        // proof must not advertise reusable chunk inputs to the next conversion.
+        chunk_inputs.clear();
+    }
     let lod_configuration = hash_bytes(&serde_json::to_vec(&serde_json::json!({
         "assets": configuration_hash(config)?,
         "atlas_encoder": match config.lod_texture_encoder {
@@ -5674,7 +5745,7 @@ async fn compile_lod_chunks_inline(
         },
     }))?);
     let identity = build_identity(
-        plugin_hashes,
+        &current_plugin_hashes,
         &chunk_hashes,
         &lod_configuration,
         &world_settings,
@@ -5808,6 +5879,125 @@ fn resolve_lod_settings(
         Err(error) => Err(error)
             .wrap_err_with(|| format!("failed to inspect LOD settings {}", path.display())),
     }
+}
+
+/// Empty entries preserve unavailable admitted slots without claiming a source-byte proof.
+fn admitted_plugin_hashes(plugins: &[PathBuf]) -> Vec<String> {
+    plugins
+        .iter()
+        .map(|path| {
+            // silent-ok: an unavailable admitted slot keeps an empty proof; the decoded-view digest replaces it and a notice covers its absence.
+            hash_file(path).unwrap_or_default()
+        })
+        .collect()
+}
+
+/// Once parsing rejects an admitted input, later proof stages must not reopen it.
+pub(crate) fn clear_unavailable_plugin_hashes(hashes: &mut [String], skipped: &BTreeSet<usize>) {
+    for &index in skipped {
+        if let Some(hash) = hashes.get_mut(index) {
+            hash.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after the database cache identity is proved and before any
+    /// plugin is decoded. Take-once, like the reader's admission and decode hooks.
+    static AFTER_DATABASE_CACHE_IDENTITY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn after_database_cache_identity_for_test() {
+    let hook = AFTER_DATABASE_CACHE_IDENTITY.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// The stored bundle must contain the bytes the reader actually decoded, not just the bytes that
+/// were on disk when the identity was proved. `inputs["plugins"][i]["sha256"]` is the lowercase
+/// hex of the raw SHA-256 over plugin `i`'s whole file (the admitted stream proof), and
+/// `digests[i]` is the reader's raw SHA-256 of the exact bytes it decoded. The decoded digest is
+/// encoded with `cache::digest_hex`; hashing it again would never match.
+fn decoded_plugin_digests_match_identity(inputs: &serde_json::Value, digests: &[Vec<u8>]) -> bool {
+    let Some(plugins) = inputs.get("plugins").and_then(|plugins| plugins.as_array()) else {
+        return false;
+    };
+    plugins.len() == digests.len()
+        && plugins.iter().zip(digests).all(|(input, digest)| {
+            !digest.is_empty()
+                && input
+                    .get("sha256")
+                    .and_then(|sha256| sha256.as_str())
+                    .is_some_and(|sha256| sha256 == crate::cache::digest_hex(digest).as_str())
+        })
+}
+
+/// Replace file-inspection hashes with the digests the reader verified while decoding.
+/// A plugin that recovered after the initial hash keeps a proof of the bytes that supplied
+/// its records, so the post-export mutation check still covers it. A plugin without a
+/// verified digest keeps an empty slot and gets one short notice.
+fn apply_decoded_plugin_hashes(
+    hashes: &mut [String],
+    digests: &[Vec<u8>],
+    plugins: &[PathBuf],
+    notices: &mut Vec<String>,
+) {
+    for (index, digest) in digests.iter().enumerate() {
+        let Some(hash) = hashes.get_mut(index) else {
+            continue;
+        };
+        if digest.is_empty() {
+            hash.clear();
+            notices.push(format!(
+                "{}: no verified plugin checksum from the reader; a later source change is not detected",
+                plugins
+                    .get(index)
+                    .and_then(|path| path.file_name())
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            ));
+        } else {
+            *hash = crate::cache::digest_hex(digest);
+        }
+    }
+}
+
+/// Compare each expected digest with the bytes still on disk after export.
+/// Expected digests come from the reader's verified decode view; unavailable sources only
+/// remove optional proof, while a readable change still refuses a mixed-generation LOD build.
+fn recheck_lod_plugin_hashes(
+    plugins: &[PathBuf],
+    expected: &[String],
+    report: &mut PipelineReport,
+) -> Result<Vec<String>> {
+    ensure!(
+        plugins.len() == expected.len(),
+        "plugin proof/order length mismatch"
+    );
+    plugins.iter().zip(expected).map(|(path, expected)| {
+        if expected.is_empty() {
+            return Ok(String::new());
+        }
+        match hash_file(path) {
+            Ok(actual) => {
+                ensure!(actual == *expected,
+                    "plugin input {} changed during conversion; refusing to publish an LOD build from a mixed input generation",
+                    path.display());
+                Ok(actual)
+            }
+            Err(error) => {
+                report.warnings.push(format!(
+                    "warning: {}: source unavailable after decoding; retained data has no reusable plugin checksum: {error:#}",
+                    path.display(),
+                ));
+                Ok(String::new())
+            }
+        }
+    }).collect()
 }
 
 /// One build identity across ordered plugin bytes, compiled chunk payloads,
@@ -6753,6 +6943,94 @@ mod stop_hook {
 
 #[cfg(test)]
 mod tests {
+    /// Missing source proofs preserve their indices and never become a hash of an empty file.
+    #[test]
+    fn unavailable_plugin_proofs_preserve_slots_without_duplicate_warnings() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "Missing.esp", "C.esp"].map(|name| directory.path().join(name));
+        for (path, bytes) in paths.iter().zip([b"a".as_slice(), b"b", b"c"]) {
+            fs::write(path, bytes).unwrap();
+        }
+        let mut expected = admitted_plugin_hashes(&paths);
+        fs::rename(&paths[1], directory.path().join("missing.retained")).unwrap();
+        clear_unavailable_plugin_hashes(&mut expected, &BTreeSet::from([1]));
+        let mut report = PipelineReport::default();
+        let rechecked = recheck_lod_plugin_hashes(&paths, &expected, &mut report).unwrap();
+        assert_eq!(rechecked.len(), 3);
+        assert_eq!(rechecked, expected);
+        assert!(!rechecked[0].is_empty() && rechecked[1].is_empty() && !rechecked[2].is_empty());
+        assert!(report.warnings.is_empty());
+        assert_eq!(admitted_plugin_hashes(&paths), rechecked);
+    }
+
+    /// A disappearance during later stages removes proof, while a readable mutation still fails.
+    #[test]
+    fn late_unavailable_plugin_proof_warns_and_keeps_neighbor_hashes() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "Missing.esp", "C.esp"].map(|name| directory.path().join(name));
+        for path in &paths {
+            fs::write(path, b"original").unwrap();
+        }
+        let expected = admitted_plugin_hashes(&paths);
+        fs::rename(&paths[1], directory.path().join("missing.retained")).unwrap();
+        let mut report = PipelineReport::default();
+        let rechecked = recheck_lod_plugin_hashes(&paths, &expected, &mut report).unwrap();
+        assert_eq!((&rechecked[0], &rechecked[2]), (&expected[0], &expected[2]));
+        assert!(rechecked[1].is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("Missing.esp"));
+        fs::write(&paths[0], b"changed").unwrap();
+        assert!(recheck_lod_plugin_hashes(&paths, &expected, &mut report).is_err());
+    }
+
+    /// A readable input changed after decoding is named in the LOD refusal.
+    #[test]
+    fn lod_refusal_names_the_changed_plugin() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableMod.esp");
+        fs::write(&path, b"original").unwrap();
+        let expected = admitted_plugin_hashes(std::slice::from_ref(&path));
+        fs::write(&path, b"changed").unwrap();
+        let mut report = PipelineReport::default();
+        let error = recheck_lod_plugin_hashes(std::slice::from_ref(&path), &expected, &mut report)
+            .expect_err("a readable changed plugin must refuse the LOD publication");
+        let message = format!("{error:#}");
+        assert!(message.contains("MutableMod.esp"), "{message}");
+    }
+
+    /// A plugin that recovered after the initial hash still gets a reader-verified proof.
+    #[test]
+    fn recovered_plugin_keeps_reader_digest_and_later_change_fails() {
+        use sha2::{Digest, Sha256};
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "Missing.esp", "C.esp"].map(|name| directory.path().join(name));
+        for (path, bytes) in paths.iter().zip([b"a".as_slice(), b"recovered", b"c"]) {
+            fs::write(path, bytes).unwrap();
+        }
+        let mut expected = admitted_plugin_hashes(&paths);
+        // The initial hash failed, so the slot is empty before the reader supplies records.
+        expected[1].clear();
+        let digest = |bytes: &[u8]| Sha256::digest(bytes).to_vec();
+        let digests = vec![digest(b"a"), digest(b"recovered"), digest(b"c")];
+        let mut notices = Vec::new();
+        apply_decoded_plugin_hashes(&mut expected, &digests, &paths, &mut notices);
+        assert_eq!(expected[1], hash_bytes(b"recovered"));
+        assert!(notices.is_empty(), "{notices:?}");
+        let mut report = PipelineReport::default();
+        recheck_lod_plugin_hashes(&paths, &expected, &mut report).unwrap();
+        // A later readable change is now covered by the reader-verified digest.
+        fs::write(&paths[1], b"changed").unwrap();
+        assert!(recheck_lod_plugin_hashes(&paths, &expected, &mut report).is_err());
+        // Without a verified digest the slot stays empty and the run explains why.
+        let mut without_digest = admitted_plugin_hashes(&paths);
+        let digests = vec![digest(b"a"), Vec::new(), digest(b"c")];
+        let mut notices = Vec::new();
+        apply_decoded_plugin_hashes(&mut without_digest, &digests, &paths, &mut notices);
+        assert!(without_digest[1].is_empty());
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("Missing.esp") && notices[0].contains("not detected"));
+    }
+
     /// Failed staging must actually remove a surviving stale copy before permitting defaults.
     #[test]
     fn failed_default_cleanup_removes_surviving_copy() {
@@ -14762,6 +15040,104 @@ mod tests {
         assert!(!run_without_progress(config).await.database_cache_hit);
     }
 
+    /// A same-header replacement decoded under the original's proved cache key must not be stored.
+    /// The admission header (masters and ESM/ESL/localized flags) is identical, so the reader
+    /// decodes the replacement; only its HEDR author differs, which changes the decoded digest.
+    #[tokio::test(flavor = "current_thread")]
+    async fn database_cache_store_rejects_a_same_header_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        let plugin = data.join("Skyrim.esm");
+        let fixture = |author| {
+            dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                author,
+                worldspace: "CacheStoreWorld",
+                cells: &[dummy_content::esm::Cell {
+                    grid_x: 0,
+                    grid_y: 0,
+                }],
+                model_path: "test/cache.nif",
+                diffuse: "test/cache.dds",
+                normal_texture: "test/cache_n.dds",
+            })
+            .unwrap()
+        };
+        let original = fixture("OriginalFixture");
+        fs::write(&plugin, &original).unwrap();
+        let replacement_path = directory.path().join("replacement.native");
+        fs::write(&replacement_path, fixture("ReplacementFixture")).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.no_lod = true;
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
+        let cache_root = config.ingestion_cache_dir().join(".database-cache");
+        struct ClearHooks;
+        impl Drop for ClearHooks {
+            fn drop(&mut self) {
+                AFTER_DATABASE_CACHE_IDENTITY.with(|slot| *slot.borrow_mut() = None);
+                crate::esm::AFTER_PLUGIN_DECODE.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let clear = ClearHooks;
+        // After the cache identity proves the original, the path holds the replacement.
+        let retained_original = directory.path().join("original.retained");
+        let retained_replacement = directory.path().join("decoded-replacement.retained");
+        let (hook_plugin, hook_replacement, hook_retained) =
+            (plugin.clone(), replacement_path, retained_original.clone());
+        AFTER_DATABASE_CACHE_IDENTITY.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&hook_plugin, &hook_retained).unwrap();
+                fs::rename(&hook_replacement, &hook_plugin).unwrap();
+            }));
+        });
+        // The reader has decoded the replacement; the original returns before the cache recheck.
+        let (hook_plugin, hook_retained, hook_replaced) = (
+            plugin.clone(),
+            retained_original,
+            retained_replacement.clone(),
+        );
+        crate::esm::AFTER_PLUGIN_DECODE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&hook_plugin, &hook_replaced).unwrap();
+                fs::rename(&hook_retained, &hook_plugin).unwrap();
+            }));
+        });
+        let report = run_without_progress(config).await;
+        drop(clear);
+        assert!(
+            retained_replacement.is_file(),
+            "the replacement must be the decoded view"
+        );
+        assert_eq!(
+            fs::read(&plugin).unwrap(),
+            original,
+            "the original must be back before the cache recheck"
+        );
+        assert!(
+            report.database_cache_key.is_none(),
+            "a replacement decoded under the original's key must not keep that key"
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("a decoded plugin digest differs")),
+            "{:?}",
+            report.notices
+        );
+        let entries = fs::read_dir(&cache_root)
+            .map(|entries| entries.filter_map(|entry| entry.ok()).count())
+            .unwrap_or(0);
+        assert_eq!(
+            entries, 0,
+            "the replacement's database must not be stored under the original's key"
+        );
+    }
+
     /// Loads the manifest published in an output directory.
     fn published_manifest(output: &Path) -> ConversionManifest {
         ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap()
@@ -15897,5 +16273,371 @@ mod tests {
             .extension()
             .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default()
+    }
+
+    /// Publication, cache proof, LOD and merged terrain share the captured admitted order.
+    #[tokio::test(flavor = "current_thread")]
+    async fn missing_admitted_plugin_publishes_manifest_lod_and_merged_terrain() {
+        fn small_plugin(id: u32, master: &str) -> Vec<u8> {
+            fn frame(signature: &[u8; 4], id: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+                let mut payload = Vec::new();
+                for (tag, value) in fields {
+                    payload.extend_from_slice(*tag);
+                    payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+                    payload.extend(value);
+                }
+                let mut bytes = signature.to_vec();
+                bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&id.to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&44u16.to_le_bytes());
+                bytes.extend_from_slice(&0u16.to_le_bytes());
+                bytes.extend(payload);
+                bytes
+            }
+            let mut header = 1.7f32.to_le_bytes().to_vec();
+            header.extend(1u32.to_le_bytes());
+            header.extend(0x1000u32.to_le_bytes());
+            let mut master = master.as_bytes().to_vec();
+            master.push(0);
+            let mut bytes = frame(
+                b"TES4",
+                0,
+                &[(b"HEDR", header), (b"MAST", master), (b"DATA", vec![0; 8])],
+            );
+            bytes.extend(frame(
+                b"KYWD",
+                id,
+                &[(b"EDID", b"HealthyNeighbor\0".to_vec())],
+            ));
+            bytes
+        }
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        for reader in [
+            crate::config::RecordReader::Legacy,
+            crate::config::RecordReader::Inhouse,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let output = directory.path().join("modern");
+            fs::create_dir_all(&data).unwrap();
+            // LAND names these real source images; a missing diffuse would intentionally
+            // skip LOD before this test reaches the post-parse publication paths.
+            dummy_content::layout::generate(
+                &data,
+                dummy_content::layout::DEFAULT_SEED,
+                dummy_content::layout::Formats::parse("dds,nif").unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                data.join("Skyrim.esm"),
+                dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                    author: "UnavailableInputPublication",
+                    worldspace: "UnavailableInputWorld",
+                    cells: &[dummy_content::esm::Cell {
+                        grid_x: 0,
+                        grid_y: 0,
+                    }],
+                    model_path: dummy_content::layout::GENERATED_MODEL_PATH,
+                    diffuse: dummy_content::layout::GENERATED_DIFFUSE_PATH,
+                    normal_texture: dummy_content::layout::GENERATED_NORMAL_PATH,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let missing = data.join("MutableMod.esp");
+            fs::write(&missing, small_plugin(0x0100_0822, "Skyrim.esm")).unwrap();
+            fs::write(
+                data.join("HealthyC.esp"),
+                small_plugin(0x0100_0833, "MutableMod.esp"),
+            )
+            .unwrap();
+            let selected = directory.path().join("plugins.txt");
+            fs::write(&selected, b"*MutableMod.esp\n*HealthyC.esp\n").unwrap();
+            let retained = directory.path().join("removed-plugin.retained");
+            let clear = ClearHook;
+            crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| {
+                assert!(slot.borrow().is_none());
+                *slot.borrow_mut() = Some(Box::new(move || fs::rename(missing, retained).unwrap()));
+            });
+            let mut config = cpu_lod_config(&data, &output);
+            config.record_reader = reader;
+            config.plugins_file = Some(selected);
+            config.merged_terrain = true;
+            config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
+            config
+                .lod_origins
+                .insert("UnavailableInputWorld".into(), [0, 0]);
+            let report = run_without_progress(config).await;
+            drop(clear);
+            assert!(
+                !data.join("MutableMod.esp").exists(),
+                "admission hook did not run"
+            );
+            assert!(!report.complete);
+            assert_eq!(
+                report
+                    .warnings
+                    .iter()
+                    .filter(|warning| warning.to_ascii_lowercase().contains("mutablemod.esp"))
+                    .count(),
+                1,
+                "{:?}",
+                report.warnings
+            );
+            assert_eq!(
+                report.load_order,
+                ["Skyrim.esm", "MutableMod.esp", "HealthyC.esp"]
+            );
+            assert!(!report.database_cache_hit && report.database_cache_key.is_none());
+            assert!(report.lod_warnings.is_empty(), "{:?}", report.lod_warnings);
+            assert!(report.lod_chunks > 0);
+            let terrain = report.terrain.as_ref().expect("merged terrain was built");
+            assert_eq!(terrain.cells_written, 1);
+            assert!(
+                terrain.skipped_cells.is_empty(),
+                "{:?}",
+                terrain.skipped_cells
+            );
+            assert!(
+                terrain.skipped_textures.is_empty(),
+                "{:?}",
+                terrain.skipped_textures
+            );
+            assert!(!terrain.chunk_files.is_empty());
+            for path in &terrain.chunk_files {
+                assert!(
+                    output.join(path).is_file(),
+                    "missing terrain payload {path}"
+                );
+            }
+            let manifest = published_manifest(&output);
+            assert!(!manifest.complete && manifest.record_data_complete == Some(false));
+            let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+            let rows: Vec<(i64, i64)> = conn
+                .prepare("SELECT id,length(checksum) FROM plugins ORDER BY id")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(rows, [(0, 32), (1, 0), (2, 32)]);
+            let later: u32 = conn
+                .query_row(
+                    "SELECT count(*) FROM records WHERE form_id=?1",
+                    [0x0200_0833u32],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(later, 1);
+        }
+    }
+
+    /// A plugin deleted after MO2 validated the order keeps its slot and its healthy neighbours.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mo2_plugin_missing_after_order_validation_keeps_neighbors() {
+        fn frame(signature: &[u8; 4], id: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+            let mut payload = Vec::new();
+            for (tag, value) in fields {
+                payload.extend_from_slice(*tag);
+                payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+                payload.extend(value);
+            }
+            let mut bytes = signature.to_vec();
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&id.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&44u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend(payload);
+            bytes
+        }
+        fn plugin(id: u32, masters: &[&str]) -> Vec<u8> {
+            let mut header = 1.7f32.to_le_bytes().to_vec();
+            header.extend(1u32.to_le_bytes());
+            header.extend(0x1000u32.to_le_bytes());
+            let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![(b"HEDR", header)];
+            for master in masters {
+                let mut name = master.as_bytes().to_vec();
+                name.push(0);
+                fields.push((b"MAST", name));
+            }
+            fields.push((b"DATA", vec![0; 8]));
+            let mut bytes = frame(b"TES4", 0, &fields);
+            bytes.extend(frame(
+                b"KYWD",
+                id,
+                &[(b"EDID", b"HealthyNeighbor\0".to_vec())],
+            ));
+            bytes
+        }
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                crate::esm::load_order::AFTER_LOAD_ORDER_READ
+                    .with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let instance = directory.path().join("MO2");
+        for folder in ["mods/Low", "profiles/Default", "overwrite"] {
+            fs::create_dir_all(instance.join(folder)).unwrap();
+        }
+        fs::write(
+            instance.join("ModOrganizer.ini"),
+            b"[General]\ngameName=Skyrim Special Edition\n",
+        )
+        .unwrap();
+        fs::write(instance.join("profiles/Default/modlist.txt"), b"+Low\n").unwrap();
+        fs::write(
+            instance.join("profiles/Default/plugins.txt"),
+            b"*MutableMod.esp\n*HealthyC.esp\n",
+        )
+        .unwrap();
+        fs::write(
+            instance.join("profiles/Default/loadorder.txt"),
+            b"Skyrim.esm\nMutableMod.esp\nHealthyC.esp\n",
+        )
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin(0x0800, &[])).unwrap();
+        let missing = instance.join("mods/Low/MutableMod.esp");
+        fs::write(&missing, plugin(0x0100_0822, &["Skyrim.esm"])).unwrap();
+        fs::write(
+            instance.join("mods/Low/HealthyC.esp"),
+            plugin(0x0100_0833, &["MutableMod.esp"]),
+        )
+        .unwrap();
+        let retained = directory.path().join("removed-plugin.retained");
+        let clear = ClearHook;
+        crate::esm::load_order::AFTER_LOAD_ORDER_READ.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || fs::rename(missing, retained).unwrap()));
+        });
+        let mut config = PipelineConfig::new(&data, &output);
+        config.mo2 = Some(mo2::Selection {
+            instance_path: instance.clone(),
+            profile: "Default".into(),
+        });
+        config.no_lod = true;
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let result = AssetPipeline::run_async(config, tx).await;
+        drain.await.unwrap();
+        drop(clear);
+        assert!(
+            !instance.join("mods/Low/MutableMod.esp").exists(),
+            "admission hook did not run"
+        );
+        let report = result
+            .expect("a plugin deleted after MO2 validated the order must reach reader recovery");
+        assert!(!report.complete);
+        assert_eq!(
+            report.load_order,
+            ["Skyrim.esm", "MutableMod.esp", "HealthyC.esp"]
+        );
+        assert_eq!(
+            report
+                .warnings
+                .iter()
+                .filter(|warning| warning.to_ascii_lowercase().contains("mutablemod.esp"))
+                .count(),
+            1,
+            "{:?}",
+            report.warnings
+        );
+        let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let healthy: u32 = conn
+            .query_row(
+                "SELECT count(*) FROM records WHERE form_id=?1",
+                [0x0200_0833u32],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(healthy, 1, "the healthy neighbour's record must survive");
+    }
+
+    /// Truncated mod inputs warn during publication while valid records on both sides survive.
+    #[tokio::test]
+    async fn truncated_input_publishes_usable_record_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let mut bytes = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "SnapshotRecoveryFixture",
+            worldspace: "SnapshotRecoveryWorld",
+            cells: &[dummy_content::esm::Cell {
+                grid_x: 0,
+                grid_y: 0,
+            }],
+            model_path: "unused/model.nif",
+            diffuse: "unused/diffuse.dds",
+            normal_texture: "unused/normal.dds",
+        })
+        .unwrap();
+        bytes.extend(dummy_content::esm::texture_set(0x1001, [None; 8]).unwrap());
+        let mut corrupt = vec![0; 24];
+        corrupt[..4].copy_from_slice(b"STAT");
+        corrupt[4..8].copy_from_slice(&5u32.to_le_bytes());
+        corrupt[8..12].copy_from_slice(&0x40000u32.to_le_bytes());
+        corrupt[12..16].copy_from_slice(&0x1002u32.to_le_bytes());
+        corrupt.extend([0, 0, 0, 0, 99]);
+        bytes.extend(corrupt);
+        bytes.extend(dummy_content::esm::texture_set(0x1003, [None; 8]).unwrap());
+        fs::write(data.join("Skyrim.esm"), bytes).unwrap();
+        let archive = data.join("TruncatedMod.bsa");
+        fs::write(&archive, b"BSA\0longer original input").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&archive)
+            .unwrap()
+            .set_len(7)
+            .unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.no_lod = true;
+        let report = run_without_progress(config).await;
+        assert!(!report.complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|line| line.contains("TruncatedMod.bsa"))
+        );
+        assert!(
+            report.warnings.iter().any(|line| {
+                line.to_ascii_lowercase().contains("skyrim.esm")
+                    && line.contains("skipped 1 records")
+                    && line.contains("STAT 00001002")
+            }),
+            "{:?}",
+            report.warnings
+        );
+        let manifest = published_manifest(&output);
+        assert!(!manifest.complete);
+        let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let neighbors: u32 = conn.query_row(
+            "SELECT count(*) FROM inhouse_source_records WHERE source_form_id IN (4097,4099) AND record_type='TXST'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(neighbors, 2);
+        let corrupt: u32 = conn
+            .query_row(
+                "SELECT count(*) FROM inhouse_source_records WHERE source_form_id=4098",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(corrupt, 0);
     }
 }

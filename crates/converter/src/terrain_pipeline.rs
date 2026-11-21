@@ -149,9 +149,9 @@ impl TerrainOptions {
 }
 
 /// Where entry 0's diffuse comes from, for the LOD bake (`crate::pipeline::compile_lod_chunks`).
-/// It reads the same setting and the same [`landscape_defaults`] as the merged-terrain arrays
-/// ([`run_merged_terrain_stage`]), so a quadrant with no `BTXT` (or a null one) is painted the
-/// same texture on both sides of the LOD switch distance.
+/// It reads the same setting and the same [`landscape_defaults`] as the merged-terrain arrays,
+/// so a quadrant with no `BTXT` (or a null one) is painted the same texture on both sides of
+/// the LOD switch distance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerrainDefaultDiffuse {
     /// The generated white diffuse, explicitly selected or used as a fallback.
@@ -632,21 +632,13 @@ pub fn build_merged_terrain(
     })
 }
 
-/// Runs the merged-terrain stage for one route that has just built its world database: the
-/// records, the load order's masters, the publish list and the report, around
-/// [`build_merged_terrain`].
-///
-/// `records` is the merged record map the database was exported from ([`terrain_records`] for a
-/// caller that kept only what this stage reads); the option being on without one (no plugin
-/// produced a world database) is an error naming `--merged-terrain`, never a silent skip. The
-/// build is heavy CPU and disk work, so it runs on the blocking pool rather than on the async
-/// runtime, as the LOD stage keeps its compilers off it. A stop cannot be honoured inside the
-/// build; it is checked by the caller at its next safe point.
-pub async fn run_merged_terrain_stage(
+/// Build from the same admitted master metadata that produced the database and cell cache.
+/// Missing input files after admission do not change any retained record's slot context.
+pub(crate) async fn run_merged_terrain_stage_with_order(
     staging: &Path,
     records: Option<HashMap<u32, RawRecord>>,
     source_offsets: HashMap<u32, u64>,
-    plugins: &[PathBuf],
+    order: &LoadOrder,
     options: &TerrainOptions,
     progress_tx: &Sender<ProgressEvent>,
     report: &mut PipelineReport,
@@ -667,9 +659,7 @@ pub async fn run_merged_terrain_stage(
             "Building merged terrain",
         ))
         .await;
-    let order = LoadOrder::read(plugins)
-        .wrap_err("failed to read the load order for the merged terrain")?;
-    let masters = load_order_masters(&order);
+    let masters = load_order_masters(order);
     let staging = staging.to_path_buf();
     let options = options.clone();
     let terrain = spawn_blocking(move || {

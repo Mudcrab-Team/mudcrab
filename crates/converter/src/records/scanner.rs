@@ -1,9 +1,10 @@
-//! Memory-mapped framing with recoverable record errors and bounded inflation.
+//! Checked input framing with recoverable record errors and bounded inflation.
 use super::{DiscardedFrameScope, PluginDiagnostics, TruncatedPlacement};
+use crate::esm::binary::PluginMetadata;
 use crate::esm::types::CELL_CHILD_GROUP_KINDS;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
-use memmap2::Mmap;
+use sha2::{Digest, Sha256};
 use std::{collections::HashSet, fs::File, path::Path};
 
 /// A framed, inflated record before any schema interpretation or ID resolution.
@@ -48,6 +49,41 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("checked frame"))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change made while the decode-view digest is computed.
+    static DURING_SCAN_DIGEST: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Digest the exact view the records were decoded from. Tests may inject one source edit
+/// partway through, so the stability check after the digest must still see it.
+fn decode_view_digest(bytes: &[u8]) -> [u8; 32] {
+    #[cfg(test)]
+    if let Some(change) = DURING_SCAN_DIGEST.with(|slot| slot.borrow_mut().take()) {
+        let mut hasher = Sha256::new();
+        let split = bytes.len() / 2;
+        hasher.update(&bytes[..split]);
+        change();
+        hasher.update(&bytes[split..]);
+        return hasher.finalize().into();
+    }
+    Sha256::digest(bytes).into()
+}
+
+/// What a scanned input still proves after the source-stability check.
+pub(crate) enum ScanOutcome {
+    /// The decode view verified; the digest covers exactly those bytes.
+    Verified([u8; 32]),
+    /// The source changed after it was copied; records and digest cover that stable copy.
+    RetainedSnapshot([u8; 32]),
+    /// A direct mapping changed while decoding; retained records may mix generations.
+    MixedRecords,
+    /// No records usable for later proof stages.
+    Skipped,
+}
+
+/// Structural recovery facts from one scan, independent of its decoded-view proof.
 #[derive(Default)]
 pub(crate) struct ScanDamage {
     pub frames: HashSet<DiscardedFrameScope>,
@@ -65,32 +101,109 @@ impl ScanDamage {
 }
 
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
+/// A non-`Verified` outcome means later proof stages must not reopen this changed source;
+/// already decoded records can still be retained. A digest covers the bytes that were decoded.
+/// `RetainedSnapshot` and `MixedRecords` mean records were delivered; with none, the input is
+/// simply `Skipped`. Local record errors alone still return the digest.
+pub(crate) fn scan_admitted_plugin(
+    (path, admitted): (&Path, &PluginMetadata),
+    diagnostics: &mut PluginDiagnostics,
+    observe: impl FnMut(ObservedHeader),
+    receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
+) -> Result<(ScanDamage, ScanOutcome)> {
+    scan_plugin_impl(path, Some(admitted), diagnostics, observe, receive)
+}
+
+/// Framing tests without a load-order admission retain the original scanner entry point.
+#[cfg(test)]
 pub(crate) fn scan_plugin(
     path: &Path,
     diagnostics: &mut PluginDiagnostics,
+    observe: impl FnMut(ObservedHeader),
+    receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
+) -> Result<ScanOutcome> {
+    scan_plugin_impl(path, None, diagnostics, observe, receive).map(|(_, outcome)| outcome)
+}
+
+/// Check an optional admission authority before exposing framed records to callbacks.
+fn scan_plugin_impl(
+    path: &Path,
+    admitted: Option<&PluginMetadata>,
+    diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<ScanDamage> {
+) -> Result<(ScanDamage, ScanOutcome)> {
     diagnostics.set_record(0, None, None, None, "framing");
-    let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
-    if file.metadata()?.len() < 24 {
-        diagnostics.note("record", || "input shorter than TES4 header".into());
-        return Ok(ScanDamage::default());
-    }
-    // SAFETY: inputs are read-only for the conversion and the map is never exposed to a writer.
-    // An outside truncation or in-place rewrite would fault reads of the map; that risk is
-    // accepted here (#633).
-    let map = unsafe { Mmap::map(&file)? };
+    let input = (|| -> Result<_> {
+        let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
+        let map = crate::source_input::map_input(&file, path)?;
+        Ok((file, map))
+    })();
+    let (file, map) = match input {
+        Ok(input) => input,
+        Err(error) => {
+            diagnostics.note("record", || {
+                format!("unusable input {}: {error:#}", path.display())
+            });
+            return Ok((ScanDamage::default(), ScanOutcome::Skipped));
+        }
+    };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
-        return Ok(ScanDamage::default());
+        return Ok((ScanDamage::default(), ScanOutcome::Skipped));
     }
-    Ok(scan_bytes_observed(
+    if let Some(admitted) = admitted
+        && let Err(error) = crate::esm::binary::verify_admitted_metadata(&map, admitted)
+    {
+        diagnostics.set_record(0, Some(*b"TES4"), None, None, "admission");
+        diagnostics.event_context.action = Some("skipped");
+        diagnostics.note("record", || {
+            format!("unusable input {}: {error:#}", path.display())
+        });
+        return Ok((ScanDamage::default(), ScanOutcome::Skipped));
+    }
+    let mut delivered = false;
+    let damage = scan_bytes_observed(
         &map,
         diagnostics,
-        &mut receive,
+        &mut |record, diagnostics| {
+            delivered = true;
+            receive(record, diagnostics);
+        },
         &mut observe,
-    ))
+    );
+    // Digest the view the records were decoded from before the final stability check, so a
+    // change that lands while (or after) the digest is computed cannot be published as
+    // verified. The legacy reader hashes and then rechecks its source stamp the same way.
+    let digest = decode_view_digest(&map);
+    if let Err(error) = map.verify(&file, path) {
+        diagnostics.set_record(0, None, None, None, "input_stability");
+        if map.is_snapshot() {
+            // Anonymous bytes never change under the reader: one digest names both the
+            // records that were delivered and the copy they came from.
+            diagnostics.event_context.action = Some("kept_snapshot");
+            diagnostics.note("input", || {
+                format!("{error:#}; retained the stable captured snapshot")
+            });
+            let outcome = if delivered {
+                ScanOutcome::RetainedSnapshot(digest)
+            } else {
+                ScanOutcome::Skipped
+            };
+            return Ok((damage, outcome));
+        }
+        diagnostics.event_context.action = Some("kept_decoded_records");
+        diagnostics.note("input", || {
+            format!("{error:#}; retained decoded records may mix versions of the large input and be inconsistent")
+        });
+        let outcome = if delivered {
+            ScanOutcome::MixedRecords
+        } else {
+            ScanOutcome::Skipped
+        };
+        return Ok((damage, outcome));
+    }
+    Ok((damage, ScanOutcome::Verified(digest)))
 }
 
 /// Traverse groups iteratively, retaining siblings when an inner boundary is corrupt.
@@ -352,6 +465,69 @@ mod tests {
         bytes
     }
 
+    /// Every semantic flag change is rejected before a header or record reaches a callback.
+    #[test]
+    fn admission_guard_rejects_changed_flags_before_callbacks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ChangedMod.esp");
+        let admitted = PluginMetadata::default();
+        for flags in [0x1, 0x80, 0x200] {
+            let mut bytes = frame(b"TES4", 0, flags, &[]);
+            bytes.extend(frame(b"STAT", 0x101, 0, b"EDID\x02\x00x\0"));
+            std::fs::write(&path, bytes).unwrap();
+            let mut diagnostics = PluginDiagnostics::default();
+            let mut observed = 0;
+            let mut received = 0;
+            let (_, outcome) = scan_admitted_plugin(
+                (&path, &admitted),
+                &mut diagnostics,
+                |_| observed += 1,
+                |_, _| received += 1,
+            )
+            .unwrap();
+            assert!(matches!(outcome, ScanOutcome::Skipped));
+            assert_eq!((observed, received), (0, 0));
+            assert_eq!(diagnostics.skipped_records, 1);
+            assert_eq!(diagnostics.event_context.action, Some("skipped"));
+            let warnings = diagnostics.warning_summary_lines("ChangedMod.esp");
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains("changed after load order was read"));
+        }
+    }
+
+    /// Case-equivalent master names pass admission while one corrupt record stays local.
+    #[test]
+    fn admission_guard_keeps_case_equivalent_masters_and_usable_record_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("UnchangedMod.esp");
+        let mut masters = b"MAST".to_vec();
+        masters.extend(9u16.to_le_bytes());
+        masters.extend(b"BASE.ESM\0");
+        let mut bytes = frame(b"TES4", 0, 0, &masters);
+        bytes.extend(frame(b"STAT", 0x101, 0x40000, &[0, 0, 0, 0, 99]));
+        bytes.extend(frame(b"STAT", 0x102, 0, b"EDID\x02\x00x\0"));
+        std::fs::write(&path, bytes).unwrap();
+        let admitted = PluginMetadata {
+            flags: 0,
+            masters: vec!["base.esm".into()],
+        };
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut observed = Vec::new();
+        let mut received = Vec::new();
+        let (_, outcome) = scan_admitted_plugin(
+            (&path, &admitted),
+            &mut diagnostics,
+            |header| observed.push(header.source_form_id),
+            |record, _| received.push(record.source_form_id),
+        )
+        .unwrap();
+        assert!(matches!(outcome, ScanOutcome::Verified(_)));
+        assert_eq!(observed, [0, 0x101, 0x102]);
+        assert_eq!(received, [0, 0x102]);
+        assert_eq!(diagnostics.skipped_records, 1);
+        assert_eq!(diagnostics.input_changes, 0);
+    }
+
     /// A corrupt compressed neighbor must not hide a later usable record.
     #[test]
     fn corrupt_record_keeps_neighbors() {
@@ -419,5 +595,212 @@ mod tests {
         assert!(inflate(&payload).is_err());
         payload[..4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(inflate(&payload).is_err());
+    }
+
+    /// Source edits report independently of malformed records while captured neighbors survive.
+    #[test]
+    #[cfg(windows)]
+    fn scanner_snapshot_warns_for_source_truncation_and_keeps_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableMod.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x101, 0, b"EDID\x02\x00a\0"));
+        bytes.extend(frame(b"STAT", 0x102, 0x40000, &[0, 0, 0, 0, 99]));
+        bytes.extend(frame(b"STAT", 0x103, 0, b"EDID\x02\x00b\0"));
+        std::fs::write(&path, &bytes).unwrap();
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut ids = Vec::new();
+        let mut truncated = None;
+        let outcome = scan_plugin(
+            &path,
+            &mut diagnostics,
+            |_| {
+                if truncated.is_none() {
+                    truncated = Some(File::options().write(true).open(&path).unwrap().set_len(0));
+                }
+            },
+            |record, _| ids.push(record.source_form_id),
+        )
+        .unwrap();
+        assert!(truncated.unwrap().is_ok(), "source is still mapped");
+        // The snapshot bytes are the delivered records, so their digest is the decode proof.
+        let ScanOutcome::RetainedSnapshot(digest) = outcome else {
+            panic!("a stable captured snapshot must keep its decode digest");
+        };
+        assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&bytes)));
+        assert_eq!(ids, [0, 0x101, 0x103]);
+        assert_eq!(diagnostics.skipped_records, 1);
+        assert_eq!(diagnostics.skipped_fields, 0);
+        assert_eq!(diagnostics.event_context.action, Some("kept_snapshot"));
+        let warnings = diagnostics.warning_summary_lines("MutableMod.esp");
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("input changed during conversion"))
+        );
+        assert!(warnings.iter().any(|line| line.contains("MutableMod.esp")));
+        assert!(!warnings.iter().any(|line| line.contains("inconsistent")));
+    }
+
+    /// A same-size edit between records can leave a direct view with two source generations.
+    #[test]
+    fn scanner_direct_view_warns_that_rewritten_records_may_be_inconsistent() {
+        use std::io::{Seek, SeekFrom};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableLargeMod.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x301, 0, b"EDID\x04\x00old\0"));
+        let second_payload = bytes.len() as u64 + 24;
+        bytes.extend(frame(b"STAT", 0x302, 0, b"EDID\x04\x00old\0"));
+        bytes.extend(frame(
+            b"STAT",
+            0x303,
+            0,
+            &vec![0; crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize],
+        ));
+        assert!(bytes.len() as u64 > crate::source_input::MEMORY_SNAPSHOT_LIMIT);
+        std::fs::write(&path, bytes).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut records = Vec::new();
+        let outcome = scan_plugin(
+            &path,
+            &mut diagnostics,
+            |_| {},
+            |record, _| {
+                if record.source_form_id == 0x301 {
+                    let mut writer = File::options().write(true).open(&path).unwrap();
+                    writer.seek(SeekFrom::Start(second_payload)).unwrap();
+                    writer.write_all(b"EDID\x04\x00new\0").unwrap();
+                    writer.flush().unwrap();
+                    // Force an observable stamp change independently of filesystem clock precision.
+                    writer
+                        .set_times(
+                            std::fs::FileTimes::new()
+                                .set_modified(modified + std::time::Duration::from_secs(2)),
+                        )
+                        .unwrap();
+                }
+                if matches!(record.source_form_id, 0x301 | 0x302) {
+                    records.push((record.source_form_id, record.payload));
+                }
+            },
+        )
+        .unwrap();
+        // A changed direct mapping has no single decoded view to prove.
+        assert!(matches!(outcome, ScanOutcome::MixedRecords));
+        assert_eq!(
+            records,
+            [
+                (0x301, b"EDID\x04\x00old\0".to_vec()),
+                (0x302, b"EDID\x04\x00new\0".to_vec())
+            ]
+        );
+        assert_eq!(diagnostics.input_changes, 1);
+        assert_eq!(diagnostics.skipped_records, 0);
+        assert_eq!(diagnostics.skipped_fields, 0);
+        assert_eq!(
+            diagnostics.event_context.action,
+            Some("kept_decoded_records")
+        );
+        let warnings = diagnostics.warning_summary_lines("MutableLargeMod.esp");
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("MutableLargeMod.esp")
+                    && line.contains("may mix versions")
+                    && line.contains("inconsistent")),
+            "changed direct views must warn that retained records may mix versions and be inconsistent: {warnings:?}"
+        );
+    }
+
+    /// A change made while the decode-view digest is computed must fail the source stamp.
+    /// The old order (stamp, then digest) accepted the changed body as verified.
+    #[test]
+    fn a_source_change_during_the_decode_digest_is_rejected() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Large.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x401, 0, b"EDID\x02\x00a\0"));
+        let edited_offset = bytes.len() as u64;
+        bytes.extend(frame(
+            b"STAT",
+            0x402,
+            0,
+            &vec![b'x'; crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize],
+        ));
+        assert!(bytes.len() as u64 > crate::source_input::MEMORY_SNAPSHOT_LIMIT);
+        std::fs::write(&path, &bytes).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let edited = path.clone();
+        DURING_SCAN_DIGEST.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut writer = File::options().write(true).open(&edited).unwrap();
+                writer.seek(SeekFrom::Start(edited_offset)).unwrap();
+                writer.write_all(b"EDID\x02\x00z\0").unwrap();
+                writer.flush().unwrap();
+                // Force an observable stamp change independently of filesystem clock precision.
+                writer
+                    .set_times(
+                        std::fs::FileTimes::new()
+                            .set_modified(modified + std::time::Duration::from_secs(2)),
+                    )
+                    .unwrap();
+            }));
+        });
+        let mut diagnostics = PluginDiagnostics::default();
+        let outcome = scan_plugin(&path, &mut diagnostics, |_| {}, |_, _| {}).unwrap();
+        assert!(
+            !matches!(outcome, ScanOutcome::Verified(_)),
+            "a change during the decode digest must never be accepted as verified"
+        );
+        assert_eq!(
+            diagnostics.event_context.action,
+            Some("kept_decoded_records")
+        );
+    }
+
+    /// Atomic replacement leaves the old mapped inode untouched, so this red test is safe on Unix.
+    #[test]
+    #[cfg(unix)]
+    fn scanner_snapshot_reports_source_replacement_and_keeps_captured_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableMod.esp");
+        let replacement = directory.path().join("replacement.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x201, 0, b"EDID\x02\x00a\0"));
+        bytes.extend(frame(b"STAT", 0x202, 0, b"EDID\x02\x00b\0"));
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::write(&replacement, b"replacement source").unwrap();
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut ids = Vec::new();
+        let mut replaced = false;
+        let outcome = scan_plugin(
+            &path,
+            &mut diagnostics,
+            |_| {
+                if !replaced {
+                    std::fs::rename(&replacement, &path).unwrap();
+                    replaced = true;
+                }
+            },
+            |record, _| ids.push(record.source_form_id),
+        )
+        .unwrap();
+        assert!(replaced);
+        assert!(matches!(outcome, ScanOutcome::RetainedSnapshot(_)));
+        assert_eq!(ids, [0, 0x201, 0x202]);
+        assert_eq!(diagnostics.skipped_records, 0);
+        assert_eq!(diagnostics.skipped_fields, 0);
+        let warnings = diagnostics.warning_summary_lines("MutableMod.esp");
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("input changed during conversion"))
+        );
     }
 }

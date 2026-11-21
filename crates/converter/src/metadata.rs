@@ -514,7 +514,14 @@ fn new_output_path(output: &Path, source: &Path, data: &Path) -> Result<PathBuf>
     Ok(output)
 }
 
-fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<String>)> {
+fn matched_plugins(
+    source: &Path,
+    data: &Path,
+) -> Result<(
+    Vec<PathBuf>,
+    Vec<String>,
+    Vec<crate::esm::binary::PluginMetadata>,
+)> {
     let connection = Connection::open_with_flags(
         source.join("skyrim_world.db"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -527,6 +534,7 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
     let mut seen = BTreeSet::new();
     let mut plugins = Vec::with_capacity(rows.len());
     let mut hashes = Vec::with_capacity(rows.len());
+    let mut metadata = Vec::with_capacity(rows.len());
     for (index, (name, priority, expected)) in rows.into_iter().enumerate() {
         ensure!(
             priority == index as i64,
@@ -546,14 +554,59 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
             "duplicate plugin name {name}"
         );
         let path = data.join(&name);
+        // Authenticate the TES4 header and the package checksum from one checked view. The
+        // rebuild's slot read must not admit a replacement these bytes never contained.
+        let reader = crate::esm::mmap_reader::EsmReader::open(&path)?;
+        let header = crate::esm::binary::plugin_metadata_from_bytes(reader.as_slice())
+            .wrap_err_with(|| format!("failed to read plugin header {name}"))?;
         ensure!(
-            hash_file(&path)? == expected,
+            hash_bytes(reader.as_slice()) == expected,
             "plugin checksum mismatch: {name}"
         );
+        reader.verify_source()?;
         plugins.push(path);
         hashes.push(expected);
+        metadata.push(header);
     }
-    Ok((plugins, hashes))
+    Ok((plugins, hashes, metadata))
+}
+
+/// Admission flags that decide the full/light namespace and localized master decoding.
+const ADMISSION_FLAGS: u32 = 0x1 | 0x80 | 0x200;
+
+/// Require the rebuild's slot read to use the header facts authenticated with each package.
+///
+/// `LoadOrder::read` opens the plugin headers again. A temporary ESL-flagged replacement seen
+/// only by that read moves one plugin into the light namespace and shifts every later full slot;
+/// a healthy neighbor then exports unchanged bytes at a slot the source package never assigned.
+/// Refuse that mismatch instead of publishing shifted FormIDs. Both sides decode the same TES4
+/// facts: `authenticated` from the bytes `matched_plugins` hashed, `order` from its own read.
+fn verify_admitted_order(
+    order: &crate::esm::load_order::LoadOrder,
+    authenticated: &[crate::esm::binary::PluginMetadata],
+) -> Result<()> {
+    ensure!(
+        order.metadata.len() == authenticated.len(),
+        "plugin order/authentication length mismatch"
+    );
+    for (index, (name, admitted)) in order.names.iter().zip(&order.metadata).enumerate() {
+        let expected = &authenticated[index];
+        let flags_match = (admitted.flags ^ expected.flags) & ADMISSION_FLAGS == 0;
+        let masters_match = admitted.masters.len() == expected.masters.len()
+            && admitted
+                .masters
+                .iter()
+                .zip(&expected.masters)
+                .all(|(admitted, expected)| {
+                    shared::plugin_selection::normalize_plugin_name(admitted)
+                        == shared::plugin_selection::normalize_plugin_name(expected)
+                });
+        ensure!(
+            flags_match && masters_match,
+            "plugin {name}: the header read for slot assignment differs from the checksum-authenticated source package; refusing to rebuild metadata with shifted plugin slots"
+        );
+    }
+    Ok(())
 }
 
 /// Enforce retained source identity for every ordinary LTEX diffuse.
@@ -643,12 +696,67 @@ fn stage_optional_default_source(
     Ok(())
 }
 
+/// Require the rebuild to decode the same source generation `matched_plugins` authenticated.
+/// A readable replacement with unchanged header facts is a mixed-generation refusal, not a
+/// malformed-plugin recovery: retained assets cannot pair with another generation's records.
+/// A stable captured snapshot keeps the digest of its own copy, so it is still compared; a
+/// large direct mapping that changed during decode has no consistent digest, so retained
+/// records from it are refused. Both sides are lowercase hex SHA-256: `expected` from
+/// `cache::hash_file`-style hashing of the authenticated file, the decode side from
+/// `cache::digest_hex` applied once to the raw 32-byte digest.
+fn verify_decoded_plugin_sources(
+    conversion: &crate::esm::RecordConversion,
+    expected: &[String],
+) -> Result<()> {
+    ensure!(
+        conversion.plugin_checksums.len() == expected.len(),
+        "plugin proof/order length mismatch"
+    );
+    for (index, digest) in conversion.plugin_checksums.iter().enumerate() {
+        if let Some(unverified) = conversion.unverified_inputs.get(&index) {
+            let name = &conversion.load_order.names[index];
+            match unverified {
+                crate::records::UnverifiedInput::MixedRecords => bail!(
+                    "plugin {name}: source changed while decoding a large plugin; retained records may mix generations; refusing to rebuild metadata from a mixed input generation"
+                ),
+                crate::records::UnverifiedInput::StableSnapshot(snapshot) => {
+                    if expected[index].is_empty() {
+                        continue;
+                    }
+                    ensure!(
+                        crate::cache::digest_hex(snapshot) == expected[index],
+                        "plugin {name}: captured snapshot differs from the authenticated source package; refusing to rebuild metadata from a mixed input generation"
+                    );
+                }
+            }
+            continue;
+        }
+        if conversion.skipped_inputs.contains(&index) || digest.is_empty() {
+            continue;
+        }
+        let expected = &expected[index];
+        if expected.is_empty() {
+            continue;
+        }
+        ensure!(
+            crate::cache::digest_hex(digest) == *expected,
+            "plugin {}: decoded bytes differ from the authenticated source package; refusing to rebuild metadata from a mixed input generation",
+            conversion.load_order.names[index]
+        );
+    }
+    Ok(())
+}
+
 /// Rebuild requested metadata while publishing the already verified original asset provenance.
 async fn rebuild_into(
     config: &PipelineConfig,
     source: &Path,
     staging: &Path,
-    matched: &(Vec<PathBuf>, Vec<String>),
+    matched: &(
+        Vec<PathBuf>,
+        Vec<String>,
+        Vec<crate::esm::binary::PluginMetadata>,
+    ),
     metadata: SourceMetadata<'_>,
     progress: &Sender<ProgressEvent>,
     ownership: Arc<LodWorkerOwnership>,
@@ -662,7 +770,10 @@ async fn rebuild_into(
         source_script_abi,
         source_lineage,
     } = metadata;
-    let (plugins, plugin_hashes) = matched;
+    let (plugins, plugin_hashes, authenticated_metadata) = matched;
+    // Retain slot/master metadata before copying assets and extracting archive inputs.
+    let admitted_order = crate::esm::load_order::LoadOrder::read(plugins)?;
+    verify_admitted_order(&admitted_order, authenticated_metadata)?;
     progress_event(
         progress,
         ProgressStage::Validating,
@@ -876,14 +987,24 @@ async fn rebuild_into(
             );
         }
     }
-    let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
+    let conversion = EsmParser::convert_plugins_with_admitted_order_and_string_sources(
         plugins,
         &database,
         config.record_reader,
-        &vfs,
-        &config.language,
+        crate::esm::inhouse::StringSources {
+            roots: crate::esm::inhouse::StringRoots::PluginLooseFirst(&vfs),
+            language: &config.language,
+        },
         Some(config.schemas()?.as_ref()),
+        admitted_order,
     )?;
+    verify_decoded_plugin_sources(&conversion, plugin_hashes)?;
+    let admitted_order = conversion.load_order;
+    let mut plugin_hashes = plugin_hashes.to_vec();
+    crate::pipeline::clear_unavailable_plugin_hashes(
+        &mut plugin_hashes,
+        &conversion.skipped_inputs,
+    );
     // This fresh read owns record completeness independently of the retained assets.
     manifest.record_data_complete = Some(conversion.warnings.is_empty());
     report.warnings.extend(conversion.warnings);
@@ -974,7 +1095,7 @@ async fn rebuild_into(
         staging,
         source,
         plugins,
-        plugin_hashes,
+        &plugin_hashes,
         progress,
         &mut report,
         Some(ownership),
@@ -984,11 +1105,11 @@ async fn rebuild_into(
     // Merged terrain (#215) is rebuilt from the records like the database and the LOD chunks
     // are, so a rebuild with the option on produces it instead of ignoring the option.
     if config.merged_terrain {
-        crate::terrain_pipeline::run_merged_terrain_stage(
+        crate::terrain_pipeline::run_merged_terrain_stage_with_order(
             staging,
             merged_records,
             source_offsets,
-            plugins,
+            &admitted_order,
             &crate::terrain_pipeline::TerrainOptions::from_config(config),
             progress,
             &mut report,
@@ -1812,6 +1933,80 @@ async fn progress_event(progress: &Sender<ProgressEvent>, stage: ProgressStage, 
 mod tests {
     use super::*;
     use crate::cache::CacheEntry;
+
+    /// The rebuild accepts only decode digests that match the authenticated source package.
+    #[test]
+    fn decoded_plugin_sources_must_match_the_authenticated_package() {
+        use sha2::{Digest, Sha256};
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "B.esp"].map(|name| directory.path().join(name));
+        for path in &paths {
+            let mut header = b"TES4".to_vec();
+            header.extend(0u32.to_le_bytes());
+            header.extend(0u32.to_le_bytes());
+            header.extend(0u32.to_le_bytes());
+            header.extend(0u32.to_le_bytes());
+            header.extend(44u16.to_le_bytes());
+            header.extend(0u16.to_le_bytes());
+            fs::write(path, header).unwrap();
+        }
+        let order = crate::esm::load_order::LoadOrder::read(&paths).unwrap();
+        let digest = |bytes: &[u8]| Sha256::digest(bytes).to_vec();
+        let raw = |bytes: &[u8]| <[u8; 32]>::from(Sha256::digest(bytes));
+        let expected = vec![hash_bytes(b"source A"), hash_bytes(b"source B")];
+        let mut conversion = crate::esm::RecordConversion {
+            load_order: order,
+            skipped_inputs: BTreeSet::new(),
+            unverified_inputs: BTreeMap::new(),
+            records: HashMap::new(),
+            warnings: Vec::new(),
+            notices: Vec::new(),
+            plugin_checksums: vec![digest(b"source A"), digest(b"source B")],
+            phases: BTreeMap::new(),
+        };
+        verify_decoded_plugin_sources(&conversion, &expected).unwrap();
+        // A readable replacement with unchanged header facts is a mixed generation.
+        conversion.plugin_checksums[1] = digest(b"replacement B");
+        let error = verify_decoded_plugin_sources(&conversion, &expected).unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("decoded bytes differ from the authenticated source package"),
+            "{error:#}"
+        );
+        // A stable captured snapshot keeps the digest of the same copy its records came from.
+        conversion.skipped_inputs.insert(1);
+        conversion.plugin_checksums[1].clear();
+        conversion.unverified_inputs.insert(
+            1,
+            crate::records::UnverifiedInput::StableSnapshot(raw(b"source B")),
+        );
+        verify_decoded_plugin_sources(&conversion, &expected).unwrap();
+        conversion.unverified_inputs.insert(
+            1,
+            crate::records::UnverifiedInput::StableSnapshot(raw(b"replacement B")),
+        );
+        let error = verify_decoded_plugin_sources(&conversion, &expected).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("captured snapshot differs from the authenticated"),
+            "{error:#}"
+        );
+        // A changed direct mapping cannot prove its retained records, so the rebuild refuses.
+        conversion
+            .unverified_inputs
+            .insert(1, crate::records::UnverifiedInput::MixedRecords);
+        let error = verify_decoded_plugin_sources(&conversion, &expected).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("retained records may mix generations"),
+            "{error:#}"
+        );
+        // Genuinely unavailable inputs keep their separate recovery, and empty proofs never match.
+        conversion.unverified_inputs.clear();
+        verify_decoded_plugin_sources(&conversion, &expected).unwrap();
+        conversion.skipped_inputs.clear();
+        let mut without_proof = expected.clone();
+        without_proof[1].clear();
+        verify_decoded_plugin_sources(&conversion, &without_proof).unwrap();
+    }
 
     /// Failed optional-copy cleanup is counted once per output while verified neighbors survive.
     #[test]

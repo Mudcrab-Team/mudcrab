@@ -23,11 +23,12 @@ pub use scanner::{fuzz_inflate, fuzz_scan};
 
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
+use scanner::{ScanOutcome, scan_admitted_plugin as scan_plugin};
 use schema_format::Schema;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::OnceLock,
 };
@@ -322,6 +323,9 @@ pub struct PluginDiagnostics {
     pub skipped_records: u64,
     pub retired_base_placements: u64,
     pub skipped_fields: u64,
+    /// Source identity/metadata changes observed after capturing usable plugin bytes.
+    #[serde(skip_serializing_if = "no_input_changes")]
+    pub input_changes: u64,
     pub unexpected_subrecords: u64,
     /// Links faithfully cleared when their targets are absent, disallowed or outside the master list.
     pub invalid_links: u64,
@@ -345,6 +349,11 @@ pub struct PluginDiagnostics {
     pub(crate) deferred_link_events: Option<Vec<decoder::DeferredLinkEvent>>,
 }
 
+/// Preserve the existing diagnostics JSON for unchanged source inputs.
+fn no_input_changes(count: &u64) -> bool {
+    *count == 0
+}
+
 impl PluginDiagnostics {
     /// Summary-only diagnostics for the fuzz targets: counters and bounded examples,
     /// no per-input disk journal. Ordinary builds do not compile this.
@@ -356,7 +365,7 @@ impl PluginDiagnostics {
         }
     }
 
-    /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
+    /// Summarize data loss and changed snapshot sources as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
         if let Some(example) = ["record", "field", "unexpected"]
@@ -368,6 +377,14 @@ impl PluginDiagnostics {
                 self.skipped_records,
                 self.skipped_fields,
                 self.unexpected_subrecords
+            ));
+        }
+        if self.input_changes != 0
+            && let Some(example) = self.first_by_category.get("input")
+        {
+            lines.push(format!(
+                "warning: {plugin}: observed {} input changes (first: {example})",
+                self.input_changes
             ));
         }
         lines
@@ -406,6 +423,10 @@ impl PluginDiagnostics {
     /// Unrecognized recovery categories remain field-loss warnings rather than link notices.
     pub(crate) fn note(&mut self, category: &str, example: impl FnOnce() -> String) {
         let summary_category = match category {
+            "input" => {
+                self.input_changes += 1;
+                category
+            }
             "retired_base" => {
                 self.retired_base_placements += 1;
                 category
@@ -560,6 +581,15 @@ pub struct RecordSource {
     pub deleted: bool,
 }
 
+/// What a skipped input still proves about the records it retained.
+#[derive(Clone, Debug)]
+pub enum UnverifiedInput {
+    /// Anonymous snapshot bytes: the digest covers the same stable copy the records came from.
+    StableSnapshot([u8; 32]),
+    /// A direct mapping changed during decode, so retained records may mix generations.
+    MixedRecords,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TruncatedPlacement {
     signature: &'static [u8],
@@ -655,6 +685,12 @@ impl DiscardedFrameScope {
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
+    /// Admitted sources unavailable for later proof; slots and decoded records remain allocated.
+    pub skipped_inputs: BTreeSet<usize>,
+    /// Skipped inputs whose records were retained, with the proof their decode view still gives.
+    pub unverified_inputs: BTreeMap<usize, UnverifiedInput>,
+    /// Digest of the exact verified bytes each plugin's records were decoded from.
+    pub plugin_checksums: Vec<Vec<u8>>,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -788,7 +824,10 @@ fn read_plugins_with_prepared(
         plugin_paths.len() == order.names.len(),
         "plugin/order length mismatch"
     );
-    let mut result = ReadResult::default();
+    let mut result = ReadResult {
+        plugin_checksums: vec![Vec::new(); plugin_paths.len()],
+        ..ReadResult::default()
+    };
     let mut unknown_discarded_scope = false;
     let mut truncated_placements = HashMap::new();
     let mut recovery = decoder::RecoveryCandidates::default();
@@ -1084,7 +1123,8 @@ fn read_plugins_with_prepared(
                 }
             }
         };
-        let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
+        let input = (path.as_path(), &order.metadata[index]);
+        let (damage, digest) = scan_plugin(input, &mut diagnostics, observe, receive)?;
         for (offset, placement) in damage.truncated_placements {
             if let Some(id) = placement.runtime_id(index, order) {
                 truncated_placements.insert(id, (index as u32, offset));
@@ -1098,6 +1138,26 @@ fn read_plugins_with_prepared(
                     result.damaged_cell_groups.insert(cell);
                 }
                 DiscardedFrameScope::Unknown => unknown_discarded_scope = true,
+            }
+        }
+        match digest {
+            ScanOutcome::Verified(digest) => result.plugin_checksums[index] = digest.to_vec(),
+            ScanOutcome::RetainedSnapshot(digest) => {
+                // The digest and the records name one captured copy, but LOD proof stays
+                // unavailable because the source that copy came from is no longer readable.
+                result.skipped_inputs.insert(index);
+                result
+                    .unverified_inputs
+                    .insert(index, UnverifiedInput::StableSnapshot(digest));
+            }
+            ScanOutcome::MixedRecords => {
+                result.skipped_inputs.insert(index);
+                result
+                    .unverified_inputs
+                    .insert(index, UnverifiedInput::MixedRecords);
+            }
+            ScanOutcome::Skipped => {
+                result.skipped_inputs.insert(index);
             }
         }
         result.history.extend(history.into_inner());

@@ -167,9 +167,40 @@ CREATE TABLE IF NOT EXISTS plugins (
     id INTEGER PRIMARY KEY,             -- load-order index; records.load_order refers to it
     name TEXT NOT NULL UNIQUE,          -- plugin filename as installed
     priority INTEGER NOT NULL,          -- same as id
-    checksum BLOB NOT NULL              -- SHA-256 of the plugin file
+    checksum BLOB NOT NULL              -- 32-byte SHA-256, or empty BLOB if unavailable
 );
 ```
+
+Once admitted, a plugin keeps its `id`, `name` and `priority` even if its source
+becomes unreadable before record parsing. The checksum comes from the same
+opened view those records are decoded from, so there is no separate checksum
+phase to reach. Both readers publish usable neighboring plugins without
+renumbering full/light slots or master indices. An unavailable input has an
+empty checksum BLOB (not NULL and not a SHA-256 digest); already decoded usable
+records may remain. The input's first
+recovery decision supplies the warning, and later metadata/proof stages do not
+reopen a known skipped source or emit it again. Such output is incomplete and its
+unavailable source cannot authenticate cache reuse or source-version decoding.
+
+Before decoding records, both readers compare the TES4 header in their opened input
+view with the admitted ordered master names and ESM, ESL and localized flags.
+Master-name comparison ignores case; compression is only a physical encoding detail.
+A mismatch skips that input before any records are merged and reports one bounded
+warning containing `changed after load order was read`. Its original plugin row and
+slot remain, with an empty checksum, so neighboring plugin identities do not shift.
+Each plugin's checksum is the digest of the exact opened view its records were
+decoded from; an input whose decode view cannot be verified keeps an empty
+checksum. A stable copied snapshot is the exception: it keeps the digest of the
+copied bytes that were decoded even when its source changed afterwards. A
+metadata rebuild compares these digests with the source package it authenticated
+and refuses, as a clean error before publication, when a plugin's records came
+from another generation. It also refuses a large input that changed under a
+direct mapping after decoding, because its retained records may mix generations;
+an ordinary conversion still publishes those records with a warning. Inputs
+skipped before decoding have no digest and are not compared. Database-cache
+proofs check the header and hash one checked source view; cache eligibility is
+checked before restore, after restore and before storage.
+These checks also apply with `--no-lod`.
 
 ---
 
@@ -249,6 +280,12 @@ and status `header`, and stores source path and the authored schema hash.
 `inhouse_plugin_masters(plugin_id,master_index,master_name)` stores original MAST
 order as scalar rows with contiguous zero-based indices; a header with no child
 rows has no masters. New snapshots have no `plugin_masters` JSON column.
+`inhouse_plugin_inputs(plugin_id,flags,source_path)` retains admission flags and an
+absolute source path for every plugin slot, including inputs skipped after admission
+that have no TES4 history row. It uses the same original plugin indices as `plugins`
+and `inhouse_plugin_masters`, preserving full/light slot reconstruction without
+inventing header records. Source-version decoding requires a 32-byte checksum;
+an unavailable source's empty BLOB cannot authenticate bytes or another slot's path.
 The history loader still accepts that column in retained packs when the child
 table is absent. These small metadata rows allow replay to reconstruct
 original full/light mapping without reading another missing or changed plugin.
