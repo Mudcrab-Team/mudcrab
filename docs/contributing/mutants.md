@@ -37,14 +37,14 @@ shards of two hours. To cover more, dispatch a run with the next file, for examp
 `crates/converter/src/records/**` and `crates/converter/src/esm/**`, are 4965 mutants and do not
 fit one run. Size a wider run from `outcomes.json` first.
 
-The run is split into eight shards with `--shard k/8`. Each job has a two-hour cap, and the run
-step stops at 105 minutes, so a shard that reaches that cap still uploads a partial report. Read
-the `not tested` count in the summary before you conclude that a shard was complete: it is the
-planned mutants that have no outcome yet.
+The run is split into eight shards with `--shard k/8`, where `k` is 0 to 7. Each job has a
+two-hour cap, and the run step stops at 105 minutes, so a shard that reaches that cap still
+uploads a partial report. Read the `not tested` count in the summary before you conclude that a
+shard was complete: it is the planned mutants that have no outcome yet.
 
 ## Read the report
 
-Each shard uploads an artifact named `mutants-shard-<k>`, holding `mutants.out/`:
+Each shard uploads an artifact named `mutants-shard-<k>`, holding the contents of `mutants.out/`:
 
 | Path | Contents |
 | --- | --- |
@@ -99,8 +99,10 @@ cargo mutants -p converter \
 ```
 
 `--test-tool nextest` matches CI, so a local survivor means the same as a CI survivor. Add
-`--shard 1/4` to split a larger scope across four shells. The report is written to `mutants.out/`
-in the checkout; it is not tracked, and it should not be committed.
+`--shard k/4` with `k` from 0 to 3 to split a larger scope across four shells. Give each shell its
+own `--output` parent, such as `--output shards/k`, so each run has its own `mutants.out/` lock
+and does not rotate another run's report. The report is written under that parent; it is not
+tracked, and it should not be committed.
 
 To reuse one dependency build instead of one per copy, use `--in-place`. cargo-mutants then
 mutates the checkout and restores each file afterwards, and it refuses `--jobs` in that mode, so
@@ -113,6 +115,9 @@ python3 scripts/workspace.py exec --isolated mutants --needed-gib 8 -- \
     --file crates/converter/src/records/scanner.rs \
     --test-tool nextest --timeout-multiplier 2
 ```
+
+An interrupted `--in-place` run can leave a mutation in the checkout. Inspect `git diff` before
+you commit, or use a disposable checkout.
 
 Guidance for sizing:
 
