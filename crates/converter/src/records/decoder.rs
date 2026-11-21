@@ -41,7 +41,7 @@ use super::{
 use crate::esm::load_order::LoadOrder;
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::OnceLock,
 };
 
@@ -3009,6 +3009,14 @@ struct BaseDeletion {
 }
 
 impl DeletedBases {
+    pub(crate) fn absent_from<T>(&self, winners: &HashMap<u32, T>) -> HashSet<u32> {
+        self.0
+            .keys()
+            .copied()
+            .filter(|id| !winners.contains_key(id))
+            .collect()
+    }
+
     pub(crate) fn restored(&mut self, id: u32, priority: u32) {
         if let Some(previous) = self.0.get_mut(&id).and_then(|events| events.last_mut()) {
             previous.restored.get_or_insert(priority);

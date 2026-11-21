@@ -439,16 +439,20 @@ fn plugin_edits(
                 Some("with invalid parent CELL")
             } else {
                 validate_room_field_tags(&record.subrecords)?;
-                if base
-                    .and_then(|id| {
-                        source_identity::header_runtime_id(b"REFR", id, priority, &order)
-                    })
-                    .is_none_or(|id| id == 0)
-                {
+                let valid_target = |id| {
+                    source_identity::header_runtime_id(b"REFR", id, priority, &order)
+                        .is_some_and(|runtime| runtime != 0)
+                };
+                if base.is_none_or(|id| !valid_target(id)) {
                     Some("with malformed NAME")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
-                } else if view.find_all(b"XESP").any(|bytes| bytes.len() != 8) {
+                } else if view.find_all(b"XESP").any(|bytes| {
+                    bytes.len() != 8
+                        || SubrecordXESP::parse(bytes).is_none_or(|parent| {
+                            parent.parent_ref != 0 && !valid_target(parent.parent_ref)
+                        })
+                }) {
                     Some("with malformed XESP")
                 } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
                     let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
@@ -460,11 +464,7 @@ fn plugin_edits(
                         || !super::valid_placement_transform(std::iter::once(
                             &arrival_and_flags[..24],
                         ))
-                        || (target != 0
-                            && source_identity::header_runtime_id(
-                                b"REFR", target, priority, &order,
-                            )
-                            .is_none_or(|id| id == 0))
+                        || (target != 0 && !valid_target(target))
                 }) {
                     Some("with malformed XTEL")
                 } else {

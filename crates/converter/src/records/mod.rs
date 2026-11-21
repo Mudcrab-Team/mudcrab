@@ -673,6 +673,8 @@ pub struct ReadResult {
     pub overrides: HashMap<u32, Vec<RecordSource>>,
     /// Physical header provenance includes accepted, deleted and rejected versions.
     pub history: Vec<history::HistoryEntry>,
+    /// Accepted deletions without a surviving record after duplicate recovery.
+    pub(crate) deleted_ids: HashSet<u32>,
     /// Runtime cell IDs potentially affected by discarded source frames.
     pub(crate) damaged_cell_groups: HashSet<u32>,
     /// Physical placement omissions explained by the later deletion of a usable base.
@@ -1140,6 +1142,7 @@ fn read_plugins_with_prepared(
         &mut recovery,
         &mut validate,
     );
+    result.deleted_ids = recovery.deleted.absent_from(&result.records);
     deferred_stage.finish(result.records.len());
     // Deferred validation may restore a predecessor. A later usable move or deletion
     // supersedes the incomplete header's evidence about that predecessor.

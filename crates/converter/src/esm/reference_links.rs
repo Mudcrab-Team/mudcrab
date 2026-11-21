@@ -126,6 +126,7 @@ pub(crate) struct Context<'a> {
     /// exports, where the key stays NULL.
     pub(crate) order: Option<&'a LoadOrder>,
     pub(crate) subset: bool,
+    pub(crate) deleted_ids: Option<&'a HashSet<u32>>,
 }
 
 impl Context<'_> {
@@ -155,7 +156,7 @@ impl Context<'_> {
                 StoredTarget::Absent => {}
             }
         }
-        Ok((id < 0x800).then_some(id))
+        Ok((id < 0x800 && !self.deleted_ids.is_some_and(|ids| ids.contains(&id))).then_some(id))
     }
 }
 
