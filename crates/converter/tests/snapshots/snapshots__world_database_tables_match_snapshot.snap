@@ -8,14 +8,23 @@ expression: snapshot
 # empty ones. One line per row: table|column=value|column=value.
 # Rows are sorted by column values before formatting, so SQLite row order
 # and HashMap iteration cannot churn. NULL is NULL, text is a JSON string,
-# REAL has nine fixed decimals, and a BLOB is blob:<sha256 prefix>:<length>.
+# a REAL shows nine decimals when that token parses back to the same
+# value and Rust's round-trip form otherwise, and a BLOB is
+# blob:<sha256 prefix>:<length>.
 # Normalized columns, because the machine or clock sets them:
 #   conversion_cache.plugin_path: the fixture's temporary directory, which differs between runs and machines
 #   conversion_cache.last_converted: the wall-clock time when the cache row was written
 #   record_overrides.source_path: the plugin path in the fixture's temporary directory
-# Omitted tables: the shadow tables of a virtual table hold SQLite's
-# R-tree blocks; the virtual tables (exterior_spatial,
-# lod_chunks_spatial) are included.
+# Omitted objects, named so no exclusion is silent:
+#   exterior_spatial_node (shadow): R-tree node block of exterior_spatial
+#   exterior_spatial_parent (shadow): R-tree parent block of exterior_spatial
+#   exterior_spatial_rowid (shadow): R-tree rowid map of exterior_spatial
+#   lod_chunks_spatial_node (shadow): R-tree node block of lod_chunks_spatial
+#   lod_chunks_spatial_parent (shadow): R-tree parent block of lod_chunks_spatial
+#   lod_chunks_spatial_rowid (shadow): R-tree rowid map of lod_chunks_spatial
+# The virtual tables exterior_spatial and lod_chunks_spatial are included:
+# their rows are the published spatial index. The test fails if the omitted
+# set differs from this list.
 ## actor_model_parts (0 rows)
 ## actor_models (1 rows)
 actor_models|id=7|race_id=10|sex="male"|skin_armo_id=NULL|head_model=NULL|head_source=NULL|resolution="unresolved"|skin_tone_r=NULL|skin_tone_g=NULL|skin_tone_b=NULL|weight=NULL
@@ -101,7 +110,7 @@ landscape_textures|id=4|editor_id="GeneratedLandscape"|texture_set_id=2|material
 ## movement_game_settings (1 rows)
 movement_game_settings|id=11|editor_id="fJumpHeightMin"|value=76.000000000|load_order=0
 ## movement_types (1 rows)
-movement_types|id=219149|editor_id="NPC_Default_MT"|left_walk=80.089996338|left_run=370.000000000|right_walk=79.750000000|right_run=370.000000000|forward_walk=80.099998474|forward_run=370.000000000|back_walk=71.930000305|back_run=205.250000000|load_order=0
+movement_types|id=219149|editor_id="NPC_Default_MT"|left_walk=80.08999633789063|left_run=370.000000000|right_walk=79.750000000|right_run=370.000000000|forward_walk=80.0999984741211|forward_run=370.000000000|back_walk=71.93000030517578|back_run=205.250000000|load_order=0
 ## npcs (1 rows)
 npcs|id=7|editor_id="Player"|full_name=NULL|race_id=10|class_id=NULL|flags=0
 ## plugins (1 rows)

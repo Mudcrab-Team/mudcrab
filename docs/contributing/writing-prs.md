@@ -57,15 +57,25 @@ Fill in [the PR template](../../.github/PULL_REQUEST_TEMPLATE.md): a one-sentenc
 
 ### Converter database snapshot
 
-[`world_database_tables_match_snapshot`](../../crates/converter/tests/snapshots.rs) writes every table of a world database built from the synthetic `dummy-content` fixture to a committed snapshot, one sorted line per row. A converter change that alters a published row fails the test and prints a row diff.
+[`world_database_tables_match_snapshot`](../../crates/converter/tests/snapshots.rs) writes every table of a world database built from the synthetic `dummy-content` fixture to a committed snapshot, one sorted line per row. A converter change that alters a published row fails the test and prints a row diff. [`legacy_world_database_tables_match_snapshot`](../../crates/converter/tests/snapshots.rs) keeps the 11 tables the older JSON snapshot covered on the legacy reader path.
 
-A PR that changes `crates/converter/tests/snapshots/snapshots__world_database_tables_match_snapshot.snap` must list each changed, added or removed row in its body and say why the converter now publishes it. To write a reviewed snapshot, run:
+A PR that changes either world database snapshot must list each changed row, each added or removed table, and each header change, and say why. To write a reviewed snapshot, run one of these:
 
 ```bash
+# POSIX shell
 INSTA_UPDATE=always python3 scripts/workspace.py cargo test --locked -p converter --test snapshots world_database_tables_match_snapshot
 ```
 
-Read the diff before you commit it. The snapshot header names every normalized column and omitted table, so no exclusion is silent.
+```powershell
+# PowerShell
+$env:INSTA_UPDATE="always"; python3 scripts/workspace.py cargo test --locked -p converter --test snapshots world_database_tables_match_snapshot; Remove-Item Env:INSTA_UPDATE
+```
+
+That command updates an existing snapshot. A missing snapshot fails the test, so the update command cannot recreate a deleted file and pass with no review: restore it from Git, or, to create it on purpose, also set `MUDCRAB_SNAPSHOT_CREATE=1` (`$env:MUDCRAB_SNAPSHOT_CREATE="1"` in PowerShell).
+
+Read the diff before you commit it. The snapshot header names every normalized column and every omitted table, and the test fails if that set changes, so no exclusion is silent.
+
+The fixture fills 27 of the 66 tables. These important paths are empty, so the snapshot proves only that the fixture publishes no rows for them: scripts (`scripts`, `script_properties`, `script_property_values`), omissions (`projection_omission_samples`, `projection_omission_stats`, `record_diagnostics`), weather (every `weathers`, `weather_*`, `climates`, `climate_weathers` and `region_weathers` table), water (`waters`), light (`lights`, `cell_lighting`, `lighting_templates`, `emittance`), LOD (`lod`, `lod_build`, `lod_chunks`, `lod_chunks_spatial`) and grass (`grass_types`, `landscape_texture_grasses`). `room_graph_stats` has 12 rows of zeros, and every other room table is empty. A snapshot change on those paths proves reporting only, not world content.
 
 ## Draft PRs
 
