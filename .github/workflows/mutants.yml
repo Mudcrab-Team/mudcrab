@@ -10,7 +10,8 @@ name: mutants
 # not gate anything. Gating new code with `--in-diff` is a later change.
 #
 # The scope is split by `--shard k/n` so each job fits its timeout. Each shard uploads its own
-# mutants.out, because a shard that stops at the timeout still reports what it finished.
+# mutants.out. The run step has a shorter timeout than the job, so a shard that stops at the cap
+# still reaches its summary and upload steps and reports what it finished.
 # docs/contributing/mutants.md explains how to read the artifacts and how to run this locally.
 
 on:
@@ -88,6 +89,9 @@ jobs:
         run: cargo install --locked cargo-mutants --version "$CARGO_MUTANTS_VERSION"
 
       - name: Run cargo-mutants
+        # Below the job cap, so a shard that overruns still reaches the summary and upload steps.
+        # A step timeout fails this step, and the `if: always()` steps after it still run.
+        timeout-minutes: 105
         env:
           # First slice of the reader and recovery scope: the framing reader, which recovers at
           # trusted boundaries and bounds inflation, and the memory-mapped plugin reader. That is
@@ -151,46 +155,76 @@ jobs:
         if: always()
         run: |
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob
           import json
           import os
           from collections import Counter
 
-          # mutants.json writes a SummaryOutcome value per mutant. The report groups them into the
-          # four outcomes the docs name, plus "not tested" for a shard that stopped early.
+          # outcomes.json holds one entry per finished scenario. Each entry names its summary, such
+          # as CaughtMutant, and its scenario: "Baseline" or {"Mutant": {...}}.
+          # mutants.json lists every mutant the shard planned to test, including any that a timeout
+          # cut off before they ran, so its length is the planned total.
           OUTCOMES = {
               "CaughtMutant": "caught",
               "MissedMutant": "missed",
               "Timeout": "timeout",
               "Unviable": "unviable",
               "Failure": "failure",
-              "Success": "not tested",
-              None: "not tested",
           }
 
-          out = "mutants.out"
-          path = os.path.join(out, "mutants.json")
-          try:
-              with open(path, encoding="utf-8") as stream:
-                  mutants = json.load(stream)
-          except FileNotFoundError:
-              print("## Mutants shard ${{ matrix.shard }}")
-              print()
-              print("No mutants.json was written, so this shard tested nothing.")
-              print("cargo-mutants failed before it reported; read the job log.")
-              raise SystemExit(0)
+          def find(name):
+              matches = sorted(glob.glob(os.path.join("mutants.out", "**", name), recursive=True))
+              return matches[0] if matches else None
 
-          counts = Counter(OUTCOMES.get(mutant.get("summary"), "not tested") for mutant in mutants)
+          planned_path = find("mutants.json")
+          outcomes_path = find("outcomes.json")
+
+          planned = None
+          if planned_path:
+              with open(planned_path, encoding="utf-8") as stream:
+                  planned = len(json.load(stream))
+
+          tested = Counter()
+          unknown = Counter()
+          if outcomes_path:
+              with open(outcomes_path, encoding="utf-8") as stream:
+                  lab = json.load(stream)
+              for outcome in lab.get("outcomes", []):
+                  scenario = outcome.get("scenario")
+                  if not (isinstance(scenario, dict) and "Mutant" in scenario):
+                      continue
+                  summary = outcome.get("summary")
+                  if summary in OUTCOMES:
+                      tested[OUTCOMES[summary]] += 1
+                  else:
+                      unknown[summary] += 1
+
+          finished = sum(tested.values()) + sum(unknown.values())
+          total = planned if planned is not None else finished
+          not_tested = max(total - finished, 0)
+
           print("## Mutants shard ${{ matrix.shard }} of ${{ strategy.job-total }}")
           print()
+          if planned is None:
+              print("No mutants.json was written, so this shard planned no mutants.")
+          if outcomes_path is None:
+              print("No outcomes.json was written, so no mutant finished.")
           print("| Outcome | Mutants |")
           print("| --- | --- |")
-          for outcome in ("caught", "missed", "timeout", "unviable", "failure", "not tested"):
-              print(f"| {outcome} | {counts.get(outcome, 0)} |")
-          print(f"| total | {len(mutants)} |")
+          for outcome in ("caught", "missed", "timeout", "unviable", "failure"):
+              print(f"| {outcome} | {tested.get(outcome, 0)} |")
+          if unknown:
+              print(f"| unknown summary | {sum(unknown.values())} |")
+          print(f"| not tested | {not_tested} |")
+          print(f"| total planned | {total} |")
 
-          missed_path = os.path.join(out, "missed.txt")
-          if os.path.exists(missed_path):
-              missed = [line.strip() for line in open(missed_path, encoding="utf-8") if line.strip()]
+          missed_path = find("missed.txt")
+          if missed_path:
+              missed = [
+                  line.strip()
+                  for line in open(missed_path, encoding="utf-8")
+                  if line.strip()
+              ]
               if missed:
                   print()
                   print("Surviving mutants:")
@@ -216,6 +250,10 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Keep this equal to the size of the matrix above. The report cannot read the matrix, and a
+      # missing artifact must show as a missing shard, not shrink the denominator.
+      SHARDS: 8
     steps:
       - name: Download every shard report
         uses: actions/download-artifact@v4
@@ -237,28 +275,51 @@ jobs:
               "Timeout": "timeout",
               "Unviable": "unviable",
               "Failure": "failure",
-              "Success": "not tested",
-              None: "not tested",
           }
+          SHARDS = int(os.environ["SHARDS"])
+
+          def find(root, name):
+              matches = sorted(glob.glob(os.path.join(root, "**", name), recursive=True))
+              return matches[0] if matches else None
 
           counts = Counter()
+          unknown = Counter()
           survivors = set()
-          shards = sorted(glob.glob("shards/mutants-shard-*"))
+          planned = 0
           reported = 0
-          for shard in shards:
-            out = os.path.join(shard, "mutants.out")
-            try:
-              with open(os.path.join(out, "mutants.json"), encoding="utf-8") as stream:
-                mutants = json.load(stream)
-            except FileNotFoundError:
-              counts["shard without a report"] += 1
+          shard_dirs = sorted(glob.glob("shards/mutants-shard-*"))
+          for shard in shard_dirs:
+            planned_path = find(shard, "mutants.json")
+            outcomes_path = find(shard, "outcomes.json")
+            if planned_path:
+              with open(planned_path, encoding="utf-8") as stream:
+                planned += len(json.load(stream))
+            if outcomes_path is None:
+              counts["shard without outcomes"] += 1
               continue
             reported += 1
-            for mutant in mutants:
-              counts[OUTCOMES.get(mutant.get("summary"), "not tested")] += 1
-            missed = os.path.join(out, "missed.txt")
-            if os.path.exists(missed):
-              survivors.update(line.strip() for line in open(missed, encoding="utf-8") if line.strip())
+            with open(outcomes_path, encoding="utf-8") as stream:
+              lab = json.load(stream)
+            for outcome in lab.get("outcomes", []):
+              scenario = outcome.get("scenario")
+              if not (isinstance(scenario, dict) and "Mutant" in scenario):
+                continue
+              summary = outcome.get("summary")
+              if summary in OUTCOMES:
+                counts[OUTCOMES[summary]] += 1
+              else:
+                unknown[summary] += 1
+            missed_path = find(shard, "missed.txt")
+            if missed_path:
+              survivors.update(
+                line.strip()
+                for line in open(missed_path, encoding="utf-8")
+                if line.strip()
+              )
+
+          finished = sum(counts[o] for o in OUTCOMES.values()) + sum(unknown.values())
+          not_tested = max(planned - finished, 0)
+          missing_artifacts = SHARDS - len(shard_dirs)
 
           with open("surviving-mutants.txt", "w", encoding="utf-8") as stream:
             for name in sorted(survivors):
@@ -266,14 +327,24 @@ jobs:
 
           print("## Mutation report")
           print()
-          print(f"Shards reporting: {reported} of {len(shards)}")
+          print(f"Shards reporting: {reported} of {SHARDS}")
+          if missing_artifacts:
+            print(f"Shards with no artifact: {missing_artifacts}")
           print()
           print("| Outcome | Mutants |")
           print("| --- | --- |")
-          for outcome in ("caught", "missed", "timeout", "unviable", "failure", "not tested"):
+          for outcome in ("caught", "missed", "timeout", "unviable", "failure"):
             print(f"| {outcome} | {counts.get(outcome, 0)} |")
-          if counts.get("shard without a report"):
-            print(f"| shard without a report | {counts['shard without a report']} |")
+          if unknown:
+            print(f"| unknown summary | {sum(unknown.values())} |")
+          print(f"| not tested | {not_tested} |")
+          print(f"| total planned | {planned} |")
+          if counts.get("shard without outcomes"):
+            print()
+            print(
+              "Shards with an artifact but no outcomes.json: "
+              f"{counts['shard without outcomes']}"
+            )
           print()
           print(f"Surviving mutants: {len(survivors)}")
           if survivors:
@@ -297,7 +368,9 @@ jobs:
       # a broken schedule, so fail it loudly.
       - name: Fail when no shard reported
         run: |
-          if ! ls shards/mutants-shard-*/mutants.out/mutants.json >/dev/null 2>&1; then
-            echo '::error::No shard produced mutants.json, so the schedule produced no report.'
+          # mutants.json is written before the first mutant runs, so require outcomes.json: proof
+          # that at least one mutant finished. A plan with no outcome is not a report.
+          if ! find shards -name outcomes.json -print -quit | grep -q .; then
+            echo '::error::No shard produced outcomes.json, so the schedule produced no report.'
             exit 1
           fi

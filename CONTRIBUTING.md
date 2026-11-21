@@ -143,6 +143,10 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    targets in `fuzz/`. They run on a schedule, not on pull requests.
    [`docs/contributing/fuzzing.md`](docs/contributing/fuzzing.md) shows how to run one
    for a fixed time and what to do with a crash.
+
+   The record readers also have a scheduled `cargo-mutants` run that lists tests which pass
+   without testing a change. [`docs/contributing/mutants.md`](docs/contributing/mutants.md)
+   explains the report and how to run one locally.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.

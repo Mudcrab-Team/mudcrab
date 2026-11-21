@@ -37,9 +37,10 @@ shards of two hours. To cover more, dispatch a run with the next file, for examp
 `crates/converter/src/records/**` and `crates/converter/src/esm/**`, are 4965 mutants and do not
 fit one run. Size a wider run from `outcomes.json` first.
 
-The run is split into eight shards with `--shard k/8`, and each job has a two-hour cap. A shard
-reports what it finished, so a shard that reaches the cap still uploads a partial report. Read the
-`not tested` count in the summary before you conclude that a shard was complete.
+The run is split into eight shards with `--shard k/8`. Each job has a two-hour cap, and the run
+step stops at 105 minutes, so a shard that reaches that cap still uploads a partial report. Read
+the `not tested` count in the summary before you conclude that a shard was complete: it is the
+planned mutants that have no outcome yet.
 
 ## Read the report
 
@@ -51,8 +52,8 @@ Each shard uploads an artifact named `mutants-shard-<k>`, holding `mutants.out/`
 | `caught.txt` | Mutants that a test caught. |
 | `timeout.txt` | Mutants whose test run passed the timeout. Treat these as unproven, not caught. |
 | `unviable.txt` | Mutants that did not compile. Usually an equivalent change. |
-| `mutants.json` | The same results with file, line, column and function. |
-| `outcomes.json` | Per-mutant timings and process status. Use it to size a scope change. |
+| `mutants.json` | The mutants the shard planned to test, with file, line, column and diff. |
+| `outcomes.json` | One entry per finished mutant: outcome, phase timings and process status. Use it to size a scope change. |
 | `log/<mutant>.log` | Build and test output for one mutant. |
 | `diff/<mutant>.diff` | The exact change that was applied. |
 
