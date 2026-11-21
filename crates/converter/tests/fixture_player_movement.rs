@@ -87,6 +87,18 @@ fn fixture_has_the_player_race_and_default_movement_type_the_engine_needs() {
         )
         .expect("MOVT 0003580D");
     assert_eq!(editor_id, "NPC_Default_MT");
+
+    // The unset race links resolve through the default objects, like the player race in Skyrim.esm.
+    for key in ["DMWL", "DMRN"] {
+        let target: u32 = connection
+            .query_row(
+                "SELECT form_id FROM default_objects WHERE key=?1",
+                [key],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("default object {key}: {error}"));
+        assert_eq!(target, 0x0003_580D, "{key}");
+    }
 }
 
 #[test]

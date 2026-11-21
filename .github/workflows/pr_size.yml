@@ -1,0 +1,174 @@
+name: pr_size
+
+# Advisory only: label a pull request by the size of its hand-written change. The job
+# never fails a pull request and is not a required check.
+#
+# It runs on pull_request_target so that a pull request from a fork can be labelled.
+# It never checks out or runs pull request code: the only checkout is the default
+# branch, restricted to scripts/, and the pull request reaches the job only as data
+# from the REST API. Keep both properties when you edit this file. The workflow file
+# from the default branch runs, not the copy in the pull request.
+#
+# One-time setup for a maintainer, from .github/labels.yml:
+#   gh label create "size: L" --color fbca04 \
+#     --description "More than 2,000 changed hand-written lines; consider splitting"
+#   gh label create "size: XL" --color d93f0b \
+#     --description "More than 5,000 changed hand-written lines; split before review"
+# The workflow token has pull-requests: write only; creating repository labels needs
+# issues: write, so the workflow does not create them.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr_size-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Label PR size
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted size script
+        # Advisory job: a checkout failure warns in the last step instead of a red check.
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Read the pull request file list
+        id: files
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # --slurp wraps the pages as [[...], [...]], so jq add flattens them.
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            | jq 'add' > "$RUNNER_TEMP/pr-files.json"
+          python3 - "$RUNNER_TEMP/pr-files.json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              files = json.load(source)
+          print(f"pr_size: read {len(files)} changed files")
+          PY
+
+      - name: Sum changed hand-written lines
+        id: size
+        if: steps.files.outcome == 'success'
+        continue-on-error: true
+        run: >-
+          python3 -B scripts/pr_size.py
+          --files "$RUNNER_TEMP/pr-files.json"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Apply the size label and the split guidance
+        if: steps.size.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DESIRED_LABEL: ${{ steps.size.outputs.label }}
+          LINES: ${{ steps.size.outputs.lines }}
+          TRUNCATED: ${{ steps.size.outputs.truncated }}
+        run: |
+          set -uo pipefail
+
+          if [ "$TRUNCATED" = "true" ]; then
+            echo "::warning::The GitHub API returned its maximum of 3,000 changed files, so the size may be undercounted."
+          fi
+
+          {
+            echo "### PR size"
+            echo
+            echo "**${LINES}** changed hand-written lines; computed label: \`${DESIRED_LABEL:-none}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if ! current="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" --json labels --jq '.labels[].name')"; then
+            echo "::warning::Could not read the pull request labels; the size label was not changed."
+            exit 0
+          fi
+
+          add=()
+          remove=()
+          for label in "size: L" "size: XL"; do
+            if [ "$label" = "$DESIRED_LABEL" ]; then
+              if ! printf '%s\n' "$current" | grep -Fxq "$label"; then
+                add+=("$label")
+              fi
+            elif printf '%s\n' "$current" | grep -Fxq "$label"; then
+              remove+=("$label")
+            fi
+          done
+
+          add_failed=0
+          if [ "${#add[@]}" -gt 0 ]; then
+            for label in "${add[@]}"; do
+              if ! gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --add-label "$label"; then
+                echo "::warning::Could not add '$label'. A maintainer may need to create it once from .github/labels.yml."
+                add_failed=1
+              fi
+            done
+          fi
+
+          # Keep the previous label when the new one could not be added, so the PR is
+          # never left with no size label because the label does not exist yet.
+          if [ "$add_failed" -eq 0 ] && [ "${#remove[@]}" -gt 0 ]; then
+            for label in "${remove[@]}"; do
+              if ! gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --remove-label "$label"; then
+                echo "::warning::Could not remove '$label'."
+              fi
+            done
+          fi
+
+          if [ -z "$DESIRED_LABEL" ]; then
+            exit 0
+          fi
+
+          # A comment that says the PR is labelled would be false when the label is absent.
+          if [ "$add_failed" -ne 0 ]; then
+            exit 0
+          fi
+
+          marker='<!-- pr-size-label: split-guidance -->'
+          if ! gh api --paginate \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            --jq '.[].body' > "$RUNNER_TEMP/pr-comments.txt"; then
+            echo "::warning::Could not read the existing comments; the split guidance was not posted."
+            exit 0
+          fi
+          if grep -Fq "$marker" "$RUNNER_TEMP/pr-comments.txt"; then
+            exit 0
+          fi
+
+          guidance_url="https://github.com/${REPOSITORY}/blob/${DEFAULT_BRANCH}/docs/contributing/workflow.md#splitting-a-large-pull-request"
+          body="$(printf '%s\n' \
+            "$marker" \
+            "When this comment was posted, this pull request changed **${LINES}** hand-written lines. Test and generated files are excluded, so it was labelled \`${DESIRED_LABEL}\`. The label follows later pushes; this comment does not." \
+            "" \
+            "Large pull requests are slow to review, and a mixed one can hide a defect. Keep one feature per pull request. If the parts depend on each other, open a stack with \`stack:\` labels and land it bottom-up with merge commits. See [Splitting a large pull request](${guidance_url})." \
+            "" \
+            "This label is advisory. It does not block the merge.")"
+          if ! gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$body"; then
+            echo "::warning::Could not post the split guidance comment."
+          fi
+
+      - name: Report a skipped run
+        if: steps.size.outcome != 'success'
+        run: |
+          echo "::warning::PR size was not labelled because the file list or the size script failed. This workflow is advisory and does not block the pull request."

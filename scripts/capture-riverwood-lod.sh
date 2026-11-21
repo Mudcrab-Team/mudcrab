@@ -75,6 +75,7 @@ unset WGPU_FORCE_FALLBACK_ADAPTER
 capture() {
     local name=$1 radius=$2 status=0
     local -a flags=(
+        --no-grass
         --stream-radius "$radius" --benchmark-duration 30 --benchmark-warmup-frames 120
         --benchmark-output "$output/$name-benchmark.json"
         --benchmark-frame-times "$output/$name-frame-times.csv"

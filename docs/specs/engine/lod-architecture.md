@@ -73,6 +73,9 @@ command-line options override every file wherever they appear
 | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
 | `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
 
+The same reader honours the `[Grass]` keys listed with their defaults and effects
+in [Runtime grass](grass.md#skyrim-ini-settings).
+
 Terrain follows retail's block rule (RF-LOD-001, RF-LOD-003, RF-LOD-011). A
 block of `level` cells is replaced by its four children while the planar
 distance from the camera to the block's box is under `fSplitDistanceMult` x

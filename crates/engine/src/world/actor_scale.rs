@@ -123,6 +123,7 @@ fn race_heights(data: &[u8]) -> Option<RaceHeights> {
     }
     let height = |offset: usize| -> Option<f32> {
         Some(f32::from_le_bytes(
+            // silent-ok: the length check above guarantees four bytes, None means no race height
             data[offset..offset + 4].try_into().ok()?,
         ))
     };

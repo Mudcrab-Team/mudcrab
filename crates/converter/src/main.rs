@@ -212,6 +212,9 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
     suppress_caught_nif_parser_panics();
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if args.first().and_then(|argument| argument.to_str()) == Some("apply-room-placements") {
+        return apply_room_placements(&args[1..]);
+    }
     // Asking for help is not an error: print the usage and exit successfully.
     if args
         .iter()
@@ -259,6 +262,12 @@ async fn main() -> Result<()> {
                 report.failures.len(),
                 report.directory.display()
             );
+            for warning in &report.warnings {
+                eprintln!("Warning: {warning}");
+            }
+            for notice in &report.notices {
+                eprintln!("Notice: {notice}");
+            }
             if !report.record_data_complete {
                 eprintln!(
                     "Record data remains incomplete or unverified. Run normal conversion to recheck plugin data and rebuild world metadata."
@@ -803,6 +812,39 @@ fn format_check_report(report: &converter::CheckReport) -> String {
 }
 
 /// Parse conversion, check, or repair arguments with boxed pipeline commands.
+fn apply_room_placements(args: &[OsString]) -> Result<()> {
+    use converter::esm::placement_edits::{PlacementSource, apply};
+
+    const USAGE: &str =
+        "usage: converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)";
+    if matches!(args, [arg] if arg == "-h" || arg == "--help") {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    let [pack, format, input] = args else {
+        bail!("{USAGE}");
+    };
+    let input = Path::new(input);
+    let source = match format.to_str() {
+        Some("--plugin") => PlacementSource::SkyrimPlugin(input),
+        Some("--native") => PlacementSource::NativeJson(input),
+        _ => bail!("select --plugin or --native"),
+    };
+    let report = apply(Path::new(pack), source)?;
+    let creations = if report.created_cells.is_empty() {
+        String::new()
+    } else {
+        format!("{} created, ", report.created_cells.len())
+    };
+    println!(
+        "Applied {} room placements in {} cells ({creations}{} certified)",
+        report.changed_references,
+        report.affected_cells.len(),
+        report.certified_cells.len(),
+    );
+    Ok(())
+}
+
 fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);
@@ -1308,6 +1350,7 @@ fn usage() -> &'static str {
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
        converter -V | --version
        converter check <output directory> [--full]
+       converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)
        converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
