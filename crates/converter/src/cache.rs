@@ -486,6 +486,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "scene-ancestor-skin-motion",
     "verified-fixed-ordered-descendants",
     "non-finite-uv-repair-v1",
+    "collision-body-node-rebind",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
