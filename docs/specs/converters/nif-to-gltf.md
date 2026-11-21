@@ -284,6 +284,20 @@ no Havok type derives from `NiAVObject`, so collision cannot change the scene's 
 other unparsed block type still refuses the tag. Mesh contract
 `object-texture-swap-geometry-index-v2` (#723) records this change; it changes the `nif` proof only.
 
+### 6.1 Non-finite UVs
+
+A few retail shapes store a NaN or infinite half-float UV in one vertex (the Whiterun guard house wall
+`WRGuardHouse01:48` has one in 1,095 vertices). The reader used to remove the whole `TEXCOORD_0`
+attribute for such a shape. Bevy 0.19 skips the base-colour sample of a mesh without UVs, so the
+surface drew its flat base colour.
+It now replaces each non-finite component with zero, keeps the attribute and logs the count.
+This is an engineering guard, not a retail rule: the retail look of the triangles around such a vertex
+was not traced (no row in the retail registry), and zero is only the neutral value. Whether retail
+treats such a vertex as a rule is unverified. Those triangles can show a stretched strip of texture;
+the rest of the mapping is intact.
+Mesh contract `non-finite-uv-repair-v1` records this change; it changes the `nif` proof only, so a
+normal conversion rebuilds meshes an earlier converter wrote. 21 meshes of the retail game change.
+
 ## 7. Skinning support boundary
 
 ### 7.1 Supported
