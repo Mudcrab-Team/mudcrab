@@ -121,6 +121,9 @@ const CHECK_PROBLEM_LINES: usize = 20;
 /// Usage line of `derive-outfits`, printed by its help and its errors.
 const DERIVE_OUTFITS_USAGE: &str = "usage: converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]";
 
+/// Usage line of `derive-grass`, printed by its help and its errors.
+const DERIVE_GRASS_USAGE: &str = "usage: converter derive-grass <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]";
+
 #[derive(Debug, Serialize)]
 struct FailureReport {
     complete: bool,
@@ -230,6 +233,10 @@ async fn main() -> Result<()> {
     if args.first().and_then(|argument| argument.to_str()) == Some("derive-outfits") {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_outfits(&args[1..], command_line);
+    }
+    if args.first().and_then(|argument| argument.to_str()) == Some("derive-grass") {
+        let command_line = std::env::args().collect::<Vec<String>>();
+        return derive_grass(&args[1..], command_line);
     }
     let command = parse_command(args)?;
     let mo2 = match &command {
@@ -1005,6 +1012,94 @@ fn parse_derive_outfits_options(
     })
 }
 
+/// Parse `derive-grass` options and report what the overlay produced.
+fn derive_grass(args: &[OsString], command_line: Vec<String>) -> Result<()> {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
+        println!("{DERIVE_GRASS_USAGE}");
+        return Ok(());
+    }
+    let options = parse_derive_grass_options(args, command_line)?;
+    let report = converter::derive_grass::run(&options)?;
+    println!(
+        "Derived grass cache {} ({} bytes added, {} ms)",
+        report.cache.display(),
+        report.bytes_added,
+        report.elapsed_ms
+    );
+    println!("Receipt: {}", report.receipt.display());
+    println!(
+        "Baked {} cells, skipped {}",
+        report.bake.baked_cells, report.bake.skipped_cells
+    );
+    for notice in report.bake.notices() {
+        eprintln!("notice: {notice}");
+    }
+    for warning in report.bake.warnings() {
+        eprintln!("warning: {warning}");
+    }
+    Ok(())
+}
+
+/// Parse the target and the clone inputs of `derive-grass`.
+fn parse_derive_grass_options(
+    args: &[OsString],
+    command_line: Vec<String>,
+) -> Result<converter::derive_grass::DeriveGrassOptions> {
+    let mut positional = Vec::new();
+    let mut registry = None;
+    let mut clone_of = None;
+    let mut replace = false;
+    let mut converter_head = None;
+    let mut args = args.iter().cloned();
+    while let Some(argument) = args.next() {
+        match argument.to_str() {
+            Some("--registry") => {
+                registry = Some(PathBuf::from(next_value(&mut args, "--registry")?))
+            }
+            Some("--clone-of") => {
+                let value = next_value(&mut args, "--clone-of")?;
+                clone_of =
+                    Some(value.into_string().map_err(|_| {
+                        color_eyre::eyre::eyre!("--clone-of value is not valid UTF-8")
+                    })?);
+            }
+            Some("--converter-head") => {
+                let value = next_value(&mut args, "--converter-head")?;
+                converter_head = Some(value.into_string().map_err(|_| {
+                    color_eyre::eyre::eyre!("--converter-head value is not valid UTF-8")
+                })?);
+            }
+            Some("--replace") => replace = true,
+            Some(flag) if flag.starts_with('-') => {
+                bail!("unknown derive-grass option {flag:?}")
+            }
+            _ => {
+                if !positional.is_empty() {
+                    bail!("{DERIVE_GRASS_USAGE}");
+                }
+                positional.push(PathBuf::from(argument));
+            }
+        }
+    }
+    let Some(target) = positional.into_iter().next() else {
+        bail!("{DERIVE_GRASS_USAGE}");
+    };
+    let Some(registry) = registry else {
+        bail!("derive-grass requires --registry");
+    };
+    let Some(clone_of) = clone_of else {
+        bail!("derive-grass requires --clone-of");
+    };
+    Ok(converter::derive_grass::DeriveGrassOptions {
+        target,
+        registry,
+        clone_of,
+        replace,
+        converter_head,
+        command: command_line,
+    })
+}
+
 /// Parse conversion options, preserving source selection and schema add-on order for resumed runs.
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut positional = Vec::new();
@@ -1352,6 +1447,7 @@ fn usage() -> &'static str {
        converter check <output directory> [--full]
        converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)
        converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
+       converter derive-grass <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
@@ -1449,7 +1545,10 @@ changing those source assets. This route does not support MO2 selection; use a n
 conversion with --mo2-instance. It cannot resume or cooperatively cancel.
 
 derive-outfits writes only actor-outfits.json and a receipt into an APFS clone of a registered pack,
-from the records the pack already holds. It reads no game data and never writes into a registered pack."
+from the records the pack already holds. It reads no game data and never writes into a registered pack.
+
+derive-grass writes only grass_cache.rkyv and a receipt into an APFS clone of a registered pack.
+It never writes into a registered pack."
 }
 
 #[cfg(test)]
@@ -1965,6 +2064,109 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(usage.contains("converter check <output directory> [--full]"));
+    }
+
+    /// The derive-grass subcommand keeps every overlay input and the recorded command line.
+    #[test]
+    fn parses_derive_grass_options() {
+        let command_line: Vec<String> = [
+            "converter",
+            "derive-grass",
+            "clone",
+            "--registry",
+            "packs.json",
+            "--clone-of",
+            "base",
+            "--replace",
+            "--converter-head",
+            "abc123",
+        ]
+        .map(String::from)
+        .to_vec();
+        let options = parse_derive_grass_options(
+            &args(&[
+                "clone",
+                "--registry",
+                "packs.json",
+                "--clone-of",
+                "base",
+                "--replace",
+                "--converter-head",
+                "abc123",
+            ]),
+            command_line.clone(),
+        )
+        .unwrap();
+        assert_eq!(options.target, PathBuf::from("clone"));
+        assert_eq!(options.registry, PathBuf::from("packs.json"));
+        assert_eq!(options.clone_of, "base");
+        assert!(options.replace);
+        assert_eq!(options.converter_head.as_deref(), Some("abc123"));
+        assert_eq!(options.command, command_line);
+    }
+
+    #[test]
+    fn rejects_malformed_derive_grass_arguments() {
+        let usage = parse_derive_grass_options(
+            &args(&["--registry", "packs.json", "--clone-of", "base"]),
+            Vec::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(usage.contains("usage:"), "{usage}");
+        assert!(
+            parse_derive_grass_options(&args(&["clone", "--clone-of", "base"]), Vec::new())
+                .unwrap_err()
+                .to_string()
+                .contains("derive-grass requires --registry")
+        );
+        assert!(
+            parse_derive_grass_options(&args(&["clone", "--registry", "packs.json"]), Vec::new())
+                .unwrap_err()
+                .to_string()
+                .contains("derive-grass requires --clone-of")
+        );
+        assert!(
+            parse_derive_grass_options(
+                &args(&[
+                    "clone",
+                    "--registry",
+                    "packs.json",
+                    "--clone-of",
+                    "base",
+                    "--bogus"
+                ]),
+                Vec::new()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unknown derive-grass option")
+        );
+        let incomplete_sets: [&[&str]; 3] = [
+            &["clone", "--registry"],
+            &["clone", "--clone-of"],
+            &["clone", "--converter-head"],
+        ];
+        for incomplete in incomplete_sets {
+            assert!(
+                parse_derive_grass_options(&args(incomplete), Vec::new()).is_err(),
+                "{incomplete:?} was accepted"
+            );
+        }
+        assert!(
+            parse_derive_grass_options(
+                &args(&[
+                    "clone",
+                    "second",
+                    "--registry",
+                    "packs.json",
+                    "--clone-of",
+                    "base"
+                ]),
+                Vec::new()
+            )
+            .is_err()
+        );
     }
 
     /// The derive-outfits subcommand keeps every overlay input and the recorded command line.
