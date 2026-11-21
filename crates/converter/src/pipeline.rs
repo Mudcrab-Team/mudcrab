@@ -1415,7 +1415,7 @@ impl AssetPipeline {
                 .unwrap_or(path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if crate::asset_path::is_authoring_resource(&relative) {
+            if is_authoring_source_name(&relative) {
                 manifest.excluded_inputs.insert(
                     relative,
                     "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
@@ -11769,6 +11769,39 @@ mod tests {
                     .schema_version,
                 crate::cache::CONVERTER_SCHEMA_VERSION
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn all_files_retains_authoring_mesh_without_replacing_runtime_mesh() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        let output = dir.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let mesh = static_shape(&actor_skeleton_shape("Runtime")).unwrap();
+        let runtime = "meshes/test.nif";
+        let authoring = "%43alienteTools/meshes/test.nif";
+        let archive = dummy_content::ba2::general(
+            &[
+                dummy_content::Entry::new(runtime, &mesh),
+                dummy_content::Entry::new(authoring, b"authoring bytes"),
+            ],
+            dummy_content::ba2::Compression::None,
+        )
+        .unwrap();
+        fs::write(data.join("assets.ba2"), archive).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.extract_all_archive_files = true;
+        for _ in 0..2 {
+            let report = run_without_progress(config.clone()).await;
+            assert!(report.complete, "{:?}", report.warnings);
+            let manifest = published_manifest(&output);
+            assert_eq!(manifest.entries[runtime].source_hash, hash_bytes(&mesh));
+            assert!(manifest.excluded_inputs.contains_key(authoring));
+            assert!(manifest.archives["assets.ba2"].files.iter().any(|file| {
+                file.path == authoring && file.hash == hash_bytes(b"authoring bytes")
+            }));
+            assert!(output.join("meshes/test.glb").is_file());
         }
     }
 

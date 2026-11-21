@@ -7,8 +7,8 @@ use super::{
     ArchiveSelection, ExtractOptions, ExtractedFile, ExtractionOutcome, ExtractionProgressCallback,
     ExtractionTimings, FreshIngestion, IngestionSync, Interrupted, ProgressReporter,
     RawIngestionSession, RawWriteMeasurements, StopCheck, SyncMeasurements, archive_reader_version,
-    ba2, blob_path, bsa, check_stop, detect_archive_collision, restore_cached_files_with_io_limit,
-    safe_relative_path,
+    ba2, blob_path, bsa, check_stop, detect_archive_collision, ingestion_relative_path,
+    restore_cached_files_with_io_limit,
 };
 use crate::cache::{
     IngestedFile, IngestionCacheEntry, SpillCache, hash_bytes, hash_file, is_zero, link_or_copy,
@@ -317,12 +317,11 @@ pub(super) fn extract_with_session(
     let mut chosen = Vec::new();
     let mut inventory = BTreeMap::new();
     for (name, payload) in raw {
-        if options.selection != ArchiveSelection::All
-            && crate::asset_path::is_authoring_source_name(&name)
-        {
+        let authoring = crate::asset_path::is_authoring_source_name(&name);
+        if authoring && options.selection != ArchiveSelection::All {
             continue;
         }
-        let path = safe_relative_path(&name)?;
+        let path = super::normalize_archive_path(&name, authoring)?;
         // Validate the runtime namespace before filtering: unsupported files do
         // not conceal traversal or case-folded collisions.
         detect_archive_collision(&mut seen, &path, &name)?;
@@ -374,7 +373,7 @@ pub(super) fn extract_with_session(
     });
     if let Some(previous) = reusable {
         for file in &previous.files {
-            let path = safe_relative_path(&file.path)?;
+            let path = ingestion_relative_path(&file.path)?;
             if options.selection.includes(&path) {
                 ensure!(
                     expected.insert(path, file).is_none(),
@@ -1049,7 +1048,7 @@ fn validate_pack_layout(
     let mut payloads = BTreeMap::new();
     let mut layout = Vec::with_capacity(index.files.len());
     for item in &index.files {
-        let relative = safe_relative_path(&item.path)?;
+        let relative = ingestion_relative_path(&item.path)?;
         detect_archive_collision(&mut seen, &relative, &item.path)?;
         ensure!(
             item.size <= MAX_FILE_BYTES as u64,
@@ -2977,7 +2976,7 @@ mod tests {
             .take(2048)
             .map(|entry| {
                 (
-                    safe_relative_path(&entry.name)
+                    ingestion_relative_path(&entry.name)
                         .unwrap()
                         .to_string_lossy()
                         .into_owned(),

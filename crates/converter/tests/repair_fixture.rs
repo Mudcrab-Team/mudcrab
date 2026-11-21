@@ -259,10 +259,10 @@ async fn repair_fails_closed_on_stale_bsa_reader_entry() {
     fs::write(
         data.join("Textures.ba2"),
         dummy_content::ba2::general(
-            &[dummy_content::Entry::new(
-                "textures/archive.dds",
-                &archive_dds,
-            )],
+            &[
+                dummy_content::Entry::new("textures/archive.dds", &archive_dds),
+                dummy_content::Entry::new("%43alienteTools/textures/archive.dds", b"authoring"),
+            ],
             dummy_content::ba2::Compression::None,
         )
         .unwrap(),
@@ -272,6 +272,7 @@ async fn repair_fails_closed_on_stale_bsa_reader_entry() {
     let output = root.path().join("pack");
     let mut config = PipelineConfig::new(&data, &output);
     config.no_lod = true;
+    config.extract_all_archive_files = true;
     config.texture_encoder = converter::config::TextureEncoder::Cpu;
     config.lod_texture_encoder = converter::config::TextureEncoder::Cpu;
     config.cpu_jobs = 2;
