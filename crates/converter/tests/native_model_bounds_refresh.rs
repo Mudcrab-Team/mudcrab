@@ -288,14 +288,33 @@ fn refresh_resolves_case_aliases_and_rejects_colliding_winners() {
     refresh(root, &[KEY]);
     assert_eq!(projection(), Some(10.0));
 
+    write_glb_with(&path, 10.0, None, |document| {
+        document["scene"] = json!(1);
+        document["scenes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"nodes":[1]}));
+        document["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"mesh":0,"translation":[100,0,0]}));
+    });
+    refresh(root, &[KEY]);
+    assert_eq!(projection(), Some(10.0), "streaming loads scene zero");
     let collision = root.join(KEY);
     fs::create_dir_all(collision.parent().unwrap()).unwrap();
-    write_glb(&collision, 20.0, None);
-    let result = run_refresh(root, &[KEY]);
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("multiple installed GLBs"));
-    assert_eq!(projection(), Some(10.0));
-    fs::remove_file(collision).unwrap();
+    match fs::File::create_new(&collision) {
+        Ok(_) => {
+            write_glb(&collision, 20.0, None);
+            let result = run_refresh(root, &[KEY]);
+            assert!(!result.status.success());
+            assert!(String::from_utf8_lossy(&result.stderr).contains("multiple installed GLBs"));
+            assert_eq!(projection(), Some(10.0));
+            fs::remove_file(collision).unwrap();
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => panic!("cannot create collision fixture: {error}"),
+    }
 
     fs::remove_file(path).unwrap();
     refresh(root, &[KEY]);

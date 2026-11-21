@@ -125,10 +125,10 @@ The tutorial recommends measuring performance and limiting long chains of visibl
 
 ## Runtime choices
 
-Each view starts from all containing authored room unions with the camera frustum. Portal polygons
+A perspective view starts from all containing authored room unions with the camera frustum. Portal polygons
 are clipped against incoming convex volumes; aperture edges and the doorway plane narrow the next
-volume. Separate paths remain a union. Perspective views use converging rays and orthographic views
-use parallel rays. The work limits remain 16 contributions per space and 64 planes per volume;
+volume. Separate paths remain a union. Orthographic views retain full rendering in interiors with rooms
+because their near plane can span multiple disconnected rooms. The work limits remain 16 contributions per space and 64 planes per volume;
 exceeding either widens that space conservatively. These limits differ from the native operator budget.
 
 Graphs with `visibility_version = 2` have explicit unbounded space. Only endpoints verified as zero

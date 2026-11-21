@@ -30,7 +30,7 @@ fn run(args: &[String]) -> Result<()> {
     let data = Path::new(&args[0]);
     let assets = Path::new(&args[1]);
     validate_private_assets(assets)?;
-    let _asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
+    let asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
     // Any failure below leaves a visible incomplete marker instead of a previous success receipt.
     write_receipt(assets, &serde_json::json!({"complete": false}))?;
     let cells: BTreeSet<u32> = args[2]
@@ -89,7 +89,13 @@ fn run(args: &[String]) -> Result<()> {
     let (sources, extracted, staged) =
         prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
     let results = convert_capture_models(sources.path(), assets, &models, &staged)?;
-    converter::integration::finalize_world_database(assets)?;
+    let changed: Vec<_> = models
+        .iter()
+        .map(|model| model.with_extension("glb").to_string_lossy().into_owned())
+        .collect();
+    if !changed.is_empty() {
+        converter::integration::refresh_converted_model_bounds(&asset_lock, &changed)?;
+    }
     let conn = Connection::open(assets.join("skyrim_world.db"))?;
     let bounds: u64 = conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r.get(0))?;
     let report = serde_json::json!({
@@ -158,13 +164,30 @@ fn convert_capture_models(
         .map(|key| (key.clone(), sources.join(key)))
         .collect();
     let skeletons = SkeletonIndex::from_sources(&paths);
-    let results: Vec<_> = models
+    let keys: Vec<_> = models
+        .iter()
+        .map(|model| model.with_extension("glb").to_string_lossy().into_owned())
+        .collect();
+    let root = assets.canonicalize()?;
+    let installed =
+        converter::integration::installed_glb_paths(&root, keys.iter().map(String::as_str))?;
+    let outputs: Vec<_> = models
+        .iter()
+        .zip(keys)
+        .map(|(model, key)| {
+            let output = installed
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| root.join(key));
+            (model, output)
+        })
+        .collect();
+    let results: Vec<_> = outputs
         .par_iter()
-        .map(|model| {
+        .map(|(model, output)| {
             let source = sources.join(model);
-            let output = assets.join(model).with_extension("glb");
             let converted = source.is_file().then(|| {
-                MeshConverter::convert_nif_to_glb_from_index(model, &source, &output, &skeletons)
+                MeshConverter::convert_nif_to_glb_from_index(model, &source, output, &skeletons)
                     .map_err(|error| format!("{error:#}"))
             });
             serde_json::json!({
@@ -275,6 +298,7 @@ mod tests {
         );
         conn.execute_batch(
             "INSERT INTO room_graph_stats VALUES('assignment_version',1);
+             INSERT INTO statics(id,flags,model_path,bounds_valid,bounds_min_x) VALUES(91,0,'unselected.glb',1,-17);
              INSERT INTO room_reference_rules VALUES(81,8,'unknown',NULL);
              INSERT INTO room_portals VALUES(82,0,8,0,0,0,0,0,0,1,1,NULL,NULL,1,0);",
         )
@@ -293,6 +317,15 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(state, (false, "unknown".to_owned(), true, false));
+            assert_eq!(
+                conn.query_row(
+                    "SELECT bounds_min_x FROM statics WHERE id=91 AND bounds_valid=1",
+                    [],
+                    |r| r.get::<_, f64>(0)
+                )
+                .unwrap(),
+                -17.0
+            );
         }
     }
 
@@ -699,8 +732,10 @@ mod tests {
             prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 4);
         assert_eq!(fs::read(sources.path().join(skeleton)).unwrap(), winner);
+        let output = assets.join("Meshes/Actors/Selected/50%Fern.GLB");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, b"old winner").unwrap();
         convert_capture_models(sources.path(), &assets, &models, &staged).unwrap();
-        let output = assets.join(model).with_extension("glb");
         let captured = fs::read(&output).unwrap();
         let bone_translation = |bytes: &[u8]| {
             gltf::Gltf::from_slice(bytes)

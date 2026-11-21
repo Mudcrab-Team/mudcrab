@@ -562,6 +562,10 @@ impl RoomGraph {
             return None;
         }
         let outside = room_count;
+        // Parallel rays can enter disconnected rooms anywhere across an orthographic near plane.
+        if clip_from_local.row(3).truncate() == Vec3::ZERO {
+            return None;
+        }
         let starts = self.rooms_containing(camera);
         if starts.is_empty() {
             // Room boxes do not prove outside-space coverage: the camera may be in a seam.
@@ -2532,6 +2536,13 @@ mod tests {
                 .execute("UPDATE room_portals SET pos_x=0", [])
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn an_orthographic_near_plane_cannot_seed_room_traversal_at_one_point() {
+        let graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
+        let clip = Mat4::orthographic_rh(-30.0, 30.0, -30.0, 30.0, 100.0, 0.1);
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip).is_none());
     }
 
     #[test]

@@ -251,7 +251,8 @@ do not substitute for an original-runtime comparison.
 
 The first implementation replaces room booleans with unions of convex portal volumes and
 tests each eligible mesh's transformed AABB against its membership volumes. It preserves
-separate paths, clips portal polygons, and supports perspective and orthographic views.
+separate paths and clips portal polygons for perspective views. Orthographic views keep full
+rendering in interiors with rooms.
 The native sphere test and our transformed AABB test can retain different conservative false
 positives, so identical submitted-object lists are not guaranteed by this implementation.
 The [current policy report](skyrim-room-culling.md#runtime-choices) describes the work limits,
