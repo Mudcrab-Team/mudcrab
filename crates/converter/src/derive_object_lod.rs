@@ -99,7 +99,7 @@ pub struct DeriveObjectLodReport {
     pub elapsed_ms: u128,
 }
 
-/// One retail block read from the game data, before compilation.
+/// One `.bto` block read from the game data, before compilation.
 pub struct BlockCandidate {
     /// South-west cell, from the file name.
     pub cell: (i32, i32),
@@ -358,7 +358,7 @@ fn object_row_count(connection: &Connection) -> Result<i64> {
     )
 }
 
-/// Retail data read from the game folder.
+/// The `.bto` blocks and the object atlas read from the game folder.
 struct Retail {
     blocks: Vec<BlockCandidate>,
     atlas_dds: Vec<u8>,
@@ -368,7 +368,7 @@ struct Retail {
     skipped: Vec<SkippedBlock>,
 }
 
-/// Where one retail file can be read from.
+/// Where one game-data file can be read from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Provider {
     Loose(PathBuf),
@@ -391,7 +391,9 @@ fn providers(
     let mut found: BTreeMap<String, Vec<Provider>> = BTreeMap::new();
     let mut archives: Vec<PathBuf> = fs::read_dir(data)
         .wrap_err_with(|| format!("cannot read the game data folder {}", data.display()))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("bsa"))
@@ -402,7 +404,9 @@ fn providers(
         let name = archive
             .file_name()
             .map(|name| name.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!("archive path {} has no file name", archive.display())
+            })?;
         let paths = ArchiveExtractor::list_paths(&archive)
             .wrap_err_with(|| format!("cannot list archive {name}"))?;
         for path in paths {
@@ -417,9 +421,10 @@ fn providers(
     }
     // Loose files: walk the two terrain folders (found case-insensitively).
     for root in ["meshes", "textures"] {
-        let mut stack = vec![(PathBuf::from(root), child_ci(data, root))];
+        let mut stack = vec![(PathBuf::from(root), child_ci(data, root)?)];
         while let Some((relative, Some(directory))) = stack.pop() {
-            for entry in fs::read_dir(&directory)?.filter_map(|entry| entry.ok()) {
+            for entry in fs::read_dir(&directory)? {
+                let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                 let relative = relative.join(&name);
                 let path = entry.path();
@@ -441,17 +446,18 @@ fn providers(
 }
 
 /// The child of `directory` named `name`, compared without case.
-fn child_ci(directory: &Path, name: &str) -> Option<PathBuf> {
-    fs::read_dir(directory)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .find(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(name)
-        })
-        .map(|entry| entry.path())
+fn child_ci(directory: &Path, name: &str) -> Result<Option<PathBuf>> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+        {
+            return Ok(Some(entry.path()));
+        }
+    }
+    Ok(None)
 }
 
 /// Reads the bytes of `relative` from its providers. `Ok(Err(..))` is a conflict: several
@@ -575,13 +581,13 @@ fn read_retail(
     let info = read_dds_info(&atlas_dds).map_err(|error| {
         color_eyre::eyre::eyre!("refused: the object atlas is not a valid DDS: {error}")
     })?;
+    let atlas_length = u64::try_from(atlas_dds.len()).wrap_err("the object atlas is too large")?;
+    let header_length =
+        u64::try_from(info.data_offset).wrap_err("the object atlas header is too large")?;
     ensure!(
-        info.expected_payload_bytes().is_some_and(|payload| {
-            u64::try_from(info.data_offset)
-                .ok()
-                .and_then(|offset| offset.checked_add(payload))
-                .is_some_and(|total| u64::try_from(atlas_dds.len()).ok() == Some(total))
-        }),
+        info.expected_payload_bytes()
+            .and_then(|payload| header_length.checked_add(payload))
+            == Some(atlas_length),
         "refused: the object atlas DDS has the wrong length for its header"
     );
     sources.push(serde_json::json!({

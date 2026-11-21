@@ -78,12 +78,11 @@ pub fn chunk_key_for_block(
     x: i32,
     y: i32,
 ) -> Result<ChunkKey> {
-    let tier = i32::try_from(level)
-        .ok()
-        .and_then(LodTier::from_side_cells)
-        .ok_or_else(|| {
-            color_eyre::eyre::eyre!("object LOD level {level} is not a compiled tier")
-        })?;
+    let side = i32::try_from(level)
+        .wrap_err_with(|| format!("object LOD level {level} is out of range"))?;
+    let tier = LodTier::from_side_cells(side).ok_or_else(|| {
+        color_eyre::eyre::eyre!("object LOD level {level} is not a compiled tier")
+    })?;
     let anchor = origin.chunk_for_cell(tier, x, y);
     let key = ChunkKey::new(worldspace_id, tier, anchor);
     ensure!(
@@ -414,10 +413,10 @@ pub fn create_object_chunk_tables(connection: &Connection) -> Result<()> {
 
 /// Reads a JSON number as `usize`, naming `what` in the error.
 fn json_usize(value: &serde_json::Value, what: &str) -> Result<usize> {
-    value
+    let number = value
         .as_u64()
-        .and_then(|number| usize::try_from(number).ok())
-        .ok_or_else(|| color_eyre::eyre::eyre!("{what} is missing or not a number"))
+        .ok_or_else(|| color_eyre::eyre::eyre!("{what} is missing or not a number"))?;
+    usize::try_from(number).wrap_err_with(|| format!("{what} does not fit in memory"))
 }
 
 fn le_u32(bytes: &[u8], offset: usize) -> Result<u32> {
@@ -706,8 +705,7 @@ pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
     let inputs = manifest
         .as_ref()
         .and_then(|manifest| manifest["object_chunk_inputs"].as_object())
-        .cloned()
-        .unwrap_or_default();
+        .map_or_else(serde_json::Map::new, Clone::clone);
     if !database_path.is_file() {
         ensure!(
             listed == 0 && inputs.is_empty(),

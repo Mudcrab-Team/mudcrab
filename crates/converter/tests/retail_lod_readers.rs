@@ -247,17 +247,33 @@ fn tamriel_level_16_blocks_compile_to_valid_chunk_local_object_chunks() {
     assert_eq!(files.len(), 48);
     // The pack's LOD origin for Tamriel (worldspace 0x3c).
     let origin = LodOrigin::new(-96, -96);
+    let atlas = {
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        converter::texture::TextureConverter::convert(
+            &dds,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    };
     let mut triangles = 0;
+    let mut flag_counts = std::collections::BTreeMap::<u32, usize>::new();
     for file in &files {
         let name = parse_lod_file_name(&file.to_string_lossy()).unwrap();
         let (x, y) = name.cell.unwrap();
         let key = chunk_key_for_block(0x3c, origin, 16, x, y).unwrap();
         let bytes = std::fs::read(file).unwrap();
         let block = read_object_lod(&bytes, file).unwrap();
-        let chunk = compile_object_chunk(key, origin, &block, b"KTX2").unwrap();
+        let chunk = compile_object_chunk(key, origin, &block, &atlas).unwrap();
+        for shape in &block.shapes {
+            *flag_counts.entry(shape.flags).or_default() += 1;
+        }
         validate_object_glb(&chunk.glb).unwrap();
         triangles += chunk.triangles;
-        // Retail stores a level-16 shape at scale 16 (the block level), translated to the block
+        // The shipped files store a level-16 shape at scale 16 (the block level), translated to the block
         // origin; the compiler applies the stored transform.
         assert_eq!(block.shapes[0].scale, 16.0);
         assert_eq!(
@@ -281,5 +297,6 @@ fn tamriel_level_16_blocks_compile_to_valid_chunk_local_object_chunks() {
             "{x},{y}"
         );
     }
+    println!("level 16 shape node flags: {flag_counts:?}");
     assert_eq!(triangles, 311_641);
 }

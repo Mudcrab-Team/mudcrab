@@ -139,6 +139,36 @@ Database bounds and R-tree XY bounds are world-space Creation units: translate
 the chunk-local X/Y extent by `(origin + anchor * tier_side_cells) * 4096`; Z
 is unchanged. Never index chunk-local coordinates as world-space bounds.
 
+### Object LOD chunks
+
+Retail object LOD is imported, not computed from references (draft; Taylor has not decided whether
+it ships in v0.1.0). `crates/converter/src/lod/objects.rs` compiles one retail level-16 `.bto`
+block into one object chunk GLB beside the terrain chunk of the same key
+(`lod/<world>/16/objects_<x>_<y>.glb`). Levels 8 and 4 are not compiled yet.
+
+- **Geometry.** The stored shape transform is applied and the block origin is subtracted, so the
+  chunk is chunk-local like terrain chunks (the root node carries the Creation-to-glTF rotation).
+  One `objects` group holds one `object_batch_<n>` mesh per shape. A block with several segments
+  per shape, large-reference markers, no geometry or a non-finite vertex is refused and reported,
+  never guessed.
+- **Atlas.** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`) goes
+  through the existing texture stage as sRGB KTX2 and is embedded in every chunk.
+- **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
+  128/255 with no blending (high confidence). A shape is single-sided unless its node flags
+  intersect mask `0x108`, and then it uses the double-sided material (medium confidence: the live
+  draw state is unverified). Winding and the vertex colour stream are kept as stored.
+- **Validation.** `validate_object_glb` checks container lengths, buffer view and accessor ranges,
+  vertex formats, finite data, every triangle index, the two materials and the embedded KTX2.
+  `validate_artifacts` also runs `validate_object_lod_package`.
+- **Producers.** `converter derive-object-lod <clone> --registry <packs.json> --clone-of <pack>
+  --data <Skyrim Data> [--worldspace <EditorID>] [--force]` adds object LOD to an APFS clone of a
+  registered pack without reconverting any NIF: it verifies that every archive it reads is the one
+  the pack was converted from (manifest hash), writes the chunks, the rows, the manifest fields and
+  `object-lod-overlay-receipt.json`, and reports every skipped block with its reason. It refuses a
+  registered pack, a clone that does not match the registry, a pack that already has object chunks
+  (unless `--force`) and a pack without terrain LOD. Wiring into a normal conversion and the
+  metadata rebuild is a later change.
+
 ### Proposed object sidecars
 
 Keep the terrain GLB and spatial-index contract. The hybrid experiment adds

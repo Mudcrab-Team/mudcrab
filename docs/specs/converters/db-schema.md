@@ -903,6 +903,21 @@ The unused pre-schema-6 `lod` blob placeholder is retained. Terrain LOD
 uses `lod_chunks` for indexing and external GLB files for payloads. See
 [ADR-0010](../../adr/0010-lod-chunk-payload-format.md).
 
+#### Object LOD chunks (`lod_object_chunks`, `lod_object_chunks_spatial`)
+
+Additive tables for retail object LOD, one row per level-16 `.bto` block. They have the columns,
+primary key and R-tree of `lod_chunks` and `lod_chunks_spatial`, and are created only when the
+first object chunk is published, so a pack without object LOD has no extra table and its database
+is unchanged. `payload_path` is `lod/<world>/<tier>/objects_<x>_<y>.glb`, a file beside the terrain
+chunk of the same key. The rows are checked against the same `lod_build` identity as terrain rows
+and do not change it. `WORLD_DATABASE_SCHEMA_VERSION` is unchanged.
+
+`lod-manifest.json` gains three optional fields, absent for a pack without object LOD:
+`object_chunks` (row count), `objects_compiler_version` and `object_chunk_inputs` (payload path to
+the SHA-256 of the compiler revision, key, LOD origin, `.bto` bytes and atlas bytes). Package
+validation fails when a listed chunk is missing, has a different SHA-256, or is not a valid object
+chunk GLB (see [lod-compiler.md](lod-compiler.md#object-lod-chunks)).
+
 ---
 
 ### 9. Script attachments (`scripts`)
