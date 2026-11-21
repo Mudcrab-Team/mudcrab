@@ -1,0 +1,20 @@
+{
+  "width": 1400,
+  "height": 900,
+  "shots": [
+    {
+      "name": "LostKnife-entry",
+      "worldspace_id": null,
+      "interior_cell_id": 107319,
+      "position": [
+        -4.329109191894531,
+        652.6505126953125,
+        44.40137481689453
+      ],
+      "yaw": 233.3768542027171,
+      "pitch": 0.0,
+      "hfov": 75.0,
+      "note": "LostKnifeHideout02: authored COC marker 0010416B +128 eye height; authored heading"
+    }
+  ]
+}

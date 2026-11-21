@@ -1,0 +1,25 @@
+{
+  "evidence": [
+    {
+      "anchor": "pub(crate) fn publish(",
+      "path": "crates/converter/src/controls.rs"
+    },
+    {
+      "anchor": "let path = \"interface/controls/pc/provenance.json\";",
+      "path": "crates/converter/src/controls.rs"
+    }
+  ],
+  "format_version": 1,
+  "owner": "converter and PC control maintainers (#741)",
+  "reason": "Conversion and metadata rebuild can publish optional PC control files beside the world database. The files preserve usable source lines. The JSON sidecar records effective provider, source and output hashes, and skipped line numbers. Runtime consumption remains unknown in this inventory.",
+  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
+  "states": {
+    "decoded": "unknown",
+    "mapped": "unknown",
+    "preserved": "source_preserved",
+    "projected": "source_projected",
+    "query_dependent": "unknown",
+    "semantic_use": "unknown"
+  },
+  "store": "interface/controls/pc"
+}

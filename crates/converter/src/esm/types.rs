@@ -11,6 +11,9 @@ pub struct GroupHeader {
     pub group_type: i32,
 }
 
+/// GRUP kinds whose label is the owning CELL FormID.
+pub(crate) const CELL_CHILD_GROUP_KINDS: [i32; 4] = [6, 8, 9, 10];
+
 /// Skyrim Record Header (24 Bytes)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordHeader {

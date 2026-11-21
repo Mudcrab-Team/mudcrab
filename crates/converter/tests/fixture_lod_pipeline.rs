@@ -430,12 +430,35 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
         ]
         .concat()
     }
-    let mut plugin = record(b"TES4", 0, &[]);
-    plugin.extend(record(b"GRAS", 0x801, &sub(b"EDID", b"CombinedGrass\0")));
+    // TNAM refers to the generated master; new GRAS/LTEX identities use self index one.
+    // This is a complete-export control with full GRAS DATA, not a malformed-GRAS recovery fixture.
+    let mut plugin = record(
+        b"TES4",
+        0,
+        &[sub(b"MAST", b"Skyrim.esm\0"), sub(b"DATA", &[0; 8])].concat(),
+    );
+    let mut rule = vec![0; 32];
+    rule[0] = 40;
+    rule[2] = 90;
+    rule[24..28].copy_from_slice(&1.0f32.to_le_bytes());
+    plugin.extend(record(
+        b"GRAS",
+        0x0100_0801,
+        &[
+            sub(b"EDID", b"CombinedGrass\0"),
+            sub(b"MODL", b"grass/optional.nif\0"),
+            sub(b"DATA", &rule),
+        ]
+        .concat(),
+    ));
     plugin.extend(record(
         b"LTEX",
-        0x802,
-        &sub(b"GNAM", &0x801u32.to_le_bytes()),
+        0x0100_0802,
+        &[
+            sub(b"TNAM", &2u32.to_le_bytes()),
+            sub(b"GNAM", &0x0100_0801u32.to_le_bytes()),
+        ]
+        .concat(),
     ));
     fs::write(data.join("Grass.esp"), plugin).unwrap();
     let output = directory.path().join("combined");

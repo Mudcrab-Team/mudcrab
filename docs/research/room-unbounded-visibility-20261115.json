@@ -1,0 +1,257 @@
+{
+  "date": "2026-11-15",
+  "scope": "Mudcrab outside-space traversal and shared endpoint visibility; no original-game or FPS comparison",
+  "source_base": "4e42b8832eba933569c28b41d75e8b9d9ba93072",
+  "toolchain": "Rust 1.98.1, NixOS, cargo build -p engine --bin engine --profile test",
+  "adapter": {
+    "name": "NVIDIA GeForce GTX 1660",
+    "backend": "Vulkan",
+    "driver": "595.112.07"
+  },
+  "size": [
+    1400,
+    1050
+  ],
+  "control": "Same executable and shared geometry; private database copy with the four optional room tables removed",
+  "data_preparation": {
+    "source_preserved": true,
+    "private_database": true,
+    "endpoint_provenance": "Flags set only for complete source XPOD pairs whose original endpoint is zero and whose stored room endpoint is NULL; then visibility_version=2",
+    "authored_outside_pairs": 16,
+    "unknown_pairs": 21
+  },
+  "repetitions_per_mode": 3,
+  "threshold_per_channel": 8,
+  "persistent_pixel_definition": "Pixel exceeds the threshold in every one of the nine off/on image pairings",
+  "regression": {
+    "poses": "crates/engine/tests/fixtures/room-volume-shots.json",
+    "capture_count": 36,
+    "all_images_match_at_threshold": true,
+    "results": [
+      {
+        "pose": "BleakFallsBarrow01-room0-c",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 2754,
+            "listed": 2754
+          },
+          "on": {
+            "drawn": 557,
+            "listed": 2754
+          }
+        }
+      },
+      {
+        "pose": "BleakFallsBarrow01-room1-c",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 2542,
+            "listed": 2542
+          },
+          "on": {
+            "drawn": 2542,
+            "listed": 2542
+          }
+        }
+      },
+      {
+        "pose": "BleakFallsBarrow01-portal0-c",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 132,
+            "listed": 132
+          },
+          "on": {
+            "drawn": 132,
+            "listed": 132
+          }
+        }
+      },
+      {
+        "pose": "NightcallerTemple01-room0-c",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 1664,
+            "listed": 1664
+          },
+          "on": {
+            "drawn": 743,
+            "listed": 1664
+          }
+        }
+      },
+      {
+        "pose": "AbandonedPrison01-room0-portal",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 1412,
+            "listed": 1412
+          },
+          "on": {
+            "drawn": 234,
+            "listed": 1412
+          }
+        }
+      },
+      {
+        "pose": "riverwood-return",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 1044,
+            "listed": 1044
+          },
+          "on": {
+            "drawn": 1044,
+            "listed": 1044
+          }
+        }
+      }
+    ]
+  },
+  "boundary": {
+    "poses": "crates/engine/tests/fixtures/room-unbounded-shots.json",
+    "capture_count": 24,
+    "portal_ref": 370165,
+    "cell_id": 86643,
+    "camera_distance_from_portal_creation_units": 16,
+    "camera_membership": {
+      "outside": [],
+      "inside": [
+        369486
+      ]
+    },
+    "results": [
+      {
+        "pose": "GallowsRock01-outside-in",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 710,
+            "listed": 710
+          },
+          "on": {
+            "drawn": 710,
+            "listed": 710
+          }
+        }
+      },
+      {
+        "pose": "GallowsRock01-outside-away",
+        "persistent_differing_pixels": 384120,
+        "mesh_lists": {
+          "off": {
+            "drawn": 149,
+            "listed": 149
+          },
+          "on": {
+            "drawn": 15,
+            "listed": 149
+          }
+        }
+      },
+      {
+        "pose": "GallowsRock01-inside-out",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 162,
+            "listed": 162
+          },
+          "on": {
+            "drawn": 162,
+            "listed": 162
+          }
+        }
+      },
+      {
+        "pose": "GallowsRock01-inside-in",
+        "persistent_differing_pixels": 0,
+        "mesh_lists": {
+          "off": {
+            "drawn": 693,
+            "listed": 693
+          },
+          "on": {
+            "drawn": 693,
+            "listed": 693
+          }
+        }
+      }
+    ],
+    "interpretation": "Three views match full rendering. Outside-away has the portal behind the camera and rejects room geometry. Its full-render control sees the back side of the level shell. This policy difference is recorded, not accepted as an image-equality pass or an original-game validation."
+  },
+  "exploratory": {
+    "capture_count": 18,
+    "poses": [
+      {
+        "name": "ShimmermistCave02-outside-in",
+        "worldspace_id": null,
+        "interior_cell_id": 130150,
+        "position": [
+          5979.445343780771,
+          3935.999999999995,
+          -128.000244140625
+        ],
+        "yaw": 180.00001866933465,
+        "pitch": -0.0,
+        "hfov": 75.0,
+        "note": "Authored unbounded portal 000530F8; camera membership checked against all cell room boxes."
+      },
+      {
+        "name": "ShimmermistCave02-outside-away",
+        "worldspace_id": null,
+        "interior_cell_id": 130150,
+        "position": [
+          5979.445343780771,
+          3935.999999999995,
+          -128.000244140625
+        ],
+        "yaw": 1.8669334667539626e-05,
+        "pitch": 0.0,
+        "hfov": 75.0,
+        "note": "Authored unbounded portal 000530F8; camera membership checked against all cell room boxes."
+      },
+      {
+        "name": "ShimmermistCave02-inside-out",
+        "worldspace_id": null,
+        "interior_cell_id": 130150,
+        "position": [
+          5979.445281219229,
+          3744.000000000005,
+          -128.000244140625
+        ],
+        "yaw": 1.8669334667539626e-05,
+        "pitch": 0.0,
+        "hfov": 75.0,
+        "note": "Authored unbounded portal 000530F8; camera membership checked against all cell room boxes."
+      }
+    ],
+    "observations": "ShimmermistCave02 outside-in sees backfaces outside the cave shell and has 45785 persistent differing pixels. Outside-away and inside-out list zero meshes in both modes and are blank. These poses are excluded from image-equality validation; their differing/blank results are retained here."
+  },
+  "settling": {
+    "all_runs_complete": true,
+    "timed_out_captures": 0,
+    "pending_room_graphs_at_capture": 0,
+    "failed_room_graphs_at_capture": 0
+  },
+  "automated_tests": {
+    "engine_library_passed": 1427,
+    "engine_library_ignored": 7,
+    "converter_library_passed": 1176,
+    "converter_library_ignored": 30,
+    "plugin_references_passed": 32,
+    "plugin_references_ignored": 1,
+    "shared_geometry_regression": "First failed with a child mesh hidden on the near side of a portal despite aggregate model overlap; passes when both endpoint volumes are candidates."
+  },
+  "limits": [
+    "Shared ownership uses conservative affine-box/portal overlap, not native bounding-sphere assignment.",
+    "Authored joined bounds, multi-portal ownership, occluders and exact assignment remain unresolved.",
+    "No controlled comparison with a running Skyrim instance."
+  ]
+}
