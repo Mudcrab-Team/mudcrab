@@ -476,6 +476,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "complete-root-room-spheres",
     "rigid-child-and-depth-room-spheres",
     "renderer-verified-room-spheres",
+    "collision-body-node-rebind",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
