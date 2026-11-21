@@ -1160,6 +1160,7 @@ fn read_plugins_with_prepared(
                 result.skipped_inputs.insert(index);
             }
         }
+        result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);
     }
     scan_stage.finish(result.records.len());
