@@ -135,9 +135,9 @@ pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     cosine(max) <= normal_z && normal_z <= cosine(min)
 }
 
-/// Retail value (RF-GRASS-020): 1.4222222 (512/360) and a 512-entry cosine table; the index
-/// wraps with `& 511`, so degrees past 360 wrap. The code uses 1.4222221, spud's f32 constant,
-/// so 45 degrees truncates to 63 where retail truncates to 64.
+/// Retail value (RF-GRASS-020): the stored f32 factor 1.4222221 (about 512/360) and a 512-entry
+/// cosine table; the index wraps with `& 511`, so degrees past 360 wrap. The code uses the same
+/// f32, so 45 degrees truncates to index 63 as in retail.
 pub(super) fn slope_bounds(min: u8, max: u8) -> [f32; 2] {
     let cosine = |angle: u8| {
         let index = ((f32::from(angle) * 1.422_222_1) as usize) & 511;
