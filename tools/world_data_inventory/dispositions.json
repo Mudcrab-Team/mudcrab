@@ -874,6 +874,21 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
+    "perk_effects": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #599)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "perk_entry_points": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #599)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "perks": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #599)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
     "plugins": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
@@ -897,6 +912,11 @@
     "race_movement_links": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "record_conditions": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #599)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
     "record_diagnostics": {

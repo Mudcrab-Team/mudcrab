@@ -31,11 +31,14 @@ type LoadedStringTable = (Option<ParsedTextTable>, Option<String>);
 
 /// Resolve every localized string field of the winning `records` in place, returning fields
 /// without text and bounded warnings/notices using the in-house reader's severity policy.
+/// Malformed localized `PERK` `EPFD`/`EPF2` fields are recorded in `perk_rejections` so they
+/// produce `perk_effect_undecoded` omissions matching the in-house reader.
 pub(crate) fn resolve_localized_fields(
     records: &mut HashMap<u32, RawRecord>,
     plugin_paths: &[PathBuf],
     order: &LoadOrder,
     sources: StringSources<'_>,
+    perk_rejections: &mut HashMap<u32, super::perks::PerkRejectedSections>,
 ) -> (UnresolvedFields, Vec<String>, Vec<String>) {
     let mut tables: HashMap<(usize, &'static str), LoadedStringTable> = HashMap::new();
     let mut unresolved = UnresolvedFields::new();
@@ -55,8 +58,44 @@ pub(crate) fn resolve_localized_fields(
             .metadata
             .get(priority)
             .is_some_and(|metadata| metadata.flags & LOCALIZED != 0);
+        let mut perk_epft: Option<u8> = None;
+        let mut current_perk_effect: Option<usize> = None;
+        let mut next_perk_effect = 0usize;
         for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
-            let Some(bank) = records::localized_field_bank(&record.record_type, tag) else {
+            if record.record_type == *b"PERK" {
+                match tag.as_slice() {
+                    b"PRKE" => {
+                        perk_epft = None;
+                        current_perk_effect = Some(next_perk_effect);
+                        next_perk_effect += 1;
+                    }
+                    b"PRKF" => {
+                        perk_epft = None;
+                        current_perk_effect = None;
+                    }
+                    b"EPFT" => perk_epft = (data.len() == 1).then(|| data[0]),
+                    _ if matches!(
+                        tag.as_slice(),
+                        b"EDID" | b"ICON" | b"MICO" | b"CIS1" | b"CIS2"
+                    ) || (tag.as_slice() == b"EPFD" && perk_epft == Some(6)) =>
+                    {
+                        let end = data
+                            .iter()
+                            .position(|&byte| byte == 0)
+                            .unwrap_or(data.len());
+                        *data = runtime_string(&records::decode_text(&data[..end]));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            let is_perk_localized_epfd =
+                record.record_type == *b"PERK" && tag.as_slice() == b"EPFD" && perk_epft == Some(7);
+            let is_perk_localized_epf2 =
+                record.record_type == *b"PERK" && tag.as_slice() == b"EPF2";
+            let Some(bank) = records::localized_field_bank(&record.record_type, tag)
+                .or_else(|| is_perk_localized_epfd.then_some("strings"))
+            else {
                 continue;
             };
             if !localized {
@@ -84,14 +123,30 @@ pub(crate) fn resolve_localized_fields(
             match id.and_then(|id| localized_text(id, &table.as_ref()?.values)) {
                 Some(text) => *data = runtime_string(text),
                 None => {
-                    unresolved.entry(record.form_id).or_default().insert(index);
-                    // Zero is the reader's null-key sentinel, not a failed lookup.
-                    if id != Some(0) {
-                        let malformed = id.is_some_and(|id| {
-                            table
+                    let malformed = id.is_some_and(|id| {
+                        id != 0
+                            && table
                                 .as_ref()
                                 .is_some_and(|table| table.malformed_ids.contains(&id))
-                        });
+                    });
+                    // A wrong-width localized PERK EPFD/EPF2 or malformed bank entry cannot be
+                    // projected as NULL; keep the warning below, mark the effect rejected for
+                    // `perk_effect_undecoded`, clear its payload to empty bytes, and keep it out
+                    // of `unresolved`.
+                    let malformed_perk_text = (is_perk_localized_epfd || is_perk_localized_epf2)
+                        && (id.is_none() || malformed);
+                    if malformed_perk_text && let Some(effect_index) = current_perk_effect {
+                        perk_rejections
+                            .entry(record.form_id)
+                            .or_default()
+                            .effect_indices
+                            .insert(effect_index);
+                    }
+                    if !malformed_perk_text {
+                        unresolved.entry(record.form_id).or_default().insert(index);
+                    }
+                    // Zero is the reader's null-key sentinel, not a failed lookup.
+                    if id != Some(0) {
                         let reason = match id {
                             None => format!("{} bytes, not a four-byte ID", data.len()),
                             Some(id) if table.is_none() => format!(
@@ -123,7 +178,11 @@ pub(crate) fn resolve_localized_fields(
                         miss.0 += 1;
                     }
                     // The in-house reader stores an unresolved name as empty text.
-                    *data = runtime_string("");
+                    *data = if malformed_perk_text {
+                        Vec::new()
+                    } else {
+                        runtime_string("")
+                    };
                 }
             }
         }
