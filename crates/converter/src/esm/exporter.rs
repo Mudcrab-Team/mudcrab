@@ -1420,8 +1420,10 @@ fn write_static_model(
             return Ok(());
         }
         if !unchanged {
-            tx.prepare_cached("DELETE FROM room_model_bounds WHERE base_form_id=?1")?
-                .execute([form_id])?;
+            if super::rooms::table_exists(tx, "room_model_bounds")? {
+                tx.prepare_cached("DELETE FROM room_model_bounds WHERE base_form_id=?1")?
+                    .execute([form_id])?;
+            }
             tx.prepare_cached(
                 "INSERT INTO room_graph_cells(cell_id,complete) \
              SELECT DISTINCT cell_id,0 FROM [references] WHERE base_form_id=?1 \
@@ -5765,6 +5767,42 @@ mod tests {
                 assert!((other_radius - 8.0).abs() < f32::EPSILON);
             }
         }
+    }
+
+    #[test]
+    fn subset_base_model_change_invalidates_a_cell_without_model_bounds() -> Result<()> {
+        let base = |path| {
+            record(
+                0x500,
+                b"STAT",
+                None,
+                None,
+                vec![(b"MODL".to_vec(), cstr(path))],
+            )
+        };
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+            base("A.nif"),
+        ]);
+        conn.execute_batch("DROP TABLE room_model_bounds")?;
+        let complete = || {
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=0x100",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+        };
+        assert!(complete()?);
+        export_to_db(&conn, &HashMap::from([(0x500, base("B.nif"))]))?;
+        let path: String =
+            conn.query_row("SELECT model_path FROM statics WHERE id=0x500", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(path, "B.nif");
+        assert!(!complete()?);
+        Ok(())
     }
 
     #[test]
