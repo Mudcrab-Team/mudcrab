@@ -210,6 +210,29 @@ class LinkedItemNumberTests(unittest.TestCase):
             ),
         )
 
+    def test_a_longer_fence_is_not_closed_by_a_shorter_one(self):
+        self.assertEqual(
+            [7],
+            self.numbers(
+                "````markdown\n"
+                "```\n"
+                "Closes #5\n"
+                "```\n"
+                "````\n"
+                "Closes #7\n"
+            ),
+        )
+
+    def test_a_closing_keyword_links_only_its_reference_list(self):
+        self.assertEqual([5, 6], self.numbers("Closes #5 and #6\n"))
+        self.assertEqual(
+            [],
+            self.numbers(
+                "This fixes a typo in the README; see #10 for background.\n"
+            ),
+        )
+        self.assertEqual([], self.numbers("Related to the work; see #10.\n"))
+
     def test_bare_references_are_not_links(self):
         self.assertEqual([], self.numbers("See #5 and #6.\n"))
         self.assertEqual([], self.numbers("**Merge after:** #9\n"))
@@ -424,6 +447,49 @@ class ModeTests(ManagerTestCase):
         self.assertEqual(0, code)
         self.assertEqual([], self.github.writes)
         self.assertIn("#30", stderr)
+
+    def test_the_daily_run_re_reads_an_unassigned_item(self):
+        class StaleSnapshot(FakeGitHub):
+            def get(inner_self, path, paginate=False):
+                if path.endswith("/issues?state=open&per_page=100"):
+                    snapshot = copy.deepcopy(inner_self.items[2])
+                    inner_self.items[2]["milestone"] = {
+                        "number": G5[0],
+                        "title": G5[1],
+                    }
+                    return [snapshot]
+                return FakeGitHub.get(inner_self, path, paginate=paginate)
+
+        github = StaleSnapshot()
+        github.add(2)
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = ASSIGN.main(
+                ["--repository", REPOSITORY, "--all"], client=github
+            )
+        self.assertEqual(0, code)
+        self.assertEqual([], github.writes)
+        self.assertEqual(G5[0], github.milestone_number(2))
+
+    def test_a_disappeared_item_is_skipped_in_the_daily_run(self):
+        class Disappearing(FakeGitHub):
+            def get(inner_self, path, paginate=False):
+                if path.endswith("/issues?state=open&per_page=100"):
+                    snapshot = [issue(2)]
+                    del inner_self.items[2]
+                    return snapshot
+                return FakeGitHub.get(inner_self, path, paginate=paginate)
+
+        github = Disappearing()
+        github.add(2)
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = ASSIGN.main(
+                ["--repository", REPOSITORY, "--all"], client=github
+            )
+        self.assertEqual(0, code)
+        self.assertEqual([], github.writes)
+        self.assertIn("disappeared", stdout.getvalue())
 
     def test_dry_run_inheritance_writes_nothing(self):
         self.github.add(1, milestone=G5)

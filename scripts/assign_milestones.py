@@ -59,6 +59,16 @@ ISSUE_URL_RE = re.compile(
     r"/(?:issues|pull)/(?P<number>[1-9]\d*)\b",
     re.IGNORECASE,
 )
+REFERENCE_TOKEN = (
+    r"(?:https?://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/[1-9]\d*"
+    r"|(?<![\w/])#[1-9]\d*)"
+)
+# A closing keyword links only the references that follow it, not any later
+# reference on the same line.
+REFERENCE_LIST_RE = re.compile(
+    r"^\s*" + REFERENCE_TOKEN + r"(?:\s*(?:,\s*|\band\b\s*)" + REFERENCE_TOKEN + r")*",
+    re.IGNORECASE,
+)
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
@@ -211,14 +221,22 @@ def _lines_outside_code(body: str) -> List[str]:
     """Drop fenced code and HTML comments, so a sample reference is not a link."""
     text = HTML_COMMENT_RE.sub("", body)
     lines: List[str] = []
-    fence: Optional[str] = None
+    fence: Optional[Tuple[str, int]] = None
     for line in text.splitlines():
         match = FENCE_RE.match(line)
         if match:
-            marker = match.group(1)[0]
+            marker = match.group(1)
+            character = marker[0]
+            length = len(marker)
             if fence is None:
-                fence = marker
-            elif fence == marker:
+                fence = (character, length)
+            elif (
+                character == fence[0]
+                and length >= fence[1]
+                # A closing fence has no info string; a shorter or annotated
+                # fence inside the block is content.
+                and line[match.end() :].strip() == ""
+            ):
                 fence = None
             continue
         if fence is None:
@@ -260,13 +278,19 @@ def linked_item_numbers(body: str, repository: str) -> List[int]:
         references: List[Tuple[int, int]] = []
         match = REFERENCE_LINE_RE.match(line)
         if match is not None:
-            references.extend(
-                _references_in(match.group("rest"), match.start("rest"), owner, name)
-            )
+            listed = REFERENCE_LIST_RE.match(match.group("rest"))
+            if listed is not None:
+                references.extend(
+                    _references_in(
+                        listed.group(0), match.start("rest"), owner, name
+                    )
+                )
         for keyword in CLOSING_KEYWORD_RE.finditer(line):
-            references.extend(
-                _references_in(line[keyword.end() :], keyword.end(), owner, name)
-            )
+            listed = REFERENCE_LIST_RE.match(line[keyword.end() :])
+            if listed is not None:
+                references.extend(
+                    _references_in(listed.group(0), keyword.end(), owner, name)
+                )
         for _, number in sorted(references):
             if number not in seen:
                 seen.add(number)
@@ -313,17 +337,20 @@ class Manager:
             self.client.send(method, path, payload)
         self._say(description)
 
-    def _get_item(self, number: int) -> Item:
-        try:
-            data = self.client.get(self._path(f"/issues/{number}"))
-        except NotFound:
-            raise GitHubError(f"item #{number} does not exist") from None
+    def _read_item(self, number: int) -> Item:
+        data = self.client.get(self._path(f"/issues/{number}"))
         item = parse_item(data)
         if item.number != number:
             raise GitHubError(
                 f"asked for item #{number}, but the API returned #{item.number}"
             )
         return item
+
+    def _get_item(self, number: int) -> Item:
+        try:
+            return self._read_item(number)
+        except NotFound:
+            raise GitHubError(f"item #{number} does not exist") from None
 
     def _linked_item(self, number: int) -> Optional[Item]:
         if number in self._linked_items:
@@ -526,6 +553,16 @@ class Manager:
         remaining: List[int] = []
         for entry in entries:
             item = parse_item(entry)
+            if item.milestone is None:
+                # The list is a snapshot taken before the loop. A maintainer can
+                # assign a milestone while this run is in progress, and a PATCH
+                # would overwrite it. Re-read the item before it is written.
+                try:
+                    item = self._read_item(item.number)
+                except NotFound:
+                    self._notice(f"#{item.number}: item disappeared; skipped")
+                    counts["skipped"] = counts.get("skipped", 0) + 1
+                    continue
             outcome = self._process(item)
             counts[outcome] = counts.get(outcome, 0) + 1
             if outcome == "labelled":
