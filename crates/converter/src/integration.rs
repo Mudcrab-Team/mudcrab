@@ -856,6 +856,58 @@ mod tests {
     }
 
     #[test]
+    fn native_room_spheres_enclose_the_streamed_scene() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = &directory.path().join("pack");
+        fs::create_dir(root).unwrap();
+        let key = "meshes/wall.glb";
+        let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO statics(id,model_path,flags) VALUES (10,'wall.nif',0)",
+                [],
+            )
+            .unwrap();
+        let vertices: Vec<_> = [0.0f32, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let mut document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scenes": [{"nodes": [0]}, {"nodes": [1]}],
+            "nodes": [{"mesh": 0}, {"mesh": 0, "translation": [100, 0, 0]}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                           "min": [0, 0, 0], "max": [2, 2, 0]}],
+            "bufferViews": [{"buffer": 0, "byteLength": 36}],
+            "buffers": [{"byteLength": 36}],
+        });
+        for default_scene in [None, Some(0), Some(1)] {
+            if let Some(scene) = default_scene {
+                document["scene"] = serde_json::json!(scene);
+            }
+            for (center, expected) in [(1, Some(1.0)), (101, None)] {
+                document["extras"]["mudcrabRoomSphere"] =
+                    serde_json::json!({"version": 1, "center": [center, 1, 0], "radius": 2});
+                let glb = glb_with_json(serde_json::to_vec(&document).unwrap(), &vertices);
+                write_file(root, key, &glb);
+                refresh_native_model_bounds(root, &[key.to_owned()]).unwrap();
+                let projected = connection
+                    .query_row(
+                        "SELECT s.bounds_min_x,b.center_x FROM statics s
+                         LEFT JOIN room_model_bounds b ON b.base_form_id=s.id
+                         WHERE s.id=10 AND s.bounds_valid=1",
+                        [],
+                        |r| Ok((r.get::<_, f64>(0)?, r.get::<_, Option<f64>>(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(projected, (0.0, expected), "{default_scene:?}, {center}");
+            }
+        }
+    }
+
+    #[test]
     fn rejects_invalid_or_truncated_glb_json() {
         let valid = bounded_glb([0.0; 3], [1.0; 3], [0.0; 3]);
         let json_end = 20 + u32::from_le_bytes(valid[12..16].try_into().unwrap()) as usize;

@@ -7,7 +7,7 @@ use std::{
 
 use color_eyre::{
     Result,
-    eyre::{ContextCompat, bail, ensure},
+    eyre::{ContextCompat, WrapErr, bail, ensure},
 };
 use tempfile::{NamedTempFile, TempDir};
 
@@ -137,6 +137,42 @@ fn run_prefix(root: &Path) -> String {
     )
 }
 
+fn payload_relative<'a>(root: &Path, destination: &'a Path) -> Result<&'a Path> {
+    let relative = destination.strip_prefix(root).wrap_err_with(|| {
+        format!(
+            "archive staging directory escapes extraction root: {}",
+            destination.display()
+        )
+    })?;
+    ensure!(
+        !relative.iter().any(reserved),
+        "reserved archive staging directory"
+    );
+    Ok(relative)
+}
+
+fn create_payload_parent(root: &Path, parent: &Path) -> Result<PathBuf> {
+    let requested = root.join(parent);
+    let mut ancestor = requested.as_path();
+    loop {
+        match ancestor.symlink_metadata() {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ancestor = ancestor
+                    .parent()
+                    .wrap_err("missing archive extraction root")?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let destination = ancestor
+        .canonicalize()?
+        .join(requested.strip_prefix(ancestor)?);
+    payload_relative(root, &destination)?;
+    fs::create_dir_all(&destination)?;
+    Ok(destination.canonicalize()?)
+}
+
 /// Holds temporary files beside their destinations while one lock protects the whole run.
 pub(super) struct Run {
     // Drop the payload directories and their registry before closing the ownership lock.
@@ -176,14 +212,8 @@ impl Run {
         let mut paths = Vec::with_capacity(parents.len());
         let mut manifest = Vec::with_capacity(parents.len());
         for (index, parent) in parents.into_iter().enumerate() {
-            let destination = root.join(parent);
-            fs::create_dir_all(&destination)?;
-            let destination = destination.canonicalize()?;
-            let relative = destination.strip_prefix(&root)?;
-            ensure!(
-                !relative.iter().any(reserved),
-                "reserved archive staging directory"
-            );
+            let destination = create_payload_parent(&root, parent)?;
+            let relative = payload_relative(&root, &destination)?;
             let name = payload_name(run_name, index);
             manifest.push(relative.join(&name));
             paths.push((parent, destination, name));
@@ -521,6 +551,32 @@ mod tests {
             state.metadata().unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_nested_output_with_private_staging() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().canonicalize().unwrap().join("out");
+        let parent = Path::new("meshes/architecture/interior");
+        let run = Run::new(&output, BTreeSet::from([parent])).unwrap();
+        let staged = run.new_file(parent).unwrap();
+        let payload = staged.path().parent().unwrap().to_owned();
+        assert_eq!(payload.parent(), Some(output.join(parent).as_path()));
+        let registry = run._registry.path().to_owned();
+        for path in [payload.as_path(), registry.parent().unwrap()] {
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        assert!(!registry.starts_with(&output));
+        staged
+            .persist(output.join(parent).join("model.nif"))
+            .unwrap();
+        drop(run);
+        assert!(!payload.exists());
+        assert!(!registry.exists());
+        assert!(output.join(parent).join("model.nif").is_file());
     }
 
     #[cfg(unix)]

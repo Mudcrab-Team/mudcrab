@@ -1988,39 +1988,25 @@ fn finish_skinned_model(
 }
 
 pub(crate) fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".mudcrab-glb-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
     }
-    let extension = output
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("glb");
-    let temporary = output.with_extension(format!("{extension}.{}.partial", std::process::id()));
-    let backup = output.with_extension(format!("{extension}.{}.backup", std::process::id()));
-    ensure!(
-        !temporary.exists() && !backup.exists(),
-        "stale temporary GLB exists for {}",
-        output.display()
-    );
-    let mut file = fs::File::create(&temporary)
-        .wrap_err_with(|| format!("failed to create {}", temporary.display()))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-
-    if output.exists() {
-        fs::rename(output, &backup)
-            .wrap_err_with(|| format!("failed to preserve {}", output.display()))?;
-    }
-    if let Err(error) = fs::rename(&temporary, output) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, output);
-        }
-        return Err(error).wrap_err_with(|| format!("failed to publish {}", output.display()));
-    }
-    if backup.exists() {
-        fs::remove_file(backup)?;
-    }
+    let mut temporary = builder
+        .tempfile_in(parent)
+        .wrap_err_with(|| format!("failed to stage {}", output.display()))?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    crate::cache::persist_cache_file(temporary, output)
+        .wrap_err_with(|| format!("failed to publish {}", output.display()))?;
     Ok(())
 }
 
@@ -3521,6 +3507,17 @@ mod tests {
     use crate::material::NifAlphaMode;
     use crate::test_strategies::{arbitrary_bytes, config, corrupted};
     use proptest::prelude::*;
+
+    #[test]
+    fn glb_publication_failure_preserves_the_destination_and_cleans_the_temporary() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("mesh.glb");
+        fs::create_dir(&output).unwrap();
+
+        assert!(write_glb_atomic(&output, b"new GLB").is_err());
+        assert!(output.is_dir());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     fn geometry_test_contract() -> Vec<NifShapeMaterial> {
         let directory = tempfile::tempdir().unwrap();
