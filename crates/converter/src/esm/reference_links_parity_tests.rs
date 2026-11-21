@@ -270,6 +270,11 @@ fn malformed_placement_enable_parent_keeps_predecessor() {
     );
     assert_eq!(parent(), (Some(LEVER), Some(1)));
     assert_eq!(
+        apply_patch("Repeated.esp", &[xesp(TRAP, 2), xesp(LEVER, 1)]).changed_references,
+        0
+    );
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
         apply_patch("Changed.esp", &[xesp(TRAP, 2)]).changed_references,
         1
     );

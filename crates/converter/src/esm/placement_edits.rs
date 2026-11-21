@@ -447,8 +447,9 @@ fn plugin_edits(
                     Some("with malformed NAME")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
-                } else if view.find_all(b"XESP").any(|bytes| {
-                    bytes.len() != 8
+                } else if view.find_all(b"XESP").enumerate().any(|(index, bytes)| {
+                    index != 0
+                        || bytes.len() != 8
                         || SubrecordXESP::parse(bytes).is_none_or(|parent| {
                             parent.parent_ref != 0 && !valid_target(parent.parent_ref)
                         })

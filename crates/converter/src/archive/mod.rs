@@ -17,7 +17,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{ContextCompat, WrapErr, bail},
+    eyre::{ContextCompat, WrapErr, bail, ensure},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -765,10 +765,10 @@ impl ArchiveExtractor {
             .into_iter()
             .filter(|(path, _)| include(path))
             .collect::<Vec<_>>();
+        staging::reclaim_abandoned(output_root)?;
         if selected.is_empty() {
             return Ok(Vec::new());
         }
-        staging::reclaim_abandoned(output_root)?;
         let parents = selected
             .iter()
             .map(|(path, _)| path.parent().wrap_err("missing extraction directory"))
@@ -1159,7 +1159,9 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
     let mut safe = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Normal(part) if !part.is_empty() => safe.push(part),
+            Component::Normal(part) if !part.is_empty() && !staging::reserved(part) => {
+                safe.push(part)
+            }
             Component::CurDir => {}
             _ => bail!("archive contains unsafe path: {name}"),
         }
@@ -1187,7 +1189,12 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
         }
     });
     if let (Some(kind), Some(extension)) = (kind, extension) {
-        return canonical_asset_path(name, kind, extension).map(PathBuf::from);
+        let path = PathBuf::from(canonical_asset_path(name, kind, extension)?);
+        ensure!(
+            !path.iter().any(staging::reserved),
+            "reserved archive staging path"
+        );
+        return Ok(path);
     }
     Ok(safe)
 }
