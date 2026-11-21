@@ -2208,6 +2208,28 @@ mod tests {
         ("check_retail_claims.py", "--base"),
         ("check_retail_claims.py", "--head"),
         ("check_retail_claims.py", "--repo"),
+        // sync_branch.py merges origin/main and drives git and the inventory tool. It never
+        // launches the engine, so these options belong to its own CLI and its Git commands.
+        ("sync_branch.py", "--base"),
+        ("sync_branch.py", "--base-root"),
+        ("sync_branch.py", "--detach"),
+        ("sync_branch.py", "--diff-filter"),
+        ("sync_branch.py", "--dry-run"),
+        ("sync_branch.py", "--force"),
+        ("sync_branch.py", "--head"),
+        ("sync_branch.py", "--ignore-unmatch"),
+        ("sync_branch.py", "--inventory-command"),
+        ("sync_branch.py", "--is-ancestor"),
+        ("sync_branch.py", "--name-only"),
+        ("sync_branch.py", "--no-edit"),
+        ("sync_branch.py", "--no-fetch"),
+        ("sync_branch.py", "--no-ff"),
+        ("sync_branch.py", "--repo"),
+        ("sync_branch.py", "--review-sources"),
+        ("sync_branch.py", "--show-toplevel"),
+        ("sync_branch.py", "--theirs"),
+        ("sync_branch.py", "--verify"),
+        ("sync_branch.py", "--write-tree"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
