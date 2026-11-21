@@ -405,7 +405,7 @@ fn write_record_archive_scope(output: &Path, complete: bool, signatures: &[[u8; 
             "status": if complete { "COMPLETE_DIAGNOSTIC_ARCHIVE_RUNTIME_VIEWS_DEFERRED" } else { "INCOMPLETE" },
             "runtime_ready": false,
             "runtime_views_materialized": false,
-            "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map",
+            "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map", "subset_nonplacement_deletions",
                 "inhouse_source_records", "inhouse_localized_fields", "inhouse_terrain_source_order",
                 "inhouse_terrain_layers", "inhouse_unresolved_terrain_textures", "record_overrides", "inhouse_plugin_masters", "inhouse_schema_addons", "record_diagnostics"],
         "deferred_runtime_tables": DEFERRED_RUNTIME_TABLES,
