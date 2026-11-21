@@ -6286,18 +6286,18 @@ fn occluder_link_to_a_deleted_archived_placement_is_an_omission() {
     let result = run_placement_import(&assets, "--plugin", &plane);
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(
-        result.status.success() && error.contains("unresolved FormID"),
+        result.status.success() && error.contains("occluder_unusable_links"),
         "{error}"
     );
     assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
     assert_eq!(
         db.query_row(
-            "SELECT count(*) FROM room_occluder_links WHERE ref_id=0x01000910",
+            "SELECT link_index,linked_ref,single_target_verified FROM room_occluder_links WHERE ref_id=0x01000910",
             [],
-            |row| row.get::<_, i64>(0)
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?, row.get::<_, bool>(2)?))
         )
         .unwrap(),
-        0
+        (0, 0x802, false)
     );
     assert_eq!(
         db.query_row(
