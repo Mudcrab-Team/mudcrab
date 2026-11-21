@@ -36,6 +36,14 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
   reachability. See
   [data-inventory/README.md](../data-inventory/README.md#migrating-a-branch-that-adds-a-store).
 
+### Splitting a large pull request
+
+One feature per pull request. A mixed pull request hides defects behind its description, and a reviewer cannot hold it in their head.
+
+- **Independent parts** become separate pull requests against `main`.
+- **Dependent parts** become a stack: each layer targets the branch below it. A set of three or more carries the same `stack: <name> <i>/<n>` label (see [labels.md](labels.md)); a single dependency uses `**Merge after:** #N` at the top of the PR. Land the stack bottom-up with merge commits, as [step 6](#6-merge-maintainers) describes.
+- **Test and generated files do not count** towards the size. The [PR size workflow](../../.github/workflows/pr_size.yml) skips test code, fixtures, snapshots, vendored code, recorded evidence and generated data; the full list is in [scripts/pr_size.py](../../scripts/pr_size.py). It labels a pull request `size: L` above 2,000 remaining lines and `size: XL` above 5,000, then comments once with this guidance. The label is advisory and does not block a merge.
+
 ## 4. Open the pull request
 
 - Fill in the PR template, and write the text as [writing-prs.md](writing-prs.md) describes: the result first, the problem with an example, honest evidence.
