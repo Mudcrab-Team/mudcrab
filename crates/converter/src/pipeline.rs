@@ -7,7 +7,10 @@ use crate::{
         ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
         RawIngestionSession, prune_stale_reader_packs,
     },
-    asset_path::{AssetKind, canonical_asset_path, normalize_separators, resolve_asset_uri},
+    asset_path::{
+        AssetKind, canonical_asset_path, is_authoring_source_name, normalize_separators,
+        resolve_asset_uri,
+    },
     cache::{
         BODY_COMPOSE_CONTEXT, BODY_COMPOSE_RECIPE, CONVERTER_SCHEMA_VERSION, CacheEntry,
         ConversionManifest, DEFAULT_GAIT_RECIPE, DerivedOutput, IngestionJournal,
@@ -1072,7 +1075,7 @@ impl AssetPipeline {
 
         if config.mo2.is_none() {
             mask_undiscovered_inputs(&config.data_dir, &vfs_dir, &undiscovered)?;
-            overlay_loose_assets_with_recovery(
+            let authoring_inputs = overlay_loose_assets_with_recovery(
                 &config.data_dir,
                 &vfs_dir,
                 &files,
@@ -1085,6 +1088,12 @@ impl AssetPipeline {
                     Ok(())
                 },
             )?;
+            for relative in authoring_inputs {
+                manifest.excluded_inputs.insert(
+                    relative,
+                    "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
+                );
+            }
         }
         if config.mo2.is_some() {
             for (relative, source) in &resolved_files {
@@ -3954,6 +3963,9 @@ fn mask_undiscovered_inputs(data: &Path, vfs: &Path, blocked: &[PathBuf]) -> Res
             !relative.as_os_str().is_empty(),
             "cannot mask undiscovered inputs at the data root"
         );
+        if is_authoring_source_name(&relative.to_string_lossy()) {
+            continue;
+        }
         prefixes.insert(PathBuf::from(
             normalize_separators(relative).to_ascii_lowercase(),
         ));
@@ -4157,7 +4169,7 @@ pub(crate) fn validate_artifact(
 }
 
 pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()> {
-    overlay_loose_assets_with_recovery(data, vfs, files, |_, _, error| Err(error))
+    overlay_loose_assets_with_recovery(data, vfs, files, |_, _, error| Err(error)).map(|_| ())
 }
 
 fn overlay_loose_assets_with_recovery(
@@ -4165,13 +4177,19 @@ fn overlay_loose_assets_with_recovery(
     vfs: &Path,
     files: &[PathBuf],
     mut failed: impl FnMut(&Path, Option<&Path>, color_eyre::Report) -> Result<()>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let mut seen = BTreeMap::<String, PathBuf>::new();
+    let mut authoring_inputs = Vec::new();
     for source in files
         .iter()
         .filter(|path| extension(path, &["dds", "nif", "pex", "lod", "hkx"]))
     {
         let relative = source.strip_prefix(data)?;
+        let name = relative.to_string_lossy();
+        if is_authoring_source_name(&name) {
+            authoring_inputs.push(normalize_separators(relative));
+            continue;
+        }
         let (kind, extension) = if extension(source, &["dds"]) {
             (AssetKind::Texture, "dds")
         } else if extension(source, &["nif"]) {
@@ -4186,7 +4204,7 @@ fn overlay_loose_assets_with_recovery(
         } else {
             (AssetKind::LodSettings, "lod")
         };
-        let canonical = match canonical_asset_path(&relative.to_string_lossy(), kind, extension) {
+        let canonical = match canonical_asset_path(&name, kind, extension) {
             Ok(canonical) => canonical,
             Err(error) => {
                 failed(source, None, error)?;
@@ -4226,7 +4244,7 @@ fn overlay_loose_assets_with_recovery(
             failed(source, Some(Path::new(&canonical)), error)?;
         }
     }
-    Ok(())
+    Ok(authoring_inputs)
 }
 
 /// Select explicit plugins or direct Data children, warning about nested-only discovery.
@@ -11343,6 +11361,35 @@ mod tests {
             vfs.join("meshes/actors/character/behaviors/0_master.hkx")
                 .exists()
         );
+    }
+
+    #[test]
+    fn loose_asset_overlay_keeps_runtime_precedence_with_authoring_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let vfs = directory.path().join("vfs");
+        let archived = vfs.join("meshes/test.nif");
+        let runtime = data.join("meshes/test.nif");
+        let authoring = data.join("%43alienteTools/Meshes/Test.NIF");
+        let duplicate = data.join("Data/Meshes/Test.NIF");
+        for (path, bytes) in [
+            (&archived, b"archive".as_slice()),
+            (&runtime, b"loose runtime".as_slice()),
+            (&authoring, b"authoring".as_slice()),
+            (&duplicate, b"duplicate runtime".as_slice()),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+
+        overlay_loose_assets(&data, &vfs, std::slice::from_ref(&authoring)).unwrap();
+        assert_eq!(fs::read(&archived).unwrap(), b"archive");
+        overlay_loose_assets(&data, &vfs, &[authoring, runtime.clone()]).unwrap();
+        assert_eq!(fs::read(&archived).unwrap(), b"loose runtime");
+        mask_undiscovered_inputs(&data, &vfs, &[data.join("%43alienteTools/Meshes")]).unwrap();
+        assert_eq!(fs::read(&archived).unwrap(), b"loose runtime");
+        let error = overlay_loose_assets(&data, &vfs, &[runtime, duplicate]).unwrap_err();
+        assert!(error.to_string().contains("normalized path collision"));
     }
 
     #[test]
