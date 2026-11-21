@@ -48,6 +48,7 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
     };
     let mut target_names: HashSet<_> = motion_targets
         .iter()
+        // silent-ok: Only node blocks contribute names to the skin hierarchy.
         .filter_map(|&index| blocks.get(index as usize)?.as_node().ok())
         .filter_map(|node| string(node.av.object.name))
         .collect();
@@ -76,6 +77,7 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
             let moves_skin = match (kind, blocks.get(index)) {
                 ("NiTransformController" | "NiKeyframeController" | "BSLagBoneController", _) => {
                     NiTimeController::parse(raw)
+                        // silent-ok: An unreadable controller prevents certifying a fixed skin pose.
                         .ok()
                         .is_none_or(|(_, controller)| motion_targets.contains(&controller.target))
                 }

@@ -468,7 +468,10 @@ fn parse_plugin_file_inner(path: &Path, visit: impl FnMut(ParsedRecord)) -> Resu
     let reader = EsmReader::open(path)?;
     parse_plugin_bytes(
         reader.as_slice(),
-        &path.file_name().unwrap_or_default().to_string_lossy(),
+        &path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy(),
         visit,
     )
 }
