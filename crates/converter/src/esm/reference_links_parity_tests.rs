@@ -218,6 +218,12 @@ fn plugin_deletion_disables_hardcoded_owner_fallback_across_subset_exports() {
 
         let restored_path = dir.path().join(format!("{reader:?}-restored.db"));
         let restored_plugins = [paths[0].clone(), paths[1].clone(), restoration.clone()];
+        let mut winners = EsmParser::merge_plugins(&restored_plugins).unwrap();
+        let faction = winners.remove(&deleted).unwrap();
+        super::exporter::export_to_db(&db, &HashMap::from([(deleted, faction)])).unwrap();
+        assert_eq!(projected_owner(CHEST), Some(deleted));
+        assert_eq!(projected_owner(LEVER), Some(absent));
+
         EsmParser::convert_plugins_with_reader(
             &restored_plugins,
             &restored_path,

@@ -962,6 +962,7 @@ reference and cell fields, validated against their expected sizes:
 | `XLKR` | placed references | keyword and linked reference (8 bytes), or the linked reference alone (legacy 4 bytes) |
 | `XNDP` | placed references | navmesh (bytes 0-3 of 8) |
 | `XEMI` | placed references | emitted light or region |
+| `XMBR` | placed references | multibound target (one 4-byte FormID) |
 | `XATR` | placed references | attached reference (the in-house reader already remapped it; the legacy reader does since #269) |
 | `SNAM`, `LNAM` | LIGH | sound and lens flare (the in-house reader already remapped them; the legacy reader does since #269) |
 | `XAPR` | placed references | activate-parent reference (one 8-byte subrecord per parent) |
@@ -985,10 +986,14 @@ For blob remapping, placed references are REFR, ACHR, ACRE, PGRE, PMIS, PHZD,
 PARW, PBAR, PBEA, PCON and PFLA. This does not expand the record types exported
 to the `references` table; the six newly covered types retain their blobs in
 `records` without adding `references` rows.
+For `XMBR`, the legacy reader remaps the four-byte word for every placed type listed above.
+The in-house reader emits a runtime FormID when the record schema declares `XMBR` as a FormID.
+Its built-in `ACRE` schema has no such field. The in-house source archive
+(`inhouse_source_records.payload`) keeps the original plugin bytes.
 Fields not covered may still hold plugin-local FormIDs. In particular, do not
 consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys (use `reference_details.lock_key_id`), `XPWR` water
 reflections as resolved IDs. Other
-unconverted fields include `XLIB`, `XMBR`, `XTNM`, `PDTO` and
+unconverted fields include `XLIB`, `XTNM`, `PDTO` and
 `CELL.XILL`. Check the converter's field-specific handling before using
 these payloads; this list is not exhaustive.
 
@@ -1608,8 +1613,8 @@ placements from references belonging to other cells or unknown runtime objects.
 Authored assignment metadata:
 
 - **`room_reference_rules`** records ordinary placements independently of geometric overlap rows.
-  A nonzero, remapped `XMBR` is `target`; a Multibound header flag with no `XMBR` is `none`;
-  an ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
+  For a `target` rule, `room_reference_rules.target_ref` is the nonzero runtime FormID projected from `XMBR`.
+  A Multibound header flag with no `XMBR` is `none`. An ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
   are `unknown`. Repeated `XMBR` fields also produce `unknown` with no target, including identical
   repetitions. Both readers preserve malformed `XMBR` presence for every supported placed
   record type, including references carrying the Multibound flag; rejection cannot turn it
