@@ -3,7 +3,10 @@
 use crate::{
     asset_path::{AssetKind, canonical_asset_path, canonical_literal_asset_path},
     esm::projection_omissions::ProjectionOmissions,
-    mesh::{glb_bounds_from_document, room_bounds::encloses_native_scene},
+    mesh::{
+        glb_bounds_from_document,
+        room_bounds::{encloses_native_scene, native_sphere_eligible},
+    },
 };
 use color_eyre::{
     Result,
@@ -105,7 +108,28 @@ pub fn refresh_native_model_bounds(
 ) -> Result<NativeModelBoundsRefresh> {
     ensure!(!changed_paths.is_empty(), "no changed GLB paths provided");
     let root = assets_root.canonicalize()?;
-    let _lock = AssetLock::acquire_exclusive(&root)?;
+    let lock = AssetLock::acquire_exclusive(&root)?;
+    refresh_model_bounds(&lock, changed_paths, ModelBoundsSource::NativeReplacement)
+}
+
+/// Updates only the models regenerated in this exclusive capture session.
+pub fn refresh_converted_model_bounds(
+    lock: &AssetLock,
+    changed_paths: &[String],
+) -> Result<NativeModelBoundsRefresh> {
+    ensure!(
+        lock.mode() == shared::asset_lock::AssetLockMode::Exclusive,
+        "exclusive pack lock required"
+    );
+    refresh_model_bounds(lock, changed_paths, ModelBoundsSource::Converter)
+}
+
+fn refresh_model_bounds(
+    lock: &AssetLock,
+    changed_paths: &[String],
+    source: ModelBoundsSource,
+) -> Result<NativeModelBoundsRefresh> {
+    let root = lock.asset_dir();
     let mut report = NativeModelBoundsRefresh::default();
     let mut models = BTreeMap::new();
     for path in changed_paths {
@@ -116,13 +140,13 @@ pub fn refresh_native_model_bounds(
         );
         models.entry(key).or_insert(None);
     }
-    let paths = installed_glb_paths(&root, models.keys().map(String::as_str))?;
+    let paths = installed_glb_paths(root, models.keys().map(String::as_str))?;
     for (key, bounds) in &mut models {
         let Some(resolved) = paths.get(key) else {
             continue;
         };
         ensure!(resolved.is_file(), "not a GLB file: {key}");
-        match read_glb_bounds(resolved, ModelBoundsSource::NativeReplacement) {
+        match read_glb_bounds(resolved, source) {
             Ok(projected) => *bounds = Some(projected),
             Err(error) if error.downcast_ref::<std::io::Error>().is_some() => return Err(error),
             Err(error) => {
@@ -133,7 +157,7 @@ pub fn refresh_native_model_bounds(
         }
     }
 
-    let mut connection = open_private_world_database(&root)?;
+    let mut connection = open_private_world_database(root)?;
     let transaction = connection.transaction()?;
     let affected = {
         let mut statement =
@@ -468,11 +492,16 @@ fn visit_asset_entries(
     Ok(())
 }
 
-fn installed_glb_paths<'a>(
+/// Resolves existing regular GLBs for canonical mesh keys and rejects ambiguous winners.
+/// The root must be the canonical pack directory.
+pub fn installed_glb_paths<'a>(
     root: &Path,
     keys: impl Iterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, PathBuf>> {
     let keys: BTreeSet<_> = keys.collect();
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
     let directories: BTreeSet<_> = keys
         .iter()
         .flat_map(|key| key.match_indices('/').map(|(end, _)| &key[..end]))
@@ -523,6 +552,7 @@ fn write_model_bounds(tx: &Transaction<'_>, id: u32, bounds: ModelBounds) -> rus
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 enum ModelBoundsSource {
     Converter,
     NativeReplacement,
@@ -532,8 +562,16 @@ fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds
     let mut file =
         fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
     let file_length = file.metadata()?.len();
-    let mut prefix = read_glb_prefix(&mut file, file_length)
-        .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))?;
+    read_glb_bounds_from_reader(&mut file, file_length, source)
+        .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))
+}
+
+fn read_glb_bounds_from_reader(
+    file: &mut impl Read,
+    file_length: u64,
+    source: ModelBoundsSource,
+) -> Result<ModelBounds> {
+    let mut prefix = read_glb_prefix(file, file_length)?;
     let document: serde_json::Value = serde_json::from_slice(&prefix[20..])?;
     let metadata = &document["extras"]["mudcrabRoomSphere"];
     let mut sphere = (metadata["version"].as_u64() == Some(1))
@@ -542,21 +580,21 @@ fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds
         .flatten()
         .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
     if let (ModelBoundsSource::NativeReplacement, Some(candidate)) = (source, sphere) {
-        file.read_to_end(&mut prefix)?;
-        sphere = encloses_native_scene(&prefix, &document, candidate).then_some(candidate);
+        sphere = if native_sphere_eligible(&document) {
+            file.read_to_end(&mut prefix)?;
+            encloses_native_scene(&prefix, candidate).then_some(candidate)
+        } else {
+            None
+        };
     }
+    let render = match source {
+        ModelBoundsSource::Converter => glb_bounds_from_document(&document)?,
+        ModelBoundsSource::NativeReplacement => crate::mesh::glb_scene_bounds(&document, Some(0))?,
+    };
     Ok(ModelBounds {
-        render: glb_bounds_from_document(&document)?,
+        render,
         room: sphere,
     })
-}
-
-#[cfg(test)]
-fn read_glb_bounds_from_reader(
-    reader: &mut impl Read,
-    file_length: u64,
-) -> Result<shared::Bounds3> {
-    crate::mesh::glb_bounds_from_bytes(&read_glb_prefix(reader, file_length)?)
 }
 
 fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {
@@ -646,6 +684,18 @@ fn recover_invalid_static_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_installed_glb_paths_never_walks_the_pack() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("absent");
+        assert!(
+            installed_glb_paths(&root, std::iter::empty())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(installed_glb_paths(&root, ["meshes/selected.glb"].into_iter()).is_err());
+    }
 
     fn glb_with_json(mut json: Vec<u8>, binary: &[u8]) -> Vec<u8> {
         while !json.len().is_multiple_of(4) {
@@ -770,7 +820,13 @@ mod tests {
         let glb = bounded_glb([-2.0, -3.0, -4.0], [5.0, 6.0, 7.0], [3.0, 4.0, 5.0]);
         let json_length = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
         let mut reader = std::io::Cursor::new(&glb);
-        let bounds = read_glb_bounds_from_reader(&mut reader, glb.len() as u64).unwrap();
+        let bounds = read_glb_bounds_from_reader(
+            &mut reader,
+            glb.len() as u64,
+            ModelBoundsSource::Converter,
+        )
+        .unwrap()
+        .render;
         assert_eq!(bounds.min, [1.0, 1.0, 1.0]);
         assert_eq!(bounds.max, [8.0, 10.0, 12.0]);
         assert_eq!(reader.position(), (20 + json_length) as u64);
@@ -778,12 +834,93 @@ mod tests {
     }
 
     #[test]
+    fn animated_native_sphere_is_rejected_without_reading_the_binary() {
+        let rigid = bounded_glb([0.; 3], [1.; 3], [0.; 3]);
+        let mut json = crate::mesh::glb_json_from_bytes(&rigid).unwrap();
+        json["extras"] =
+            serde_json::json!({"mudcrabRoomSphere":{"version":1,"center":[0,0,0],"radius":2}});
+        let binary = [0; 4096];
+        json["buffers"] = serde_json::json!([{"byteLength": binary.len()}]);
+        assert!(native_sphere_eligible(&json));
+        json["animations"] = serde_json::json!([{}]);
+        let glb = glb_with_json(serde_json::to_vec(&json).unwrap(), &binary);
+        let mut reader = std::io::Cursor::new(&glb);
+        let bounds = read_glb_bounds_from_reader(
+            &mut reader,
+            glb.len() as u64,
+            ModelBoundsSource::NativeReplacement,
+        )
+        .unwrap();
+        assert!(bounds.room.is_none());
+        assert_eq!(
+            reader.position(),
+            20 + u64::from(u32::from_le_bytes(glb[12..16].try_into().unwrap()))
+        );
+    }
+
+    #[test]
+    fn native_room_spheres_enclose_the_streamed_scene() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = &directory.path().join("pack");
+        fs::create_dir(root).unwrap();
+        let key = "meshes/wall.glb";
+        let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO statics(id,model_path,flags) VALUES (10,'wall.nif',0)",
+                [],
+            )
+            .unwrap();
+        let vertices: Vec<_> = [0.0f32, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let mut document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scenes": [{"nodes": [0]}, {"nodes": [1]}],
+            "nodes": [{"mesh": 0}, {"mesh": 0, "translation": [100, 0, 0]}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                           "min": [0, 0, 0], "max": [2, 2, 0]}],
+            "bufferViews": [{"buffer": 0, "byteLength": 36}],
+            "buffers": [{"byteLength": 36}],
+        });
+        for default_scene in [None, Some(0), Some(1)] {
+            if let Some(scene) = default_scene {
+                document["scene"] = serde_json::json!(scene);
+            }
+            for (center, expected) in [(1, Some(1.0)), (101, None)] {
+                document["extras"]["mudcrabRoomSphere"] =
+                    serde_json::json!({"version": 1, "center": [center, 1, 0], "radius": 2});
+                let glb = glb_with_json(serde_json::to_vec(&document).unwrap(), &vertices);
+                write_file(root, key, &glb);
+                refresh_native_model_bounds(root, &[key.to_owned()]).unwrap();
+                let projected = connection
+                    .query_row(
+                        "SELECT s.bounds_min_x,b.center_x FROM statics s
+                         LEFT JOIN room_model_bounds b ON b.base_form_id=s.id
+                         WHERE s.id=10 AND s.bounds_valid=1",
+                        [],
+                        |r| Ok((r.get::<_, f64>(0)?, r.get::<_, Option<f64>>(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(projected, (0.0, expected), "{default_scene:?}, {center}");
+            }
+        }
+    }
+
+    #[test]
     fn rejects_invalid_or_truncated_glb_json() {
         let valid = bounded_glb([0.0; 3], [1.0; 3], [0.0; 3]);
         let json_end = 20 + u32::from_le_bytes(valid[12..16].try_into().unwrap()) as usize;
         assert!(
-            read_glb_bounds_from_reader(&mut std::io::Cursor::new(&valid), valid.len() as u64,)
-                .is_ok()
+            read_glb_bounds_from_reader(
+                &mut std::io::Cursor::new(&valid),
+                valid.len() as u64,
+                ModelBoundsSource::Converter
+            )
+            .is_ok()
         );
         let mut bad_magic = valid.clone();
         bad_magic[..4].copy_from_slice(b"nope");
@@ -802,8 +939,12 @@ mod tests {
             impossible_length,
         ] {
             assert!(
-                read_glb_bounds_from_reader(&mut std::io::Cursor::new(&bytes), bytes.len() as u64)
-                    .is_err()
+                read_glb_bounds_from_reader(
+                    &mut std::io::Cursor::new(&bytes),
+                    bytes.len() as u64,
+                    ModelBoundsSource::Converter
+                )
+                .is_err()
             );
         }
     }

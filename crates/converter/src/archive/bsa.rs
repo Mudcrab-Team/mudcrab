@@ -11,6 +11,8 @@ use super::source::ArchiveSource;
 const HEADER_SIZE: usize = 36;
 const FILE_RECORD_SIZE: usize = 16;
 const FILENAME_BLOCK_SIZE: usize = 8 * 1024;
+// Match the maximum length encodable in a BA2 filename, including unusually long names.
+const MAX_FILENAME_BYTES: usize = u16::MAX as usize;
 const ARCHIVE_COMPRESSED: u32 = 0x0004;
 const ARCHIVE_EMBED_FILE_NAMES: u32 = 0x0100;
 const KNOWN_ARCHIVE_FLAGS: u32 = 0x03ff;
@@ -67,6 +69,48 @@ pub(super) struct BsaEntry {
 }
 
 impl BsaEntry {
+    pub(super) fn decoded_size(&self, source: &ArchiveSource<'_>) -> Result<usize> {
+        if !self.is_compressed {
+            return Ok(self.stored_size);
+        }
+        ensure!(
+            self.stored_size >= 4,
+            "compressed BSA payload is truncated: {}",
+            self.name
+        );
+        let header = source.read(self.offset, 4)?;
+        let bytes = u32_at(&header, 0)? as usize;
+        ensure!(
+            bytes <= expansion_limit(self.stored_size - 4),
+            "compressed BSA entry {} declares {bytes} decompressed bytes, over the safety limit",
+            self.name
+        );
+        Ok(bytes)
+    }
+
+    pub(super) fn staging_bytes(&self, source: &ArchiveSource<'_>) -> Result<usize> {
+        if !self.is_compressed || self.stored_size < 4 {
+            return Ok(self.stored_size);
+        }
+        let prefix = source
+            .read(self.offset, self.stored_size.min(10))
+            .wrap_err_with(|| format!("invalid BSA file payload: {}", self.name))?;
+        let expected = u32_at(&prefix, 0)? as usize;
+        if expected > expansion_limit(self.stored_size - 4) {
+            // Decoding rejects this size before allocating any output.
+            return Ok(self.stored_size);
+        }
+        let frame_buffers = if self.version >= 105 {
+            lz4_frame_buffer_bytes(&prefix[4..])
+        } else {
+            0
+        };
+        Ok(self
+            .stored_size
+            .saturating_add(super::growing_buffer_bytes(expected))
+            .saturating_add(frame_buffers))
+    }
+
     pub(super) fn decompress(self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
         let payload = source
             .read_payload(self.offset, self.stored_size)
@@ -239,7 +283,7 @@ pub(super) fn read_entries(source: &ArchiveSource<'_>) -> Result<Vec<BsaEntry>> 
             );
             if archive_flags & ARCHIVE_EMBED_FILE_NAMES != 0 {
                 ensure!(stored_size != 0, "missing embedded BSA filename");
-                let prefix_size = 1 + source.read_payload(start, 1)?[0] as usize;
+                let prefix_size = 1 + source.read(start, 1)?[0] as usize;
                 stored_size = stored_size.checked_sub(prefix_size)
                     .ok_or_else(|| eyre!("truncated embedded BSA filename"))?;
                 start += prefix_size;
@@ -292,9 +336,17 @@ fn read_filenames(
         let mut block = bytes.as_ref();
         while !block.is_empty() && names.len() < file_count {
             let Some(terminator) = block.iter().position(|&byte| byte == 0) else {
+                ensure!(
+                    cursor - name_start <= MAX_FILENAME_BYTES,
+                    "BSA filename exceeds size limit"
+                );
                 continue 'blocks;
             };
             let name_end = cursor - block.len() + terminator;
+            ensure!(
+                name_end - name_start <= MAX_FILENAME_BYTES,
+                "BSA filename exceeds size limit"
+            );
             let raw_name = if name_start < block_start {
                 source.read(name_start, name_end - name_start)?
             } else {
@@ -336,6 +388,28 @@ fn expansion_limit(packed_len: usize) -> usize {
         .min(MAX_ENTRY_SIZE)
 }
 
+const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+
+fn lz4_frame_buffer_bytes(prefix: &[u8]) -> usize {
+    let Some([flags, descriptor]) = prefix.strip_prefix(&LZ4_FRAME_MAGIC) else {
+        return 0;
+    };
+    let block_size = match (descriptor >> 4) & 7 {
+        4 => 64 * 1024,
+        5 => 256 * 1024,
+        6 => 1024 * 1024,
+        7 => 4 * 1024 * 1024,
+        _ => return 0,
+    };
+    // Independent blocks need one input and one output block. Linked blocks need
+    // a second output block and a 64 KiB history window.
+    if flags & 0x20 != 0 {
+        2 * block_size
+    } else {
+        3 * block_size + 64 * 1024
+    }
+}
+
 fn decompress(payload: &[u8], version: u32) -> Result<Vec<u8>> {
     ensure!(payload.len() >= 4, "compressed BSA payload is truncated");
     let expected = u32_at(payload, 0)? as usize;
@@ -349,7 +423,7 @@ fn decompress(payload: &[u8], version: u32) -> Result<Vec<u8>> {
         compressed.len()
     );
     let decoded = if version >= 105 {
-        if compressed.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
+        if compressed.starts_with(&LZ4_FRAME_MAGIC) {
             read_bounded(lz4_flex::frame::FrameDecoder::new(compressed), expected)
                 .wrap_err("LZ4 frame decoding failed")?
         } else if expected <= max_lz4_block_output(compressed.len())
@@ -656,6 +730,33 @@ mod tests {
     }
 
     #[test]
+    fn file_backed_embedded_filename_prefixes_keep_payload_and_range_checks() {
+        let folder = b"scripts";
+        let name = b"script.pex";
+        let mut bytes = raw_archive(folder, name, folder_hash(folder), file_hash(name));
+        let payload_start = bytes.len() - b"PEX".len();
+        let size_offset = payload_start - name.len() - 1 - 8;
+        let embedded = b"\x0ascript.pex";
+        bytes[12..16].copy_from_slice(&(3 | ARCHIVE_EMBED_FILE_NAMES).to_le_bytes());
+        bytes[size_offset..size_offset + 4]
+            .copy_from_slice(&u32::try_from(embedded.len() + 3).unwrap().to_le_bytes());
+        bytes.splice(payload_start..payload_start, embedded.iter().copied());
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        let mut entries = read_entries(&source).unwrap();
+        assert_eq!(entries.remove(0).decompress(&source).unwrap(), b"PEX");
+
+        bytes[payload_start] = u8::MAX;
+        std::fs::write(file.path(), bytes).unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        assert!(
+            matches!(read_entries(&source), Err(error) if error.to_string().contains("truncated embedded BSA filename"))
+        );
+    }
+
+    #[test]
     fn filename_table_requires_a_terminator_within_its_bounds_across_blocks() {
         let mut bytes = b"first.nif\0".to_vec();
         bytes.resize(FILENAME_BLOCK_SIZE + 1, b'a');
@@ -674,6 +775,37 @@ mod tests {
                 (decode_name(second), file_hash(second))
             ]
         );
+    }
+
+    #[test]
+    fn file_backed_filename_table_rejects_oversized_names_before_hashing() {
+        let folder = b"scripts";
+        for size in [
+            MAX_FILENAME_BYTES,
+            MAX_FILENAME_BYTES + 1,
+            MAX_FILENAME_BYTES + 2,
+        ] {
+            let name = vec![b'a'; size];
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(&raw_archive(
+                folder,
+                &name,
+                folder_hash(folder),
+                file_hash(&name),
+            ))
+            .unwrap();
+            let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+            if size == MAX_FILENAME_BYTES {
+                assert_eq!(
+                    read_entries(&source).unwrap()[0].name.len(),
+                    folder.len() + 1 + size
+                );
+            } else {
+                assert!(
+                    matches!(read_entries(&source), Err(error) if error.to_string().contains("filename exceeds size limit"))
+                );
+            }
+        }
     }
 
     #[test]
@@ -833,10 +965,14 @@ mod tests {
 
     #[test]
     fn decompresses_special_edition_lz4_frame() {
+        use lz4_flex::frame::{BlockMode, BlockSize, FrameEncoder, FrameInfo};
         let source = b"Gamebryo File Format, Version 20.2.0.7\n";
         let mut compressed = Vec::new();
         {
-            let mut encoder = lz4_flex::frame::FrameEncoder::new(&mut compressed);
+            let info = FrameInfo::new()
+                .block_size(BlockSize::Max64KB)
+                .block_mode(BlockMode::Linked);
+            let mut encoder = FrameEncoder::with_frame_info(info, &mut compressed);
             encoder.write_all(source).unwrap();
             encoder.finish().unwrap();
         }
@@ -847,6 +983,19 @@ mod tests {
         payload.extend_from_slice(&compressed);
 
         assert_eq!(decompress(&payload, 105).unwrap(), source);
+        let entry = BsaEntry {
+            name: "meshes/model.nif".to_owned(),
+            offset: 0,
+            stored_size: payload.len(),
+            version: 105,
+            is_compressed: true,
+        };
+        assert_eq!(
+            entry
+                .staging_bytes(&ArchiveSource::Slice(&payload))
+                .unwrap(),
+            payload.len() + super::super::growing_buffer_bytes(source.len()) + 256 * 1024
+        );
     }
 
     fn fixtures() -> Vec<Vec<u8>> {
