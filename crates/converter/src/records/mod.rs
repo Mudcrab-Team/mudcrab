@@ -23,7 +23,7 @@ pub use scanner::{fuzz_inflate, fuzz_scan};
 
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
-use scanner::scan_admitted_plugin as scan_plugin;
+use scanner::{ScanOutcome, scan_admitted_plugin as scan_plugin};
 use schema_format::Schema;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -531,11 +531,22 @@ pub struct RecordSource {
     pub deleted: bool,
 }
 
+/// What a skipped input still proves about the records it retained.
+#[derive(Clone, Debug)]
+pub enum UnverifiedInput {
+    /// Anonymous snapshot bytes: the digest covers the same stable copy the records came from.
+    StableSnapshot([u8; 32]),
+    /// A direct mapping changed during decode, so retained records may mix generations.
+    MixedRecords,
+}
+
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
     /// Admitted sources unavailable for later proof; slots and decoded records remain allocated.
     pub skipped_inputs: BTreeSet<usize>,
+    /// Skipped inputs whose records were retained, with the proof their decode view still gives.
+    pub unverified_inputs: BTreeMap<usize, UnverifiedInput>,
     /// Digest of the exact verified bytes each plugin's records were decoded from.
     pub plugin_checksums: Vec<Vec<u8>>,
     pub records: HashMap<u32, DecodedRecord>,
@@ -942,8 +953,22 @@ fn read_plugins_with_prepared(
             }
         })?;
         match digest {
-            Some(digest) => result.plugin_checksums[index] = digest.to_vec(),
-            None => {
+            ScanOutcome::Verified(digest) => result.plugin_checksums[index] = digest.to_vec(),
+            ScanOutcome::RetainedSnapshot(digest) => {
+                // The digest and the records name one captured copy, but LOD proof stays
+                // unavailable because the source that copy came from is no longer readable.
+                result.skipped_inputs.insert(index);
+                result
+                    .unverified_inputs
+                    .insert(index, UnverifiedInput::StableSnapshot(digest));
+            }
+            ScanOutcome::MixedRecords => {
+                result.skipped_inputs.insert(index);
+                result
+                    .unverified_inputs
+                    .insert(index, UnverifiedInput::MixedRecords);
+            }
+            ScanOutcome::Skipped => {
                 result.skipped_inputs.insert(index);
             }
         }

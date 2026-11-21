@@ -646,6 +646,11 @@ fn stage_optional_default_source(
 /// Require the rebuild to decode the same source generation `matched_plugins` authenticated.
 /// A readable replacement with unchanged header facts is a mixed-generation refusal, not a
 /// malformed-plugin recovery: retained assets cannot pair with another generation's records.
+/// A stable captured snapshot keeps the digest of its own copy, so it is still compared; a
+/// large direct mapping that changed during decode has no consistent digest, so retained
+/// records from it are refused. Both sides are lowercase hex SHA-256: `expected` from
+/// `cache::hash_file`-style hashing of the authenticated file, the decode side from
+/// `cache::digest_hex` applied once to the raw 32-byte digest.
 fn verify_decoded_plugin_sources(
     conversion: &crate::esm::RecordConversion,
     expected: &[String],
@@ -655,6 +660,24 @@ fn verify_decoded_plugin_sources(
         "plugin proof/order length mismatch"
     );
     for (index, digest) in conversion.plugin_checksums.iter().enumerate() {
+        if let Some(unverified) = conversion.unverified_inputs.get(&index) {
+            let name = &conversion.load_order.names[index];
+            match unverified {
+                crate::records::UnverifiedInput::MixedRecords => bail!(
+                    "plugin {name}: source changed while decoding a large plugin; retained records may mix generations; refusing to rebuild metadata from a mixed input generation"
+                ),
+                crate::records::UnverifiedInput::StableSnapshot(snapshot) => {
+                    if expected[index].is_empty() {
+                        continue;
+                    }
+                    ensure!(
+                        crate::cache::digest_hex(snapshot) == expected[index],
+                        "plugin {name}: captured snapshot differs from the authenticated source package; refusing to rebuild metadata from a mixed input generation"
+                    );
+                }
+            }
+            continue;
+        }
         if conversion.skipped_inputs.contains(&index) || digest.is_empty() {
             continue;
         }
@@ -1871,10 +1894,12 @@ mod tests {
         }
         let order = crate::esm::load_order::LoadOrder::read(&paths).unwrap();
         let digest = |bytes: &[u8]| Sha256::digest(bytes).to_vec();
+        let raw = |bytes: &[u8]| <[u8; 32]>::try_from(Sha256::digest(bytes)).unwrap();
         let expected = vec![hash_bytes(b"source A"), hash_bytes(b"source B")];
         let mut conversion = crate::esm::RecordConversion {
             load_order: order,
             skipped_inputs: BTreeSet::new(),
+            unverified_inputs: BTreeMap::new(),
             records: HashMap::new(),
             warnings: Vec::new(),
             notices: Vec::new(),
@@ -1890,8 +1915,34 @@ mod tests {
                 .contains("decoded bytes differ from the authenticated source package"),
             "{error:#}"
         );
-        // Genuinely unavailable inputs keep their separate recovery, and empty proofs never match.
+        // A stable captured snapshot keeps the digest of the same copy its records came from.
         conversion.skipped_inputs.insert(1);
+        conversion.plugin_checksums[1].clear();
+        conversion.unverified_inputs.insert(
+            1,
+            crate::records::UnverifiedInput::StableSnapshot(raw(b"source B")),
+        );
+        verify_decoded_plugin_sources(&conversion, &expected).unwrap();
+        conversion.unverified_inputs.insert(
+            1,
+            crate::records::UnverifiedInput::StableSnapshot(raw(b"replacement B")),
+        );
+        let error = verify_decoded_plugin_sources(&conversion, &expected).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("captured snapshot differs from the authenticated"),
+            "{error:#}"
+        );
+        // A changed direct mapping cannot prove its retained records, so the rebuild refuses.
+        conversion
+            .unverified_inputs
+            .insert(1, crate::records::UnverifiedInput::MixedRecords);
+        let error = verify_decoded_plugin_sources(&conversion, &expected).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("retained records may mix generations"),
+            "{error:#}"
+        );
+        // Genuinely unavailable inputs keep their separate recovery, and empty proofs never match.
+        conversion.unverified_inputs.clear();
         verify_decoded_plugin_sources(&conversion, &expected).unwrap();
         conversion.skipped_inputs.clear();
         let mut without_proof = expected.clone();

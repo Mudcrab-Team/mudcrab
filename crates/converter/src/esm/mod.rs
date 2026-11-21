@@ -99,6 +99,8 @@ pub(crate) struct RecordConversion {
     /// Preserve admission identities even when a later source read fails.
     pub(crate) load_order: load_order::LoadOrder,
     pub(crate) skipped_inputs: BTreeSet<usize>,
+    /// Skipped inputs whose records were retained, with the proof their decode view still gives.
+    pub(crate) unverified_inputs: BTreeMap<usize, crate::records::UnverifiedInput>,
     pub(crate) records: HashMap<u32, RawRecord>,
     pub(crate) warnings: Vec<String>,
     pub(crate) notices: Vec<String>,
@@ -513,6 +515,7 @@ impl EsmParser {
         Ok(RecordConversion {
             load_order: order.clone(),
             skipped_inputs,
+            unverified_inputs: BTreeMap::new(),
             records: merged,
             warnings: summaries,
             notices,

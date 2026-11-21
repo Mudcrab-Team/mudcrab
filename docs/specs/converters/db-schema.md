@@ -190,8 +190,16 @@ warning containing `changed after load order was read`. Its original plugin row 
 slot remain, with an empty checksum, so neighboring plugin identities do not shift.
 Each plugin's checksum is the digest of the exact opened view its records were
 decoded from; an input whose decode view cannot be verified keeps an empty
-checksum. Database-cache proofs check the header and hash one checked source view;
-cache eligibility is checked before restore, after restore and before storage.
+checksum. A stable copied snapshot is the exception: it keeps the digest of the
+copied bytes that were decoded even when its source changed afterwards. A
+metadata rebuild compares these digests with the source package it authenticated
+and refuses, as a clean error before publication, when a plugin's records came
+from another generation. It also refuses a large input that changed under a
+direct mapping after decoding, because its retained records may mix generations;
+an ordinary conversion still publishes those records with a warning. Inputs
+skipped before decoding have no digest and are not compared. Database-cache
+proofs check the header and hash one checked source view; cache eligibility is
+checked before restore, after restore and before storage.
 These checks also apply with `--no-lod`.
 
 ---
