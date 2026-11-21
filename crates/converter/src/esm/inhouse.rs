@@ -1280,7 +1280,13 @@ fn convert_plugins_with_text_sources_report_impl(
             &decoded,
         )?;
     } else {
-        export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
+        export_inhouse_record_archive_to_db(
+            &conn,
+            &master,
+            &order,
+            plugin_paths,
+            &decoded.deleted_ids,
+        )?;
     }
     runtime_stage.finish(master.len());
     phases.insert(

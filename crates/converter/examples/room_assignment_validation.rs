@@ -92,13 +92,25 @@ fn run(args: &[String]) -> Result<()> {
     let (sources, extracted, staged) =
         prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
     let results = convert_capture_models(sources.path(), assets, &models, &staged)?;
-    let changed: Vec<_> = models
+    let changed: Vec<_> = results
         .iter()
-        .map(|model| model.with_extension("glb").to_string_lossy().into_owned())
+        .filter(|result| result.converted)
+        .map(|result| {
+            result
+                .model
+                .with_extension("glb")
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     if !changed.is_empty() {
         converter::integration::refresh_converted_model_bounds(&asset_lock, &changed)?;
     }
+    ensure!(
+        changed.len() == models.len(),
+        "capture preparation incomplete: one or more requested source conversions failed: {}",
+        serde_json::to_string(&results)?
+    );
     let conn = Connection::open(assets.join("skyrim_world.db"))?;
     let bounds: u64 = conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r.get(0))?;
     let report = serde_json::json!({
@@ -156,12 +168,19 @@ fn validate_private_assets(assets: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct CaptureResult {
+    model: PathBuf,
+    converted: bool,
+    error: Option<String>,
+}
+
 fn convert_capture_models(
     sources: &Path,
     assets: &Path,
     models: &BTreeSet<PathBuf>,
     staged: &BTreeSet<PathBuf>,
-) -> Result<Vec<serde_json::Value>> {
+) -> Result<Vec<CaptureResult>> {
     let paths = staged
         .iter()
         .map(|key| (key.clone(), sources.join(key)))
@@ -193,18 +212,13 @@ fn convert_capture_models(
                 MeshConverter::convert_nif_to_glb_from_index(model, &source, output, &skeletons)
                     .map_err(|error| format!("{error:#}"))
             });
-            serde_json::json!({
-                "model": model,
-                "converted": matches!(converted, Some(Ok(()))),
-                "error": converted.and_then(|result| result.err())
-            })
+            CaptureResult {
+                model: (*model).clone(),
+                converted: matches!(converted, Some(Ok(()))),
+                error: converted.and_then(|result| result.err()),
+            }
         })
         .collect();
-    ensure!(
-        results.iter().all(|result| result["converted"] == true),
-        "capture preparation incomplete: one or more requested source conversions failed: {}",
-        serde_json::to_string(&results)?
-    );
     Ok(results)
 }
 
@@ -330,6 +344,70 @@ mod tests {
                 -17.0
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_capture_refreshes_only_successful_outputs() {
+        use dummy_content::nif::{StaticShape, static_shape};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let assets = root.join("assets");
+        let data = root.join("Data");
+        fs::create_dir_all(data.join("meshes")).unwrap();
+        fs::create_dir_all(assets.join("meshes")).unwrap();
+        let mesh = static_shape(&StaticShape {
+            name: "Triangle",
+            positions: &[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            normals: &[[0., 0., 1.]; 3],
+            uvs: &[[0., 0.]; 3],
+            indices: &[[0, 1, 2]],
+            diffuse: "textures/d.dds",
+            normal_texture: "textures/n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("meshes/good.nif"), mesh).unwrap();
+        fs::write(data.join("meshes/bad.nif"), b"invalid fixture").unwrap();
+        fs::write(assets.join("meshes/bad.glb"), b"previous output").unwrap();
+        let conn = Connection::open(assets.join("skyrim_world.db")).unwrap();
+        create_tables(&conn).unwrap();
+        conn.execute_batch("INSERT INTO cells(id,flags) VALUES(7,0);
+            INSERT INTO room_graph_stats VALUES('visibility_version',2),('assignment_version',1);
+            INSERT INTO statics(id,flags,model_path,bounds_valid,bounds_min_x) VALUES
+                (91,0,'good.nif',1,-17),(92,0,'bad.nif',1,-17);
+            INSERT INTO [references](id,cell_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z)
+                VALUES (11,7,91,0,0,0,0,0,0,0),(12,7,92,0,0,0,0,0,0,0);").unwrap();
+        let args = [
+            data.display().to_string(),
+            assets.display().to_string(),
+            "7".into(),
+        ];
+        let error = run(&args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requested source conversions failed"),
+            "{error:#}"
+        );
+        let bound = |id| {
+            conn.query_row(
+                "SELECT bounds_min_x FROM statics WHERE id=?1 AND bounds_valid=1",
+                [id],
+                |r| r.get::<_, f64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(bound(91), 0.);
+        assert_eq!(bound(92), -17.);
+        assert_eq!(
+            fs::read(assets.join("meshes/bad.glb")).unwrap(),
+            b"previous output"
+        );
+        let receipt = fs::read(assets.join("room-assignment-preparation.json")).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&receipt).unwrap()["complete"],
+            false
+        );
     }
 
     #[cfg(unix)]
@@ -501,13 +579,13 @@ mod tests {
         fs::write(&output, b"previous capture").unwrap();
         let models = BTreeSet::from([model.clone()]);
         assert!(
-            convert_capture_models(&sources, &assets, &models, &models).is_err(),
+            !convert_capture_models(&sources, &assets, &models, &models).unwrap()[0].converted,
             "a missing source must abort before finalization"
         );
         fs::create_dir(sources.join("meshes")).unwrap();
         fs::write(sources.join(model), b"invalid NIF").unwrap();
         assert!(
-            convert_capture_models(&sources, &assets, &models, &models).is_err(),
+            !convert_capture_models(&sources, &assets, &models, &models).unwrap()[0].converted,
             "a failed conversion must abort before finalization"
         );
     }

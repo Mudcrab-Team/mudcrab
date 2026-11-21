@@ -3720,6 +3720,63 @@ fn placement_cycle_recovers_queued_static_before_checking_its_dependent() {
 }
 
 #[test]
+fn unresolved_parent_of_a_new_placement_keeps_interiors_open_until_superseded() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let cells = [0x900, 0x901];
+    let base = plugin(
+        root,
+        "Skyrim.esm",
+        &[],
+        1,
+        cells
+            .iter()
+            .flat_map(|&cell| {
+                [
+                    record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+                    placement_group(cell, placement_marker(cell - 0x100, 0x1f, Vec::new())),
+                ]
+                .concat()
+            })
+            .collect(),
+    );
+    let damaged = plugin(
+        root,
+        "Bad.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x9900_0900, placement_marker(0x0100_0880, 0x1f, Vec::new())),
+    );
+    let fixed = plugin(
+        root,
+        "Fixed.esp",
+        &["Skyrim.esm", "Bad.esp"],
+        0,
+        record(b"REFR", 0x0100_0880, 0x20, Vec::new()),
+    );
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        for recovered in [false, true] {
+            let db_path = root.join(format!("{reader:?}-{recovered}.db"));
+            let mut paths = vec![base.clone(), damaged.clone()];
+            if recovered {
+                paths.push(fixed.clone());
+            }
+            EsmParser::convert_plugins_with_reader(&paths, &db_path, reader, root).unwrap();
+            let db = rusqlite::Connection::open(db_path).unwrap();
+            for cell in cells {
+                assert_eq!(
+                    placement_certificate(&db, cell),
+                    recovered,
+                    "{reader:?} {cell:x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn bounded_damaged_cell_preserves_the_winner_and_invalidates_its_graph() {
     use converter::config::RecordReader;
 

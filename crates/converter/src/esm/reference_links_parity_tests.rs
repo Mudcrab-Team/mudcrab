@@ -153,6 +153,66 @@ fn interior_with_id(cell_id: u32, references: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn plugin_deletion_disables_hardcoded_owner_fallback_across_subset_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let patch = dir.path().join("Delete.esp");
+    let deleted = 0x600;
+    let absent = 0x601;
+    let owner = |id| [sub(b"XOWN", &le(id)), sub(b"XRNK", &le(7))];
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", CRATE),
+            named(b"FACT", deleted),
+            interior(
+                &[
+                    reference(CHEST, &owner(deleted)),
+                    reference(LEVER, &owner(absent)),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    fs::write(
+        &patch,
+        [
+            header(0, &["Skyrim.esm"]),
+            top(b"FACT", &record_with_flags(b"FACT", deleted, 0x20, &[])),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let paths = [base, patch];
+    let subset: HashMap<_, _> = EsmParser::merge_plugins(&paths)
+        .unwrap()
+        .into_iter()
+        .filter(|(id, _)| [CHEST, LEVER].contains(id))
+        .collect();
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let db_path = dir.path().join(format!("{reader:?}.db"));
+        EsmParser::convert_plugins_with_reader(&paths, &db_path, reader, dir.path()).unwrap();
+        let db = Connection::open(db_path).unwrap();
+        let projected_owner = |id| {
+            db.query_row(
+                "SELECT owner_id FROM reference_details WHERE reference_id=?1",
+                [id],
+                |row| row.get::<_, Option<u32>>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(projected_owner(CHEST), None);
+        assert_eq!(projected_owner(LEVER), Some(absent));
+        super::exporter::export_to_db(&db, &subset).unwrap();
+        assert_eq!(projected_owner(CHEST), None);
+        assert_eq!(projected_owner(LEVER), Some(absent));
+    }
+}
+
+#[test]
 fn malformed_placement_enable_parent_keeps_predecessor() {
     use super::placement_edits::{PlacementSource, apply};
 
@@ -205,6 +265,11 @@ fn malformed_placement_enable_parent_keeps_predecessor() {
     assert_eq!(parent(), (Some(LEVER), Some(1)));
     assert_eq!(
         apply_patch("Malformed.esp", &[sub(b"XESP", &le(TRAP))]).changed_references,
+        0
+    );
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("BadMaster.esp", &[xesp(0x9900_0802, 2)]).changed_references,
         0
     );
     assert_eq!(parent(), (Some(LEVER), Some(1)));

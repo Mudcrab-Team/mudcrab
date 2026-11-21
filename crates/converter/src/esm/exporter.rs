@@ -4,7 +4,7 @@ use crate::esm::{
     load_order::{LoadOrder, StableId},
     projection_omissions::{OmissionCategory, ProjectionOmissions},
     records::{RawRecord, achr::SubrecordXESP},
-    rooms::{RoomLinkLayout, RoomLinkSources},
+    rooms::RoomLinkSources,
 };
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
@@ -421,6 +421,7 @@ struct ExportOptions<'a> {
     scalar_scripts: bool,
     /// Source remapping preserves authored nulls; typed canonical nulls need source verification.
     trusted_portal_nulls: bool,
+    deleted_ids: Option<&'a HashSet<u32>>,
     room_link_sources: Option<RoomLinkSources<'a>>,
     subset_sources: Option<(&'a HashMap<u32, DecodedRecord>, &'a LoadOrder)>,
     damaged_placement_cells: Option<&'a HashSet<u32>>,
@@ -442,6 +443,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
+            deleted_ids: None,
             room_link_sources: None,
             subset_sources: None,
             damaged_placement_cells: None,
@@ -513,6 +515,7 @@ pub fn export_placed_subset_with_sources(
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: false,
+            deleted_ids: None,
             room_link_sources: None,
             subset_sources: Some((records, order)),
             damaged_placement_cells: None,
@@ -540,6 +543,7 @@ pub fn export_to_db_with_load_order(
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
+            deleted_ids: None,
             room_link_sources: None,
             subset_sources: None,
             damaged_placement_cells: None,
@@ -552,16 +556,14 @@ pub fn export_to_db_with_load_order(
 /// in-house reader's, they stay in `records.data` and are left out of the runtime projections.
 pub(super) fn export_plugins_to_db(
     conn: &Connection,
-    master: &HashMap<u32, RawRecord>,
+    merged: &super::LegacyPluginMerge,
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
-    damaged_placement_cells: &HashSet<u32>,
-    room_link_layouts: &HashMap<u32, RoomLinkLayout>,
 ) -> Result<()> {
     export_records(
         conn,
-        master,
+        &merged.conversion.records,
         Some(order),
         Some(plugin_paths),
         Some(unresolved_fields),
@@ -570,9 +572,10 @@ pub(super) fn export_plugins_to_db(
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
-            room_link_sources: Some(RoomLinkSources::Legacy(room_link_layouts)),
+            deleted_ids: Some(&merged.deleted_ids),
+            room_link_sources: Some(RoomLinkSources::Legacy(&merged.room_link_layouts)),
             subset_sources: None,
-            damaged_placement_cells: Some(damaged_placement_cells),
+            damaged_placement_cells: Some(&merged.damaged_cells),
         },
     )
 }
@@ -598,6 +601,7 @@ pub(crate) fn export_inhouse_to_db(
             runtime_views: true,
             scalar_scripts: true,
             trusted_portal_nulls: false,
+            deleted_ids: Some(&decoded.deleted_ids),
             room_link_sources: Some(RoomLinkSources::Typed(decoded)),
             subset_sources: None,
             damaged_placement_cells: None,
@@ -612,6 +616,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
+    deleted_ids: &HashSet<u32>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -624,6 +629,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
             runtime_views: false,
             scalar_scripts: true,
             trusted_portal_nulls: false,
+            deleted_ids: Some(deleted_ids),
             room_link_sources: None,
             subset_sources: None,
             damaged_placement_cells: None,
@@ -764,6 +770,7 @@ fn export_records(
         runtime_views,
         scalar_scripts,
         trusted_portal_nulls,
+        deleted_ids,
         room_link_sources,
         subset_sources,
         damaged_placement_cells,
@@ -790,6 +797,13 @@ fn export_records(
         tx.execute_batch(super::reference_links::SUBSET_SOURCES_SQL)?;
     }
     tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
+    if let Some(ids) = deleted_ids {
+        let mut insert =
+            tx.prepare_cached("INSERT INTO subset_nonplacement_deletions(form_id) VALUES (?1)")?;
+        for id in ids {
+            insert.execute([id])?;
+        }
+    }
     if scalar_scripts {
         // In-house exports own the complete script snapshot; legacy partial APIs retain theirs.
         super::inhouse_script_properties::replace_snapshot_tables(&tx)?;
@@ -870,6 +884,7 @@ fn export_records(
         master,
         order,
         subset: order.is_none(),
+        deleted_ids,
     };
     let mut subset_link_sources = Vec::new();
     let mut unavailable_link_targets = Vec::new();
@@ -3786,7 +3801,8 @@ mod tests {
             1
         );
 
-        export_inhouse_record_archive_to_db(&conn, &master, &order, &paths).unwrap();
+        export_inhouse_record_archive_to_db(&conn, &master, &order, &paths, &HashSet::new())
+            .unwrap();
         for table in [
             "room_bounds",
             "room_portals",
@@ -4867,7 +4883,8 @@ mod tests {
         export_to_db(&conn, &HashMap::new()).unwrap();
         assert_eq!(door_links(&conn), expected, "a subset export leaves links");
 
-        export_inhouse_record_archive_to_db(&conn, &master, &order, &paths).unwrap();
+        export_inhouse_record_archive_to_db(&conn, &master, &order, &paths, &HashSet::new())
+            .unwrap();
         assert!(door_links(&conn).is_empty(), "deferred runtime table");
         export(&conn);
         assert_eq!(door_links(&conn), expected);
