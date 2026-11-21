@@ -476,7 +476,7 @@ impl IngestionSelection {
     /// Versioned archive coverage; additive controls do not change these cache identities.
     pub fn recipe(self) -> &'static str {
         match self {
-            Self::All => "all-v1",
+            Self::All => "all-v2",
             Self::ConverterInputsV1 => "converter-inputs-v4",
             Self::RuntimeEnglishV1 => "runtime-english-v4",
         }
@@ -490,7 +490,7 @@ impl IngestionSelection {
     /// Accept coverage from current filtered recipes or an all-files inventory.
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
-            "" | "all-v1" => Self::All,
+            "" | "all-v1" | "all-v2" => Self::All,
             "converter-inputs-v4" => Self::ConverterInputsV1,
             "runtime-english-v4" => Self::RuntimeEnglishV1,
             _ => return false,

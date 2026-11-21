@@ -1,9 +1,9 @@
 //! Targeted repair of a published pack, including asset-aware database finalization.
 use crate::{
-    archive::{ArchiveExtractor, archive_reader_version, safe_relative_path},
+    archive::{ArchiveExtractor, ArchiveSelection, archive_reader_version, safe_relative_path},
     asset_path::{
-        AssetKind, canonical_asset_path, is_authoring_resource, is_authoring_source_name,
-        resolve_asset_uri,
+        AssetKind, canonical_asset_path, canonical_literal_asset_path, is_authoring_resource,
+        is_authoring_source_name, resolve_asset_uri,
     },
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestedFile,
@@ -32,7 +32,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::OnceCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -423,6 +423,16 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             );
         }
         unique_archive_asset_keys(entry, &archive)?;
+        if let Err(error) = validate_legacy_archive_paths(entry, &archive) {
+            fs::remove_dir_all(&directory)
+                .wrap_err("cannot discard repair staging for a stale archive path")?;
+            return Err(error).wrap_err_with(|| {
+                format!(
+                    "cannot verify cached paths for {}; run a normal conversion before repair",
+                    archive.display()
+                )
+            });
+        }
         for file in runtime_archive_files(entry) {
             let Some((asset_kind, ext, _)) = kind(&file.path) else {
                 continue;
@@ -916,6 +926,27 @@ fn runtime_archive_files(entry: &IngestionCacheEntry) -> impl Iterator<Item = &I
         .files
         .iter()
         .filter(|file| !is_authoring_source_name(&file.path))
+}
+
+/// Older all-files inventories could flatten an authoring path to a runtime name.
+fn validate_legacy_archive_paths(entry: &IngestionCacheEntry, archive: &Path) -> Result<()> {
+    if entry.selection != ArchiveSelection::All || entry.recipe == ArchiveSelection::All.recipe() {
+        return Ok(());
+    }
+    let runtime_paths: HashSet<_> = ArchiveExtractor::list_runtime_paths(archive)?
+        .into_iter()
+        .collect();
+    for file in runtime_archive_files(entry) {
+        if let Some((asset_kind, ext, _)) = kind(&file.path) {
+            let stored = canonical_literal_asset_path(&file.path, asset_kind, ext)?;
+            ensure!(
+                runtime_paths.contains(Path::new(&stored)),
+                "no runtime archive member for cached path {}",
+                file.path
+            );
+        }
+    }
+    Ok(())
 }
 
 fn unique_archive_asset_keys(
