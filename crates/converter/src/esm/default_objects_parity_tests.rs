@@ -306,6 +306,8 @@ fn superseded_placement_duplicates_contribute_only_admitted_default_objects() {
     let text = |key: &str, id: u32| vec![Value::Text(key.into()), Value::Integer(i64::from(id))];
     let mut deleted = record(b"DOBJ", DEFAULT_OBJECTS, &[]);
     deleted[8..12].copy_from_slice(&0x20u32.to_le_bytes());
+    let mut deleted_reference = deleted.clone();
+    deleted_reference[..4].copy_from_slice(b"REFR");
     let original = vec![
         text("DMRN", DEFAULT_MT),
         text("DMSW", CREATURE_MT),
@@ -383,6 +385,14 @@ fn superseded_placement_duplicates_contribute_only_admitted_default_objects() {
             vec![],
             original,
             vec!["accepted", "skipped", "skipped"],
+        ),
+        (
+            "intervening placement tombstone",
+            0xdead,
+            top(b"DOBJ", &[default_objects(&[(b"DMSN", CREATURE_MT)])]),
+            top(b"REFR", &[deleted_reference]),
+            vec![text("DMRN", DEFAULT_MT)],
+            vec!["skipped", "accepted", "skipped"],
         ),
         (
             "intervening tombstone",

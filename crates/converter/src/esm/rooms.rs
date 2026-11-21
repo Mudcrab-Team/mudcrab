@@ -679,6 +679,7 @@ fn is_placed(record_type: &[u8; 4]) -> bool {
     super::is_placed_record_type(record_type)
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum RoomLinkSources<'a> {
     Legacy(&'a HashMap<u32, RoomLinkLayout>),
     Typed(&'a ReadResult),
@@ -840,6 +841,15 @@ pub(super) fn export_room_graph_with_sources(
         occluders,
         None,
     )?;
+    if let Some(RoomLinkSources::Typed(decoded)) = sources {
+        restore_rejected_room_fields(
+            tx,
+            decoded
+                .records
+                .values()
+                .filter(|r| is_placed(&r.record_type)),
+        )?;
+    }
     report.write(tx)?;
     tx.execute(
         "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2),('assignment_version',1)",
@@ -909,7 +919,9 @@ pub(super) fn refresh_placement_cells(
         )?;
         for row in references.query_map([cell], |row| {
             let form_id = row.get(0)?;
-            let blob: Vec<u8> = row.get(2)?;
+            let Some(blob) = row.get::<_, Option<Vec<u8>>>(2)? else {
+                return Ok(None);
+            };
             let record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob)
                 .map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
@@ -919,7 +931,7 @@ pub(super) fn refresh_placement_cells(
                     )
                 })?;
             let record_type: String = row.get(3)?;
-            Ok(RawRecord {
+            Ok(Some(RawRecord {
                 form_id,
                 record_type: record_type.as_bytes().try_into().unwrap_or(*b"UNKN"),
                 flags: row.get(1)?,
@@ -931,10 +943,14 @@ pub(super) fn refresh_placement_cells(
                 cell_form_id: Some(cell),
                 worldspace_form_id: None,
                 load_order: 0,
-            })
+            }))
         })? {
-            let record = row?;
-            records.insert(record.form_id, record);
+            if let Some(record) = row? {
+                records.insert(record.form_id, record);
+            } else {
+                // Older packs can have a placement without enough data to certify its graph.
+                occluders.incomplete_cells.insert(cell);
+            }
         }
         for sql in [
             "DELETE FROM reference_rooms WHERE room_ref IN (SELECT ref_id FROM room_bounds WHERE cell_id=?1)",
@@ -1012,7 +1028,8 @@ fn project_room_graph(
     let mut ordered: Vec<(&u32, &RawRecord)> = master
         .iter()
         .filter(|(_, record)| {
-            is_placed(&record.record_type)
+            !record.is_deleted()
+                && is_placed(&record.record_type)
                 && record
                     .cell_form_id
                     .is_some_and(|cell| interior_cells.contains(&cell))
@@ -1343,7 +1360,10 @@ fn project_room_graph(
             "unknown"
         } else if record.flags & shared::records::MULTIBOUND_REFERENCE_FLAG != 0 {
             "none"
-        } else if view.find(b"XPRM").is_some() {
+        } else if view.find(b"XPRM").is_some()
+            || matches!(&sources, Some(RoomLinkSources::Typed(decoded))
+                if decoded.records.get(&id).is_some_and(|source| source.rejected_fields.contains(b"XPRM")))
+        {
             // Native occlusion primitives can substitute their shape's translation for NiBound.
             "unknown"
         } else {
@@ -1418,7 +1438,7 @@ fn project_room_graph(
 // Integration stage
 // ---------------------------------------------------------------------------------------------
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+pub(super) fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",

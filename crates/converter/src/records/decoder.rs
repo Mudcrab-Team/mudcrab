@@ -3033,6 +3033,14 @@ impl DeletedBases {
         }
     }
 
+    /// The latest tombstone has no validated live successor yet.
+    pub(crate) fn needs_restoration(&self, id: u32) -> bool {
+        self.0
+            .get(&id)
+            .and_then(|events| events.last())
+            .is_some_and(|event| event.restored.is_none())
+    }
+
     pub(crate) fn record(
         &mut self,
         id: u32,
@@ -3376,6 +3384,33 @@ impl RecoveryCandidates {
         self.end_predecessor_chain(id, previous);
     }
 
+    /// Validate any earlier placement restoration before recording a non-placement successor.
+    pub(super) fn restore_before_replacement(
+        &mut self,
+        record: &DecodedRecord,
+        records: &HashMap<u32, DecodedRecord>,
+        order: &LoadOrder,
+        schema: &Schema,
+        prepared: &PreparedSchemas,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) {
+        let id = record.form_id;
+        if self.deleted.needs_restoration(id)
+            && let Some(previous) = records.get(&id)
+        {
+            let catalogue = PlacementCatalogue {
+                order,
+                schema,
+                prepared,
+                kinds: records,
+            };
+            let (history, _) =
+                self.replay_deletion_history(id, Some(previous), &catalogue, validate);
+            self.deleted.0.extend(history.0);
+        }
+        self.deleted.restored(id, record.load_order);
+    }
+
     fn record_replayed_deletion(
         &mut self,
         tombstone: &DecodedRecord,
@@ -3384,6 +3419,24 @@ impl RecoveryCandidates {
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
     ) {
         let id = tombstone.form_id;
+        let (mut history, previous_kind) =
+            self.replay_deletion_history(id, latest, catalogue, validate);
+        history.record(
+            id,
+            tombstone.load_order,
+            tombstone.record_type,
+            previous_kind,
+        );
+        self.deleted.0.extend(history.0);
+    }
+
+    fn replay_deletion_history(
+        &self,
+        id: u32,
+        latest: Option<&DecodedRecord>,
+        catalogue: &PlacementCatalogue<'_>,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) -> (DeletedBases, Option<[u8; 4]>) {
         // Validate against the same catalogue while rebuilding this ID's deletion intervals.
         let mut history = DeletedBases::default();
         if let Some(events) = self.deleted.0.get(&id) {
@@ -3395,13 +3448,7 @@ impl RecoveryCandidates {
             validate,
             Some(&mut history),
         );
-        history.record(
-            id,
-            tombstone.load_order,
-            tombstone.record_type,
-            previous.map(|record| record.record_type),
-        );
-        self.deleted.0.extend(history.0);
+        (history, previous.map(|record| record.record_type))
     }
 
     pub(super) fn end_predecessor_chain(&mut self, id: u32, previous: Option<DecodedRecord>) {
@@ -3425,7 +3472,7 @@ impl RecoveryCandidates {
     }
 
     pub(super) fn record_default_object(&mut self, record: &DecodedRecord) {
-        if record.record_type == *b"DOBJ" {
+        if record.record_type == *b"DOBJ" || record.flags & 0x20 != 0 {
             self.default_object_layers.insert(
                 (record.load_order, record.source_record_offset),
                 record.to_raw_record(),

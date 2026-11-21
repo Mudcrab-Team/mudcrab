@@ -73,7 +73,7 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
     assert!(
         repaired
             .2
-            .is_some_and(|radius| radius.is_finite() && radius > 0.0)
+            .is_some_and(|radius| (radius - 64.0 / 3.0).abs() < 1.0e-4)
     );
     assert_ne!(repaired.2, original.2);
 

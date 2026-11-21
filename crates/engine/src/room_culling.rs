@@ -1184,14 +1184,16 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             }
         }
     }
-    if graph.supports_unbounded {
-        graph.authored = assignment::load(
-            connection,
-            cell_id,
-            &graph.rooms,
-            &room_index,
-            &mut graph.portals,
-        )?;
+    let advertised_assignments = stats_present && connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='assignment_version' AND value=1)",
+        [], |row| row.get::<_, bool>(0),
+    )?;
+    if advertised_assignments {
+        if graph.supports_unbounded {
+            graph.authored =
+                assignment::load(connection, cell_id, &graph.rooms, &room_index, &mut graph.portals)?;
+        }
+        graph.incomplete |= graph.authored.is_none();
     }
     if graph.authored.is_some() {
         graph.links.clear();
@@ -2350,6 +2352,20 @@ mod tests {
                 .occluders
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn missing_advertised_assignment_table_invalidates_visibility() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        db.execute("DROP TABLE room_model_bounds", []).unwrap();
+        assert!(load_room_graph(&db, 7).unwrap().incomplete);
+        db.execute(
+            "DELETE FROM room_graph_stats WHERE name='assignment_version'",
+            [],
+        )
+        .unwrap();
+        assert!(!load_room_graph(&db, 7).unwrap().incomplete);
     }
 
     #[test]

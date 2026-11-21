@@ -92,9 +92,10 @@ fn run(args: &[String]) -> Result<()> {
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     drop(conn);
-    let (sources, extracted, staged) =
-        prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
-    let results = convert_capture_models(sources.path(), assets, &models, &staged)?;
+    let sources = capture_scratch(&asset_lock)?;
+    let (extracted, staged, textures) =
+        prepare_model_sources(data, sources.path(), &models, &plugins)?;
+    let results = convert_capture_models(sources.path(), assets, &models, &staged, &textures)?;
     let changed: Vec<_> = results
         .iter()
         .filter(|result| result.converted)
@@ -110,7 +111,7 @@ fn run(args: &[String]) -> Result<()> {
         converter::integration::refresh_converted_model_bounds(&asset_lock, &changed)?;
     }
     ensure!(
-        changed.len() == models.len(),
+        changed.len() == models.len() && results.iter().all(|result| result.error.is_none()),
         "capture preparation incomplete: one or more requested source conversions failed: {}",
         serde_json::to_string(&results)?
     );
@@ -185,6 +186,7 @@ fn convert_capture_models(
     assets: &Path,
     models: &BTreeSet<PathBuf>,
     staged: &BTreeSet<PathBuf>,
+    textures: &BTreeSet<String>,
 ) -> Result<Vec<CaptureResult>> {
     let paths = staged
         .iter()
@@ -220,24 +222,62 @@ fn convert_capture_models(
             CaptureResult {
                 model: (*model).clone(),
                 converted: matches!(converted, Some(Ok(()))),
-                error: converted.and_then(|result| result.err()),
+                error: converted.and_then(|result| {
+                    result
+                        .and_then(|()| {
+                            MeshConverter::prune_glb_texture_uris(&root, output, textures)
+                                .map(|_| ())
+                                .map_err(|error| format!("{error:#}"))
+                        })
+                        .err()
+                }),
             }
         })
         .collect();
     Ok(results)
 }
 
+fn capture_scratch(lock: &shared::asset_lock::AssetLock) -> Result<tempfile::TempDir> {
+    const NAME: &str = ".room-assignment-nifs";
+    const MARKER: &str = ".capture-owner";
+    const SIGNATURE: &[u8] = b"Mudcrab private capture scratch v1\n";
+    let parent = lock.asset_dir();
+    let path = parent.join(NAME);
+    if path.try_exists()? || path.is_symlink() {
+        ensure!(
+            path.symlink_metadata()?.is_dir(),
+            "invalid capture scratch directory"
+        );
+        let owner = path.join(MARKER);
+        if owner.try_exists()? {
+            ensure!(
+                owner.symlink_metadata()?.is_file() && fs::read(&owner)? == SIGNATURE,
+                "unrecognized capture scratch ownership at {}",
+                path.display()
+            );
+            ArchiveExtractor::reclaim_abandoned(&path)?;
+            fs::remove_dir_all(&path)?;
+        } else {
+            // An interruption between creating the directory and marking it can leave an empty root.
+            fs::remove_dir(&path)?;
+        }
+    }
+    let sources = tempfile::Builder::new()
+        .prefix(NAME)
+        .rand_bytes(0)
+        .tempdir_in(parent)?;
+    fs::write(sources.path().join(MARKER), SIGNATURE)?;
+    Ok(sources)
+}
+
 fn prepare_model_sources(
     data: &Path,
-    parent: &Path,
+    sources: &Path,
     models: &BTreeSet<PathBuf>,
     plugins: &[String],
-) -> Result<(tempfile::TempDir, usize, BTreeSet<PathBuf>)> {
-    let sources = tempfile::Builder::new()
-        .prefix("room-assignment-nifs-")
-        .tempdir_in(parent)?;
+) -> Result<(usize, BTreeSet<PathBuf>, BTreeSet<String>)> {
     if models.is_empty() {
-        return Ok((sources, 0, BTreeSet::new()));
+        return Ok((0, BTreeSet::new(), BTreeSet::new()));
     }
     let directories: BTreeSet<_> = models.iter().filter_map(|path| path.parent()).collect();
     // Full-cover ranking uses skeletons from all sources and joint names from
@@ -252,6 +292,19 @@ fn prepare_model_sources(
     let archives = active_data_bsa_paths(data, &plugins)?;
     let mut staged = BTreeSet::new();
     let is_runtime = |name: &str| !is_authoring_source_name(name);
+    let mut textures: BTreeSet<_> = AssetSourceIndex::build_with_name_filter(
+        &[data.to_path_buf()],
+        AssetKind::Texture,
+        |name| {
+            is_runtime(name)
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("dds"))
+        },
+    )?
+    .assets()
+    .map(|asset| asset.key.clone())
+    .collect();
     let loose = AssetSourceIndex::build_with_name_filter(
         &[data.to_path_buf()],
         AssetKind::Mesh,
@@ -262,9 +315,9 @@ fn prepare_model_sources(
         if needed(path) {
             staged.insert(path.to_owned());
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(sources.path().join(parent))?;
+                fs::create_dir_all(sources.join(parent))?;
             }
-            fs::copy(&source.path, sources.path().join(path))?;
+            fs::copy(&source.path, sources.join(path))?;
         }
     }
     // Higher-priority sources claim each path first. Selection and extraction
@@ -273,19 +326,57 @@ fn prepare_model_sources(
     for archive in archives.iter().rev() {
         let files = ArchiveExtractor::extract_matching_with_name_filter(
             archive,
-            sources.path(),
+            sources,
             is_runtime,
-            |path| needed(path) && !staged.contains(path),
+            |path| {
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("dds"))
+                    && let Ok(key) =
+                        canonical_asset_path(&path.to_string_lossy(), AssetKind::Texture, "dds")
+                {
+                    textures.insert(key);
+                }
+                needed(path) && !staged.contains(path)
+            },
         )?;
         extracted += files.len();
         staged.extend(files.into_iter().map(|file| file.path));
     }
-    Ok((sources, extracted, staged))
+    Ok((extracted, staged, textures))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepare_model_sources(
+        data: &Path,
+        parent: &Path,
+        models: &BTreeSet<PathBuf>,
+        plugins: &[String],
+    ) -> Result<(tempfile::TempDir, usize, BTreeSet<PathBuf>)> {
+        let sources = tempfile::tempdir_in(parent)?;
+        let (count, staged, _) =
+            super::prepare_model_sources(data, sources.path(), models, plugins)?;
+        Ok((sources, count, staged))
+    }
+
+    #[test]
+    fn capture_retry_recovers_its_own_scratch() {
+        let root = tempfile::tempdir().unwrap();
+        let lock = shared::asset_lock::AssetLock::acquire_exclusive(root.path()).unwrap();
+        let previous = capture_scratch(&lock).unwrap().keep();
+        fs::write(previous.join("old.nif"), b"previous run").unwrap();
+        let retry = capture_scratch(&lock).unwrap();
+        assert_eq!(retry.path(), previous);
+        assert!(!retry.path().join("old.nif").exists());
+        drop(retry);
+        fs::create_dir(&previous).unwrap();
+        fs::write(previous.join("unrelated"), b"preserve").unwrap();
+        assert!(capture_scratch(&lock).is_err());
+        assert!(previous.join("unrelated").exists());
+    }
 
     #[cfg(unix)]
     use converter::esm::exporter::create_tables;
@@ -457,8 +548,15 @@ mod tests {
             normal_texture: "textures/n.dds",
         })
         .unwrap();
+        fs::create_dir(data.join("textures")).unwrap();
+        fs::write(data.join("textures/d.dds"), b"present source").unwrap();
         fs::write(data.join("meshes/good.nif"), mesh).unwrap();
         fs::write(data.join("meshes/bad.nif"), b"invalid fixture").unwrap();
+        fs::write(
+            assets.join("meshes/good.glb"),
+            b"previous successful output",
+        )
+        .unwrap();
         fs::write(assets.join("meshes/bad.glb"), b"previous output").unwrap();
         let conn = Connection::open(assets.join("skyrim_world.db")).unwrap();
         create_tables(&conn).unwrap();
@@ -488,6 +586,12 @@ mod tests {
             )
             .unwrap()
         };
+        let glb = fs::read(assets.join("meshes/good.glb")).unwrap();
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&glb[20..20 + json_len]).unwrap();
+        let images = json["images"].as_array().unwrap();
+        assert_eq!(images.len(), 1, "{images:?}");
+        assert!(images[0]["uri"].as_str().unwrap().contains("/d."));
         assert_eq!(bound(91), 0.);
         assert_eq!(bound(92), -17.);
         assert_eq!(
@@ -624,13 +728,17 @@ mod tests {
         fs::write(&output, b"previous capture").unwrap();
         let models = BTreeSet::from([model.clone()]);
         assert!(
-            !convert_capture_models(&sources, &assets, &models, &models).unwrap()[0].converted,
+            !convert_capture_models(&sources, &assets, &models, &models, &BTreeSet::new()).unwrap()
+                [0]
+            .converted,
             "a missing source must abort before finalization"
         );
         fs::create_dir(sources.join("meshes")).unwrap();
         fs::write(sources.join(model), b"invalid NIF").unwrap();
         assert!(
-            !convert_capture_models(&sources, &assets, &models, &models).unwrap()[0].converted,
+            !convert_capture_models(&sources, &assets, &models, &models, &BTreeSet::new()).unwrap()
+                [0]
+            .converted,
             "a failed conversion must abort before finalization"
         );
     }
@@ -927,7 +1035,8 @@ mod tests {
         let output = assets.join("Meshes/Actors/Selected/50%Fern.GLB");
         fs::create_dir_all(output.parent().unwrap()).unwrap();
         fs::write(&output, b"old winner").unwrap();
-        convert_capture_models(sources.path(), &assets, &models, &staged).unwrap();
+        convert_capture_models(sources.path(), &assets, &models, &staged, &BTreeSet::new())
+            .unwrap();
         let captured = fs::read(&output).unwrap();
         let bone_translation = |bytes: &[u8]| {
             gltf::Gltf::from_slice(bytes)
@@ -947,13 +1056,15 @@ mod tests {
             Some(&sources.path().join(skeleton)),
         )
         .unwrap();
+        MeshConverter::prune_glb_texture_uris(&assets, &output, &BTreeSet::new()).unwrap();
         assert_eq!(fs::read(&output).unwrap(), captured);
         MeshConverter::convert_nif_to_glb_with_skeleton(&sources.path().join(model), &output, None)
             .unwrap();
         assert_eq!(bone_translation(&fs::read(&output).unwrap()), [0.0; 3]);
         fs::remove_file(sources.path().join(sibling_path)).unwrap();
         staged.remove(Path::new(sibling_path));
-        convert_capture_models(sources.path(), &assets, &models, &staged).unwrap();
+        convert_capture_models(sources.path(), &assets, &models, &staged, &BTreeSet::new())
+            .unwrap();
         assert_eq!(
             bone_translation(&fs::read(output).unwrap()),
             [7.0, 0.0, 0.0]

@@ -66,6 +66,7 @@ pub enum PlacementSource<'a> {
 #[derive(Debug, Default)]
 pub struct PlacementEditReport {
     pub changed_references: usize,
+    /// Cells touched by placement edits or room graph invalidation.
     pub affected_cells: Vec<u32>,
     pub created_cells: Vec<u32>,
     pub certified_cells: Vec<u32>,
@@ -256,7 +257,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         }
         records.insert(id, edit.record);
     }
-    let omissions = update_authored_subset(&tx, &records, &import.damaged_occluders)?;
+    let mut omissions = ProjectionOmissions::default();
+    let occluder_update = update_authored_subset(&tx, &records, &import.damaged_occluders,&mut omissions)?;
     for (category, details) in &omissions.categories {
         for sample in &details.samples {
             let message = format!(
@@ -287,6 +289,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     }
     certified_cells.retain(|cell| !incomplete.contains(cell));
     cells.extend(incomplete);
+    cells.extend(occluder_update.invalidated_cells);
     super::doors::refresh_placement_links(&tx, &changed)?;
     reference_links::refresh_incoming(
         &tx,
@@ -544,6 +547,13 @@ fn plugin_edits(
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
+        let unresolved_link = occluder
+            && view.find_all(b"XORD").any(|data| {
+                data.as_chunks::<4>().0.iter().any(|word| {
+                    let target = u32::from_le_bytes(*word);
+                    target != 0 && resolve_target(target).is_none()
+                })
+            });
         let marker_warnings = RemapWarnings::default();
         record.load_order = load_order;
         remap_record_form_ids(
@@ -560,7 +570,7 @@ fn plugin_edits(
         )?;
         if occluder {
             let (warnings, notices) = marker_warnings.report();
-            if !warnings.is_empty() || !notices.is_empty() {
+            if unresolved_link || !warnings.is_empty() || !notices.is_empty() {
                 import.damaged_occluders.insert(remapped);
             }
         }

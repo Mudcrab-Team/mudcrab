@@ -7,7 +7,7 @@ use std::{
 
 use color_eyre::{
     Result,
-    eyre::{ContextCompat, bail, ensure},
+    eyre::{ContextCompat, WrapErr, bail, ensure},
 };
 use tempfile::{NamedTempFile, TempDir};
 
@@ -137,6 +137,42 @@ fn run_prefix(root: &Path) -> String {
     )
 }
 
+fn payload_relative<'a>(root: &Path, destination: &'a Path) -> Result<&'a Path> {
+    let relative = destination.strip_prefix(root).wrap_err_with(|| {
+        format!(
+            "archive staging directory escapes extraction root: {}",
+            destination.display()
+        )
+    })?;
+    ensure!(
+        !relative.iter().any(reserved),
+        "reserved archive staging directory"
+    );
+    Ok(relative)
+}
+
+fn create_payload_parent(root: &Path, parent: &Path) -> Result<PathBuf> {
+    let requested = root.join(parent);
+    let mut ancestor = requested.as_path();
+    loop {
+        match ancestor.symlink_metadata() {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ancestor = ancestor
+                    .parent()
+                    .wrap_err("missing archive extraction root")?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let destination = ancestor
+        .canonicalize()?
+        .join(requested.strip_prefix(ancestor)?);
+    payload_relative(root, &destination)?;
+    fs::create_dir_all(&destination)?;
+    Ok(destination.canonicalize()?)
+}
+
 /// Holds temporary files beside their destinations while one lock protects the whole run.
 pub(super) struct Run {
     // Drop the payload directories and their registry before closing the ownership lock.
@@ -176,14 +212,8 @@ impl Run {
         let mut paths = Vec::with_capacity(parents.len());
         let mut manifest = Vec::with_capacity(parents.len());
         for (index, parent) in parents.into_iter().enumerate() {
-            let destination = root.join(parent);
-            fs::create_dir_all(&destination)?;
-            let destination = destination.canonicalize()?;
-            let relative = destination.strip_prefix(&root)?;
-            ensure!(
-                !relative.iter().any(reserved),
-                "reserved archive staging directory"
-            );
+            let destination = create_payload_parent(&root, parent)?;
+            let relative = payload_relative(&root, &destination)?;
             let name = payload_name(run_name, index);
             manifest.push(relative.join(&name));
             paths.push((parent, destination, name));
@@ -213,6 +243,39 @@ impl Run {
         })
     }
 
+    fn check_staging_space<K: Ord>(
+        &self,
+        required: &BTreeMap<&Path, u64>,
+        space: impl Fn(&Path) -> io::Result<(K, u64)>,
+    ) -> Result<()> {
+        let mut volumes = BTreeMap::new();
+        for (parent, bytes) in required {
+            let directory = self.directories[*parent].path();
+            let (device, available) = space(directory)?;
+            let (total, free, _) = volumes
+                .entry(device)
+                .or_insert((0u64, available, directory));
+            *free = (*free).min(available);
+            *total = total
+                .checked_add(*bytes)
+                .wrap_err("archive staging size overflow")?;
+        }
+        for (total, available, directory) in volumes.into_values() {
+            ensure!(
+                total <= available,
+                "insufficient archive staging space at {}: need at least {} bytes, {} available",
+                directory.display(),
+                total,
+                available
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_space(&self, required: &BTreeMap<&Path, u64>) -> Result<()> {
+        self.check_staging_space(required, filesystem_space)
+    }
+
     pub(super) fn new_file(&self, parent: &Path) -> io::Result<NamedTempFile> {
         let directory = self
             .directories
@@ -227,6 +290,40 @@ impl Run {
         }
         builder.tempfile_in(directory.path())
     }
+}
+
+#[cfg(unix)]
+fn filesystem_space(path: &Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let stats = rustix::fs::statvfs(path)?;
+    Ok((
+        path.metadata()?.dev(),
+        stats.f_bavail.saturating_mul(stats.f_frsize),
+    ))
+}
+
+#[cfg(windows)]
+fn filesystem_space(path: &Path) -> io::Result<(Vec<u16>, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetVolumePathNameW};
+    let path: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut volume = vec![0u16; 32768];
+    let mut available = 0;
+    // SAFETY: path is NUL-terminated and both APIs receive writable buffers of the stated size.
+    unsafe {
+        if GetVolumePathNameW(path.as_ptr(), volume.as_mut_ptr(), 32768) == 0
+            || GetDiskFreeSpaceExW(
+                path.as_ptr(),
+                &mut available,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    volume.truncate(volume.iter().position(|&c| c == 0).unwrap_or(volume.len()));
+    Ok((volume, available))
 }
 
 fn payload_name(run_name: &str, index: usize) -> String {
@@ -401,6 +498,87 @@ mod tests {
     use super::*;
     use crate::archive::ArchiveExtractor;
 
+    #[test]
+    fn staging_space_is_shared_only_within_a_volume() {
+        let root = tempfile::tempdir().unwrap();
+        let a = Path::new("a");
+        let b = Path::new("b");
+        let run = Run::new(root.path(), BTreeSet::from([a, b])).unwrap();
+        let required = BTreeMap::from([(a, 60), (b, 60)]);
+        assert!(
+            run.check_staging_space(&required, |_| Ok((1, 100)))
+                .is_err()
+        );
+        run.check_staging_space(&required, |dir| Ok((dir.parent().unwrap().to_owned(), 100)))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_home_allows_extraction_and_retry() {
+        use std::{os::unix::fs::PermissionsExt, process::Command};
+
+        let uid = rustix::process::geteuid();
+        if uid.is_root() {
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let scratch = fixture.path().join("scratch");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&scratch).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "archive::staging::tests::extraction_retry_reclaims_abandoned_payloads_but_keeps_a_live_run",
+            ])
+            .env("HOME", &home)
+            .env("TMPDIR", &scratch)
+            .env_remove("XDG_STATE_HOME")
+            .output()
+            .unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!home.join(STATE_DIR).exists());
+        let state = scratch.join(format!("{FALLBACK_PREFIX}{}", uid.as_raw()));
+        assert_eq!(
+            state.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_nested_output_with_private_staging() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().canonicalize().unwrap().join("out");
+        let parent = Path::new("meshes/architecture/interior");
+        let run = Run::new(&output, BTreeSet::from([parent])).unwrap();
+        let staged = run.new_file(parent).unwrap();
+        let payload = staged.path().parent().unwrap().to_owned();
+        assert_eq!(payload.parent(), Some(output.join(parent).as_path()));
+        let registry = run._registry.path().to_owned();
+        for path in [payload.as_path(), registry.parent().unwrap()] {
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        assert!(!registry.starts_with(&output));
+        staged
+            .persist(output.join(parent).join("model.nif"))
+            .unwrap();
+        drop(run);
+        assert!(!payload.exists());
+        assert!(!registry.exists());
+        assert!(output.join(parent).join("model.nif").is_file());
+    }
+
     #[cfg(unix)]
     #[test]
     fn read_only_home_allows_extraction_and_retry() {
@@ -538,10 +716,12 @@ mod tests {
         let stale_registry = _registry.keep();
         drop(_owner);
 
-        let unrelated = output.join(format!("{RUN_PREFIX}unrelated"));
+        let state = tempfile::tempdir().unwrap();
+        let prefix = run_prefix(&output.canonicalize().unwrap());
+        let unrelated = state.path().join(format!("{prefix}unrelated"));
         fs::create_dir(&unrelated).unwrap();
         fs::write(unrelated.join(OWNER), b"unrelated data").unwrap();
-        let interrupted = output.join(format!("{RUN_PREFIX}interrupted"));
+        let interrupted = state.path().join(format!("{prefix}interrupted"));
         fs::create_dir(&interrupted).unwrap();
         fs::write(interrupted.join(OWNER), SIGNATURE).unwrap();
         fs::write(interrupted.join("retained"), b"independent file").unwrap();
@@ -555,6 +735,7 @@ mod tests {
         )
         .unwrap();
 
+        reclaim_state(&output.canonicalize().unwrap(), state.path(), &prefix).unwrap();
         let empty = ArchiveExtractor::extract_matching(&archive, &output, |_| false).unwrap();
         assert!(empty.is_empty());
         assert!(!stale_registry.exists());
@@ -580,7 +761,7 @@ mod tests {
         );
         assert_eq!(fs::read(live_file.path()).unwrap(), b"staged by live run");
         assert_eq!(fs::read(unrelated.join(OWNER)).unwrap(), b"unrelated data");
-        assert_eq!(fs::read(interrupted.join(OWNER)).unwrap(), SIGNATURE);
+        assert!(!interrupted.join(OWNER).exists());
         assert_eq!(
             fs::read(interrupted.join("retained")).unwrap(),
             b"independent file"

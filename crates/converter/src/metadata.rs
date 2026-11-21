@@ -1594,7 +1594,9 @@ fn stage_script_archives(
             let extracted: Vec<PathBuf> =
                 match ArchiveExtractor::extract_script_inputs(archive, &scratch) {
                     Ok(extracted) => extracted.into_iter().map(|file| file.path).collect(),
-                    Err(error) if config.fail_fast => {
+                    Err(error)
+                        if config.fail_fast || error.is::<crate::archive::StagingUnavailable>() =>
+                    {
                         return Err(error).wrap_err_with(|| {
                             format!("failed to extract scripts from {}", archive.display())
                         });
@@ -1620,6 +1622,9 @@ fn stage_script_archives(
                                 &BTreeSet::from([path.clone()]),
                             ) {
                                 Ok(_) => extracted.push(path),
+                                Err(error) if error.is::<crate::archive::StagingUnavailable>() => {
+                                    return Err(error);
+                                }
                                 Err(error) => {
                                     let destination = vfs.join(&key);
                                     match fs::remove_file(&destination) {
