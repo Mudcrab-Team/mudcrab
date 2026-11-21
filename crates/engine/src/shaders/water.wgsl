@@ -84,6 +84,11 @@ struct WaterSettings {
 // b = the scale term, a = the phase speed. Read by texel (`flow_texel`). `water.flow.z`
 // says whether the flow program runs.
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var water_flow_map: texture_2d<f32>;
+// The flow maps of the east, south and south-east neighbour cells, read where a tap shifted half a
+// texel passes this cell's edge (RF-WATER-063). `water.flow.w` is the bit set of the bound ones.
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var water_flow_map_east: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(112) var water_flow_map_south: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(113) var water_flow_map_south_east: texture_2d<f32>;
 
 // Any path at or past the fog far distance is opaque and fully deep (Skyrim saturates the ratio),
 // so this only has to be larger than any fog far distance.
@@ -175,15 +180,6 @@ fn water_body(path: f32, vertical_depth: f32) -> vec3<f32> {
     return vec3<f32>(along, 1.0 - pow(clear, exponent), vertical);
 }
 
-// The scene colour the water is seen over, as the retail pixel shader reads it (RF-WATER-049): the
-// point on the water is moved by (N.xy * DNAM 0x98 * lerp(1, sat(L / F), DNAM 0xD4), 0) in Skyrim's
-// world XY and projected, and the scene copy is read there. The depth at that point is loaded and
-// its scene point tested against the water plane: a point on the camera's side of the plane is
-// something in front of the water (a bank, a reed), so the unperturbed pixel is used instead. The
-// copy is Bevy's view transmission texture, taken after the opaque pass and before any transmissive
-// draw, so it excludes the water itself, as retail's copy does. `normal_skyrim` is the surface
-// normal in Skyrim's axes, `along` is sat(L / F) and `depth_known` is false when the bed depth is
-// unknown (the interior and no-depth programs, which have no leak test and so no offset).
 const SKY_ROW_COUNT: u32 = 16u;
 
 fn sky_row_elevation(row: u32) -> f32 {
@@ -216,6 +212,15 @@ fn sky_dome_colour(elevation: f32) -> vec3<f32> {
     return sky_srgb_to_linear(colour) * water.sky_brightness.x;
 }
 
+// The scene colour the water is seen over, as the retail pixel shader reads it (RF-WATER-049): the
+// point on the water is moved by (N.xy * DNAM 0x98 * lerp(1, sat(L / F), DNAM 0xD4), 0) in Skyrim's
+// world XY and projected, and the scene copy is read there. The depth at that point is loaded and
+// its scene point tested against the water plane: a point on the camera's side of the plane is
+// something in front of the water (a bank, a reed), so the unperturbed pixel is used instead. The
+// copy is Bevy's view transmission texture, taken after the opaque pass and before any transmissive
+// draw, so it excludes the water itself, as retail's copy does. `normal_skyrim` is the surface
+// normal in Skyrim's axes, `along` is sat(L / F) and `depth_known` is false when the bed depth is
+// unknown (the interior and no-depth programs, which have no leak test and so no offset).
 fn refracted_scene(frag_coord: vec4<f32>, world_position: vec3<f32>, normal_skyrim: vec3<f32>, along: f32, depth_known: bool) -> vec3<f32> {
     let unperturbed_uv = (frag_coord.xy - view.viewport.xy) / view.viewport.zw;
     var uv = unperturbed_uv;
@@ -262,16 +267,37 @@ fn noise_scroll(theta: f32, speed: f32, seconds: f32) -> vec2<f32> {
     return fract(vec2<f32>(sin(theta), cos(theta)) * speed * seconds);
 }
 
-// The flow map texel under `uv`, point-sampled and clamped to the texture's edge texels. The map
-// holds a direction, a scale and a phase speed per texel, which warp the ripple coordinates by
-// large factors (64 times the scale, 346 tiles of phase), so a value interpolated between two texels
-// is not a flow at all: filtering the map smears the ripples into flat patches and sheared streaks
-// (controlled renders at the same pose). The four taps and their bilinear weights do the
-// interpolation on the resulting normals instead (RF-WATER-044), which only makes sense with point
-// taps; the report's "bilinear" is read as those weights (#698).
+// The flow map texel under `uv`, point-sampled. The map holds a direction, a scale and a phase speed
+// per texel, which warp the ripple coordinates by large factors (64 times the scale, 346 tiles of
+// phase), so a value interpolated between two texels is not a flow at all: filtering the map smears
+// the ripples into flat patches and sheared streaks (controlled renders at the same pose). The four
+// taps and their bilinear weights do the interpolation on the resulting normals instead
+// (RF-WATER-044), which only makes sense with point taps; retail's atlas sampler is POINT with wrap
+// addressing (RF-WATER-063).
+//
+// The taps are shifted half a texel east and south, so at the cell's east and south edges they read
+// one texel past it. Retail's atlas holds geographic neighbours side by side, so that texel is the
+// neighbour cell's first column or row, and the result is continuous across every cell border
+// (RF-WATER-063). Each cell here has its own texture, so the east, south and south-east
+// neighbours are bound too and the read goes to them; a side whose neighbour has no flow map clamps
+// to this cell's edge texel instead (retail's atlas slot would hold whatever it held, which the
+// registry does not give).
 fn flow_texel(uv: vec2<f32>) -> vec4<f32> {
-    let texel = vec2<i32>(floor(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.999999)) * FLOW_MAP_TEXELS));
-    return textureLoad(water_flow_map, texel, 0);
+    let texel = vec2<i32>(floor(max(uv, vec2<f32>(0.0)) * FLOW_MAP_TEXELS));
+    let last = i32(FLOW_MAP_TEXELS) - 1;
+    let bound = u32(water.flow.w + 0.5);
+    let past_east = texel.x > last;
+    let past_south = texel.y > last;
+    if past_east && past_south && (bound & 4u) != 0u {
+        return textureLoad(water_flow_map_south_east, vec2<i32>(0, 0), 0);
+    }
+    if past_east && !past_south && (bound & 1u) != 0u {
+        return textureLoad(water_flow_map_east, vec2<i32>(0, texel.y), 0);
+    }
+    if past_south && !past_east && (bound & 2u) != 0u {
+        return textureLoad(water_flow_map_south, vec2<i32>(texel.x, 0), 0);
+    }
+    return textureLoad(water_flow_map, min(texel, vec2<i32>(last)), 0);
 }
 
 // One tap of the flow program (RF-WATER-044): the flow texel `flow` turns and scales the ripple
@@ -293,7 +319,7 @@ fn flow_tap(flow: vec4<f32>, ripple: vec2<f32>, clock: f32, rate: f32, offset: f
 // and `normals_depth` is the DNAM 0xD8 depth factor.
 fn flow_normal_xy(cell_uv: vec2<f32>, seconds: f32, normals_depth: f32) -> vec2<f32> {
     // Each cell has its own texture here where retail has one atlas of the loaded cells, so the
-    // lookups are clamped at the cell's edge instead of reading the neighbour cell's texels.
+    // taps past the cell's east and south edges read the bound neighbour textures (`flow_texel`).
     let h = 0.5 / FLOW_MAP_TEXELS;
     let w = 1.0 - abs(2.0 * fract(FLOW_MAP_TEXELS * cell_uv) - 1.0);
     let flow_a = flow_texel(cell_uv + vec2<f32>(0.0, h));

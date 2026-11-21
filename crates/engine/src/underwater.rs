@@ -64,6 +64,22 @@ pub(crate) struct UnderwaterFog {
     pub color: Color,
     pub near: f32,
     pub far: f32,
+    /// Where the colour and distances came from, for the log and the tests.
+    pub source: UnderwaterFogSource,
+}
+
+/// Which record an underwater fog was read from, or why it fell back to DefaultWater's values.
+/// Displays the record id in hex, as the registry and the pack's tables write it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnderwaterFogSource {
+    /// The water record `0x...` has colours in the catalog; its shallow colour and, when its
+    /// `DNAM` carries them, its underwater fog distances are used.
+    Record(u32),
+    /// The plane names a record the catalog has no colours for: DefaultWater's shallow colour and
+    /// fog distances stand in.
+    RecordMissing(u32),
+    /// The plane names no water record at all: DefaultWater's values stand in.
+    NoRecord,
 }
 
 impl UnderwaterFog {
@@ -173,6 +189,45 @@ pub(crate) fn underwater_fog_color(shallow: [u8; 3], multiplier: [u8; 3]) -> Col
     Color::srgb(channel(0), channel(1), channel(2))
 }
 
+impl std::fmt::Display for UnderwaterFogSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Record(id) => write!(formatter, "record {id:08X}"),
+            Self::RecordMissing(id) => {
+                write!(formatter, "record {id:08X} (no colours in the catalog)")
+            }
+            Self::NoRecord => write!(formatter, "no record"),
+        }
+    }
+}
+
+/// The underwater fog of a water plane that names `form_id` (RF-WATER-031): the record's Shallow
+/// Color times the weather's Water Multiplier, over the record's own underwater fog distances
+/// (`DNAM` +0x90, +0x94). A record the catalog does not know, or a plane with no record, gets
+/// DefaultWater's colour and distances; the source says which, because that fallback is a missing
+/// record, not retail behaviour. The record's INAM tint and saturation are never read, and `DNAM`
+/// +0x8C is not either (RF-WATER-031).
+pub(crate) fn underwater_fog_for(
+    form_id: Option<u32>,
+    colors: Option<crate::world::database::WaterColors>,
+    multiplier: [u8; 3],
+) -> UnderwaterFog {
+    let shallow = colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |c| c.shallow);
+    let [near, far] = colors
+        .and_then(|colors| colors.underwater_fog)
+        .unwrap_or(DEFAULT_UNDERWATER_FOG);
+    UnderwaterFog {
+        color: underwater_fog_color(shallow, multiplier),
+        near,
+        far,
+        source: match (form_id, colors) {
+            (Some(id), Some(_)) => UnderwaterFogSource::Record(id),
+            (Some(id), None) => UnderwaterFogSource::RecordMissing(id),
+            (None, _) => UnderwaterFogSource::NoRecord,
+        },
+    }
+}
+
 /// Finds the water the camera is in and what that does to the view.
 pub(crate) fn update_underwater_state(
     mut commands: Commands,
@@ -208,24 +263,18 @@ pub(crate) fn update_underwater_state(
             // The camera is "in water" when the eye is under the surface: the engine's stand-in for the
             // physics water callback that sets retail's flag (RF-WATER-034).
             let mode = underwater_mode(eye.y < surface, surface, lowest, highest);
+            let form_id = body.surface().water_type_form_id;
             let colors = catalog
                 .as_deref()
-                .zip(body.surface().water_type_form_id)
+                .zip(form_id)
                 .and_then(|(catalog, id)| catalog.water_colors(id));
-            let shallow = colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |c| c.shallow);
-            let [near, far] = colors
-                .and_then(|colors| colors.underwater_fog)
-                .unwrap_or(DEFAULT_UNDERWATER_FOG);
             Some((
                 mode,
-                UnderwaterFog {
-                    color: underwater_fog_color(
-                        shallow,
-                        SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
-                    ),
-                    near,
-                    far,
-                },
+                underwater_fog_for(
+                    form_id,
+                    colors,
+                    SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
+                ),
             ))
         });
     let wanted = match found {
@@ -236,6 +285,17 @@ pub(crate) fn update_underwater_state(
         None => UnderwaterState::default(),
     };
     if *state != wanted {
+        // Which record and which colour the pass will use, for judging underwater looks from a log.
+        if let Some(fog) = wanted.fog.filter(|_| wanted.mode == UnderwaterMode::Below) {
+            let colour = fog.color.to_srgba();
+            info!(
+                source = %fog.source,
+                colour_srgb = format_args!("({:.4}, {:.4}, {:.4})", colour.red, colour.green, colour.blue),
+                near = fog.near,
+                far = fog.far,
+                "underwater fog"
+            );
+        }
         *state = wanted;
     }
     // The post-pass rides on the camera while it is fully below the surface (and the player has
@@ -321,6 +381,7 @@ mod tests {
             color: Color::WHITE,
             near: -500.0,
             far: 1600.0,
+            source: UnderwaterFogSource::NoRecord,
         };
         let state = |mode| UnderwaterState {
             mode,
@@ -343,6 +404,7 @@ mod tests {
             ),
             near: DEFAULT_UNDERWATER_FOG[0],
             far: DEFAULT_UNDERWATER_FOG[1],
+            source: UnderwaterFogSource::NoRecord,
         };
         let expected = Color::srgb(
             38.0 / 255.0 * 175.0 / 255.0,
@@ -358,6 +420,99 @@ mod tests {
         );
         // The record's own distances are used when it has them.
         assert_eq!(DEFAULT_UNDERWATER_FOG, [-500.0, 1600.0]);
+    }
+
+    /// A water record with only the fields the underwater fog reads.
+    fn record(shallow: [u8; 3], fog: Option<[f32; 2]>) -> crate::world::database::WaterColors {
+        crate::world::database::WaterColors {
+            shallow,
+            deep: [0; 3],
+            reflection: [0; 3],
+            fresnel: 0.1,
+            reflectivity: 0.8,
+            opacity: 50,
+            fog: None,
+            reflection_magnitude: None,
+            fnam: None,
+            underwater_fog: fog,
+        }
+    }
+
+    /// The fog colour follows the record under the camera (RF-WATER-031, RF-WATER-066): the record's
+    /// Shallow Color bytes times the Water Multiplier, so records with different shallow colours
+    /// give different fogs, the multiplier does not hide the difference, and records that share a
+    /// shallow colour (638 of the pack's 743 water cells share #262718, RF-WATER-067) share the fog
+    /// colour and differ only in the ramp (RF-WATER-068).
+    #[test]
+    fn the_fog_follows_the_record_under_the_camera() {
+        let day = SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+        // RiverWaterFlow 0x01001232: shallow #262718, underwater fog -1400 / 2000.
+        let river = underwater_fog_for(
+            Some(0x0100_1232),
+            Some(record([38, 39, 24], Some([-1400.0, 2000.0]))),
+            day,
+        );
+        // DefaultVolcanicWater 0x000713C4: shallow #827422, fog -40 / 140.
+        let volcanic = underwater_fog_for(
+            Some(0x0007_13C4),
+            Some(record([130, 116, 34], Some([-40.0, 140.0]))),
+            day,
+        );
+        // DefaultWaterFlowBlend 0x01001235: the river's shallow colour with -500 / 1600.
+        let blend = underwater_fog_for(
+            Some(0x0100_1235),
+            Some(record([38, 39, 24], Some([-500.0, 1600.0]))),
+            day,
+        );
+        assert_eq!(river.source, UnderwaterFogSource::Record(0x0100_1232));
+        assert_eq!(river.source.to_string(), "record 01001232");
+        assert_eq!(volcanic.source, UnderwaterFogSource::Record(0x0007_13C4));
+        assert_eq!((river.near, river.far), (-1400.0, 2000.0));
+        assert_eq!((volcanic.near, volcanic.far), (-40.0, 140.0));
+        // Colour = shallow / 255 * multiplier / 255, per channel, as sRGB values.
+        let river_srgb = river.color.to_srgba();
+        assert!((river_srgb.red - 38.0 / 255.0 * 175.0 / 255.0).abs() < 1e-6);
+        assert!((river_srgb.green - 39.0 / 255.0 * 237.0 / 255.0).abs() < 1e-6);
+        assert!((river_srgb.blue - 24.0 / 255.0 * 214.0 / 255.0).abs() < 1e-6);
+        // The volcanic water's fog is clearly another colour: red alone differs by a third of the range.
+        let volcanic_srgb = volcanic.color.to_srgba();
+        assert!(
+            volcanic_srgb.red - river_srgb.red > 0.2,
+            "{volcanic_srgb:?} vs {river_srgb:?}"
+        );
+        assert!(volcanic_srgb.green - river_srgb.green > 0.2);
+        // The same shallow colour gives the same fog colour; only the ramp differs: 0.44 against
+        // 0.29 at 100 units (the Sea of Ghosts cells (38,14) and (39,14)).
+        assert_eq!(river.color, blend.color);
+        let share = |fog: UnderwaterFog, depth| {
+            crate::underwater_pass::underwater_fog_share(depth, fog.near, fog.far)
+        };
+        assert!((share(river, 100.0) - 0.441).abs() < 0.001);
+        assert!((share(blend, 100.0) - 0.286).abs() < 0.001);
+        assert!((share(river, 2000.0) - 1.0).abs() < 1e-6);
+    }
+
+    /// A record the catalog has no colours for, or a plane with no record, falls back to
+    /// DefaultWater's colour and distances, and says so in its source.
+    #[test]
+    fn a_missing_record_is_reported_not_silently_defaulted() {
+        let day = SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+        let missing = underwater_fog_for(Some(77), None, day);
+        assert_eq!(missing.source, UnderwaterFogSource::RecordMissing(77));
+        let none = underwater_fog_for(None, None, day);
+        assert_eq!(none.source, UnderwaterFogSource::NoRecord);
+        for fallback in [missing, none] {
+            assert_eq!(
+                fallback.color,
+                underwater_fog_color(crate::render::DEFAULT_WATER_SHALLOW_COLOR, day)
+            );
+            assert_eq!([fallback.near, fallback.far], DEFAULT_UNDERWATER_FOG);
+        }
+        // A record whose DNAM has no readable fog keeps its own colour with DefaultWater's distances.
+        let no_fog = underwater_fog_for(Some(5), Some(record([10, 20, 30], None)), day);
+        assert_eq!(no_fog.source, UnderwaterFogSource::Record(5));
+        assert_eq!([no_fog.near, no_fog.far], DEFAULT_UNDERWATER_FOG);
+        assert_eq!(no_fog.color, underwater_fog_color([10, 20, 30], day));
     }
 
     #[test]
@@ -563,6 +718,7 @@ mod tests {
                     ),
                     near: DEFAULT_UNDERWATER_FOG[0],
                     far: DEFAULT_UNDERWATER_FOG[1],
+                    source: UnderwaterFogSource::NoRecord,
                 }
                 .pass(lens.near)
             )
