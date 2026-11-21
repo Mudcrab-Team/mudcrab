@@ -792,15 +792,19 @@ fn decode_with_identity_inner(
     let framed = subrecords(&scanned.payload, diagnostics, scanned.source_form_id);
     if scanned.flags & 0x20 == 0
         && crate::esm::is_placed_record_type(&scanned.record_type)
-        && framed
+        && let Some((position, _)) = framed
             .fields
             .iter()
-            .filter(|(tag, _)| tag == b"NAME")
+            .enumerate()
+            .filter(|(_, (tag, _))| tag == b"NAME")
             .nth(1)
-            .is_some()
     {
         // Keep the authored fields available to the occluder-link evidence pass before admission.
         rejected_fields.push(*b"NAME");
+        if potential_deferred {
+            rejections.push((position, *b"NAME"));
+            observed_rejections = rejected_fields.len();
+        }
     }
     let link_kind = |source_id| {
         let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
@@ -4478,6 +4482,88 @@ mod tests {
             bytes.to_vec(),
         ]
         .concat()
+    }
+
+    #[test]
+    fn duplicate_placement_name_survives_deferred_ownership_replay() {
+        let addons = super::super::addons::RuntimeSchemas::from_addon_bytes(&[br#"{
+            "version": 1,
+            "name": "placement-ownership",
+            "records": [{
+                "signature": "REFR",
+                "extends": true,
+                "fields": [{"signature": "COED", "definition": "inventory_extra"}]
+            }]
+        }"#])
+        .unwrap();
+        let schema = addons.schema();
+        let prepared = prepare_runtime_schema(&addons);
+        let order =
+            LoadOrder::from_metadata(vec!["Base.esm".into()], vec![Default::default()]).unwrap();
+        let context = Context {
+            order: &order,
+            plugin_index: 0,
+            localized: false,
+            winning_types: None,
+        };
+        let scanned = ScannedRecord {
+            record_type: *b"REFR",
+            flags: 0,
+            version_control: 0,
+            form_version: 44,
+            header_unknown: 0,
+            source_form_id: 0x850,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            source_topic_form_id: None,
+            topic_group_offset: None,
+            source_record_offset: 24,
+            payload: [
+                replay_probe_subrecord(b"NAME", &0x17u32.to_le_bytes()),
+                replay_probe_subrecord(
+                    b"COED",
+                    &[
+                        0x900u32.to_le_bytes(),
+                        0u32.to_le_bytes(),
+                        1.0f32.to_le_bytes(),
+                    ]
+                    .concat(),
+                ),
+                replay_probe_subrecord(b"NAME", &0x17u32.to_le_bytes()),
+                replay_probe_subrecord(b"DATA", &[0; 24]),
+            ]
+            .concat(),
+        };
+        let mut record = decode_with_prepared(
+            scanned,
+            schema,
+            &prepared,
+            &context,
+            &mut PluginDiagnostics::default(),
+        )
+        .unwrap();
+        assert_eq!(record.deferred_fields[0].rejections, [(2, *b"NAME")]);
+        assert!(record.validate_placement_base().is_err());
+
+        let kinds = HashMap::from([(0x900, *b"FACT")]);
+        let context = Context {
+            winning_types: Some(&kinds),
+            ..context
+        };
+        let mut source = DeferredSource::take(&mut record);
+        replay_deferred(
+            &mut record,
+            &mut source,
+            schema,
+            &context,
+            &mut PluginDiagnostics::default(),
+            &mut PluginDiagnostics::default(),
+            &prepared,
+        )
+        .unwrap();
+        assert!(!record_contains_deferred(&record));
+        assert!(record.rejected_fields.contains(b"NAME"));
+        assert!(record.validate_placement_base().is_err());
     }
 
     /// Copy diagnostic summaries into an independent journal for the legacy oracle.

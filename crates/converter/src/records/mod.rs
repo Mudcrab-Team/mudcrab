@@ -706,8 +706,8 @@ fn validate_live_candidate(
         return Err("rejected placed base NAME".into());
     }
     crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
-    if crate::esm::is_placed_record_type(&record.record_type) && previous.is_some() {
-        if !record.has_placement_transform() {
+    if crate::esm::is_placed_record_type(&record.record_type) {
+        if previous.is_some() && !record.has_placement_transform() {
             return Err("invalid placement override transform".into());
         }
         record.validate_placement_base()?;
@@ -877,10 +877,7 @@ fn read_plugins_with_prepared(
                     rejected_cells.extend(source_cell);
                     if let Some(entry) = history.borrow_mut().last_mut() {
                         if entry.record_type == *b"REFR" && entry.flags & 0x20 == 0 {
-                            let id = entry
-                                .form_id
-                                .or(diagnostics.event_context.form_id)
-                                .filter(|&id| id != 0);
+                            let id = entry.form_id.filter(|&id| id != 0);
                             unreadable_refs.insert(id, (index as u32, offset));
                         }
                         entry.reason = Some(error.clone());
@@ -902,7 +899,8 @@ fn read_plugins_with_prepared(
             if record.record_type == *b"REFR" && record.flags & 0x20 == 0 {
                 let position = (index as u32, offset);
                 if !record.payload_complete {
-                    unreadable_refs.insert(Some(record.form_id), position);
+                    let id = history.borrow().last().and_then(|entry| entry.form_id);
+                    unreadable_refs.insert(id.filter(|&id| id != 0), position);
                 } else if has_authored_occluder_links(&record, index, order) {
                     linked_marker_candidates.insert(record.form_id, position);
                 }
@@ -1234,8 +1232,8 @@ fn read_plugins_with_prepared(
             result.damaged_cell_groups.extend(winner.cell_form_id);
         }
     }
-    // Only a later admitted record (including a tombstone) settles the identity.
-    // An old non-marker base cannot establish what the unread replacement contained.
+    // Only a later admitted record (including a tombstone) with proven native
+    // ownership settles the identity of an unread replacement.
     if !unreadable_refs.is_empty() || !linked_marker_candidates.is_empty() {
         for entry in result.history.iter().filter(|entry| entry.accepted) {
             let Some(id) = entry.form_id else { continue };
@@ -1243,6 +1241,12 @@ fn read_plugins_with_prepared(
             if unreadable_refs
                 .get(&Some(id))
                 .is_some_and(|&damage| damage < position)
+                && source_identity::header_runtime_id(
+                    b"REFR",
+                    entry.source_form_id,
+                    entry.plugin_index as usize,
+                    order,
+                ) == Some(id)
             {
                 unreadable_refs.remove(&Some(id));
             }

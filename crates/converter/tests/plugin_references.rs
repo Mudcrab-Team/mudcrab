@@ -8328,7 +8328,35 @@ fn check_discarded_occluder_override(import: bool) {
             1,
         ),
     ];
+    let unreadable_self = compressed(b"REFR", 0x0100_0850);
     let typed_only = [
+        (
+            "unreadable-before-compatibility-alias",
+            [
+                placement_group(0x900, unreadable_self.clone()),
+                placement_group(0x900, placement(0x0900_0850, 0x810, 0, 0.0, Vec::new())),
+            ]
+            .concat(),
+            0,
+        ),
+        (
+            "unreadable-before-native-replacement",
+            [
+                placement_group(0x900, unreadable_self.clone()),
+                placement_group(0x900, placement(0x0100_0850, 0x810, 0, 0.0, Vec::new())),
+            ]
+            .concat(),
+            1,
+        ),
+        (
+            "unreadable-before-native-deletion",
+            [
+                placement_group(0x900, unreadable_self),
+                record(b"REFR", 0x0100_0850, 0x20, Vec::new()),
+            ]
+            .concat(),
+            1,
+        ),
         ("invalid-parent", wrong_parent(), 0),
         (
             "invalid-parent-unrelated-replacement",
@@ -8427,6 +8455,9 @@ fn check_discarded_occluder_override(import: bool) {
                     1
                 );
             }
+        }
+        if name == "unreadable-before-compatibility-alias" {
+            assert_eq!(placement_winner_cell(&conn, 0x0100_0850), Some(0x900));
         }
         let actual = read(&conn, certificate);
         if actual != expected {
