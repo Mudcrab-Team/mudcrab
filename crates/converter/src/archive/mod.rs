@@ -765,10 +765,10 @@ impl ArchiveExtractor {
             .into_iter()
             .filter(|(path, _)| include(path))
             .collect::<Vec<_>>();
+        staging::reclaim_abandoned(output_root)?;
         if selected.is_empty() {
             return Ok(Vec::new());
         }
-        staging::reclaim_abandoned(output_root)?;
         let parents = selected
             .iter()
             .map(|(path, _)| path.parent().wrap_err("missing extraction directory"))

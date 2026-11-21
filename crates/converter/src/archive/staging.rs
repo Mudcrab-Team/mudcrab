@@ -26,7 +26,7 @@ pub(super) fn reserved(component: &std::ffi::OsStr) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PAYLOAD_PREFIX.as_bytes()))
 }
 
-fn state_directory() -> Result<PathBuf> {
+fn state_path() -> Option<PathBuf> {
     let base = std::env::var_os(if cfg!(windows) {
         "LOCALAPPDATA"
     } else {
@@ -34,9 +34,12 @@ fn state_directory() -> Result<PathBuf> {
     })
     .map(PathBuf::from)
     .filter(|path| path.is_absolute())
-    .or_else(std::env::home_dir)
-    .wrap_err("archive staging needs a per-user state directory")?;
-    let path = base.join(STATE_DIR);
+    .or_else(std::env::home_dir)?;
+    Some(base.join(STATE_DIR))
+}
+
+fn state_directory() -> Result<PathBuf> {
+    let path = state_path().wrap_err("archive staging needs a per-user state directory")?;
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -44,7 +47,11 @@ fn state_directory() -> Result<PathBuf> {
         builder.mode(0o700);
     }
     builder.recursive(true).create(&path)?;
-    let metadata = path.symlink_metadata()?;
+    check_state_directory(path.symlink_metadata()?)?;
+    Ok(path)
+}
+
+fn check_state_directory(metadata: fs::Metadata) -> Result<()> {
     ensure!(metadata.is_dir(), "invalid archive staging state directory");
     #[cfg(unix)]
     {
@@ -54,7 +61,7 @@ fn state_directory() -> Result<PathBuf> {
             "archive staging state must be private to the current user"
         );
     }
-    Ok(path)
+    Ok(())
 }
 
 fn run_prefix(root: &Path) -> String {
@@ -176,7 +183,16 @@ pub(super) fn reclaim_abandoned(root: &Path) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     let prefix = run_prefix(&root);
-    let entries = fs::read_dir(state_directory()?)?;
+    let Some(state) = state_path() else {
+        return Ok(());
+    };
+    let metadata = match state.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    check_state_directory(metadata)?;
+    let entries = fs::read_dir(state)?;
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
@@ -429,6 +445,17 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+
+        let empty = ArchiveExtractor::extract_matching(&archive, &output, |_| false).unwrap();
+        assert!(empty.is_empty());
+        assert!(!output.join("meshes/test.nif").exists());
+        assert!(!stale_registry.exists());
+        assert!(
+            stale_payloads
+                .iter()
+                .all(|path| !path.parent().unwrap().exists())
+        );
+        assert_eq!(fs::read(live_file.path()).unwrap(), b"staged by live run");
 
         let extracted = ArchiveExtractor::extract(&archive, &output).unwrap();
         assert_eq!(extracted.len(), 1);
