@@ -39,7 +39,7 @@ struct Block<'a> {
 /// A skin can use a bind-pose bound only if its bones have no independent motion.
 pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock]) -> Result<bool> {
     let (mut data, header) = crate::mesh::parse_skyrim_header(bytes, path)?;
-    let motion_targets = skin_motion_targets(blocks);
+    let motion_targets = skin_motion_targets(blocks)?;
     let string = |index: u32| {
         header
             .strings
@@ -136,14 +136,14 @@ fn skin_node(block: &NifBlock) -> Option<&NiNode> {
     }
 }
 
-fn skin_motion_targets(blocks: &[NifBlock]) -> HashSet<u32> {
+fn skin_motion_targets(blocks: &[NifBlock]) -> Result<HashSet<u32>> {
     let mut parents = vec![None; blocks.len()];
     for (index, block) in blocks.iter().enumerate() {
         if let Some(node) = skin_node(block) {
             for &child in &node.children {
                 if let Some(parent) = parents.get_mut(child as usize) {
                     // Mesh-local joint binding also uses the first parent in block order.
-                    parent.get_or_insert(index as u32);
+                    parent.get_or_insert(u32::try_from(index)?);
                 }
             }
         }
@@ -173,7 +173,7 @@ fn skin_motion_targets(blocks: &[NifBlock]) -> HashSet<u32> {
             }
         }
     }
-    targets
+    Ok(targets)
 }
 
 pub fn from_nif(path: &Path, nif: &NifFile) -> Result<CollisionAsset> {
