@@ -4521,6 +4521,7 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
             crate::esm::load_order::normalize_plugin_name(
                 &archive.file_stem().unwrap_or_default().to_string_lossy(),
             ),
+            archive.clone(),
         )
     });
 }
@@ -11380,7 +11381,8 @@ mod tests {
         let mut archives = vec![
             PathBuf::from("Example - Textures.bsa"),
             PathBuf::from("Skyrim - Textures.bsa"),
-            PathBuf::from("Update.bsa"),
+            PathBuf::from("b/update.bsa"),
+            PathBuf::from("A/Update.bsa"),
             PathBuf::from("Skyrim - Meshes.bsa"),
         ];
         sort_archives_by_load_order(&mut archives, &plugins);
@@ -11389,7 +11391,8 @@ mod tests {
             vec![
                 PathBuf::from("Skyrim - Meshes.bsa"),
                 PathBuf::from("Skyrim - Textures.bsa"),
-                PathBuf::from("Update.bsa"),
+                PathBuf::from("A/Update.bsa"),
+                PathBuf::from("b/update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
             ]
         );

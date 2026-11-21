@@ -703,9 +703,7 @@ fn export_records(
             })?;
         }
     } else {
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS subset_nonplacement_deletions (form_id INTEGER PRIMARY KEY)",
-        )?;
+        tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     }
     if scalar_scripts {
         // In-house exports own the complete script snapshot; legacy partial APIs retain theirs.

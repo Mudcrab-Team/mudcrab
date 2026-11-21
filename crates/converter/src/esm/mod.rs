@@ -615,6 +615,7 @@ fn resolve_legacy_placements(
     loop {
         let rejected = invalid_placement_candidates(
             candidates.keys().copied(),
+            |id| candidates[&id].predecessor.is_some(),
             |id| {
                 legacy_predecessors(&candidates[&id])
                     .any(|record| !is_placed_record_type(&record.record_type))
@@ -630,14 +631,19 @@ fn resolve_legacy_placements(
                     }
                 })
             },
-            |id, dependencies, cycle| {
+            |id, dependencies, cycle, absent| {
                 crate::records::validate_placement_targets(
                     None,
                     &winners[&id].record_type,
                     winners[&id].load_order,
                     dependencies,
                     cycle,
-                    |target| winners.get(&target).map(|record| record.record_type),
+                    |target| {
+                        winners
+                            .get(&target)
+                            .filter(|_| !absent.contains(&target))
+                            .map(|record| record.record_type)
+                    },
                     deleted_ids,
                 )
             },
@@ -722,19 +728,26 @@ fn legacy_grouped_predecessors(
         .into_iter()
         .flat_map(legacy_predecessors)
         .take_while(|previous| is_placed_record_type(&previous.record_type))
-        .filter(|previous| previous.cell_form_id.is_some())
+        .filter(|previous| {
+            previous.cell_form_id.is_some()
+                && valid_placement_transform(
+                    extractors::SubrecordView::new(&previous.subrecords).find_all(b"DATA"),
+                )
+        })
 }
 
 /// Select failures against the current catalogue in dependency order. A caller
 /// restores predecessors and starts another round before checking their dependents.
 pub(crate) fn invalid_placement_candidates(
     placements: impl IntoIterator<Item = u32>,
+    has_recovery: impl Fn(u32) -> bool,
     restores_nonplacement: impl Fn(u32) -> bool,
     links: impl Fn(u32) -> Option<PlacementDependencies>,
     validate: impl Fn(
         u32,
         &PlacementDependencies,
         Option<&HashSet<u32>>,
+        &HashSet<u32>,
     ) -> std::result::Result<(), crate::records::PlacementFailure>,
 ) -> Vec<(u32, crate::records::PlacementFailure)> {
     // Gabow's path-based strongly connected components algorithm. Discovery indices
@@ -743,6 +756,7 @@ pub(crate) fn invalid_placement_candidates(
     let mut traversal = Vec::new();
     let mut active: Vec<(u32, PlacementDependencies)> = Vec::new();
     let mut roots: Vec<(u32, usize, usize)> = Vec::new();
+    let mut absent = HashSet::new();
     let mut unresolved = HashSet::new();
     let mut rejected = Vec::new();
     for id in placements {
@@ -757,15 +771,25 @@ pub(crate) fn invalid_placement_candidates(
                 }
                 roots.pop();
                 let component = &active[start..];
-                if component
-                    .iter()
-                    .any(|(_, targets)| targets.all().any(|target| unresolved.contains(&target)))
-                {
+                if component.iter().any(|(id, targets)| {
+                    targets.all().any(|target| {
+                        unresolved.contains(&target)
+                            || (absent.contains(&target)
+                                && (component.len() > 1 || has_recovery(*id)))
+                    })
+                }) {
                     unresolved.extend(component.iter().map(|&(member, _)| member));
-                } else if let Some(failure) =
-                    placement_component_failure(component, &restores_nonplacement, &validate)
-                {
-                    unresolved.extend(component.iter().map(|&(member, _)| member));
+                } else if let Some(failure) = placement_component_failure(
+                    component,
+                    &restores_nonplacement,
+                    &|id, deps, cycle| validate(id, deps, cycle, &absent),
+                ) {
+                    if component.len() == 1 && !has_recovery(failure.0) {
+                        // Dependents can validate against this final removal during the same walk.
+                        absent.insert(failure.0);
+                    } else {
+                        unresolved.extend(component.iter().map(|&(member, _)| member));
+                    }
                     rejected.push(failure);
                 }
                 for &(member, _) in component {
@@ -792,6 +816,32 @@ pub(crate) fn invalid_placement_candidates(
         }
     }
     rejected
+}
+
+#[test]
+fn terminal_placement_chain_is_rejected_in_one_walk() {
+    let rejected = invalid_placement_candidates(
+        1..=128,
+        |_| false,
+        |_| false,
+        |id| {
+            (id <= 128).then(|| PlacementDependencies {
+                own: [None, Some(id + 1)],
+                grouped: Vec::new(),
+            })
+        },
+        |_, dependencies, _, absent| {
+            let target = dependencies.own[1].unwrap();
+            if target > 128 || absent.contains(&target) {
+                return Err("missing base".to_owned().into());
+            }
+            Ok(())
+        },
+    );
+    assert_eq!(
+        rejected.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+        (1..=128).rev().collect::<Vec<_>>()
+    );
 }
 
 type PlacementLinks = [Option<u32>; 2];

@@ -10,6 +10,9 @@ use super::{
 use rusqlite::{OptionalExtension, Result, Transaction, params};
 use std::collections::{HashMap, HashSet};
 
+pub(super) const SUBSET_NONPLACEMENT_DELETIONS_SQL: &str =
+    "CREATE TABLE IF NOT EXISTS subset_nonplacement_deletions (form_id INTEGER PRIMARY KEY)";
+
 /// Tables this module owns. A complete export drops and recreates them.
 pub(crate) const REFERENCE_LINK_TABLES: [&str; 3] = [
     "reference_linked_refs",

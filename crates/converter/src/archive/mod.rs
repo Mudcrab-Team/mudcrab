@@ -16,7 +16,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, bail},
+    eyre::{ContextCompat, WrapErr, bail},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -761,7 +761,7 @@ impl ArchiveExtractor {
             .filter(|(path, _)| include(path))
             .collect::<Vec<_>>();
         let sync = SyncMeasurements::default();
-        selected
+        let staged = selected
             .into_par_iter()
             .map(|(path, entry)| {
                 let data = match entry {
@@ -769,17 +769,37 @@ impl ArchiveExtractor {
                     ArchiveEntry::Ba2(entry) => entry.decompress(&source)?,
                 };
                 let destination = output_root.join(&path);
-                if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent)?;
+                let parent = destination
+                    .parent()
+                    .wrap_err("missing extraction directory")?;
+                fs::create_dir_all(parent)?;
+                let mut builder = tempfile::Builder::new();
+                builder.prefix(".mudcrab-extract-");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    builder.permissions(fs::Permissions::from_mode(0o666));
                 }
-                let sha256 = hash_bytes(&data);
-                atomic_write(&destination, &data, IngestionSync::PerFile, &sync)
-                    .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
-                Ok(ExtractedFile {
+                let mut temporary = builder.tempfile_in(parent)?;
+                temporary.write_all(&data)?;
+                sync.flush(temporary.as_file())?;
+                let extracted = ExtractedFile {
                     path,
                     bytes_written: data.len() as u64,
-                    sha256,
-                })
+                    sha256: hash_bytes(&data),
+                };
+                Ok((temporary.into_temp_path(), extracted))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        staged
+            .into_iter()
+            .map(|(temporary, extracted)| {
+                let destination = output_root.join(&extracted.path);
+                temporary
+                    .persist(&destination)
+                    .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
+                Ok(extracted)
             })
             .collect()
     }
@@ -1107,32 +1127,6 @@ fn replace_raw_payload(
     // Replacing the name preserves any old-cache inode shared through other names, including
     // corrupt resumed blobs or dangling symlinks. NamedTempFile cleans failed writes on drop.
     crate::cache::persist_cache_file(temporary, destination)?;
-    Ok(())
-}
-
-/// Atomically writes data to a file, ensuring the destination is replaced atomically.
-fn atomic_write(
-    destination: &Path,
-    data: &[u8],
-    sync_mode: IngestionSync,
-    sync: &SyncMeasurements,
-) -> Result<()> {
-    let file_name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let temporary =
-        destination.with_file_name(format!(".{file_name}.{}.partial", std::process::id()));
-    let mut file = File::create(&temporary)?;
-    file.write_all(data)?;
-    if sync_mode == IngestionSync::PerFile {
-        sync.flush(&file)?;
-    }
-    drop(file);
-    if destination.exists() {
-        fs::remove_file(destination)?;
-    }
-    fs::rename(&temporary, destination)?;
     Ok(())
 }
 
@@ -2131,6 +2125,31 @@ mod tests {
             ArchiveExtractor::list_paths(&ba2).unwrap(),
             vec![PathBuf::from("meshes/a.hkx"), PathBuf::from("meshes/b.hkx")]
         );
+    }
+
+    #[test]
+    fn selected_ba2_decode_failure_keeps_previous_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.ba2");
+        let mut bytes = dummy_content::ba2::general(
+            &[
+                dummy_content::Entry::new("strings/a.strings", b"new"),
+                dummy_content::Entry::new("strings/b.strings", b"also new"),
+            ],
+            dummy_content::ba2::Compression::Zlib,
+        )
+        .unwrap();
+        // The last byte is part of the final payload's zlib checksum.
+        *bytes.last_mut().unwrap() ^= 0xff;
+        fs::write(&path, bytes).unwrap();
+        let root = dir.path().join("out");
+        fs::create_dir_all(root.join("strings")).unwrap();
+        let old = root.join("strings/a.strings");
+        fs::write(&old, b"old").unwrap();
+        let error = ArchiveExtractor::extract_matching(&path, &root, |_| true).unwrap_err();
+        assert!(error.to_string().contains("strings/b.strings"), "{error:#}");
+        assert_eq!(fs::read(old).unwrap(), b"old");
+        assert_eq!(fs::read_dir(root.join("strings")).unwrap().count(), 1);
     }
 
     #[test]
