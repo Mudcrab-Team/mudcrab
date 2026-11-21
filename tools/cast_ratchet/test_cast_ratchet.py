@@ -108,13 +108,11 @@ def write_log(path, diagnostics, finish=True, success=True, artifacts=None):
 
 
 def workflow_job(name):
-    """Return the indented block of one workflow job."""
+    """Return the block of one workflow job."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     start = workflow.index(f"\n  {name}:")
-    try:
-        end = workflow.index("\n  test:", start + 1)
-    except ValueError:
-        end = len(workflow)
+    following = re.search(r"\n  [a-z_]+:\n", workflow[start + 1 :])
+    end = start + 1 + following.start() if following else len(workflow)
     return workflow[start:end]
 
 
@@ -122,7 +120,9 @@ def workflow_step_script(job, name):
     """Return the shell block of one workflow step."""
     start = job.index("run: |", job.index(f"name: {name}"))
     start = job.index("\n", start) + 1
-    end = job.index("\n      - name:", start)
+    end = job.find("\n      - name:", start)
+    if end < 0:
+        end = len(job)
     return textwrap.dedent(job[start:end])
 
 

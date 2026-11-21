@@ -426,8 +426,9 @@ def main(argv=None):
         f"cast gate: {existing} existing hit(s) on unchanged lines; only added lines "
         "are gated."
     )
+    sys.stdout.flush()
     for (path, line), hit in hits:
-        print(f"{path}:{line}: {hit.lint}: {hit.message}")
+        print(f"{path}:{line}: {hit.lint}: {hit.message}", file=sys.stderr)
         if hit.rendered:
             print(hit.rendered, file=sys.stderr)
 
