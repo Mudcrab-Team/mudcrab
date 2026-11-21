@@ -702,8 +702,13 @@ mod tests {
             padding_start..padding_start,
             std::iter::repeat_n(0, padding_len),
         );
-        bytes[28..32].copy_from_slice(&((payload_start - names_start) as u32).to_le_bytes());
-        bytes[names_start - 4..names_start].copy_from_slice(&(payload_start as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(
+            &u32::try_from(payload_start - names_start)
+                .unwrap()
+                .to_le_bytes(),
+        );
+        bytes[names_start - 4..names_start]
+            .copy_from_slice(&u32::try_from(payload_start).unwrap().to_le_bytes());
 
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(&bytes).unwrap();
@@ -734,7 +739,7 @@ mod tests {
         let embedded = b"\x0ascript.pex";
         bytes[12..16].copy_from_slice(&(3 | ARCHIVE_EMBED_FILE_NAMES).to_le_bytes());
         bytes[size_offset..size_offset + 4]
-            .copy_from_slice(&((embedded.len() + 3) as u32).to_le_bytes());
+            .copy_from_slice(&u32::try_from(embedded.len() + 3).unwrap().to_le_bytes());
         bytes.splice(payload_start..payload_start, embedded.iter().copied());
 
         let mut file = tempfile::NamedTempFile::new().unwrap();

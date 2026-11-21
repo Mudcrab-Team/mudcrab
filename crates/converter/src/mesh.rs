@@ -2319,7 +2319,8 @@ pub(crate) fn glb_scene_bounds(
         visited[index] = true;
         let transform = parent.mul(Mat4::from_node(node));
         if let Some(mesh) = node.get("mesh").and_then(serde_json::Value::as_u64) {
-            accumulate_mesh(document, mesh as usize, transform, &mut bounds)?;
+            let mesh = usize::try_from(mesh).wrap_err("glTF mesh index is out of range")?;
+            accumulate_mesh(document, mesh, transform, &mut bounds)?;
         }
         if let Some(children) = node.get("children").and_then(serde_json::Value::as_array) {
             for child in children.iter().rev().filter_map(serde_json::Value::as_u64) {
@@ -2327,7 +2328,8 @@ pub(crate) fn glb_scene_bounds(
                     pending.len() < remaining,
                     "glTF node traversal exceeds the node count"
                 );
-                pending.push((child as usize, transform));
+                let child = usize::try_from(child).wrap_err("glTF child index is out of range")?;
+                pending.push((child, transform));
             }
         }
     }
@@ -2339,7 +2341,11 @@ fn scene_roots(
     nodes: &[serde_json::Value],
     scene_index: Option<usize>,
 ) -> Result<Vec<usize>> {
-    let index = scene_index.unwrap_or_else(|| document["scene"].as_u64().unwrap_or(0) as usize);
+    let index = match scene_index {
+        Some(index) => index,
+        None => usize::try_from(document["scene"].as_u64().unwrap_or(0))
+            .wrap_err("glTF default scene index is out of range")?,
+    };
     let scene = document["scenes"].get(index);
     if scene_index.is_some() {
         ensure!(scene.is_some(), "missing glTF scene {index}");
@@ -2349,11 +2355,12 @@ fn scene_roots(
             roots.len() <= nodes.len(),
             "glTF node traversal exceeds the node count"
         );
-        return Ok(roots
+        return roots
             .iter()
             .filter_map(serde_json::Value::as_u64)
-            .map(|id| id as usize)
-            .collect());
+            .map(usize::try_from)
+            .collect::<Result<_, _>>()
+            .wrap_err("glTF root node index is out of range");
     }
     if scene_index.is_some() {
         return Ok(Vec::new());
@@ -2362,7 +2369,9 @@ fn scene_roots(
     for node in nodes {
         if let Some(indices) = node.get("children").and_then(serde_json::Value::as_array) {
             for index in indices.iter().filter_map(serde_json::Value::as_u64) {
-                if let Some(child) = children.get_mut(index as usize) {
+                if let Ok(index) = usize::try_from(index)
+                    && let Some(child) = children.get_mut(index)
+                {
                     *child = true;
                 }
             }
@@ -4632,7 +4641,13 @@ mod tests {
             "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
             "accessors":[{"min":[0,0,0],"max":[1,1,1]}]
         });
-        assert_eq!(glb_bounds_from_document(&document).unwrap().max, [1.0; 3]);
+        let bounds = glb_bounds_from_document(&document).unwrap();
+        assert!(
+            bounds
+                .max
+                .iter()
+                .all(|&value| (value - 1.0).abs() < f32::EPSILON)
+        );
     }
 
     #[test]
@@ -4649,8 +4664,12 @@ mod tests {
             "accessors": [{"min": [-1, -1, -1], "max": [1, 1, 1]}]
         });
         let bounds = glb_bounds_from_document(&document).unwrap();
-        assert_eq!(bounds.min, [-5.0, -1.0, -1.0]);
-        assert_eq!(bounds.max, [4.0, 1.0, 1.0]);
+        for (actual, expected) in bounds.min.into_iter().zip([-5.0, -1.0, -1.0]) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
+        for (actual, expected) in bounds.max.into_iter().zip([4.0, 1.0, 1.0]) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
 
         document["nodes"][1]["children"][0] = 2.into();
         let repeated = glb_bounds_from_document(&document).unwrap_err();
@@ -5450,7 +5469,7 @@ mod tests {
             shape.av.rotation.0.0 = rotation;
             shape.av.scale.0 = scale;
             let sphere = room_bounds::source_sphere(&nif).unwrap();
-            assert_eq!(sphere.radius, 4.0);
+            assert!((sphere.radius - 4.0).abs() < f32::EPSILON);
             for (actual, expected) in sphere.center.into_iter().zip(center) {
                 assert!((actual - expected).abs() < 1.0e-4);
             }
@@ -5465,7 +5484,7 @@ mod tests {
         let input = directory.path().join("nested-leaf.nif");
         fs::write(&input, static_nif()).unwrap();
         let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
-        let index = nif.blocks.len() as u32;
+        let index = u32::try_from(nif.blocks.len()).unwrap();
         let mut leaf = nif.blocks[0].as_node().unwrap().clone();
         leaf.av.translation.0.0.x = 3.0;
         match &mut nif.blocks[0] {
@@ -5489,7 +5508,7 @@ mod tests {
                 .iter()
                 .find(|node| node.block_index == index)
                 .unwrap();
-            assert_eq!(leaf.translation.x, 3.0);
+            assert!((leaf.translation.x - 3.0).abs() < f32::EPSILON);
             assert_eq!(leaf.children, vec![1]);
         }
     }
@@ -5508,7 +5527,8 @@ mod tests {
         let name = b"BSLeafAnimNode";
         bytes.splice(
             start - 4..start + old.len(),
-            (name.len() as u32)
+            u32::try_from(name.len())
+                .unwrap()
                 .to_le_bytes()
                 .into_iter()
                 .chain(name.iter().copied()),
@@ -5589,7 +5609,7 @@ mod tests {
         let expected = room_bounds::source_sphere(&nif).unwrap();
         let mut empty = nif.blocks[0].as_node().unwrap().clone();
         empty.children.clear();
-        let added = nif.blocks.len() as u32;
+        let added = u32::try_from(nif.blocks.len()).unwrap();
         let NifBlock::BSFadeNode(root) = &mut nif.blocks[0] else {
             unreachable!()
         };
@@ -5773,7 +5793,8 @@ mod tests {
         let sphere = &doc["extras"]["mudcrabRoomSphere"];
         assert_eq!(sphere["center"], serde_json::json!([1000.0, 0.0, 0.0]));
         assert_eq!(sphere["radius"], 1.0);
-        assert_eq!(glb_bounds_from_bytes(&bytes).unwrap().max[0], 1001.0);
+        let bounds = glb_bounds_from_bytes(&bytes).unwrap();
+        assert!((bounds.max[0] - 1001.0).abs() < f32::EPSILON);
     }
 
     #[test]
