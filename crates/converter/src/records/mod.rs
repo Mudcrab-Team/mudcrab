@@ -588,6 +588,7 @@ impl TruncatedPlacement {
 
     pub(crate) fn runtime_id(self, plugin: usize, order: &LoadOrder) -> Option<u32> {
         source_identity::header_runtime_id(
+            // silent-ok: A partial signature cannot establish a runtime record identity.
             self.signature.try_into().ok()?,
             self.source_id?,
             plugin,

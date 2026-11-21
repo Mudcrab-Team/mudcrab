@@ -827,16 +827,19 @@ fn project_room_graph(
         let view = SubrecordView::new(&record.subrecords);
         let layout = match &sources {
             Some(RoomLinkSources::Legacy(layouts)) => {
+                // silent-ok: An absent legacy entry supplies no room-link slots or flags.
                 layouts.get(&form_id).cloned().unwrap_or_default()
             }
             Some(RoomLinkSources::Typed(decoded)) => decoded
                 .records
                 .get(&form_id)
                 .map(RoomLinkLayout::from_decoded)
+                // silent-ok: An absent decoded record supplies no room-link slots or flags.
                 .unwrap_or_default(),
             None => RoomLinkLayout::from_raw(record),
         };
         let links = record.subrecords.iter().filter_map(|(tag, data)| {
+            // silent-ok: Only four-byte XLRMs occupy slots in the source layout.
             let bytes: [u8; 4] = data.as_slice().try_into().ok()?;
             (tag == b"XLRM").then(|| u32::from_le_bytes(bytes))
         });
@@ -1117,11 +1120,10 @@ fn project_room_graph(
                 continue;
             };
             let view = SubrecordView::new(&record.subrecords);
-            if !view.find(b"DATA").is_some_and(|data| data.len() >= 24) {
+            let Some((position, _)) = view.find(b"DATA").and_then(transform_of) else {
+                // The placement exporter records reference_unusable_data for this FormID.
                 continue;
-            }
-            let data = view.get_f32_slice(b"DATA").unwrap_or_default();
-            let position = [0, 1, 2].map(|index| data.get(index).copied().unwrap_or_default());
+            };
             match write_pivot_rows(&mut insert, rooms, form_id, position)? {
                 0 => report.objects_in_no_room += 1,
                 1 => {}

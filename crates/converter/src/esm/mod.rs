@@ -1111,10 +1111,7 @@ fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
 
 /// A publishable placement transform is exactly one position/rotation tuple.
 pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a [u8]>) -> bool {
-    let Some(data) = fields
-        .next()
-        .and_then(|bytes| <&[u8; 24]>::try_from(bytes).ok())
-    else {
+    let Some(data) = fields.next().filter(|bytes| bytes.len() == 24) else {
         return false;
     };
     fields.next().is_none()

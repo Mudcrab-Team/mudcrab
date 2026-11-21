@@ -139,6 +139,7 @@ impl<'a> SubrecordView<'a> {
 
     pub(super) fn unique_form_id(&self, target_tag: &[u8; 4]) -> Option<u32> {
         let mut fields = self.find_all(target_tag);
+        // silent-ok: A field with the wrong width cannot identify a FormID.
         let bytes = <[u8; 4]>::try_from(fields.next()?).ok()?;
         fields.next().is_none().then(|| u32::from_le_bytes(bytes))
     }

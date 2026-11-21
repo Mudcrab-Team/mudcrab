@@ -143,7 +143,8 @@ pub struct RoomCullExempt;
 /// Whether a base record type (the `records.record_type` of a reference's base object) is one
 /// room culling must not hide: actors and their leveled lists, doors, activators, and the
 /// inventory records that become loose, physics-driven objects when placed. Mudcrab keeps
-/// these types visible as a precaution. Retail has no record-type exemption list.
+/// these types visible as a precaution. For the native assignment path, see
+/// docs/research/skyrim-native-culling.md (RVA 0x2ca230).
 pub fn exempt_record_type(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -1139,19 +1140,20 @@ pub fn cull_room_views(
                 if exempted(reference) || exempted(entity) {
                     return true;
                 }
+                // silent-ok: A mesh without bounds supplies no geometric evidence for culling.
                 let bounds = mesh_bounds.get(entity).ok().and_then(|(aabb, transform)| {
                     MeshBounds::transformed(aabb, local_from_world * transform.affine())
                 });
-                let owner_bounds =
-                    reference_bounds
-                        .get(reference)
-                        .ok()
-                        .and_then(|(bounds, transform)| {
-                            MeshBounds::transformed(
-                                &Aabb::from_min_max(bounds.min, bounds.max),
-                                local_from_world * transform.affine(),
-                            )
-                        });
+                let owner_bounds = reference_bounds
+                    .get(reference)
+                    // silent-ok: References without model bounds have no owner bounds to test.
+                    .ok()
+                    .and_then(|(bounds, transform)| {
+                        MeshBounds::transformed(
+                            &Aabb::from_min_max(bounds.min, bounds.max),
+                            local_from_world * transform.affine(),
+                        )
+                    });
                 loaded.graph.mesh_is_drawn(
                     form_id,
                     &volumes,
