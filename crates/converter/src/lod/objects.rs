@@ -104,6 +104,16 @@ struct Streams {
     indices: Vec<u32>,
 }
 
+/// World units of a cell coordinate. A block origin is a multiple of 4,096 within a few hundred
+/// thousand units, which `f32` holds exactly.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "block origins are exact multiples of 4,096 well inside f32's exact integer range"
+)]
+fn cell_to_units(cell: i32) -> f32 {
+    (f64::from(cell) * CELL_SIZE) as f32
+}
+
 /// Applies a retail shape transform to a vector: `rotation * (scale * v) + translation`, with the
 /// rotation given as three columns.
 fn transform(shape: &ObjectLodShape, v: [f32; 3], translate: bool) -> [f32; 3] {
@@ -152,11 +162,7 @@ pub fn compile_object_chunk(
         "object chunk {key:?}: the atlas texture is empty"
     );
     let (cell_x, cell_y) = chunk_origin_cell(key, origin);
-    let block_origin = [
-        (f64::from(cell_x) * CELL_SIZE) as f32,
-        (f64::from(cell_y) * CELL_SIZE) as f32,
-        0.0,
-    ];
+    let block_origin = [cell_to_units(cell_x), cell_to_units(cell_y), 0.0];
 
     let mut streams = Streams::default();
     let mut shape_ranges = Vec::new(); // (vertex start, vertex count, index start, index count)
@@ -419,6 +425,22 @@ fn json_usize(value: &serde_json::Value, what: &str) -> Result<usize> {
     usize::try_from(number).wrap_err_with(|| format!("{what} does not fit in memory"))
 }
 
+/// A JSON number as an index, or `None` when it is not a number or does not fit.
+fn json_index(value: &serde_json::Value) -> Option<usize> {
+    // silent-ok: a value that is not an index finds no element, and every caller reports that.
+    value
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+}
+
+/// An optional JSON byte offset: absent is zero, present must be a number that fits.
+fn json_offset(value: &serde_json::Value) -> Result<usize> {
+    if value.is_null() {
+        return Ok(0);
+    }
+    json_usize(value, "byteOffset")
+}
+
 fn le_u32(bytes: &[u8], offset: usize) -> Result<u32> {
     let word = offset
         .checked_add(4)
@@ -469,7 +491,7 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         .iter()
         .enumerate()
     {
-        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let offset = json_offset(&view["byteOffset"])?;
         let length = json_usize(&view["byteLength"], "bufferView byteLength")?;
         ensure!(
             json_usize(&view["buffer"], "bufferView buffer")? == 0
@@ -503,7 +525,7 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         };
         let count = json_usize(&accessor["count"], "accessor count")?;
         ensure!(count > 0, "accessor {index} is empty");
-        let offset = accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let offset = json_offset(&accessor["byteOffset"])?;
         ensure!(
             offset.is_multiple_of(4)
                 && count
@@ -540,9 +562,8 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         meshes.len()
     );
     for child in children {
-        let node = child
-            .as_u64()
-            .and_then(|index| nodes_json.get(index as usize))
+        let node = json_index(child)
+            .and_then(|index| nodes_json.get(index))
             .ok_or_else(|| color_eyre::eyre::eyre!("a group child is not a node"))?;
         ensure!(
             node["name"]
@@ -550,9 +571,8 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
                 .is_some_and(|name| name.starts_with("object_batch_")),
             "a node under `objects` is not an object batch: {node}"
         );
-        let mesh = node["mesh"]
-            .as_u64()
-            .and_then(|index| meshes.get(index as usize))
+        let mesh = json_index(&node["mesh"])
+            .and_then(|index| meshes.get(index))
             .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has no mesh"))?;
         let primitives = mesh["primitives"]
             .as_array()
@@ -579,8 +599,8 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         ] {
             let (start, count, component_type, found) = attributes
                 .get(semantic)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|index| spans.get(index as usize))
+                .and_then(json_index)
+                .and_then(|index| spans.get(index))
                 .copied()
                 .ok_or_else(|| color_eyre::eyre::eyre!("an object batch lacks {semantic}"))?;
             ensure!(
@@ -598,9 +618,8 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
                 );
             }
         }
-        let (start, count, component_type, components) = primitive["indices"]
-            .as_u64()
-            .and_then(|index| spans.get(index as usize))
+        let (start, count, component_type, components) = json_index(&primitive["indices"])
+            .and_then(|index| spans.get(index))
             .copied()
             .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has no indices"))?;
         ensure!(
@@ -973,6 +992,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "the compiled values are exact in f32")]
     fn a_level_16_block_compiles_to_a_chunk_local_glb() {
         let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![shape(3, [0.0; 3])]), &atlas())
             .unwrap();

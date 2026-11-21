@@ -460,13 +460,16 @@ fn child_ci(directory: &Path, name: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+/// The bytes of one file and every provider that holds them, or why the providers disagree.
+type CopyRead = std::result::Result<(Vec<u8>, Vec<Provider>), String>;
+
 /// Reads the bytes of `relative` from its providers. `Ok(Err(..))` is a conflict: several
 /// providers hold different bytes, which this command does not resolve by guessing.
 fn read_provider_bytes(
     relative: &str,
     options: &[Provider],
     extracted: &BTreeMap<PathBuf, PathBuf>,
-) -> Result<std::result::Result<(Vec<u8>, Vec<Provider>), String>> {
+) -> Result<CopyRead> {
     let mut copies: Vec<(Vec<u8>, Provider)> = Vec::new();
     for provider in options {
         let bytes = match provider {
