@@ -1886,12 +1886,17 @@ fn bounds(positions: &[[f32; 3]]) -> ([f32; 3], f32) {
     let radius = positions
         .iter()
         .map(|position| {
-            let dx = position[0] - center[0];
-            let dy = position[1] - center[1];
-            let dz = position[2] - center[2];
+            let [dx, dy, dz] = [0, 1, 2].map(|i| f64::from(position[i]) - f64::from(center[i]));
             (dx * dx + dy * dy + dz * dz).sqrt()
         })
-        .fold(0.0f32, f32::max);
+        .fold(0.0f64, f64::max);
+    // NIF stores the radius as f32. Round outward so the serialized sphere still encloses every vertex.
+    let stored = radius as f32;
+    let radius = if f64::from(stored) < radius {
+        stored.next_up()
+    } else {
+        stored
+    };
     (center, radius)
 }
 
@@ -1950,6 +1955,13 @@ mod tests {
             diffuse: "textures/generated_color.dds",
             normal_texture: "textures/generated_normal.dds",
         }
+    }
+
+    #[test]
+    fn generated_quad_sphere_encloses_its_source_corners() {
+        let (center, radius) = bounds(quad().positions);
+        assert_eq!(center, [0.0; 3]);
+        assert!(f64::from(radius) >= 2.0_f64.sqrt());
     }
 
     #[test]

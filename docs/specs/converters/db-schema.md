@@ -1002,10 +1002,12 @@ When a reader remaps a field in this table, it validates master indices and ligh
 An out-of-range index or light-plugin local ID wider than 12 bits is an invalid
 optional link: the converter sets that FormID to zero and reports a warning,
 aggregated per source plugin with the count and first record/field diagnostic.
-Other records and valid links continue to convert. Malformed field lengths cause
-the entire subrecord to be dropped and counted in the same per-plugin warning,
-since its FormID offsets cannot be decoded safely. An array with an incomplete
-entry is dropped in full; valid repeated subrecords are retained. Existing
+Other records and valid links continue to convert. The legacy reader warns about malformed
+field lengths, including arrays with an incomplete entry. It normally drops the affected
+occurrence and retains valid siblings. It keeps an empty payload for malformed placed `XMBR`,
+`REFR.XLRM`, `REFR.XPOD`, `REFR.XORD`, and occluder `XESP` fields so room projection can
+recognize an unusable authored value. An empty `XMBR` yields `unknown` assignment. An absent
+`XMBR` can allow automatic assignment. Existing
 validation of record headers and required fields is unchanged. Zero FormIDs
 remain zero. Other bytes in retained subrecords (such as teleport coordinates,
 enable flags, navmesh triangles and activation delays) are preserved. Unlisted fields remain opaque,
