@@ -867,9 +867,10 @@ fn export_records(
             &tx,
             master,
             subset_sources,
-            &HashSet::new(),
+            &HashMap::new(),
             &mut omissions,
         )?
+        .only_occluders
     } else {
         HashSet::new()
     };

@@ -1162,7 +1162,16 @@ fn read_plugins_with_prepared(
                 );
             } else {
                 let id = record.form_id;
-                recovery.deleted.restored(id, record.load_order);
+                if !placement {
+                    recovery.restore_before_replacement(
+                        &record,
+                        &result.records,
+                        order,
+                        schema,
+                        prepared,
+                        &mut validate,
+                    );
+                }
                 let tentative = decoder::record_contains_deferred(&record) || placement;
                 let previous = result.records.insert(id, record);
                 if tentative {

@@ -17,8 +17,9 @@ use super::{
     },
     reference_links, remap_record_form_ids,
     rooms::{
-        NativeOccluderShape, OCCLUSION_MARKER_BASE, PORTAL_MARKER_BASE, ROOM_MARKER_BASE,
-        RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL, refresh_placement_cells, update_subset_occluders,
+        ImportedOccluderSource, NativeOccluderShape, OCCLUSION_MARKER_BASE, PORTAL_MARKER_BASE,
+        ROOM_MARKER_BASE, RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL, refresh_placement_cells,
+        update_subset_occluders,
     },
     types::ArchivedRecordData,
 };
@@ -66,6 +67,7 @@ pub enum PlacementSource<'a> {
 #[derive(Debug, Default)]
 pub struct PlacementEditReport {
     pub changed_references: usize,
+    /// Cells touched by placement edits or room graph invalidation.
     pub affected_cells: Vec<u32>,
     pub created_cells: Vec<u32>,
     pub certified_cells: Vec<u32>,
@@ -257,11 +259,11 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         records.insert(id, edit.record);
     }
     let mut omissions = ProjectionOmissions::default();
-    update_subset_occluders(
+    let occluder_update = update_subset_occluders(
         &tx,
         &records,
         None,
-        &import.damaged_occluders,
+        &import.occluder_sources,
         &mut omissions,
     )?;
     for (category, details) in &omissions.categories {
@@ -294,6 +296,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     }
     certified_cells.retain(|cell| !incomplete.contains(cell));
     cells.extend(incomplete);
+    cells.extend(occluder_update.invalidated_cells);
     super::doors::refresh_placement_links(&tx, &changed)?;
     reference_links::refresh_incoming(
         &tx,
@@ -319,7 +322,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
 struct Import {
     cells: Vec<CellCreation>,
     edits: Vec<Edit>,
-    damaged_occluders: HashSet<u32>,
+    occluder_sources: HashMap<u32, ImportedOccluderSource>,
     /// Index of the first edit following the latest unreadable REFR for each identity.
     unreadable_refs: HashMap<Option<u32>, usize>,
     unknown_discarded_scope: bool,
@@ -550,6 +553,16 @@ fn plugin_edits(
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
+        let authored_null_links = occluder
+            && view.find(b"XORD").is_some()
+            && !view.find_all(b"XORD").any(super::rooms::xord_may_link);
+        let unresolved_link = occluder
+            && view.find_all(b"XORD").any(|data| {
+                data.as_chunks::<4>().0.iter().any(|word| {
+                    let target = u32::from_le_bytes(*word);
+                    target != 0 && resolve_target(target).is_none()
+                })
+            });
         let marker_warnings = RemapWarnings::default();
         record.load_order = priority as u32;
         remap_record_form_ids(
@@ -566,8 +579,15 @@ fn plugin_edits(
         )?;
         if occluder {
             let (warnings, notices) = marker_warnings.report();
-            if !warnings.is_empty() || !notices.is_empty() {
-                import.damaged_occluders.insert(remapped);
+            let source = if unresolved_link || !warnings.is_empty() || !notices.is_empty() {
+                Some(ImportedOccluderSource::Damaged)
+            } else if authored_null_links {
+                Some(ImportedOccluderSource::AuthoredNullLinks)
+            } else {
+                None
+            };
+            if let Some(source) = source {
+                import.occluder_sources.insert(remapped, source);
             }
         }
         import.edits.push(Edit {

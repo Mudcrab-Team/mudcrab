@@ -1517,12 +1517,11 @@ fn validate_candidate_with_string_sources(
         let valid_transform = if record.rejected_fields.contains(b"DATA") {
             // Rejected nonfinite coordinates disappear from the typed projection. A short
             // source field can still carry a canonical record with no spatial row.
-            record.framed_source_subrecords().is_some_and(|fields| {
-                fields
-                    .into_iter()
-                    .filter(|(tag, _)| tag == b"DATA")
-                    .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
-            })
+            record
+                .framed_source_prefix()
+                .into_iter()
+                .filter(|(tag, _)| tag == b"DATA")
+                .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
         } else {
             let data = record
                 .fields
