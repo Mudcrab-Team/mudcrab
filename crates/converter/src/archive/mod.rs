@@ -473,7 +473,8 @@ impl IngestionSelection {
         }
     }
 
-    fn includes(self, path: &Path) -> bool {
+    /// Apply the extraction policy without changing which input paths it selects.
+    pub(crate) fn includes(self, path: &Path) -> bool {
         selection_includes(self, path)
     }
 
@@ -586,6 +587,7 @@ impl ArchiveExtractor {
         progress: Option<ExtractionProgressCallback<'_>>,
         stop: Option<StopCheck<'_>>,
         session: &RawIngestionSession,
+        ignored_inputs_by_extension: &mut BTreeMap<String, u64>,
     ) -> Result<ExtractionOutcome> {
         color_eyre::eyre::ensure!(
             options.sync != IngestionSync::None || verify_integrity,
@@ -606,6 +608,7 @@ impl ArchiveExtractor {
             stop,
             None,
             session,
+            ignored_inputs_by_extension,
         )
     }
 
@@ -695,6 +698,7 @@ impl ArchiveExtractor {
             stop,
             None,
             session,
+            &mut BTreeMap::new(),
         )
     }
 
