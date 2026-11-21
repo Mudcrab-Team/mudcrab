@@ -5,7 +5,10 @@
 use color_eyre::{Result, eyre::ensure};
 use converter::{
     archive::ArchiveExtractor,
-    asset_path::{AssetKind, AssetSourceIndex, canonical_asset_path, is_authoring_resource},
+    asset_path::{
+        AssetKind, AssetSourceIndex, canonical_asset_path, is_authoring_resource,
+        is_authoring_source_name,
+    },
     mesh::{MeshConverter, SkeletonIndex, is_skeleton_path},
     pipeline::active_data_bsa_paths,
 };
@@ -30,7 +33,7 @@ fn run(args: &[String]) -> Result<()> {
     let data = Path::new(&args[0]);
     let assets = Path::new(&args[1]);
     validate_private_assets(assets)?;
-    let _asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
+    let asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
     let cells: BTreeSet<u32> = args[2]
         .split(',')
         .map(str::parse)
@@ -92,7 +95,13 @@ fn run(args: &[String]) -> Result<()> {
     let (sources, extracted, staged) =
         prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
     let results = convert_capture_models(sources.path(), assets, &models, &staged)?;
-    converter::integration::finalize_world_database(assets)?;
+    let changed: Vec<_> = models
+        .iter()
+        .map(|model| model.with_extension("glb").to_string_lossy().into_owned())
+        .collect();
+    if !changed.is_empty() {
+        converter::integration::refresh_converted_model_bounds(&asset_lock, &changed)?;
+    }
     let conn = Connection::open(assets.join("skyrim_world.db"))?;
     let bounds: u64 = conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r.get(0))?;
     let report = serde_json::json!({
@@ -163,13 +172,30 @@ fn convert_capture_models(
         .map(|key| (key.clone(), sources.join(key)))
         .collect();
     let skeletons = SkeletonIndex::from_sources(&paths);
-    let results: Vec<_> = models
+    let keys: Vec<_> = models
+        .iter()
+        .map(|model| model.with_extension("glb").to_string_lossy().into_owned())
+        .collect();
+    let root = assets.canonicalize()?;
+    let installed =
+        converter::integration::installed_glb_paths(&root, keys.iter().map(String::as_str))?;
+    let outputs: Vec<_> = models
+        .iter()
+        .zip(keys)
+        .map(|(model, key)| {
+            let output = installed
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| root.join(key));
+            (model, output)
+        })
+        .collect();
+    let results: Vec<_> = outputs
         .par_iter()
-        .map(|model| {
+        .map(|(model, output)| {
             let source = sources.join(model);
-            let output = assets.join(model).with_extension("glb");
             let converted = source.is_file().then(|| {
-                MeshConverter::convert_nif_to_glb_from_index(model, &source, &output, &skeletons)
+                MeshConverter::convert_nif_to_glb_from_index(model, &source, output, &skeletons)
                     .map_err(|error| format!("{error:#}"))
             });
             serde_json::json!({
@@ -211,7 +237,7 @@ fn prepare_model_sources(
     let plugins: Vec<_> = plugins.iter().map(PathBuf::from).collect();
     let archives = active_data_bsa_paths(data, &plugins)?;
     let mut staged = BTreeSet::new();
-    let is_runtime = |name: &str| !is_authoring_resource(name);
+    let is_runtime = |name: &str| !is_authoring_source_name(name);
     let loose = AssetSourceIndex::build_with_name_filter(
         &[data.to_path_buf()],
         AssetKind::Mesh,
@@ -282,6 +308,7 @@ mod tests {
             "INSERT INTO room_graph_stats VALUES('assignment_version',1),('occlusion_version',1);
              INSERT INTO room_occluders VALUES(83,8,3,0,0,0,0,0,0,1,1,0,1,0,0,0,NULL);
              INSERT INTO room_occluder_links VALUES(99,0,83,1);
+             INSERT INTO statics(id,flags,model_path,bounds_valid,bounds_min_x) VALUES(91,0,'unselected.glb',1,-17);
              INSERT INTO room_reference_rules VALUES(81,8,'unknown',NULL);
              INSERT INTO room_portals VALUES(82,0,8,0,0,0,0,0,0,1,1,NULL,NULL,1,0);",
         )
@@ -315,6 +342,15 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(state, (false, "unknown".to_owned(), true, false));
+            assert_eq!(
+                conn.query_row(
+                    "SELECT bounds_min_x FROM statics WHERE id=91 AND bounds_valid=1",
+                    [],
+                    |r| r.get::<_, f64>(0)
+                )
+                .unwrap(),
+                -17.0
+            );
         }
     }
 
@@ -639,6 +675,7 @@ mod tests {
         for (directory, bytes) in [
             ("Meshes", b"runtime".as_slice()),
             ("CalienteTools/Meshes", b"authoring".as_slice()),
+            ("%43alienteTools/Meshes", b"encoded authoring".as_slice()),
         ] {
             fs::create_dir_all(data.join(directory)).unwrap();
             fs::write(data.join(directory).join("Test.NIF"), bytes).unwrap();
@@ -713,14 +750,20 @@ mod tests {
             )
             .unwrap();
         };
-        write_later("CalienteTools/Meshes/Test.NIF");
-        let (sources, count, _) =
-            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(
-            fs::read(sources.path().join(model)).unwrap(),
-            b"later runtime"
-        );
+        for alias in [
+            "CalienteTools/Meshes/Test.NIF",
+            "%43alienteTools/Meshes/Test.NIF",
+            "tools%5cCalienteTools%2fMeshes/Test.NIF",
+        ] {
+            write_later(alias);
+            let (sources, count, _) =
+                prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+            assert_eq!(count, 1);
+            assert_eq!(
+                fs::read(sources.path().join(&model)).unwrap(),
+                b"later runtime"
+            );
+        }
 
         write_later("Runtime/Meshes/Test.NIF");
         let error = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap_err();
@@ -803,8 +846,10 @@ mod tests {
             prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 4);
         assert_eq!(fs::read(sources.path().join(skeleton)).unwrap(), winner);
+        let output = assets.join("Meshes/Actors/Selected/50%Fern.GLB");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, b"old winner").unwrap();
         convert_capture_models(sources.path(), &assets, &models, &staged).unwrap();
-        let output = assets.join(model).with_extension("glb");
         let captured = fs::read(&output).unwrap();
         let bone_translation = |bytes: &[u8]| {
             gltf::Gltf::from_slice(bytes)

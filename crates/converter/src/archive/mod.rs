@@ -3,6 +3,7 @@ mod batched;
 mod bsa;
 mod bsa_name;
 mod source;
+mod staging;
 
 pub(crate) use batched::{prune_stale_reader_packs, sync_directory, sync_pack_file};
 
@@ -27,7 +28,7 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
@@ -760,27 +761,30 @@ impl ArchiveExtractor {
             .into_iter()
             .filter(|(path, _)| include(path))
             .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return Ok(Vec::new());
+        }
+        staging::reclaim_abandoned(output_root)?;
+        let parents = selected
+            .iter()
+            .map(|(path, _)| path.parent().wrap_err("missing extraction directory"))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let staging = staging::Run::new(output_root, parents)?;
         let sync = SyncMeasurements::default();
         let staged = selected
             .into_par_iter()
             .map(|(path, entry)| {
+                let bytes = match &entry {
+                    ArchiveEntry::Bsa(entry) => entry.staging_bytes(&source)?,
+                    ArchiveEntry::Ba2(entry) => entry.staging_bytes(),
+                };
+                let _permit = STAGING_MEMORY.reserve(bytes)?;
                 let data = match entry {
                     ArchiveEntry::Bsa(entry) => entry.decompress(&source)?,
                     ArchiveEntry::Ba2(entry) => entry.decompress(&source)?,
                 };
-                let destination = output_root.join(&path);
-                let parent = destination
-                    .parent()
-                    .wrap_err("missing extraction directory")?;
-                fs::create_dir_all(parent)?;
-                let mut builder = tempfile::Builder::new();
-                builder.prefix(".mudcrab-extract-");
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    builder.permissions(fs::Permissions::from_mode(0o666));
-                }
-                let mut temporary = builder.tempfile_in(parent)?;
+                let parent = path.parent().wrap_err("missing extraction directory")?;
+                let mut temporary = staging.new_file(parent)?;
                 temporary.write_all(&data)?;
                 sync.flush(temporary.as_file())?;
                 let extracted = ExtractedFile {
@@ -803,6 +807,16 @@ impl ArchiveExtractor {
             })
             .collect()
     }
+}
+
+const STAGING_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+// An oversize entry takes the entire permit. Work in other extractions uses the same pool.
+static STAGING_MEMORY: LazyLock<Arc<batched::ByteBudget>> =
+    LazyLock::new(|| Arc::new(batched::ByteBudget::new(STAGING_MEMORY_LIMIT)));
+
+// A growing Vec can hold its old and doubled allocations during reallocation.
+fn growing_buffer_bytes(len: usize) -> usize {
+    len.saturating_add(1).saturating_mul(3).max(8)
 }
 
 enum ArchiveEntry {
@@ -2150,6 +2164,7 @@ mod tests {
         assert!(error.to_string().contains("strings/b.strings"), "{error:#}");
         assert_eq!(fs::read(old).unwrap(), b"old");
         assert_eq!(fs::read_dir(root.join("strings")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
     }
 
     #[test]

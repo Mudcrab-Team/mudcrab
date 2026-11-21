@@ -208,7 +208,7 @@ impl DecodedRecord {
         Ok(())
     }
 
-    fn has_placement_transform(&self) -> bool {
+    pub(crate) fn has_placement_transform(&self) -> bool {
         !self.rejected_fields.contains(b"DATA")
             && crate::esm::valid_placement_transform(
                 self.fields
@@ -621,6 +621,18 @@ impl From<Option<u32>> for DiscardedFrameScope {
 }
 
 impl DiscardedFrameScope {
+    pub(crate) fn from_cell_prefix(bytes: &[u8]) -> Option<Self> {
+        let tag = &bytes[..bytes.len().min(4)];
+        if tag.is_empty() || !b"CELL".starts_with(tag) {
+            return None;
+        }
+        let id = bytes
+            .get(12..)
+            .and_then(|rest| rest.first_chunk::<4>())
+            .map(|word| u32::from_le_bytes(*word));
+        Some(id.into())
+    }
+
     /// A partial kind can still identify a possible child cell. Without the whole
     /// label we cannot bound the damage to a particular cell.
     pub(crate) fn from_group_prefix(bytes: &[u8]) -> Option<Self> {
@@ -673,6 +685,8 @@ pub struct ReadResult {
     pub(crate) damaged_cell_groups: HashSet<u32>,
     /// An unread frame or REFR could hide outgoing PlaneMarker links into another cell.
     pub(crate) unverified_occluder_links: bool,
+    /// Physical placement omissions explained by the later deletion of a usable base.
+    pub(crate) retired_placements: HashSet<(u32, u64)>,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
     /// earlier version, as the legacy reader does. A winning record alone would lose
     /// the keys that only an earlier plugin sets. The winners stay unmerged.
@@ -706,8 +720,8 @@ fn validate_live_candidate(
         return Err("rejected placed base NAME".into());
     }
     crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
-    if crate::esm::is_placed_record_type(&record.record_type) && previous.is_some() {
-        if !record.has_placement_transform() {
+    if crate::esm::is_placed_record_type(&record.record_type) {
+        if previous.is_some() && !record.has_placement_transform() {
             return Err("invalid placement override transform".into());
         }
         record.validate_placement_base()?;
@@ -877,10 +891,7 @@ fn read_plugins_with_prepared(
                     rejected_cells.extend(source_cell);
                     if let Some(entry) = history.borrow_mut().last_mut() {
                         if entry.record_type == *b"REFR" && entry.flags & 0x20 == 0 {
-                            let id = entry
-                                .form_id
-                                .or(diagnostics.event_context.form_id)
-                                .filter(|&id| id != 0);
+                            let id = entry.form_id.filter(|&id| id != 0);
                             unreadable_refs.insert(id, (index as u32, offset));
                         }
                         entry.reason = Some(error.clone());
@@ -902,7 +913,8 @@ fn read_plugins_with_prepared(
             if record.record_type == *b"REFR" && record.flags & 0x20 == 0 {
                 let position = (index as u32, offset);
                 if !record.payload_complete {
-                    unreadable_refs.insert(Some(record.form_id), position);
+                    let id = history.borrow().last().and_then(|entry| entry.form_id);
+                    unreadable_refs.insert(id.filter(|&id| id != 0), position);
                 } else if has_authored_occluder_links(&record, index, order) {
                     linked_marker_candidates.insert(record.form_id, position);
                 }
@@ -940,7 +952,7 @@ fn read_plugins_with_prepared(
                 && !gmst_aliases.contains_key(&record.form_id)
                 && let Some(&(_, Some(placement_offset))) = seen.get(&record.form_id)
             {
-                recovery.queue_duplicate((index as u32, placement_offset), record, &result.records);
+                recovery.queue_duplicate((index as u32, placement_offset), record);
                 return;
             }
             if record.flags & 0x20 == 0
@@ -1147,7 +1159,7 @@ fn read_plugins_with_prepared(
                         recovery.predecessors.entry(id).or_default().push(previous);
                     }
                 } else {
-                    recovery.predecessors.remove(&id);
+                    recovery.end_predecessor_chain(id, previous);
                 }
             }
         };
@@ -1234,8 +1246,8 @@ fn read_plugins_with_prepared(
             result.damaged_cell_groups.extend(winner.cell_form_id);
         }
     }
-    // Only a later admitted record (including a tombstone) settles the identity.
-    // An old non-marker base cannot establish what the unread replacement contained.
+    // Only a later admitted record (including a tombstone) with proven native
+    // ownership settles the identity of an unread replacement.
     if !unreadable_refs.is_empty() || !linked_marker_candidates.is_empty() {
         for entry in result.history.iter().filter(|entry| entry.accepted) {
             let Some(id) = entry.form_id else { continue };
@@ -1243,6 +1255,12 @@ fn read_plugins_with_prepared(
             if unreadable_refs
                 .get(&Some(id))
                 .is_some_and(|&damage| damage < position)
+                && source_identity::header_runtime_id(
+                    b"REFR",
+                    entry.source_form_id,
+                    entry.plugin_index as usize,
+                    order,
+                ) == Some(id)
             {
                 unreadable_refs.remove(&Some(id));
             }

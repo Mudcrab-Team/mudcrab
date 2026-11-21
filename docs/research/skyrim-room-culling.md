@@ -130,11 +130,11 @@ The tutorial recommends measuring performance and limiting long chains of visibl
 
 ## Runtime choices
 
-Each view starts from all containing authored room unions with the camera frustum. Portal polygons
+A perspective view starts from all containing authored room unions with the camera frustum. Portal polygons
 are clipped against incoming convex volumes; aperture edges and the doorway plane narrow the next
-volume. Separate paths remain a union. Perspective views use converging rays and orthographic views
-use parallel rays. On a newly reached bounded room, an incoming program of 26 or more native
-operator records drops its inherited constraints after the exit passes its aperture test.
+volume. Separate paths remain a union. Orthographic views retain full rendering in interiors with rooms
+because their near plane can span multiple disconnected rooms. On a newly reached bounded room, an incoming
+program of 26 or more native operator records drops its inherited constraints after the exit passes its aperture test.
 The exit and the room’s own occluders still constrain its meshes. See the
 [retail threshold captures](skyrim-culling-rea-parity.md#the-26-operator-fallback-retains-local-constraints).
 Independent work limits can also widen a complex volume. Authored graphs allow at least one contribution per physical portal in the cell before applying that limit.

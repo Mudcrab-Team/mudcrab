@@ -271,18 +271,18 @@ fn project(
                 ),
                 None => Some(target),
             };
-            let Some(linked) = linked else {
+            let Some(linked) = linked.filter(|&id| id != 0) else {
                 link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
                 continue;
             };
-            if linked == 0 || authored_ids && !target_exists(linked)? {
-                link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
-                continue;
+            let live = !authored_ids || target_exists(linked)?;
+            if !live {
+                link_omission.get_or_insert("PlaneMarker XORD target is absent or not a live REFR");
             }
             tx.prepare_cached(
                 "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref,single_target_verified) VALUES(?1,?2,?3,?4)",
             )?
-            .execute(params![id, (occurrence * 4 + slot) as i64, linked, single_target])?;
+            .execute(params![id, (occurrence * 4 + slot) as i64, linked, single_target && live])?;
         }
     }
     if let Some(reason) = link_omission {

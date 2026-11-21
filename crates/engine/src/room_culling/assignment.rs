@@ -147,11 +147,24 @@ fn transformed(sphere: ModelSphere, matrix: Affine3A) -> Option<ModelSphere> {
     {
         return None;
     }
+    // The largest row sum of |AᵀA| bounds its largest eigenvalue, including
+    // the small scale differences and shear admitted by the checks above.
+    let axes = axes.map(|axis| axis.as_dvec3());
+    let stretch_squared = axes
+        .iter()
+        .map(|a| axes.iter().map(|b| a.dot(*b).abs()).sum::<f64>())
+        .fold(0.0, f64::max);
+    let radius = f64::from(sphere.radius) * stretch_squared.sqrt();
+    let rounded = radius as f32;
     let sphere = ModelSphere {
         center: matrix
             .transform_point3(Vec3::from_array(sphere.center))
             .to_array(),
-        radius: sphere.radius * scale,
+        radius: if f64::from(rounded) < radius {
+            rounded.next_up()
+        } else {
+            rounded
+        },
     };
     (sphere.valid() && sphere.radius > 0.0).then_some(sphere)
 }
@@ -459,6 +472,26 @@ mod tests {
         assert_eq!(
             assignment.owners(100, Some(Affine3A::IDENTITY), &rooms, &[]),
             [Owner::Room(0)]
+        );
+    }
+
+    #[test]
+    fn admitted_scale_differences_enclose_the_longest_axis() {
+        let sphere = ModelSphere {
+            center: [0.0; 3],
+            radius: 1000.0,
+        };
+        let transform = Affine3A::from_scale(Vec3::new(1.0, 1.0, 1.000009));
+        let world = transformed(sphere, transform).unwrap();
+        assert!(
+            world.radius
+                >= transform
+                    .transform_vector3(Vec3::Z * sphere.radius)
+                    .length()
+        );
+        assert_eq!(
+            transformed(sphere, Affine3A::IDENTITY).unwrap().radius,
+            sphere.radius
         );
     }
 

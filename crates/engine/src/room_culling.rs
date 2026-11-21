@@ -733,6 +733,10 @@ impl RoomGraph {
             return None;
         }
         let outside = room_count;
+        // Parallel rays can enter disconnected rooms anywhere across an orthographic near plane.
+        if room_count != 0 && clip_from_local.row(3).truncate() == Vec3::ZERO {
+            return None;
+        }
         let mut doorways = vec![Vec::new(); room_count + 1];
         for (index, portal) in self.portals.iter().enumerate() {
             let [Some(a), Some(b)] = portal.rooms.map(|side| side.index(room_count)) else {
@@ -3463,6 +3467,13 @@ mod tests {
     }
 
     #[test]
+    fn an_orthographic_near_plane_cannot_seed_room_traversal_at_one_point() {
+        let graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
+        let clip = Mat4::orthographic_rh(-30.0, 30.0, -30.0, 30.0, 100.0, 0.1);
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip).is_none());
+    }
+
+    #[test]
     fn a_doorway_in_view_reaches_the_room_behind_it() {
         let graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
         let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
@@ -5562,40 +5573,29 @@ mod tests {
 
     #[test]
     fn a_close_orthographic_portal_crosses_only_if_it_reaches_the_eye_plane() {
-        let db = authored_database();
-        insert_room(&db, 1, 7, [0.0; 3]);
-        insert_room(&db, 2, 7, [0.0, 60.0, 0.0]);
-        let authored = load_room_graph(&db, 7).unwrap();
-        db.execute(
-            "DELETE FROM room_graph_stats WHERE name='assignment_version'",
-            [],
-        )
-        .unwrap();
-        let legacy = load_room_graph(&db, 7).unwrap();
-        assert!(legacy.overlaps.is_empty());
         let clip = Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 100.0, 15.0);
-        for mut graph in [legacy, authored] {
-            for (center_z, rotation, expected) in [
-                (3.0, Quat::IDENTITY, [true, false]),
-                (0.0005, Quat::IDENTITY, [true, false]),
-                (-3.0, Quat::IDENTITY, [true, true]),
-                (
-                    0.5,
-                    Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
-                    [true, true],
-                ),
-            ] {
-                let mut aperture = doorway(10, Vec3::ZERO, 2.0, [0, 1]);
-                for corner in &mut aperture.corners {
-                    *corner = rotation * *corner + Vec3::Z * center_z;
-                }
-                assert!(aperture.distance_to(Vec3::ZERO) < PORTAL_OPEN_DISTANCE);
-                graph.portals = vec![aperture];
+        let view = PortalView::new(Vec3::ZERO, Vec3::ZERO, clip);
+        let volume = VisibilityVolume::camera(clip).unwrap();
+        for (center_z, rotation, crosses) in [
+            (3.0, Quat::IDENTITY, false),
+            (0.0005, Quat::IDENTITY, false),
+            (-3.0, Quat::IDENTITY, true),
+            (
+                0.5,
+                Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
+                true,
+            ),
+        ] {
+            let mut aperture = doorway(10, Vec3::ZERO, 2.0, [0, 1]);
+            for corner in &mut aperture.corners {
+                *corner = rotation * *corner + Vec3::Z * center_z;
+            }
+            assert!(aperture.distance_to(Vec3::ZERO) < PORTAL_OPEN_DISTANCE);
+            for authored in [false, true] {
                 assert_eq!(
-                    reached_rooms(&graph, Vec3::ZERO, clip).unwrap(),
-                    expected,
-                    "authored={}, center z={center_z}",
-                    graph.authored.is_some(),
+                    volume.cross_portal(&aperture, &view, authored).is_some(),
+                    crosses,
+                    "authored={authored}, center z={center_z}",
                 );
             }
         }

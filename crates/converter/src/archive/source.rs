@@ -20,7 +20,7 @@ impl<'a> ArchiveSource<'a> {
             .and_then(usize::try_from)
             .map_err(|_| io::Error::other("archive length does not fit file offsets"))?;
         Ok(Self::File {
-            reader: Mutex::new((BufReader::new(file), Some(0))),
+            reader: Mutex::new((BufReader::new(file), None)),
             len,
         })
     }
@@ -96,6 +96,17 @@ impl<'a> ArchiveSource<'a> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn first_metadata_read_seeks_from_a_prepositioned_file() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"BSA\0data").unwrap();
+        file.seek(SeekFrom::Start(4)).unwrap();
+        let source = ArchiveSource::from_file(file).unwrap();
+
+        assert_eq!(source.read(0, 4).unwrap().as_ref(), b"BSA\0");
+        assert_eq!(source.read(4, 4).unwrap().as_ref(), b"data");
+    }
 
     #[test]
     fn owned_payload_read_has_exact_capacity_and_rejects_truncation() {

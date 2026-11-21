@@ -2358,24 +2358,50 @@ pub(crate) fn glb_bounds_from_bytes(glb: &[u8]) -> Result<shared::Bounds3> {
 }
 
 pub(crate) fn drawable_bounds(document: &serde_json::Value) -> Result<Option<shared::Bounds3>> {
+    drawable_scene_bounds(document, None)
+}
+
+pub(crate) fn drawable_scene_bounds(
+    document: &serde_json::Value,
+    scene_index: Option<usize>,
+) -> Result<Option<shared::Bounds3>> {
     let nodes = document
         .get("nodes")
         .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let roots = scene_roots(document, nodes);
+    let roots = scene_roots(document, nodes, scene_index)?;
     let mut bounds = BoundsAccumulator::default();
-    let mut remaining_visits = nodes.len();
-    for &root in &roots {
-        visit_node(
-            document,
-            nodes,
-            root,
-            Mat4::IDENTITY,
-            0,
-            &mut remaining_visits,
-            &mut bounds,
-        )?;
+    let mut remaining = nodes.len();
+    let mut pending: Vec<_> = roots
+        .iter()
+        .copied()
+        .rev()
+        .map(|id| (id, Mat4::IDENTITY))
+        .collect();
+    while let Some((index, parent)) = pending.pop() {
+        ensure!(remaining > 0, "glTF node traversal exceeds the node count");
+        remaining -= 1;
+        let node = nodes
+            .get(index)
+            .ok_or_else(|| color_eyre::eyre::eyre!("glTF node {index} is out of range"))?;
+        let transform = parent.mul(Mat4::from_node(node));
+        if let Some(value) = node.get("mesh") {
+            let mesh = value
+                .as_u64()
+                .ok_or_else(|| color_eyre::eyre::eyre!("invalid mesh index at node {index}"))?;
+            bounds.visited_mesh = true;
+            accumulate_mesh(document, mesh as usize, transform, &mut bounds)?;
+        }
+        if let Some(children) = node.get("children").and_then(serde_json::Value::as_array) {
+            for child in children.iter().rev().filter_map(serde_json::Value::as_u64) {
+                ensure!(
+                    pending.len() < remaining,
+                    "glTF node traversal exceeds the node count"
+                );
+                pending.push((child as usize, transform));
+            }
+        }
     }
     if document["extras"][INACTIVE_SWITCH].as_bool() == Some(true) {
         ensure!(
@@ -2389,23 +2415,29 @@ pub(crate) fn drawable_bounds(document: &serde_json::Value) -> Result<Option<sha
     bounds.finish().map(Some)
 }
 
-fn scene_roots(document: &serde_json::Value, nodes: &[serde_json::Value]) -> Vec<usize> {
-    if let Some(scenes) = document.get("scenes").and_then(serde_json::Value::as_array) {
-        let scene_index = document
-            .get("scene")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as usize;
-        if let Some(scene_nodes) = scenes
-            .get(scene_index)
-            .and_then(|scene| scene.get("nodes"))
-            .and_then(serde_json::Value::as_array)
-        {
-            return scene_nodes
-                .iter()
-                .filter_map(serde_json::Value::as_u64)
-                .map(|index| index as usize)
-                .collect();
-        }
+fn scene_roots(
+    document: &serde_json::Value,
+    nodes: &[serde_json::Value],
+    scene_index: Option<usize>,
+) -> Result<Vec<usize>> {
+    let index = scene_index.unwrap_or_else(|| document["scene"].as_u64().unwrap_or(0) as usize);
+    let scene = document["scenes"].get(index);
+    if scene_index.is_some() {
+        ensure!(scene.is_some(), "missing glTF scene {index}");
+    }
+    if let Some(roots) = scene.and_then(|scene| scene["nodes"].as_array()) {
+        ensure!(
+            roots.len() <= nodes.len(),
+            "glTF node traversal exceeds the node count"
+        );
+        return Ok(roots
+            .iter()
+            .filter_map(serde_json::Value::as_u64)
+            .map(|id| id as usize)
+            .collect());
+    }
+    if scene_index.is_some() {
+        return Ok(Vec::new());
     }
     let mut children = vec![false; nodes.len()];
     for node in nodes {
@@ -2417,53 +2449,11 @@ fn scene_roots(document: &serde_json::Value, nodes: &[serde_json::Value]) -> Vec
             }
         }
     }
-    children
+    Ok(children
         .iter()
         .enumerate()
         .filter_map(|(index, child)| (!child).then_some(index))
-        .collect()
-}
-
-fn visit_node(
-    document: &serde_json::Value,
-    nodes: &[serde_json::Value],
-    index: usize,
-    parent: Mat4,
-    depth: usize,
-    remaining_visits: &mut usize,
-    bounds: &mut BoundsAccumulator,
-) -> Result<()> {
-    ensure!(depth <= nodes.len(), "cyclic glTF node hierarchy");
-    let node = nodes
-        .get(index)
-        .ok_or_else(|| color_eyre::eyre::eyre!("glTF node {index} is out of range"))?;
-    ensure!(
-        *remaining_visits > 0,
-        "glTF node traversal exceeds the node count"
-    );
-    *remaining_visits -= 1;
-    let transform = parent.mul(Mat4::from_node(node));
-    if let Some(mesh) = node.get("mesh") {
-        let mesh_index = mesh
-            .as_u64()
-            .ok_or_else(|| color_eyre::eyre::eyre!("invalid mesh index at node {index}"))?;
-        bounds.visited_mesh = true;
-        accumulate_mesh(document, mesh_index as usize, transform, bounds)?;
-    }
-    if let Some(children) = node.get("children").and_then(serde_json::Value::as_array) {
-        for child in children.iter().filter_map(serde_json::Value::as_u64) {
-            visit_node(
-                document,
-                nodes,
-                child as usize,
-                transform,
-                depth + 1,
-                remaining_visits,
-                bounds,
-            )?;
-        }
-    }
-    Ok(())
+        .collect())
 }
 
 fn accumulate_mesh(
@@ -4656,6 +4646,20 @@ mod tests {
         for (actual, expected) in bounds.max.into_iter().zip([10.0, 4.0, 3.0]) {
             assert!((actual - expected).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn deep_glb_scene_keeps_the_leaf_bounds() {
+        let mut nodes: Vec<_> = (1..20_000)
+            .map(|i| serde_json::json!({"children": [i]}))
+            .collect();
+        nodes.push(serde_json::json!({"mesh":0}));
+        let document = serde_json::json!({
+            "scenes":[{"nodes":[0]}], "nodes":nodes,
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"min":[0,0,0],"max":[1,1,1]}]
+        });
+        assert_eq!(drawable_bounds(&document).unwrap().unwrap().max, [1.0; 3]);
     }
 
     #[test]

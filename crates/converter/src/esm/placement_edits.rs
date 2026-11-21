@@ -495,6 +495,8 @@ fn plugin_edits(
                     Some("with repeated or oversized XPRM")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
+                } else if view.find_all(b"XESP").any(|bytes| bytes.len() != 8) {
+                    Some("with malformed XESP")
                 } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
                     let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
                         return true;
@@ -1186,7 +1188,7 @@ impl NativeEdit {
                         .subrecords
                         .push((b"XPRM".to_vec(), shape.primitive_bytes()?));
                 }
-                if let Some(slots) = links {
+                if let Some(slots) = links.filter(|slots| slots.iter().any(|&id| id != 0)) {
                     record
                         .subrecords
                         .push((b"XORD".to_vec(), slots.map(u32::to_le_bytes).concat()));

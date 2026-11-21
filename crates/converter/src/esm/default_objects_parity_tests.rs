@@ -348,6 +348,27 @@ fn superseded_placement_duplicates_contribute_only_admitted_default_objects() {
             vec!["skipped", "accepted", "skipped"],
         ),
         (
+            "queued grouped owner blocks ungrouped claimant",
+            0xdead,
+            placement(0x20),
+            [
+                record(
+                    b"REFR",
+                    DEFAULT_OBJECTS,
+                    &[sub(b"NAME", &0x20u32.to_le_bytes()), sub(b"DATA", &[0; 24])].concat(),
+                ),
+                top(b"DOBJ", &[default_objects(&[(b"DMSN", CREATURE_MT)])]),
+            ]
+            .concat(),
+            vec![
+                text("DMRN", DEFAULT_MT),
+                text("DMSN", CREATURE_MT),
+                text("DMSW", CREATURE_MT),
+                text("DMWL", DEFAULT_MT),
+            ],
+            vec!["skipped", "accepted", "skipped"],
+        ),
+        (
             "queued tombstone",
             0xdead,
             top(b"DOBJ", &[deleted.clone()]),
