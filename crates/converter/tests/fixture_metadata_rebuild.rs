@@ -1805,7 +1805,12 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
         generate(&data);
         convert(&data, &source).await;
         if corrupt_plugin {
-            fs::write(data.join("Skyrim.esm"), b"different plugin").unwrap();
+            // A readable plugin with the same header but different bytes reaches the checksum check.
+            let plugin = data.join("Skyrim.esm");
+            let mut bytes = fs::read(&plugin).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xFF;
+            fs::write(&plugin, bytes).unwrap();
         } else {
             let manifest =
                 ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
