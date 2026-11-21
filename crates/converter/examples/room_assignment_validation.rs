@@ -5,7 +5,10 @@
 use color_eyre::{Result, eyre::ensure};
 use converter::{
     archive::ArchiveExtractor,
-    asset_path::{AssetKind, AssetSourceIndex, canonical_asset_path, is_authoring_resource},
+    asset_path::{
+        AssetKind, AssetSourceIndex, canonical_asset_path, is_authoring_resource,
+        is_authoring_source_name,
+    },
     mesh::{MeshConverter, SkeletonIndex, is_skeleton_path},
     pipeline::active_data_bsa_paths,
 };
@@ -206,7 +209,7 @@ fn prepare_model_sources(
     let plugins: Vec<_> = plugins.iter().map(PathBuf::from).collect();
     let archives = active_data_bsa_paths(data, &plugins)?;
     let mut staged = BTreeSet::new();
-    let is_runtime = |name: &str| !is_authoring_resource(name);
+    let is_runtime = |name: &str| !is_authoring_source_name(name);
     let loose = AssetSourceIndex::build_with_name_filter(
         &[data.to_path_buf()],
         AssetKind::Mesh,
@@ -535,6 +538,7 @@ mod tests {
         for (directory, bytes) in [
             ("Meshes", b"runtime".as_slice()),
             ("CalienteTools/Meshes", b"authoring".as_slice()),
+            ("%43alienteTools/Meshes", b"encoded authoring".as_slice()),
         ] {
             fs::create_dir_all(data.join(directory)).unwrap();
             fs::write(data.join(directory).join("Test.NIF"), bytes).unwrap();
@@ -609,14 +613,20 @@ mod tests {
             )
             .unwrap();
         };
-        write_later("CalienteTools/Meshes/Test.NIF");
-        let (sources, count, _) =
-            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(
-            fs::read(sources.path().join(model)).unwrap(),
-            b"later runtime"
-        );
+        for alias in [
+            "CalienteTools/Meshes/Test.NIF",
+            "%43alienteTools/Meshes/Test.NIF",
+            "tools%5cCalienteTools%2fMeshes/Test.NIF",
+        ] {
+            write_later(alias);
+            let (sources, count, _) =
+                prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+            assert_eq!(count, 1);
+            assert_eq!(
+                fs::read(sources.path().join(&model)).unwrap(),
+                b"later runtime"
+            );
+        }
 
         write_later("Runtime/Meshes/Test.NIF");
         let error = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap_err();
