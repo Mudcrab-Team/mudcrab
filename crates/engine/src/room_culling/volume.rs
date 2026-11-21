@@ -17,6 +17,11 @@ const MAX_VOLUME_PLANES: usize = 64;
 const PLANE_EPSILON: f32 = 1.0e-3;
 const CAMERA_PLANE_COUNT: usize = 5;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static PORTAL_CLIP_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A mesh's transformed AABB, including shear and negative or nonuniform scale.
 pub(super) struct MeshBounds {
     center: Vec3,
@@ -232,6 +237,8 @@ impl VisibilityVolume {
         view: &PortalView,
         authored: bool,
     ) -> Option<(Self, bool)> {
+        #[cfg(test)]
+        PORTAL_CLIP_ATTEMPTS.set(PORTAL_CLIP_ATTEMPTS.get() + 1);
         if portal.distance_to(view.eye) <= PORTAL_OPEN_DISTANCE {
             let corners = &portal.corners;
             let eye_plane = orthographic_eye_plane(view.clip, view.eye);

@@ -144,7 +144,7 @@ The [overlap replay fixture](../../crates/engine/tests/fixtures/overlapping-room
 
 The portal inclusion builder at `0xff7df0` clears its new plane set's active mask when the absolute portal-plane distance from the compound viewpoint is at most five units. That affects the new inclusion leaf, not every inherited or occluder constraint.
 
-`WithinFrustumDistFirst` at `0xfe94e0` has a different near band. The decompiled scalar combines the portal-plane distance with a supplied view-frustum-plane distance. Its `[-5, 5)` branch also tests the projected point against aperture extents and performs an exact RTTI comparison. The compared RTTI address agrees with the verified `BSPortal::GetRTTI` getter at `0x213c50`. This is not a generic eight-to-five-unit replacement.
+`WithinFrustumDistFirst` at `0xfe94e0` has a different near band. The decompiled scalar combines the portal-plane distance with a supplied view-frustum-plane distance. Its `[-5, 5)` branch also tests the projected point against aperture extents and performs an exact RTTI comparison. The compared RTTI address agrees with the verified `BSPortal::GetRTTI` getter at `0x213c50`. Mudcrab’s `PORTAL_OPEN_DISTANCE` preserves the incoming visibility volume when the eye is within eight Creation units of the doorway rectangle and the aperture survives inherited clipping and any orthographic eye plane.
 
 Exact plane orientation, normalization, corner winding, and boundary behavior still require controlled native fixtures. A read-only boundary experiment can resolve the coordinate convention and cache behavior without debugger attachment; the experiment plan is retained locally.
 

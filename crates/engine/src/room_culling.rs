@@ -4942,6 +4942,30 @@ mod tests {
     }
 
     #[test]
+    fn stale_fifo_slots_skip_unchanged_portal_clips() {
+        let db = authored_database();
+        for (id, y) in [(1, 0.0), (2, 60.0), (3, 120.0)] {
+            insert_room(&db, id, 7, [0.0, y, 0.0]);
+        }
+        let mut graph = load_room_graph(&db, 7).unwrap();
+        // Three separate apertures reach B before its first scan. All miss B's only exit.
+        graph.portals = vec![
+            doorway(1, Vec3::new(-5.0, 0.0, -40.0), 0.5, [0, 1]),
+            doorway(2, Vec3::new(0.0, 0.0, -40.0), 0.5, [0, 1]),
+            doorway(3, Vec3::new(5.0, 0.0, -40.0), 0.5, [0, 1]),
+            doorway(4, Vec3::new(1000.0, 0.0, -100.0), 0.5, [1, 2]),
+        ];
+        volume::PORTAL_CLIP_ATTEMPTS.set(0);
+        let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
+        assert_eq!(reached, [true, true, false]);
+        let attempts = volume::PORTAL_CLIP_ATTEMPTS.get();
+        assert!(
+            attempts <= 6,
+            "three entrances and three exit tests suffice, got {attempts}"
+        );
+    }
+
+    #[test]
     fn interleaved_arrival_uses_the_rooms_existing_fifo_slot() {
         let db = authored_database();
         for id in 1..=5_u16 {
