@@ -3080,6 +3080,24 @@ fn compose_default_bodies(
     report: &mut PipelineReport,
     manifest: &mut ConversionManifest,
 ) -> Result<()> {
+    compose_default_bodies_with_writer(
+        staging,
+        sources,
+        fail_fast,
+        report,
+        manifest,
+        compose::write_composed_body,
+    )
+}
+
+fn compose_default_bodies_with_writer(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+    write_body: impl Fn(&compose::ComposedBody, &Path) -> Result<bool>,
+) -> Result<()> {
     const PARTS: [(&str, BodyPartKind); 3] = [
         ("body_1.nif", BodyPartKind::Body),
         ("hands_1.nif", BodyPartKind::Hands),
@@ -3172,7 +3190,7 @@ fn compose_default_bodies(
                 BODY_COMPOSE_CONTEXT.into(),
                 body_compose_context_hash(&parts, &thin_paths, &skins)?,
             );
-            compose::write_composed_body(&model, &output)?;
+            write_body(&model, &output)?;
             let proof = derived_output_proof(BODY_COMPOSE_RECIPE, inputs, &output)?;
             Ok(Some((parts.len(), proof)))
         };
@@ -10051,11 +10069,11 @@ mod tests {
         );
     }
 
-    fn block_male_composed_output(staging: &Path) {
-        let output = staging.join(crate::compose::composed_body_path("default", "male"));
-        fs::create_dir_all(output.parent().unwrap()).unwrap();
-        let partial = output.with_extension(format!("glb.{}.partial", std::process::id()));
-        fs::write(partial, b"stale partial output").unwrap();
+    fn fail_male_body_write(body: &compose::ComposedBody, output: &Path) -> Result<bool> {
+        if output.ends_with("male/body.glb") {
+            return Err(std::io::Error::other("injected GLB write failure").into());
+        }
+        compose::write_composed_body(body, output)
     }
 
     #[test]
@@ -10065,7 +10083,6 @@ mod tests {
         stage_default_actor_parts(staging);
         compose_staged_bodies(staging, false);
         write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
-        block_male_composed_output(staging);
         let key = "meshes/actors/character/composed/default/male/body.glb";
         let mut report = PipelineReport::default();
         let mut manifest = ConversionManifest::default();
@@ -10073,12 +10090,13 @@ mod tests {
             .failures
             .insert(key.into(), "old derived failure".into());
 
-        compose_default_bodies(
+        compose_default_bodies_with_writer(
             staging,
             &staged_sources(staging),
             false,
             &mut report,
             &mut manifest,
+            fail_male_body_write,
         )
         .unwrap();
 
@@ -10089,7 +10107,7 @@ mod tests {
         assert!(!manifest.failures.contains_key(key));
         assert!(report.notices.iter().any(|notice| {
             notice.contains("failed to compose default male")
-                && notice.contains("stale temporary GLB")
+                && notice.contains("injected GLB write failure")
         }));
         assert!(
             staging
@@ -10130,22 +10148,22 @@ mod tests {
         stage_default_actor_parts(staging);
         compose_staged_bodies(staging, false);
         write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
-        block_male_composed_output(staging);
         let mut report = PipelineReport::default();
         let mut manifest = ConversionManifest::default();
 
-        let error = compose_default_bodies(
+        let error = compose_default_bodies_with_writer(
             staging,
             &staged_sources(staging),
             true,
             &mut report,
             &mut manifest,
+            fail_male_body_write,
         )
         .unwrap_err();
 
         let error = format!("{error:#}");
         assert!(error.contains("failed to compose default male"), "{error}");
-        assert!(error.contains("stale temporary GLB"), "{error}");
+        assert!(error.contains("injected GLB write failure"), "{error}");
         assert!(
             !staging
                 .join(crate::compose::composed_body_path("default", "male"))

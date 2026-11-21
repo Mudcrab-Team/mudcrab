@@ -988,7 +988,8 @@ to the `references` table; the six newly covered types retain their blobs in
 `records` without adding `references` rows.
 For `XMBR`, the legacy reader remaps the four-byte word for every placed type listed above.
 The in-house reader emits a runtime FormID when the record schema declares `XMBR` as a FormID.
-Its built-in `ACRE` schema has no such field. The in-house source archive
+With the built-in `ACRE` schema, `records.data` can retain opaque `XMBR` bytes,
+including a source master index outside the plugin’s master list. The in-house source archive
 (`inhouse_source_records.payload`) keeps the original plugin bytes.
 Fields not covered may still hold plugin-local FormIDs. In particular, do not
 consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys (use `reference_details.lock_key_id`), `XPWR` water
@@ -997,7 +998,7 @@ unconverted fields include `XLIB`, `XTNM`, `PDTO` and
 `CELL.XILL`. Check the converter's field-specific handling before using
 these payloads; this list is not exhaustive.
 
-The fields in this table validate master indices and light-plugin local IDs.
+When a reader remaps a field in this table, it validates master indices and light-plugin local IDs.
 An out-of-range index or light-plugin local ID wider than 12 bits is an invalid
 optional link: the converter sets that FormID to zero and reports a warning,
 aggregated per source plugin with the count and first record/field diagnostic.
