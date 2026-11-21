@@ -35,6 +35,10 @@ pub enum OmissionCategory {
     GrassUnusableData,
     /// A placed record without a readable DATA transform keeps only its canonical row.
     ReferenceUnusableData,
+    /// A PlaneMarker with unusable geometry gets no occluder row.
+    OccluderUnusableGeometry,
+    /// A PlaneMarker has malformed XORD or an unresolved target in an authored slot.
+    OccluderUnusableLinks,
     /// An LGTM with missing or unsupported DATA keeps its other fields but no DATA lighting.
     LightingTemplateUnusableData,
     /// A RACE whose animation authoring cannot be read has no animation source rows.
@@ -59,6 +63,8 @@ impl OmissionCategory {
             Self::LightShortData => "light_short_data",
             Self::GrassUnusableData => "grass_unusable_data",
             Self::ReferenceUnusableData => "reference_unusable_data",
+            Self::OccluderUnusableGeometry => "occluder_unusable_geometry",
+            Self::OccluderUnusableLinks => "occluder_unusable_links",
             Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
             Self::RaceUnreadableAuthoring => "race_unreadable_authoring",
             Self::EmittanceTargetAbsent => "emittance_target_absent",
@@ -77,6 +83,8 @@ impl OmissionCategory {
             | Self::LightShortData
             | Self::GrassUnusableData
             | Self::ReferenceUnusableData
+            | Self::OccluderUnusableGeometry
+            | Self::OccluderUnusableLinks
             | Self::LightingTemplateUnusableData
             | Self::RaceUnreadableAuthoring => Severity::DataLoss,
             Self::EmittanceTargetAbsent

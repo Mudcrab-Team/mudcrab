@@ -149,6 +149,14 @@ pub fn is_authoring_resource(path: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case("calientetools"))
 }
 
+/// Recognizes authoring directories in an original source name before canonicalization.
+pub fn is_authoring_source_name(name: &str) -> bool {
+    let name = name.trim();
+    is_authoring_resource(name)
+        || (name.contains('%')
+            && percent_decode(name).is_ok_and(|path| is_authoring_resource(&path)))
+}
+
 /// Canonicalizes a Bethesda asset path into a lowercase, root-relative key.
 /// Repeated `data/<kind>` or `<kind>` prefixes are collapsed by selecting the
 /// last kind component, which repairs paths leaked from authoring workspaces.
