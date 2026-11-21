@@ -2188,6 +2188,11 @@ mod tests {
         ("footprint_guard.py", "--log"),
         ("test_footprint_guard.py", "--limit-gib"),
         ("test_footprint_guard.py", "--log"),
+        // pr_size.py is the advisory GitHub pull request size labeler. It reads
+        // an API file list and never launches the engine, so both options belong
+        // to its own CLI. Any other script passing them still fails the audit.
+        ("pr_size.py", "--files"),
+        ("pr_size.py", "--github-output"),
         // workspace.py owns its storage CLI and forwards Cargo and Git options. It
         // never launches the engine, so its flags are not engine options.
         ("workspace.py", "--apply"),
@@ -2212,6 +2217,10 @@ mod tests {
         ("workspace.py", "--no-run"),
         ("workspace.py", "--open"),
         ("workspace.py", "--timings"),
+        // The retail-claim checker owns its diff range and repository path.
+        ("check_retail_claims.py", "--base"),
+        ("check_retail_claims.py", "--head"),
+        ("check_retail_claims.py", "--repo"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
