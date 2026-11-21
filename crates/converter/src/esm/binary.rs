@@ -245,14 +245,31 @@ pub(super) enum ParsedRecord {
 }
 
 /// Recover identity only from the start of a discarded record or child frame.
-fn discarded_prefix(bytes: &[u8]) -> Option<ParsedRecord> {
+fn discarded_prefix(
+    bytes: &[u8],
+    cell_form_id: Option<u32>,
+    worldspace_form_id: Option<u32>,
+) -> Option<ParsedRecord> {
     if let Some(scope) = DiscardedFrameScope::from_group_prefix(bytes) {
         return Some(ParsedRecord::DiscardedFrame(scope));
     }
     if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
         return Some(ParsedRecord::TruncatedPlacement(placement));
     }
-    DiscardedFrameScope::from_cell_prefix(bytes).map(ParsedRecord::DiscardedFrame)
+    match DiscardedFrameScope::from_cell_prefix(bytes)? {
+        DiscardedFrameScope::Cell(form_id) => Some(ParsedRecord::DamagedRecord(RawRecord {
+            record_type: *b"CELL",
+            flags: u32::from_le_bytes(*bytes.get(8..)?.first_chunk()?),
+            form_id,
+            cell_form_id,
+            worldspace_form_id,
+            subrecords: Vec::new(),
+            load_order: 0,
+        })),
+        DiscardedFrameScope::Unknown => {
+            Some(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown))
+        }
+    }
 }
 
 fn parse_group_inner(
@@ -282,7 +299,7 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
-            if let Some(candidate) = discarded_prefix(curr) {
+            if let Some(candidate) = discarded_prefix(curr, current_cell, current_worldspace) {
                 visit(candidate);
             }
             visit(ParsedRecord::DiscardedFrame(current_cell.into()));
@@ -311,7 +328,7 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
-                if let Some(candidate) = discarded_prefix(rest) {
+                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
                     visit(candidate);
                 }
                 visit(ParsedRecord::DiscardedFrame(
