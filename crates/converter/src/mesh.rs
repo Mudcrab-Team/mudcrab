@@ -17,7 +17,6 @@ use project_wormhole_nif::{
 use serde::{Deserialize, Serialize};
 use shared::collision::CollisionAsset;
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     io::{Read, Write},
@@ -3048,7 +3047,8 @@ impl SkeletonEntry {
 #[derive(Default)]
 struct DirectoryMeshes {
     paths: Vec<PathBuf>,
-    joints: OnceLock<BTreeSet<String>>,
+    // Some(index) identifies the sole source of a joint. None means siblings share it.
+    joint_sources: OnceLock<BTreeMap<String, Option<usize>>>,
 }
 
 /// Captures each winning rig's bytes and coverage together. Workers share this
@@ -3153,17 +3153,46 @@ impl SkeletonIndex {
         union
     }
 
-    fn directory_union(&self, mesh_dir: &str) -> Cow<'_, BTreeSet<String>> {
-        self.dir_meshes.get(mesh_dir).map_or_else(
-            || Cow::Owned(BTreeSet::new()),
-            |directory| {
-                Cow::Borrowed(
-                    directory
-                        .joints
-                        .get_or_init(|| self.joint_union(&directory.paths)),
-                )
-            },
-        )
+    fn directory_union(
+        &self,
+        mesh_dir: &str,
+        mesh_source: &Path,
+        mesh_joints: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut union: BTreeSet<_> = mesh_joints
+            .intersection(&self.skeleton_union)
+            .cloned()
+            .collect();
+        if let Some(directory) = self.dir_meshes.get(mesh_dir) {
+            let sources = directory.joint_sources.get_or_init(|| {
+                let mut sources = BTreeMap::new();
+                for (index, path) in directory.paths.iter().enumerate() {
+                    let joints = if path == mesh_source {
+                        union.clone()
+                    } else {
+                        self.joint_union([path])
+                    };
+                    for joint in joints {
+                        sources
+                            .entry(joint)
+                            .and_modify(|owner| *owner = None)
+                            .or_insert(Some(index));
+                    }
+                }
+                sources
+            });
+            // Another worker may have initialized the directory from an earlier version
+            // of this file. Only genuine sibling contributions supplement its snapshot.
+            union.extend(
+                sources
+                    .iter()
+                    .filter(|(_, owner)| {
+                        owner.is_none_or(|index| directory.paths[index] != mesh_source)
+                    })
+                    .map(|(joint, _)| joint.clone()),
+            );
+        }
+        union
     }
 
     fn local_directory_union(
@@ -3326,7 +3355,7 @@ fn resolve_against<'a>(
     candidates: &[PathBuf],
     index: &'a SkeletonIndex,
     joints: &BTreeSet<String>,
-    directory_union: impl FnOnce(&str) -> Cow<'a, BTreeSet<String>>,
+    directory_union: impl FnOnce(&str) -> BTreeSet<String>,
 ) -> SkeletonResolution<&'a SkeletonEntry> {
     if let Some(entry) = first_covering_candidate(candidates, index, joints) {
         return SkeletonResolution::Skeleton(entry);
@@ -3347,7 +3376,7 @@ fn resolve_against<'a>(
         let union = if full.len() > 1 {
             directory_union(mesh_dir)
         } else {
-            Cow::Owned(BTreeSet::new())
+            BTreeSet::new()
         };
         let rank = |entry| rank_key(entry, mesh_dir, mesh_actor, mesh_mirror, &union);
         full.sort_by_cached_key(|entry| rank(*entry));
@@ -3465,7 +3494,7 @@ fn resolve_indexed_skeleton<'a>(
         return resolve_without_joints(&candidates, index);
     }
     resolve_against(&key, &source.path, &candidates, index, &joints, |dir| {
-        index.directory_union(dir)
+        index.directory_union(dir, &source.path, &joints)
     })
 }
 
@@ -3531,7 +3560,7 @@ impl SkeletonIndex {
             &candidates,
             self,
             &joints,
-            |_| Cow::Owned(self.local_directory_union(nif_path, &joints)),
+            |_| self.local_directory_union(nif_path, &joints),
         )
     }
 }
@@ -3959,7 +3988,7 @@ mod tests {
         let y = PathBuf::from("meshes/actors/external/y/skeleton.nif");
         let mut sources = BTreeMap::new();
         for (key, bytes) in [
-            (&a, rename(b"WingX")),
+            (&a, rename(b"Bone0")),
             (&b, rename(b"Bone0")),
             (&x, rename(b"WingX")),
             (&y, rename(b"WingY")),
@@ -3974,6 +4003,20 @@ mod tests {
         let pick = |batch: &SkeletonIndex| {
             resolve_skeleton_from_snapshot(&b, &b_snapshot, batch).map(|entry| entry.path.clone())
         };
+        fs::write(&sources[&b], rename(b"WingY")).unwrap();
+        // When another worker goes first, the replacement is genuine sibling evidence
+        // for A, but must not influence the ranking of B's already captured bytes.
+        let sibling_first = SkeletonIndex::from_sources(&sources);
+        let a_snapshot = NifSnapshot::read(&sources[&a]).unwrap();
+        assert_eq!(
+            resolve_skeleton_from_snapshot(&a, &a_snapshot, &sibling_first)
+                .map(|entry| entry.path.clone()),
+            SkeletonResolution::Skeleton(y.clone())
+        );
+        assert_eq!(
+            pick(&sibling_first),
+            SkeletonResolution::Skeleton(x.clone())
+        );
         std::thread::scope(|scope| {
             for _ in 0..8 {
                 scope.spawn(|| assert_eq!(pick(&index), SkeletonResolution::Skeleton(x.clone())));

@@ -497,6 +497,9 @@ pub fn installed_glb_paths<'a>(
     keys: impl Iterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, PathBuf>> {
     let keys: BTreeSet<_> = keys.collect();
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
     let directories: BTreeSet<_> = keys
         .iter()
         .flat_map(|key| key.match_indices('/').map(|(end, _)| &key[..end]))
@@ -677,6 +680,18 @@ fn recover_invalid_static_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_installed_glb_paths_never_walks_the_pack() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("absent");
+        assert!(
+            installed_glb_paths(&root, std::iter::empty())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(installed_glb_paths(&root, ["meshes/selected.glb"].into_iter()).is_err());
+    }
 
     fn glb_with_json(mut json: Vec<u8>, binary: &[u8]) -> Vec<u8> {
         while !json.len().is_multiple_of(4) {

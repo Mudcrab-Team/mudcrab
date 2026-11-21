@@ -726,7 +726,16 @@ fn validate_live_candidate(
         if previous.is_some() && !record.has_placement_transform() {
             return Err("invalid placement override transform".into());
         }
-        record.validate_placement_base()?;
+        // The record reader can retain a first definition as a link target without a NAME.
+        // Spatial export validates the base separately before projecting the placement.
+        if previous.is_some()
+            || record
+                .fields
+                .iter()
+                .any(|field| field.signature == *b"NAME")
+        {
+            record.validate_placement_base()?;
+        }
     }
     validate(record)
 }
