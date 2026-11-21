@@ -207,7 +207,6 @@ def resolve_inventory(root, path, inventory_command):
     if 2 not in stages or 3 not in stages:
         raise SyncError(f"cannot regenerate {path}: it is not a two-sided text conflict")
     git(root, "checkout", "--theirs", "--", path)
-    git(root, "add", "--", path)
     run_tool(root, inventory_command + ["--review-sources"], "inventory --review-sources")
     run_tool(root, inventory_command + ["--check"], "inventory --check")
     git(root, "add", "--", path)
