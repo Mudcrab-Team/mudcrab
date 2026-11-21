@@ -1366,7 +1366,7 @@ impl AssetPipeline {
         let mut loose_keys = BTreeSet::new();
         let mut skipped_mo2_lod_inputs = BTreeSet::new();
         for (relative, source) in &resolved_files {
-            if crate::asset_path::is_authoring_resource(relative) {
+            if crate::asset_path::is_authoring_source_name(relative) {
                 manifest.excluded_inputs.insert(
                     relative.clone(),
                     "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
@@ -4366,7 +4366,7 @@ fn stage_mo2_lod_inputs(
     skipped: &BTreeSet<String>,
 ) -> Result<()> {
     for (relative, source) in sources {
-        if crate::asset_path::is_authoring_resource(relative) || skipped.contains(relative) {
+        if crate::asset_path::is_authoring_source_name(relative) || skipped.contains(relative) {
             continue;
         }
         let relative = if extension(source, &["dds"]) {
@@ -4387,7 +4387,7 @@ fn stage_mo2_lod_inputs(
 /// them beside the archive-extracted copies they override.
 fn stage_mo2_animation_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Result<()> {
     for (relative, source) in sources {
-        if crate::asset_path::is_authoring_resource(relative)
+        if crate::asset_path::is_authoring_source_name(relative)
             || !crate::archive::is_animation_input(Path::new(relative))
         {
             continue;

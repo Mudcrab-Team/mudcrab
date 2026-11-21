@@ -919,6 +919,16 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Unusable placement DATA omits activate-parent rows owned by that reference. Field-level semantics remain deferred."
     },
+    "reference_authored_changes": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#762)",
+      "reason": "Records placement sources whose archived payload changed before the next authored link index refresh."
+    },
+    "reference_authored_targets": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#762)",
+      "reason": "Subset edits index authored link slots by target to restore incoming projections from unchanged sources."
+    },
     "reference_details": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",

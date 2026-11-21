@@ -288,7 +288,12 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     certified_cells.retain(|cell| !incomplete.contains(cell));
     cells.extend(incomplete);
     super::doors::refresh_placement_links(&tx, &changed)?;
-    reference_links::refresh_incoming(&tx, &unavailable_link_targets, &available_link_targets)?;
+    reference_links::refresh_incoming(
+        &tx,
+        &unavailable_link_targets,
+        &available_link_targets,
+        &changed.iter().copied().collect::<Vec<_>>(),
+    )?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
     affected_cells.sort_unstable();
@@ -498,8 +503,9 @@ fn plugin_edits(
                     Some("with repeated or oversized XPRM")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
-                } else if view.find_all(b"XESP").any(|bytes| {
-                    bytes.len() != 8
+                } else if view.find_all(b"XESP").enumerate().any(|(index, bytes)| {
+                    index != 0
+                        || bytes.len() != 8
                         || SubrecordXESP::parse(bytes).is_none_or(|parent| {
                             parent.parent_ref != 0 && resolve_target(parent.parent_ref).is_none()
                         })

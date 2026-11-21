@@ -13,8 +13,56 @@ use tempfile::{NamedTempFile, TempDir};
 
 const RUN_PREFIX: &str = ".mudcrab-extract-run-";
 const PAYLOAD_PREFIX: &str = ".mudcrab-extract-payload-";
+const FILE_PREFIX: &str = ".mudcrab-staged-";
 const OWNER: &str = "owner";
-const SIGNATURE: &[u8] = b"Mudcrab archive staging v1\n";
+const SIGNATURE: &[u8] = b"Mudcrab archive staging v2\n";
+const STATE_DIR: &str = ".mudcrab-extraction-state";
+
+pub(super) fn reserved(component: &std::ffi::OsStr) -> bool {
+    let name = component.as_encoded_bytes();
+    name.eq_ignore_ascii_case(STATE_DIR.as_bytes())
+        || name
+            .get(..PAYLOAD_PREFIX.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PAYLOAD_PREFIX.as_bytes()))
+}
+
+fn state_directory() -> Result<PathBuf> {
+    let base = std::env::var_os(if cfg!(windows) {
+        "LOCALAPPDATA"
+    } else {
+        "XDG_STATE_HOME"
+    })
+    .map(PathBuf::from)
+    .filter(|path| path.is_absolute())
+    .or_else(std::env::home_dir)
+    .wrap_err("archive staging needs a per-user state directory")?;
+    let path = base.join(STATE_DIR);
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.recursive(true).create(&path)?;
+    let metadata = path.symlink_metadata()?;
+    ensure!(metadata.is_dir(), "invalid archive staging state directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        ensure!(
+            metadata.permissions().mode() & 0o077 == 0,
+            "archive staging state must be private to the current user"
+        );
+    }
+    Ok(path)
+}
+
+fn run_prefix(root: &Path) -> String {
+    format!(
+        "{RUN_PREFIX}{}-",
+        crate::cache::hash_bytes(root.as_os_str().as_encoded_bytes())
+    )
+}
 
 /// Holds temporary files beside their destinations while one lock protects the whole run.
 pub(super) struct Run {
@@ -28,40 +76,64 @@ impl Run {
     pub(super) fn new(root: &Path, parents: BTreeSet<&Path>) -> Result<Self> {
         let root = std::env::current_dir()?.join(root);
         fs::create_dir_all(&root)?;
+        let root = root.canonicalize()?;
+        let state = state_directory()?;
+        ensure!(
+            !root.iter().any(reserved),
+            "cannot extract into archive staging state"
+        );
         let registry = tempfile::Builder::new()
-            .prefix(RUN_PREFIX)
+            .prefix(&run_prefix(&root))
             .rand_bytes(16)
-            .tempdir_in(&root)?;
+            .tempdir_in(&state)?;
         let run_name = registry
             .path()
             .file_name()
             .and_then(|name| name.to_str())
             .wrap_err("invalid archive staging run name")?;
-        let mut owner = NamedTempFile::new_in(registry.path())?;
+        let mut owner = tempfile::Builder::new()
+            .rand_bytes(16)
+            .tempfile_in(registry.path())?;
+        let witness = owner
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .wrap_err("invalid archive staging witness")?
+            .to_owned();
         owner.write_all(SIGNATURE)?;
         owner.as_file().lock()?;
-        // A retry can see the marker only after its lock is held.
         let mut owner = owner.persist(registry.path().join(OWNER))?;
-        let paths: Vec<_> = parents
-            .into_iter()
-            .enumerate()
-            .map(|(index, parent)| (parent, payload_name(run_name, index)))
-            .collect();
-        let manifest: Vec<_> = paths
-            .iter()
-            .map(|(parent, name)| parent.join(name))
-            .collect();
-        serde_json::to_writer(&mut owner, &manifest)?;
+
+        let mut paths = Vec::with_capacity(parents.len());
+        let mut manifest = Vec::with_capacity(parents.len());
+        for (index, parent) in parents.into_iter().enumerate() {
+            let destination = root.join(parent);
+            fs::create_dir_all(&destination)?;
+            let destination = destination.canonicalize()?;
+            let relative = destination.strip_prefix(&root)?;
+            ensure!(
+                !relative.iter().any(reserved),
+                "reserved archive staging directory"
+            );
+            let name = payload_name(run_name, index);
+            manifest.push(relative.join(&name));
+            paths.push((parent, destination, name));
+        }
+        // The locked, private manifest is complete before any payload can be created.
+        serde_json::to_writer(&mut owner, &(&witness, &manifest))?;
 
         let directories = paths
             .into_iter()
-            .map(|(parent, name)| {
-                let destination = root.join(parent);
-                fs::create_dir_all(&destination)?;
-                let directory = tempfile::Builder::new()
-                    .prefix(&name)
-                    .rand_bytes(0)
-                    .tempdir_in(&destination)?;
+            .map(|(parent, destination, name)| {
+                let mut builder = tempfile::Builder::new();
+                builder.prefix(&name).rand_bytes(0);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    builder.permissions(fs::Permissions::from_mode(0o700));
+                }
+                let directory = builder.tempdir_in(&destination)?;
+                File::create_new(directory.path().join(&witness))?;
                 Ok((parent.to_owned(), directory))
             })
             .collect::<io::Result<_>>()?;
@@ -78,6 +150,7 @@ impl Run {
             .get(parent)
             .ok_or_else(|| io::Error::other("missing archive staging directory"))?;
         let mut builder = tempfile::Builder::new();
+        builder.prefix(FILE_PREFIX);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -97,20 +170,22 @@ pub(super) fn reclaim_abandoned(root: &Path) -> Result<()> {
     } else {
         root
     };
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
+    let root = match root.canonicalize() {
+        Ok(root) => root,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    let prefix = run_prefix(&root);
+    let entries = fs::read_dir(state_directory()?)?;
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with(RUN_PREFIX) {
+        if !name.starts_with(&prefix) {
             continue;
         }
         match entry.file_type() {
-            Ok(kind) if kind.is_dir() => reclaim(root, &entry.path(), &name)?,
+            Ok(kind) if kind.is_dir() => reclaim(&root, &entry.path(), &name)?,
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -147,12 +222,21 @@ fn reclaim(root: &Path, registry: &Path, run_name: &str) -> Result<()> {
         Err(error) => return Err(error.into()),
     }
 
-    let directories: Vec<PathBuf> = match serde_json::from_reader(&owner) {
+    let (witness, directories): (String, Vec<PathBuf>) = match serde_json::from_reader(&owner) {
         Ok(directories) => directories,
         // Payload directories are only created after the entire list has been written.
-        Err(error) if error.is_eof() => Vec::new(),
+        Err(error) if error.is_eof() => (String::new(), Vec::new()),
         Err(error) => return Err(error.into()),
     };
+    ensure!(
+        directories.is_empty()
+            || Path::new(&witness).components().count() == 1
+                && matches!(
+                    Path::new(&witness).components().next(),
+                    Some(Component::Normal(_))
+                ),
+        "invalid staging witness"
+    );
     for (index, directory) in directories.iter().enumerate() {
         let expected = payload_name(run_name, index);
         ensure!(
@@ -167,7 +251,23 @@ fn reclaim(root: &Path, registry: &Path, run_name: &str) -> Result<()> {
         );
     }
     for directory in directories {
-        remove_if_present(&root.join(directory))?;
+        let directory = root.join(directory);
+        match fs::symlink_metadata(directory.join(&witness)) {
+            Ok(marker)
+                if marker.is_file()
+                    && directory.symlink_metadata()?.is_dir()
+                    && directory.canonicalize()? == directory =>
+            {
+                remove_payload(&directory, &witness)?
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     // Only the marker belongs to the registry. Preserve files added after a crash.
     match fs::remove_file(marker) {
@@ -195,9 +295,18 @@ fn open_marker(path: &Path) -> io::Result<Option<File>> {
     File::options().read(true).write(true).open(path).map(Some)
 }
 
-fn remove_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_dir_all(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+fn remove_payload(path: &Path, witness: &str) -> io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(FILE_PREFIX)
+            && entry.file_type()?.is_file()
+        {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    fs::remove_file(path.join(witness))?;
+    match fs::remove_dir(path) {
+        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),
         result => result,
     }
 }
@@ -206,6 +315,71 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::archive::ArchiveExtractor;
+
+    #[cfg(unix)]
+    #[test]
+    fn stages_in_writable_child_of_read_only_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("out");
+        fs::create_dir_all(output.join("meshes")).unwrap();
+        let archive = temp.path().join("mesh.bsa");
+        fs::write(
+            &archive,
+            dummy_content::bsa::v105(
+                &[dummy_content::Entry::new("meshes/test.nif", b"mesh")],
+                dummy_content::bsa::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&output, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = ArchiveExtractor::extract(&archive, &output);
+        fs::set_permissions(&output, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(fs::read(output.join("meshes/test.nif")).unwrap(), b"mesh");
+    }
+
+    #[test]
+    fn recovery_preserves_replacements_and_skips_absent_directories() {
+        let output = tempfile::tempdir().unwrap();
+        let first = Path::new("first");
+        let second = Path::new("second");
+        let Run {
+            directories,
+            _registry,
+            _owner,
+        } = Run::new(output.path(), BTreeSet::from([first, second])).unwrap();
+        let registry = _registry.keep();
+        for (parent, directory) in directories {
+            let path = directory.path().to_owned();
+            directory.close().unwrap();
+            if parent == first {
+                fs::create_dir(&path).unwrap();
+                fs::write(path.join("independent"), b"retained").unwrap();
+            } else {
+                fs::remove_dir(output.path().join(&parent)).unwrap();
+                fs::write(output.path().join(parent), b"replacement").unwrap();
+            }
+        }
+        drop(_owner);
+        reclaim_abandoned(output.path()).unwrap();
+        assert!(!registry.exists());
+        let replacement = fs::read_dir(output.path().join(first))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(
+            fs::read(replacement.join("independent")).unwrap(),
+            b"retained"
+        );
+        assert_eq!(
+            fs::read(output.path().join(second)).unwrap(),
+            b"replacement"
+        );
+    }
 
     #[test]
     fn extraction_retry_reclaims_abandoned_payloads_but_keeps_a_live_run() {
@@ -270,7 +444,7 @@ mod tests {
         );
         assert_eq!(fs::read(live_file.path()).unwrap(), b"staged by live run");
         assert_eq!(fs::read(unrelated.join(OWNER)).unwrap(), b"unrelated data");
-        assert!(!interrupted.join(OWNER).exists());
+        assert_eq!(fs::read(interrupted.join(OWNER)).unwrap(), SIGNATURE);
         assert_eq!(
             fs::read(interrupted.join("retained")).unwrap(),
             b"independent file"

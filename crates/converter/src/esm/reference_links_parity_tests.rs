@@ -186,6 +186,12 @@ fn plugin_deletion_disables_hardcoded_owner_fallback_across_subset_exports() {
         .concat(),
     )
     .unwrap();
+    let restoration = dir.path().join("Restore.esp");
+    fs::write(
+        &restoration,
+        [header(0, &["Skyrim.esm"]), named(b"FACT", deleted)].concat(),
+    )
+    .unwrap();
     let paths = [base, patch];
     let subset: HashMap<_, _> = EsmParser::merge_plugins(&paths)
         .unwrap()
@@ -209,6 +215,29 @@ fn plugin_deletion_disables_hardcoded_owner_fallback_across_subset_exports() {
         super::exporter::export_to_db(&db, &subset).unwrap();
         assert_eq!(projected_owner(CHEST), None);
         assert_eq!(projected_owner(LEVER), Some(absent));
+
+        let restored_path = dir.path().join(format!("{reader:?}-restored.db"));
+        let restored_plugins = [paths[0].clone(), paths[1].clone(), restoration.clone()];
+        EsmParser::convert_plugins_with_reader(
+            &restored_plugins,
+            &restored_path,
+            reader,
+            dir.path(),
+        )
+        .unwrap();
+        let restored = Connection::open(restored_path).unwrap();
+        let owner: u32 = restored
+            .query_row(
+                "SELECT d.owner_id FROM reference_details d
+                 JOIN records r ON r.form_id=d.owner_id AND r.record_type='FACT'
+                 WHERE d.reference_id=?1 AND NOT EXISTS (
+                     SELECT 1 FROM subset_nonplacement_deletions WHERE form_id=r.form_id
+                 )",
+                [CHEST],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner, deleted);
     }
 }
 
@@ -270,6 +299,11 @@ fn malformed_placement_enable_parent_keeps_predecessor() {
     assert_eq!(parent(), (Some(LEVER), Some(1)));
     assert_eq!(
         apply_patch("BadMaster.esp", &[xesp(0x9900_0802, 2)]).changed_references,
+        0
+    );
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("Repeated.esp", &[xesp(TRAP, 2), xesp(LEVER, 1)]).changed_references,
         0
     );
     assert_eq!(parent(), (Some(LEVER), Some(1)));
