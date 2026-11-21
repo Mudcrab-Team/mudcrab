@@ -567,7 +567,7 @@ pub struct RoomGraph {
     pub(crate) occluders: HashMap<PortalSide, Vec<occlusion::Occluder>>,
     /// Full export with authored endpoint provenance and complete reference identities.
     pub supports_unbounded: bool,
-    /// The cell lacks positive export completeness or contains invalid geometry.
+    /// The cell lacks positive export completeness or contains invalid room or portal data.
     pub incomplete: bool,
     pub rooms: Vec<Room>,
     pub portals: Vec<Portal>,
@@ -1205,6 +1205,10 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         }
         graph.incomplete |= graph.authored.is_none();
     }
+    graph.incomplete |= graph
+        .portals
+        .iter()
+        .any(|portal| portal.rooms.contains(&PortalSide::Unknown));
     if graph.authored.is_some() {
         graph.links.clear();
         graph.unresolved_link_rooms.clear();
@@ -3168,6 +3172,7 @@ mod tests {
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert!(graph.supports_unbounded);
+        assert!(!graph.incomplete);
         assert_eq!(
             graph.portals[0].rooms,
             [PortalSide::Room(0), PortalSide::Unbounded]
@@ -3176,6 +3181,7 @@ mod tests {
         assert!(!graph.membership.contains_key(&101));
         assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_some());
         for flag in [
+            rusqlite::types::Value::Integer(0),
             rusqlite::types::Value::Integer(2),
             "invalid".to_owned().into(),
         ] {
@@ -3184,14 +3190,18 @@ mod tests {
                 .unwrap();
             let graph = load_room_graph(&connection, 7).unwrap();
             assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);
+            assert!(graph.incomplete);
             assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
         }
         // An inconsistent foreign-room ID must not acquire outside meaning from a flag.
+        insert_room(&connection, 999, 8, [0.0; 3]);
         connection
             .execute("UPDATE room_portals SET room_b=999,unbounded_b=1", [])
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);
+        assert!(graph.incomplete);
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
     }
 
     #[test]

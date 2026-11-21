@@ -75,6 +75,9 @@ pub struct NifParseDiagnostics {
     pub max_scene_depth: usize,
     /// Bounded reasons conversion refuses this file while inspection retains its measurements.
     pub conversion_refusals: Vec<String>,
+    /// Bounded warnings about recoverable input during conversion.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conversion_warnings: Vec<String>,
     pub block_types: BTreeMap<String, usize>,
     pub fallback_blocks: BTreeMap<String, usize>,
     pub fallback_offsets: BTreeMap<String, Vec<usize>>,
@@ -286,6 +289,9 @@ impl MeshConverter {
         unresolved_skin: Option<&str>,
     ) -> Result<()> {
         let nif_path = &source.path;
+        for warning in &diagnostics.conversion_warnings {
+            eprintln!("warning: NIF {} {warning}", nif_path.display());
+        }
         let mut collision = collision::from_nif_bytes(nif_path, &nif, &source.bytes)?;
         let declares_skin = declares_skin_type(&diagnostics);
         let room_sphere = if !declares_skin
@@ -1887,6 +1893,20 @@ fn open_nif_resilient_bytes(
             bytes.len() - data.len(),
             data,
         );
+    }
+    let mut invalid_switches = blocks.iter().enumerate().filter_map(|(index, block)| {
+        let NifBlock::NiSwitchNode(switch) = block else {
+            return None;
+        };
+        let selector = usize::try_from(switch.active_child).ok()?;
+        let child_count = switch.node.children.len();
+        (selector >= child_count).then_some((index, selector, child_count))
+    });
+    if let Some((index, selector, child_count)) = invalid_switches.next() {
+        let count = 1 + invalid_switches.count();
+        diagnostics.conversion_warnings.push(format!(
+            "NiSwitchNode block {index} has selector {selector} outside {child_count} child slots ({count} out-of-range selectors in this file)"
+        ));
     }
     diagnostics.scene_node_count = blocks
         .iter()
@@ -5599,10 +5619,22 @@ mod tests {
             (1, 1, 1, Some((999.0, 1001.0)), Some(second)),
             (1, 2, 2, Some((-1.0, 1001.0)), None),
             (0, -2, 0, None, Some(first.merge(second))),
+            (0, 2, 2, Some((-1.0, 1001.0)), Some(first.merge(second))),
         ] {
             let nif = dummy_content::nif::static_switch(&static_fixture_shape(), flags, selector)
                 .unwrap();
             fs::write(&input, nif).unwrap();
+            let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
+            assert!(diagnostics.conversion_refusals.is_empty());
+            let warnings = diagnostics.conversion_warnings;
+            if selector == 2 {
+                assert_eq!(warnings.len(), 1);
+                let warning = &warnings[0];
+                assert!(warning.contains("NiSwitchNode block 4"));
+                assert!(warning.contains("selector 2 outside 2 child slots"));
+            } else {
+                assert!(warnings.is_empty());
+            }
             MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
 
             let bytes = fs::read(&output).unwrap();

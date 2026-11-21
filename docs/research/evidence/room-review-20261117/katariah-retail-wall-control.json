@@ -89,6 +89,16 @@
       {
         "source": "owners1.json",
         "sha256": "d2b0ee33304fc3519f1a10d56df667affca2cca68fb0a61e2e790f085d4eb4b5",
+        "camera": {
+          "cell_id": "000BBB2F",
+          "position_creation": [-768.0, 1536.0, 748.0],
+          "player_position_creation": [-768.0, 1536.0, 627.5],
+          "camera_state_id": 3,
+          "use_multibounds": true
+        },
+        "accumulated_rooms": ["0006EE50", "0006EDCA", "0006EE1E"],
+        "unbounded": 0,
+        "wall_parent_mapped": {"000C4A65": true, "000C4A50": false},
         "root": "0006EE50",
         "mapped_rooms": [
           "0006EE1E",
@@ -103,6 +113,16 @@
       {
         "source": "owners-active.json",
         "sha256": "9f70e7d685be6d60190237c3cc34db0b3b9e90643440964c865da37ccd1f6f9e",
+        "camera": {
+          "cell_id": "000BBB2F",
+          "position_creation": [-768.0, 1536.0, 748.0],
+          "player_position_creation": [-768.0, 1536.0, 627.5],
+          "camera_state_id": 3,
+          "use_multibounds": true
+        },
+        "accumulated_rooms": ["0006EE50", "0006EE1E", "0006EDCA"],
+        "unbounded": 0,
+        "wall_parent_mapped": {"000C4A65": true, "000C4A50": false},
         "root": "0006EE50",
         "mapped_rooms": [
           "0006EE50",

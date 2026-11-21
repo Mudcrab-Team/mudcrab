@@ -38,12 +38,14 @@ Unknown rules remain conservative.
 
 ![Original-game and current combined-stack Katariah floor captures](evidence/room-review-20261117/katariah-overrides.png)
 
-The NONE-floor pose is above reference 769925. Its floor remains visible in all three modes while
-the enabled mesh list falls from 153 to 63. The named-floor pose is above reference 457767, whose
-authored target is room 454223 while the camera lies in room 454224. Its floor remains visible in
-retail and the enabled view, with 48 of 255 meshes retained. The full-render control instead covers
-much of that view with a close shell surface. The side-by-side captures show differences in props and material sampling
-between Skyrim and both Mudcrab modes. These images do not identify the owner of every visible pixel.
+The NONE-floor pose is above reference 769925. In the combined-stack build at `4de561be` with the
+measurement patch, its floor remains visible in all three modes while room culling reduces the
+draw count from 153 to 63.
+The named-floor pose is above reference 457767, whose authored target is room 454223 while the
+camera lies in room 454224. Its floor remains visible in retail and the enabled view, with 48 of
+255 meshes retained. The full-render control covers much of that view with a close shell surface.
+The side-by-side captures show differences in props and material sampling between Skyrim and
+both Mudcrab modes. The wall-scale controls below identify the carved wall.
 
 The fresh combined-stack recheck has 48 settled images at eight poses, three runs per mode.
 It includes the review toggle and gap fixes plus the upper layer's bounds support. It is recorded
@@ -102,8 +104,9 @@ At the NONE-floor pose, room culling removes 95 main-camera meshes and leaves th
 | NONE floor | 58 | 153 |
 | Named floor | 39 | 255 |
 
-Both runs used the same executable and private pack. The pack rebuilt all 236 requested models for
-Katariah01. Each mode reproduced both PNGs byte for byte on a second run. Run the two poses from
+Both modes used the November 19 build at `d2a0b8e9` and its private pack with 236 rebuilt Katariah01
+models. The November 17 comparison used a five-cell pack with 1,206 rebuilt models. Each
+November 19 mode reproduced both PNGs byte for byte on a second run. Run the two poses from
 the [receipt](evidence/room-review-20261117/katariah-wedge-control.json) with `--shots`, then add
 `--shots-no-room-culling` for the control. The retail images are the camera-verified Skyrim
 1.7.104 captures from November 17.
@@ -142,9 +145,11 @@ measured 13.63. [Capture hashes and measurements](evidence/room-review-20261117/
 The scale controls identify the visible wall as `000C4A65`. In separate main-view readbacks
 from two Skyrim launches at this pose, the root was `0006EE50` and the map contained the wall’s
 room, `0006EE1E`. The control wall `000C4A50` belonged to `0006EE4F`, absent from both maps.
-Three samples of the wall room’s inclusion volume contained the plane at Creation y = 1408 and
-four side planes through the eye and the edges of portal `0006EF37`. These identify the doorway
-in the resulting volume. The readbacks did not trace individual branch decisions.
+The owner receipt preserves the room maps in source order, the live room parents, and the main
+camera fields from `owners1.json` and `owners-active.json`. Three samples of the wall room’s
+inclusion volume contained the plane at Creation y = 1408 and four side planes through the eye
+and the edges of portal `0006EF37`. These identify the doorway in the resulting volume. The
+readbacks did not trace individual branch decisions.
 [Main-view room IDs and plane coefficients](evidence/room-review-20261117/katariah-retail-wall-control.json) · [Three raw wall-room plane readbacks](evidence/room-review-20261117/katariah-native-planes.json)
 
 A fresh launch reproduced the mapped wall room with the player at (−768, 1536, 627.5) and
@@ -163,10 +168,10 @@ Repeating the disable and running `pcb` (purge buffered cells) in the other cell
 the doorway on re-entry. The root still mapped `0006EDCA`, but its doorway count fell from
 five to four, `0006EE1E` disappeared from the map, and the carved patch disappeared. Its
 luminance standard deviation fell from 13.78 after the ordinary round trip to 0.41.
-A subsequent enable command and purge left the doorway absent. The reference still had
-flags `0x809`, including the disabled bit (`0x800`). A fresh launch without loading a save
-restored the fifth doorway, the mapped room and the carved wall at the same eye. This
-identifies the route for the captured wall. The branch within the admission routine remains untraced.
+A subsequent enable command and purge left the doorway absent. A fresh launch without loading a
+save restored the fifth doorway, the mapped room and the carved wall at the same eye. The doorway
+receipt contains the full endpoint lists from the later live doorway readbacks. This identifies
+the route for the captured wall. The branch within the admission routine remains untraced.
 [Camera, room maps, doorway endpoints and patch measurements](evidence/room-review-20261117/katariah-doorway-controls.json)
 
 ![Top row, left to right, shows the matched free camera, matched first person, and first person deeper in the room. Bottom row shows disable and re-entry, disable with a cell purge, and the fresh launch.](evidence/room-review-20261117/katariah-camera-controls.jpg)

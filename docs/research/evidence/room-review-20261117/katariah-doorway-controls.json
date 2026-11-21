@@ -20,6 +20,12 @@
     "PortalFixtures.esp"
   ],
   "coordinates": "Creation units",
+  "doorway_under_test": {
+    "reference": "0006EF37",
+    "center": [-508.0, 1408.0, 684.0],
+    "endpoints": ["0006EE1E", "0006EE50"],
+    "identity_source": "room_portals in the Katariah pack hashed in katariah-wedge-control.json"
+  },
   "wall_patch_xyxy_half_open": [
     1320,
     50,
@@ -138,6 +144,15 @@
       ],
       "image_sha256": "56a93cf1e8144f25c537c2423cf3a4cab2be6b4259386a0e2baa41a0a956460e",
       "root_room_doorway_count": 5,
+      "readback_source": "disabled-reentry.json",
+      "readback_sha256": "5659e671de5c243356ddb44eb8af3834b5d826cd2ea8c550f4f6080302daca8b",
+      "root_room_doorways": [
+        {"center": [-508.0, 1408.0, 684.0], "endpoints": ["0006EE1E", "0006EE50"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
       "root_room_doorways_to_0006EE1E": [
         {
           "center": [
@@ -180,6 +195,15 @@
       ],
       "image_sha256": "0a0960061eb29e123b449f7e7e4700ea4e58bafdcc5b8f9b2dca0358473f6d9f",
       "root_room_doorway_count": 5,
+      "readback_source": "restored-reentry.json",
+      "readback_sha256": "45f5673ba18a91e488da5db75017c851ff2e41eb4c01e35195ef2509f3af6b3b",
+      "root_room_doorways": [
+        {"center": [-508.0, 1408.0, 684.0], "endpoints": ["0006EE1E", "0006EE50"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
       "root_room_doorways_to_0006EE1E": [
         {
           "center": [
@@ -221,6 +245,14 @@
       ],
       "image_sha256": "73cfd705485a040bf3e9cb8543f4588d0bd6e8c14326395f1ef4a202e6fd7a92",
       "root_room_doorway_count": 4,
+      "readback_source": "purge-disabled.json",
+      "readback_sha256": "e9f2ab668a3616dbcb05281569df815511d8943369e6ab6dac0f6b40cdf745f5",
+      "root_room_doorways": [
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
       "root_room_doorways_to_0006EE1E": [],
       "wall_patch_luma_stddev": 0.4078,
       "wall_patch_correlation_with_archived_baseline": 0.11989
@@ -250,6 +282,14 @@
       ],
       "image_sha256": "0b015ec4324e15144d1fc0bc864ec73cac7cca5135148bb14d668e85b3dc2410",
       "root_room_doorway_count": 4,
+      "readback_source": "purge-enabled.json",
+      "readback_sha256": "1c1e90cfde58ed0b5b2eb04e941fe746e8cf0151d0430f56cf6143accc7dd1df",
+      "root_room_doorways": [
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
       "root_room_doorways_to_0006EE1E": [],
       "wall_patch_luma_stddev": 0.2087,
       "wall_patch_correlation_with_archived_baseline": -0.02831
@@ -279,6 +319,14 @@
       ],
       "image_sha256": "259fa69b5e131ed48a1337eb07a9672e1e952ba8bc8ed068c653db2253582dd8",
       "root_room_doorway_count": 4,
+      "readback_source": "explicit-enabled.json",
+      "readback_sha256": "80008ed437127d243ea9bf7e82d45379c7c94ad04fe7cbb2f3059f6c3295b00d",
+      "root_room_doorways": [
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
       "root_room_doorways_to_0006EE1E": [],
       "wall_patch_luma_stddev": 0.441,
       "wall_patch_correlation_with_archived_baseline": 0.07908
@@ -309,6 +357,15 @@
       ],
       "image_sha256": "bfef359aedf15cdb73bc11992980788ef469f79790582b0236705c3969c8fd89",
       "root_room_doorway_count": 5,
+      "readback_source": "fresh-start.json",
+      "readback_sha256": "109b3cdebb2dc2dfef4d96ca3c0e41371ef9f770360f3d9f6d20bf4e0648a79a",
+      "root_room_doorways": [
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]},
+        {"center": [-508.0, 1408.0, 684.0], "endpoints": ["0006EE1E", "0006EE50"]},
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]}
+      ],
       "root_room_doorways_to_0006EE1E": [
         {
           "center": [
