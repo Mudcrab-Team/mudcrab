@@ -1231,7 +1231,7 @@ fn attempt(
                 manifest.excluded_inputs.insert(key.into(), "Geometryless overlay template; standalone mesh is empty, runtime overlays are not implemented".into());
                 report.excluded += 1;
             } else {
-                MeshConverter::glb_bounds(&target)?;
+                MeshConverter::drawable_bounds(&target)?;
             }
         } else if ext == "pex" {
             ScriptConverter::convert_pex_to_luau(&source.path, &target)?;

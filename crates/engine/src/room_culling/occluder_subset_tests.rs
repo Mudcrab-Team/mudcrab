@@ -92,7 +92,7 @@ fn hides_mesh(conn: &Connection, cell: u32) -> bool {
     let clip = Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_3, 1.0, 0.1);
     load_room_graph(conn, cell)
         .unwrap()
-        .visibility_volumes(Vec3::ZERO, clip)
+        .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip)
         .is_some_and(|visible| !visible.unbounded.intersects(Some(&bounds)))
 }
 
@@ -280,4 +280,141 @@ fn native_occluder_subset_adds_moves_and_deletes_an_active_shape() {
         apply_native_occluders(&conn, &[NativeOccluderChange::Remove { id }]).unwrap();
         assert_eq!(active(), [false, false, true]);
     }
+}
+
+fn active_planes(conn: &Connection, cell: u32) -> Vec<u32> {
+    let mut ids: Vec<_> = load_room_graph(conn, cell)
+        .unwrap()
+        .occluders
+        .values()
+        .flatten()
+        .map(|shape| shape.ref_id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn typed_subset_replaces_the_single_slot_used_by_the_loaded_pair() {
+    let dir = tempfile::tempdir().unwrap();
+    let (conn, base, header) = converted_pack(dir.path());
+    let patch = dir.path().join("Patch.esp");
+    let paths = [base, patch.clone()];
+    let apply = |fields: &[&[u8]]| {
+        fs::write(
+            &patch,
+            plugin(
+                &header,
+                &["Skyrim.esm"],
+                0,
+                &cell_contents(OTHER, marker(MOD_MARKER, 8.0, fields)),
+            ),
+        )
+        .unwrap();
+        let order = LoadOrder::read(&paths).unwrap();
+        let mut decoded = read_plugins(&paths, &order).unwrap();
+        export_placed_subset_with_sources(
+            &conn,
+            &HashMap::from([(MOD_MARKER, decoded.records.remove(&MOD_MARKER).unwrap())]),
+            &[],
+            &order,
+        )
+        .unwrap();
+    };
+    let link = [0, OTHER_MARKER, 0, 0].map(u32::to_le_bytes).concat();
+    conn.execute_batch("ALTER TABLE room_occluder_links DROP COLUMN single_target_verified")
+        .unwrap();
+    apply(&[&link]);
+    assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER, MOD_MARKER]);
+    let stored = || {
+        conn.query_row(
+            "SELECT link_index,single_target_verified FROM room_occluder_links WHERE ref_id=?1",
+            [MOD_MARKER],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(stored(), (1, true));
+    let override_link = [0, 0, 0, OTHER_MARKER].map(u32::to_le_bytes).concat();
+    apply(&[&override_link]);
+    assert_eq!(stored(), (3, true));
+    let order = LoadOrder::read(&paths).unwrap();
+    export_placed_subset_with_sources(&conn, &HashMap::new(), &[MOD_MARKER], &order).unwrap();
+    assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER]);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM room_occluder_links WHERE ref_id=?1",
+            [MOD_MARKER],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn native_subset_replaces_the_link_and_named_owner_used_by_the_loaded_pair() {
+    let dir = tempfile::tempdir().unwrap();
+    let (conn, _, _) = converted_pack(dir.path());
+    let id = 0xff00_0800;
+    let room = 0x810;
+    super::tests::insert_room(&conn, room, OTHER, [0.0, 20.0, 0.0]);
+    conn.execute("UPDATE room_bounds SET flags=256 WHERE ref_id=?1", [room])
+        .unwrap();
+    let apply = |slots, owner| {
+        apply_native_occluders(
+            &conn,
+            &[NativeOccluderChange::Upsert {
+                id,
+                cell_id: OTHER,
+                position: [0.0, 20.0, 0.0],
+                rotation: [0.0; 3],
+                shape: NativeOccluderShape::PlaneWithReferences {
+                    half_width: 8.0,
+                    half_height: 8.0,
+                    links: Some(slots),
+                    room: Some(owner),
+                },
+            }],
+        )
+        .unwrap();
+    };
+    apply([0, OTHER_MARKER, 0, 0], room);
+    assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER, id]);
+    apply([0, 0, 0, OTHER_MARKER], room + 1);
+    assert!(active_planes(&conn, OTHER).is_empty());
+    apply([OTHER_MARKER, 0, 0, 0], room);
+    assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER, id]);
+    let peer = id + 1;
+    apply_native_occluders(
+        &conn,
+        &[NativeOccluderChange::Upsert {
+            id: peer,
+            cell_id: OTHER,
+            position: [0.0, 20.0, 0.0],
+            rotation: [0.0; 3],
+            shape: NativeOccluderShape::Plane {
+                half_width: 8.0,
+                half_height: 8.0,
+            },
+        }],
+    )
+    .unwrap();
+    apply([peer, 0, 0, 0], room);
+    assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER, id, peer]);
+    for _ in 0..2 {
+        apply_native_occluders(&conn, &[NativeOccluderChange::Remove { id: peer }]).unwrap();
+        assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER]);
+    }
+    apply_native_occluders(&conn, &[NativeOccluderChange::Remove { id }]).unwrap();
+    assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER]);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM room_reference_rules WHERE reference_id=?1",
+            [id],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0
+    );
 }
