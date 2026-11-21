@@ -433,6 +433,7 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter14_reader_identity(&schemas, &language),
                 ]
                 .into_iter()
                 .flatten()
@@ -443,6 +444,7 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
                     crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter14_reader_identity(&schemas, &language),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
@@ -612,7 +614,7 @@ fn stage_optional_default_source(
 ) -> Result<()> {
     let paths = BTreeSet::from([relative.to_owned()]);
     for archive in archives {
-        if let Err(error) = ArchiveExtractor::extract_paths(archive, vfs, &paths) {
+        if let Err(error) = ArchiveExtractor::extract_runtime_paths(archive, vfs, &paths) {
             discard_default_source(vfs, relative, &error, report)?;
         }
     }
@@ -869,7 +871,7 @@ async fn rebuild_into(
     // Both readers resolve localized names; decode only the selected plugin tables.
     let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
     for archive in &archives {
-        if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
+        if let Err(error) = ArchiveExtractor::extract_runtime_paths(archive, &vfs, &strings) {
             eprintln!(
                 "warning: {}: unable to extract localized names: {error}",
                 archive.display()
@@ -941,7 +943,7 @@ async fn rebuild_into(
         BTreeSet::new()
     };
     for archive in &archives {
-        ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
+        ArchiveExtractor::extract_runtime_paths(archive, &vfs, &diffuse_paths)?;
     }
     let loose_diffuse: Vec<_> = files
         .iter()
@@ -1603,20 +1605,18 @@ fn stage_script_archives(
                         // A fresh directory gives each retry only its own fully written payload.
                         fs::remove_dir_all(&scratch)?;
                         fs::create_dir(&scratch)?;
-                        let selected =
-                            ArchiveExtractor::list_paths(archive)?
-                                .into_iter()
-                                .filter(|path| {
-                                    path.extension().is_some_and(|extension| {
-                                        extension.eq_ignore_ascii_case("pex")
-                                    })
-                                });
+                        let selected = ArchiveExtractor::list_runtime_paths(archive)?
+                            .into_iter()
+                            .filter(|path| {
+                                path.extension()
+                                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
+                            });
                         let mut extracted = Vec::new();
                         for path in selected {
                             let Some(key) = usable_key(&path)? else {
                                 continue;
                             };
-                            match ArchiveExtractor::extract_paths(
+                            match ArchiveExtractor::extract_runtime_paths(
                                 archive,
                                 &scratch,
                                 &BTreeSet::from([path.clone()]),
@@ -2203,7 +2203,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11, 12, 13] {
+        for adapter in [10, 11, 12, 13, 14] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -2228,7 +2228,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 14);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 15);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -2238,11 +2238,11 @@ mod metadata_schema_controls {
                 .is_err()
             );
             for (key, value) in [
-                // Rule: a metadata-only migration to adapter 14 accepts retained-asset sources
-                // of adapters 10 to 13 (the loop above) and nothing else. Adapter 8 and any
+                // Rule: a metadata-only migration to adapter 15 accepts retained-asset sources
+                // of adapters 10 to 14 (the loop above) and nothing else. Adapter 8 and any
                 // adapter newer than the producer are unproven and must regenerate assets.
                 ("adapter_version", serde_json::json!(8)),
-                ("adapter_version", serde_json::json!(15)),
+                ("adapter_version", serde_json::json!(16)),
                 ("schema_sha256", serde_json::json!("different-schema")),
                 ("schema_addons", serde_json::json!([])),
                 ("language", serde_json::json!("french")),
@@ -2337,6 +2337,17 @@ mod metadata_schema_controls {
         assert_eq!(recovered.language, "french");
         assert_eq!(identity["adapter_version"], 13);
         assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
+    }
+
+    #[test]
+    fn adapter14_retains_exact_source_settings_after_occlusion_metadata_update() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter14_reader_identity(&schemas, "french").unwrap();
+        let recovered =
+            settings_for_source_reader(&PipelineConfig::new("Data", "output"), &identity, schemas)
+                .unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(identity["adapter_version"], 14);
     }
 
     /// Missing old stamps remain unversioned; later metadata cannot infer a newer asset reader.

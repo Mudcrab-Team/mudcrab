@@ -676,6 +676,11 @@ door transitions involving it, and related room rows. Room graph publication exc
 unusable placements before projecting markers or memberships; it cannot recreate an origin
 from their canonical bytes. Incoming authored links may still name the retained canonical record.
 
+The typed record reader can retain a first definition without `NAME` as a target for
+package and faction links. Runtime plugin export requires exactly one nonzero base `NAME`.
+It omits the record, its `references` and `exterior_spatial` rows, and resolves incoming
+typed links as it would for an absent target.
+
 The reference flag and enable-parent columns preserve winning raw-record
 metadata for initial spawn filtering (#165) and later object LOD (#106).
 The engine resolves parent chains before spawning. With no parent, header bit
@@ -787,14 +792,24 @@ Rules:
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
 - Subset exports refresh incoming `XLKR`, `XAPR`, `XATR` and `XOWN` links when a target is
-  added, deleted, restored or changes record type. The exporter reads each surviving source's
-  effective payload to refill compatible links and preserves unrelated columns, including owner rank.
-- A subset export records each edited placed FormID in
-  `reference_link_subset_sources(form_id INTEGER PRIMARY KEY)`. When restoring an owner link,
-  the exporter skips the native payload from the full snapshot for each marked source.
-  Full exports drop the table, and the next subset export creates it if absent.
-  Older packs with a `data` column keep that column until a full export. The exporter uses only
-  `form_id` in both layouts.
+  added, deleted, restored or changes record type. Full runtime exports index authored
+  target IDs, source IDs and slot positions in `reference_authored_targets`, including
+  sources with no detail row. The first restoration on an older pack builds the index in
+  its edit transaction. Later edits reread changed sources and look up incoming slots by
+  target ID. Unrelated columns, including owner rank, retain their values.
+  `reference_authored_changes(reference_id INTEGER PRIMARY KEY)` queues source IDs for
+  reindexing. Placement updates add IDs explicitly or through the trigger on updates to
+  `references.data`. The refresh clears the queue in the same transaction.
+  Placement layers also refresh affected links in the same transaction.
+  For an unedited in-house source, the converter uses the original plugin payload and master
+  list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
+  occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
+  which source a subset replaced and retains recoverable link fields for typed subsets.
+  Typed subset edits also resolve these recovered fields against targets already present in the pack.
+  A later placement-layer edit removes that entry and supplies the effective source.
+  The provenance table has columns `form_id INTEGER PRIMARY KEY` and `data BLOB`. A subset or
+  placement edit upgrades older FormID-only tables in the edit transaction. Existing rows keep
+  their source markers and have NULL link data. A full export drops this edit history.
 - The exporter stores the FormID of each deleted non-placement record it receives in
   `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. A later subset uses the table
   to recognize deleted targets whose canonical records still exist. A live subset replacement
@@ -958,6 +973,7 @@ reference and cell fields, validated against their expected sizes:
 | `XLKR` | placed references | keyword and linked reference (8 bytes), or the linked reference alone (legacy 4 bytes) |
 | `XNDP` | placed references | navmesh (bytes 0-3 of 8) |
 | `XEMI` | placed references | emitted light or region |
+| `XMBR` | placed references | multibound target (one 4-byte FormID) |
 | `XATR` | placed references | attached reference (the in-house reader already remapped it; the legacy reader does since #269) |
 | `SNAM`, `LNAM` | LIGH | sound and lens flare (the in-house reader already remapped them; the legacy reader does since #269) |
 | `XAPR` | placed references | activate-parent reference (one 8-byte subrecord per parent) |
@@ -981,21 +997,28 @@ For blob remapping, placed references are REFR, ACHR, ACRE, PGRE, PMIS, PHZD,
 PARW, PBAR, PBEA, PCON and PFLA. This does not expand the record types exported
 to the `references` table; the six newly covered types retain their blobs in
 `records` without adding `references` rows.
+For `XMBR`, the legacy reader remaps the four-byte word for every placed type listed above.
+The in-house reader emits a runtime FormID when the record schema declares `XMBR` as a FormID.
+With the built-in `ACRE` schema, `records.data` can retain opaque `XMBR` bytes,
+including a source master index outside the plugin’s master list. The in-house source archive
+(`inhouse_source_records.payload`) keeps the original plugin bytes.
 Fields not covered may still hold plugin-local FormIDs. In particular, do not
 consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys (use `reference_details.lock_key_id`), `XPWR` water
 reflections as resolved IDs. Other
-unconverted fields include `XLIB`, `XMBR`, `XTNM`, `PDTO` and
+unconverted fields include `XLIB`, `XTNM`, `PDTO` and
 `CELL.XILL`. Check the converter's field-specific handling before using
 these payloads; this list is not exhaustive.
 
-The fields in this table validate master indices and light-plugin local IDs.
+When a reader remaps a field in this table, it validates master indices and light-plugin local IDs.
 An out-of-range index or light-plugin local ID wider than 12 bits is an invalid
 optional link: the converter sets that FormID to zero and reports a warning,
 aggregated per source plugin with the count and first record/field diagnostic.
-Other records and valid links continue to convert. Malformed field lengths cause
-the entire subrecord to be dropped and counted in the same per-plugin warning,
-since its FormID offsets cannot be decoded safely. An array with an incomplete
-entry is dropped in full; valid repeated subrecords are retained. Existing
+Other records and valid links continue to convert. The legacy reader warns about malformed
+field lengths, including arrays with an incomplete entry. It normally drops the affected
+occurrence and retains valid siblings. It keeps an empty payload for malformed placed `XMBR`,
+`REFR.XLRM`, `REFR.XPOD`, `REFR.XORD`, and occluder `XESP` fields so room projection can
+recognize an unusable authored value. An empty `XMBR` yields `unknown` assignment. An absent
+`XMBR` can allow automatic assignment. Existing
 validation of record headers and required fields is unchanged. Zero FormIDs
 remain zero. Other bytes in retained subrecords (such as teleport coordinates,
 enable flags, navmesh triangles and activation delays) are preserved. Unlisted fields remain opaque,
@@ -1011,6 +1034,15 @@ were remapped. A future consumer of these fields must account for old packs.
 `export_to_db` without a load order refreshes already-resolved records (for
 example movement annotations), preserving established `formid_map` ownership;
 it neither resolves plugin-local IDs nor upgrades an old pack.
+
+A live sourced placement must match the record type already stored for its FormID.
+A sourced placement deletion checks the owning plugin, local ID and record type
+against the pack before removing the placement and its scripts. The owning
+identity survives deletion. For a low FormID without a stored identity, a subset
+records the deletion in `subset_placement_deletions(form_id INTEGER PRIMARY KEY)`.
+Later subsets leave links to these deleted placements null. A live replacement
+restores the link target, and a full conversion rebuilds the snapshot from its
+source plugins.
 
 ```sql
 CREATE TABLE IF NOT EXISTS formid_map (
@@ -1304,7 +1336,7 @@ CREATE TABLE inhouse_unresolved_terrain_textures (      -- LAND layer textures t
 
 ---
 
-### 15. Interior Room Graph (`room_bounds`, `room_portals`, `room_links`, `reference_rooms`, `room_graph_stats`)
+### 15. Interior room graph and occlusion
 
 Skyrim marks the rooms of an interior with `RoomMarker` references (base `0x1F`) and the
 doorways between them with `PortalMarker` references (base `0x20`). The converter decodes both
@@ -1313,7 +1345,7 @@ objects to draw is the engine's policy (design: `docs/research/interior-room-gra
 upstream issue #188). Only interior cells and only box rooms (`XPRM` shape 1) are written;
 exterior markers are skipped silently, and rooms of other shapes, and rooms or portals with a non-finite size or transform, are skipped and counted in the conversion report.
 All FormIDs are in load-order numbering, like `references.id`.
-The two marker base forms are the ones `Skyrim.esm` defines (always load-order slot 0, so the numbers do not change with the load order). A plugin that places rooms with a marker base of its own is not recognised and produces no rows; the conversion report does not count that case.
+These marker base forms, and the occlusion `PlaneMarker` (`0x17`), are the ones `Skyrim.esm` defines (always load-order slot 0, so the numbers do not change with the load order). A plugin that places rooms with a marker base of its own is not recognised and produces no rows; the conversion report does not count that case.
 
 ```sql
 CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarker with a box XPRM
@@ -1342,6 +1374,25 @@ CREATE TABLE IF NOT EXISTS room_portals (      -- one row per XPOD pair of an in
     PRIMARY KEY (ref_id, pair_index)
 );
 CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
+
+CREATE TABLE IF NOT EXISTS room_occluders (
+    ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+    shape INTEGER NOT NULL CHECK(shape IN (1,3)), -- XPRM box or plane
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+    half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL,
+    scale REAL NOT NULL,
+    header_flags INTEGER NOT NULL,
+    has_enable_parent INTEGER NOT NULL,
+    has_links INTEGER NOT NULL,
+    target_ref INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
+CREATE TABLE IF NOT EXISTS room_occluder_links (
+    ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
+    linked_ref INTEGER NOT NULL,
+    PRIMARY KEY (ref_id, link_index)
+);
 
 CREATE TABLE IF NOT EXISTS room_links (        -- ordered authored room-group links
     room_ref INTEGER NOT NULL,
@@ -1388,6 +1439,44 @@ CREATE TABLE IF NOT EXISTS room_link_anomalies (
 
 Columns and rules:
 
+- **`room_occluders`** stores interior `PlaneMarker` placements, base form `0x17`, including
+  cells with no room markers. Shape 1 is a box. Shape 3 is a local X-Z plane. `DATA` supplies
+  the transform and `XPRM` supplies the unscaled half-extents. The native record loader consumes
+  legacy `XOCP` without retaining its geometry. The converter skips deleted placements.
+  Unusable geometry leaves no row and marks the cell incomplete. An absent `XSCL` gives scale 1. An authored scale must be one finite,
+  positive float. A repeated, malformed, or non-positive scale skips the geometry and records
+  an `occluder_unusable_geometry` omission. Resolved outgoing links are still stored.
+  The runtime also skips invalid scale rows in older packs. For a valid
+  scale it uses the authored extents at scale 1 or higher and shrinks them below 1. This bounds
+  the shadow whether retail uses authored extents or scales them.
+  The row retains disabled-state flags, enable-parent presence, and linked-plane presence for
+  runtime policy. `target_ref` is NULL only when `XMBR` is absent. Zero preserves an unresolved
+  or malformed explicit override. `has_links` remains true for malformed `XORD`, including after
+  remapping.
+- **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
+  occurrences. Each occurrence holds four 32-bit FormIDs that can name a `REFR` or be null.
+  [xEdit 4.1.5f's TES5 `REFR.XORD` definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278)
+
+  `link_index` is `occurrence * 4 + slot` using the original source position, including gaps for
+  earlier malformed occurrences. The converter keeps each remapped nonzero FormID when it skips
+  source geometry or the target is absent. The edge still suppresses the target if a later subset
+  adds it. An unreadable occurrence sets the source cell's `complete` flag to false. In-house
+  exports also clear that flag for unresolved FormIDs and targets without a live `REFR`.
+  A full in-house export publishes `occlusion_version = 1` in `room_graph_stats`.
+  It sets `occlusion_links_verified`
+  to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
+  Full in-house exports and plugin placement imports also clear the flag when a discarded
+  frame has unknown scope, a `REFR` fails before its links can be read, or a rejected
+  placement has a possible `XORD` target and a `NAME` that can name a PlaneMarker.
+  An unreadable `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
+  the placement is new. A later usable replacement or deletion of the same FormID
+  supersedes that evidence within the conversion or import.
+  These markers let the loader keep unrelated occluders in a complete cell that contains an
+  all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
+  A plugin placement import also clears pack-wide link verification when remapping reports
+  damage on an occlusion marker. It retains each outgoing link it can resolve.
+  Occluder shadows require both markers because an unverified source in another cell can have a
+  missing incoming link to a local occluder. Legacy exports omit both markers.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). Exactly one 24-byte `DATA`
   supplies the transform. An invalid transform omits the room and marks its cell incomplete.
@@ -1464,7 +1553,8 @@ Columns and rules:
   `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals skipped for invalid geometry
   or ambiguous portal fields, including missing, truncated, duplicate or non-finite transforms,
   non-finite sizes, negative room half-extents, nonpositive portal X or Z half-extents, and repeated `XPOD` fields), `objects_in_no_room` and
-  `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
+  `objects_in_several_rooms` (both by pivot), `overlap_rows`, `occluders` (valid geometry rows),
+  and `invalid_occluders_skipped` (unsupported or malformed occlusion primitives).
   `assignment_version = 1` enables authored master/slave resolution and reference ownership,
   together with the three assignment tables, `link_index`, and `visibility_version = 2`.
   If the pack declares an unsupported assignment version, the engine draws the full cell.
@@ -1496,8 +1586,10 @@ Parsing resumes at the next trusted frame boundary.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
-movement annotation, leave the graph alone. A subset that replaces a placed reference clears its
-membership and marks its previous and new cells incomplete until a full export rebuilds the graph.
+movement annotation, leave the graph alone. The low-level subset exporter reprojects edited
+occluders. For ordinary placed references it clears membership and marks the previous and new
+cells incomplete. The placement command described below rebuilds room ownership for its supported
+edits in the same transaction.
 A subset that changes or removes an existing base model also deletes that base's source sphere
 and marks every referencing cell incomplete in the same transaction. An unchanged model retains
 its sphere and cell completeness. A full room export restores completeness after rebuilding.
@@ -1521,8 +1613,8 @@ placements from references belonging to other cells or unknown runtime objects.
 Authored assignment metadata:
 
 - **`room_reference_rules`** records ordinary placements independently of geometric overlap rows.
-  A nonzero, remapped `XMBR` is `target`; a Multibound header flag with no `XMBR` is `none`;
-  an ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
+  For a `target` rule, `room_reference_rules.target_ref` is the nonzero runtime FormID projected from `XMBR`.
+  A Multibound header flag with no `XMBR` is `none`. An ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
   are `unknown`. Repeated `XMBR` fields also produce `unknown` with no target, including identical
   repetitions. Both readers preserve malformed `XMBR` presence for every supported placed
   record type, including references carrying the Multibound flag; rejection cannot turn it
@@ -1592,7 +1684,7 @@ converter apply-room-placements path/to/assets --native decorations.json
 The pack must retain the in-house reader's plugin headers. Masters can come from the original
 conversion or earlier placement imports. Existing FormID slots stay stable. The command reads
 `REFR` adds, full overrides, moves, and deleted headers for existing interiors. The supported
-bases are existing `STAT` and `DOOR` records and Skyrim's room and portal markers. A master-owned
+bases are existing `STAT` and `DOOR` records and Skyrim's room, portal, and occlusion markers. A master-owned
 `CELL` record can identify an existing interior for its children. The import uses only its FormID.
 
 A plugin can declare a new interior with a plugin-owned `CELL`. Give it a nonzero local FormID
@@ -1603,7 +1695,7 @@ and cell-child groups. Its record header supports the compression flag. Its plac
 unused FormIDs owned by the same plugin.
 
 Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
-`XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
 On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry a 32-byte
 `XTEL` field. The importer skips the placement and preserves its previous door link if `XTEL`
 occurs more than once, has the wrong width, contains a nonfinite arrival frame, or names a
@@ -1614,15 +1706,25 @@ Static primitives, actor references, scripts, new base records, exterior changes
 The command warns when it skips a damaged record or discards the unread part of a group.
 The parser resumes at a verified record or group boundary, and the command applies the usable
 placements and interiors it reads. A plugin placement needs one finite 24-byte `DATA` transform.
-If present, `XSCL` must occur once and contain a finite positive 32-bit float. A damaged placement leaves its destination and any retained
+If present, `XSCL` must occur once and contain a finite positive 32-bit float. The importer skips a
+non-occluder placement if `XPRM` occurs more than once or exceeds 32 bytes. A damaged
+placement leaves its destination and any retained
 predecessor's cell incomplete. When a discarded tail could hide a placement header or the
 command cannot identify the affected cell, all interiors use the whole-cell fallback. The
 command also warns and skips placements that require a damaged new interior. Usable records
 with unsupported content still roll back the import.
 
+An occluder that passes placement admission can still have an unusable shape, such as a
+malformed `XPRM`. The placement edit report counts projection omissions by category and samples
+FormIDs and reasons. Resolved outgoing `XORD` slots still suppress their targets when the source
+shape is omitted. A placement rejected earlier, for example for a nonfinite `DATA` transform,
+produces a warning and leaves its affected cells incomplete. It contributes no projection
+omission or new link slots. If it could hide outgoing PlaneMarker links, the importer clears
+link verification. Valid neighboring placements still apply.
+
 `--native` accepts a `cells` array for new interiors and an `edits` array for placements.
 Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional
-`full_name`. `put` adds or replaces a static placement, and `delete` removes a placement by
+`full_name`. `put` adds or replaces a static placement or occluder, and `delete` removes a placement by
 `id`. A native replacement preserves the existing `XESP` and initially-disabled flag. If the
 existing enable state is unavailable or cannot be preserved, the import fails. Use numeric runtime
 FormIDs from the target pack. For a new native interior or placement,
@@ -1663,13 +1765,24 @@ flag on an existing room. A new room defaults to `false`.
 }
 ```
 
+For a PlaneMarker, use base 23 and supply a shape such as
+`{"kind":"plane","half_width":8,"half_height":8}` or
+`{"kind":"box","half_extents":[8,12,16]}`. Optional `links` holds four
+runtime FormIDs in physical XORD order. Use zero for an empty slot. Four zeros have
+the same effect as omitting `links`. Skyrim placement plugins can supply the same
+fields on a PlaneMarker. Occluder edits
+require a pack with a source-verified occluder projection.
+
 One transaction creates the runtime cell rows and updates placements, ownership rules, and the room
 graph. Moves refresh both the source and destination cells. The command uses the model bounds
 already in the pack. It reports how many cells were created and how many affected cells passed
 certification. A fresh interior with complete input retains its certificate even when it has no
-rooms. A later import can add its first room and portal. A cell with no usable rooms or incomplete graph
-evidence uses the whole-cell fallback. An existing cell must have a valid prior certificate to retain certification.
+rooms. A later import can add its first room and portal. Incomplete graph evidence keeps the
+whole-cell fallback. An existing cell must have a valid prior certificate to retain certification.
 Unknown assignments and unverified portal endpoints retain their conservative behavior.
+When an occluder first reaches a roomless interior with no
+certificate, the exporter checks its stored Skyrim placements for earlier room, portal, or
+occlusion markers before establishing a certificate.
 
 The original conversion's canonical `records`, `formid_map`, source history, and reports remain
 available for inspection. `room_placement_layers` retains the exact imported file and checksum.
@@ -1691,7 +1804,7 @@ take precedence over the per-object rules. Other renderer visibility checks stil
 
 | Case | Converter writes | Engine room filter |
 |---|---|---|
-| Interior without room markers | no room rows | retain the cell |
+| Interior without room markers | no room rows | certified standalone occluders can hide fully shadowed meshes in the unbounded space |
 | Old database, tables absent | n/a | feature off, no error |
 | Source-verified outside portal side | NULL with an unbounded-side flag | traverse the explicit unbounded node |
 | Missing, invalid, or foreign portal endpoint | NULL without verified outside provenance | retain the cell |
@@ -1714,7 +1827,8 @@ The authored-assignment path uses these rules:
 
 | Case | Engine |
 |---|---|
-| Interior without room markers or absent room tables | normal rendering |
+| Absent room tables, or a roomless cell without a usable occluder | normal rendering |
+| Certified roomless interior with a supported occluder | test mesh bounds against its unbounded-space shadow |
 | Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
 | Unknown portal endpoint | whole-cell fallback |
 | Incomplete authored cell or unresolved master | whole-cell fallback |
@@ -2077,6 +2191,8 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
+| `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row and leaves its cell incomplete | data loss |
+| `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `race_unreadable_authoring` | `RACE` with unreadable animation model slots: no `race_animation_sources` row | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |

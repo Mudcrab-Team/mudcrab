@@ -459,6 +459,11 @@ mod tests {
         fs::write(data.join("textures/d.dds"), b"present source").unwrap();
         fs::write(data.join("meshes/good.nif"), mesh).unwrap();
         fs::write(data.join("meshes/bad.nif"), b"invalid fixture").unwrap();
+        fs::write(
+            assets.join("meshes/good.glb"),
+            b"previous successful output",
+        )
+        .unwrap();
         fs::write(assets.join("meshes/bad.glb"), b"previous output").unwrap();
         let conn = Connection::open(assets.join("skyrim_world.db")).unwrap();
         create_tables(&conn).unwrap();

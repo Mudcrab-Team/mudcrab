@@ -7,20 +7,56 @@
 //!
 //! Design and byte layouts: `docs/research/interior-room-graph-converter.md`.
 
-use crate::esm::{extractors::SubrecordView, records::RawRecord, types::ArchivedRecordData};
+use crate::esm::{
+    extractors::SubrecordView, load_order::LoadOrder, projection_omissions::ProjectionOmissions,
+    records::RawRecord, types::ArchivedRecordData,
+};
 use crate::records::{DecodedRecord, ReadResult};
 use rusqlite::{Connection, OptionalExtension, Result, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
+mod occluders;
+pub(super) use occluders::{ImportedOccluderSource, update_subset as update_subset_occluders};
+pub use occluders::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
+
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;
 /// `PortalMarker` base form in `Skyrim.esm`.
 pub const PORTAL_MARKER_BASE: u32 = 0x20;
+/// `PlaneMarker` base form, used by both plane and box occlusion primitives.
+pub const OCCLUSION_MARKER_BASE: u32 = 0x17;
 /// `XPRM` shape value of a box room.
 pub(super) const SHAPE_BOX: u32 = 1;
 pub(super) const SHAPE_PORTAL: u32 = 3;
+
+/// Rejected REFRs with unreadable or missing NAME fields can hide PlaneMarker links.
+pub(crate) fn may_name_occlusion_marker<'a>(
+    names: impl Iterator<Item = &'a [u8]>,
+    plugin: usize,
+    order: &LoadOrder,
+) -> bool {
+    let mut names = names.peekable();
+    names.peek().is_none()
+        || names.any(|bytes| {
+            let Ok(word) = <[u8; 4]>::try_from(bytes) else {
+                return true;
+            };
+            crate::records::source_identity::header_runtime_id(
+                b"REFR",
+                u32::from_le_bytes(word),
+                plugin,
+                order,
+            )
+            .is_none_or(|id| id == OCCLUSION_MARKER_BASE)
+        })
+}
+
+/// A malformed XORD can hide a target. An authored four-slot all-null XORD cannot.
+pub(crate) fn xord_may_link(data: &[u8]) -> bool {
+    data != [0; 16]
+}
 
 /// Tables created by `create_tables` so an older reused database gains them.
 pub const ROOM_TABLES_SQL: &str = r#"
@@ -45,6 +81,22 @@ pub const ROOM_TABLES_SQL: &str = r#"
              PRIMARY KEY (ref_id, pair_index)
          );
          CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
+         CREATE TABLE IF NOT EXISTS room_occluders (
+             ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+             shape INTEGER NOT NULL CHECK(shape IN (1,3)),
+             pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+             rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+             half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL,
+             scale REAL NOT NULL, header_flags INTEGER NOT NULL,
+             has_enable_parent INTEGER NOT NULL, has_links INTEGER NOT NULL,
+             target_ref INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
+         CREATE TABLE IF NOT EXISTS room_occluder_links (
+             ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
+             linked_ref INTEGER NOT NULL,
+             PRIMARY KEY (ref_id, link_index)
+         );
          CREATE TABLE IF NOT EXISTS room_links (
              room_ref INTEGER NOT NULL, linked_ref INTEGER NOT NULL,
              link_index INTEGER NOT NULL DEFAULT 0,
@@ -277,6 +329,12 @@ pub struct RoomGraphReport {
     pub objects_in_several_rooms: u64,
     /// `reference_rooms` rows with `contained = 0`, added after model bounds are known.
     pub overlap_rows: u64,
+    /// Supported occlusion primitives exported, including authored state flags.
+    #[serde(default)]
+    pub occluders: u64,
+    /// Occlusion markers with missing, malformed or unsupported geometry.
+    #[serde(default)]
+    pub invalid_occluders_skipped: u64,
     /// Markers with invalid source `XRMR` blocks or link counts, grouped by supplying plugin.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub room_link_anomalies: BTreeMap<String, RoomLinkAnomalies>,
@@ -290,7 +348,7 @@ pub struct RoomLinkAnomalies {
     pub first_cell: u32,
 }
 
-const STAT_NAMES: [&str; 12] = [
+const STAT_NAMES: [&str; 14] = [
     "rooms",
     "portals",
     "links",
@@ -303,10 +361,12 @@ const STAT_NAMES: [&str; 12] = [
     "objects_in_no_room",
     "objects_in_several_rooms",
     "overlap_rows",
+    "occluders",
+    "invalid_occluders_skipped",
 ];
 
 impl RoomGraphReport {
-    fn values(&self) -> [u64; 12] {
+    fn values(&self) -> [u64; 14] {
         [
             self.rooms,
             self.portals,
@@ -320,6 +380,8 @@ impl RoomGraphReport {
             self.objects_in_no_room,
             self.objects_in_several_rooms,
             self.overlap_rows,
+            self.occluders,
+            self.invalid_occluders_skipped,
         ]
     }
 
@@ -379,6 +441,8 @@ impl RoomGraphReport {
                 "objects_in_no_room" => report.objects_in_no_room = value,
                 "objects_in_several_rooms" => report.objects_in_several_rooms = value,
                 "overlap_rows" => report.overlap_rows = value,
+                "occluders" => report.occluders = value,
+                "invalid_occluders_skipped" => report.invalid_occluders_skipped = value,
                 _ => {}
             }
         }
@@ -406,6 +470,8 @@ pub fn clear(conn: &Connection) -> Result<()> {
     for table in [
         "room_bounds",
         "room_portals",
+        "room_occluders",
+        "room_occluder_links",
         "room_links",
         "room_reference_rules",
         "room_graph_cells",
@@ -720,7 +786,15 @@ pub fn export_room_graph(
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
 ) -> Result<RoomGraphReport> {
-    export_room_graph_with_sources(tx, master, interior_cells, None, &[], None)
+    export_room_graph_with_sources(
+        tx,
+        master,
+        interior_cells,
+        None,
+        None,
+        None,
+        &mut ProjectionOmissions::default(),
+    )
 }
 
 pub(super) fn export_room_graph_with_sources(
@@ -728,17 +802,27 @@ pub(super) fn export_room_graph_with_sources(
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
     sources: Option<RoomLinkSources<'_>>,
-    plugin_names: &[String],
+    order: Option<&LoadOrder>,
     damaged_placement_cells: Option<&HashSet<u32>>,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
+    let occluder_sources = match &sources {
+        Some(RoomLinkSources::Typed(decoded)) => Some(*decoded).zip(order),
+        _ => None,
+    };
+    let mut occluders = occluders::export(tx, master, interior_cells, occluder_sources, omissions)?;
+    let links_verified = !occluders.unverified_link_targets;
+    occluders
+        .incomplete_cells
+        .extend(damaged_placement_cells.into_iter().flatten().copied());
     let report = project_room_graph(
         tx,
         master,
         interior_cells,
         sources,
-        plugin_names,
-        damaged_placement_cells,
+        order.map_or(&[][..], |order| &order.names),
+        occluders,
         None,
     )?;
     if let Some(RoomLinkSources::Typed(decoded)) = sources {
@@ -755,6 +839,12 @@ pub(super) fn export_room_graph_with_sources(
         "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2),('assignment_version',1)",
         [],
     )?;
+    if occluder_sources.is_some() {
+        tx.execute(
+            "INSERT INTO room_graph_stats(name,value) VALUES ('occlusion_links_verified',?1)",
+            [links_verified],
+        )?;
+    }
     Ok(report)
 }
 
@@ -774,17 +864,29 @@ pub(super) fn refresh_placement_cells(
     layouts: &HashMap<u32, RoomLinkLayout>,
     plugin_names: &[String],
 ) -> Result<Vec<u32>> {
-    let mut incomplete = HashSet::new();
+    let mut occluders = occluders::Exported::default();
+    let has_occluders = table_exists(tx, "room_occluders")?;
     let mut previous_outside = HashMap::new();
     let mut records = HashMap::new();
     for &cell in cells {
-        let certified: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM room_graph_cells WHERE cell_id=?1 AND complete=1)",
-            [cell],
-            |row| row.get(0),
-        )?;
-        if !certified && !fresh_cells.contains(&cell) {
-            incomplete.insert(cell);
+        let certificate = tx
+            .query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if certificate.unwrap_or(i64::from(fresh_cells.contains(&cell))) != 1 {
+            occluders.incomplete_cells.insert(cell);
+        }
+        if has_occluders
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM room_occluders WHERE cell_id=?1)",
+                [cell],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            occluders.cells.insert(cell);
         }
         let mut portals = tx.prepare_cached(
             "SELECT ref_id,pair_index,unbounded_a,unbounded_b FROM room_portals WHERE cell_id=?1",
@@ -801,7 +903,9 @@ pub(super) fn refresh_placement_cells(
         )?;
         for row in references.query_map([cell], |row| {
             let form_id = row.get(0)?;
-            let blob: Vec<u8> = row.get(2)?;
+            let Some(blob) = row.get::<_, Option<Vec<u8>>>(2)? else {
+                return Ok(None);
+            };
             let record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob)
                 .map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
@@ -811,7 +915,7 @@ pub(super) fn refresh_placement_cells(
                     )
                 })?;
             let record_type: String = row.get(3)?;
-            Ok(RawRecord {
+            Ok(Some(RawRecord {
                 form_id,
                 record_type: record_type.as_bytes().try_into().unwrap_or(*b"UNKN"),
                 flags: row.get(1)?,
@@ -823,10 +927,14 @@ pub(super) fn refresh_placement_cells(
                 cell_form_id: Some(cell),
                 worldspace_form_id: None,
                 load_order: 0,
-            })
+            }))
         })? {
-            let record = row?;
-            records.insert(record.form_id, record);
+            if let Some(record) = row? {
+                records.insert(record.form_id, record);
+            } else {
+                // Older packs can have a placement without enough data to certify its graph.
+                occluders.incomplete_cells.insert(cell);
+            }
         }
         for sql in [
             "DELETE FROM reference_rooms WHERE room_ref IN (SELECT ref_id FROM room_bounds WHERE cell_id=?1)",
@@ -848,7 +956,7 @@ pub(super) fn refresh_placement_cells(
         cells,
         Some(RoomLinkSources::Legacy(layouts)),
         plugin_names,
-        Some(&incomplete),
+        occluders,
         Some(&PlacementRefresh {
             changed,
             previous_outside,
@@ -881,13 +989,14 @@ fn project_room_graph(
     interior_cells: &HashSet<u32>,
     sources: Option<RoomLinkSources<'_>>,
     plugin_names: &[String],
-    damaged_placement_cells: Option<&HashSet<u32>>,
+    occluders: occluders::Exported,
     refresh: Option<&PlacementRefresh<'_>>,
 ) -> Result<RoomGraphReport> {
     let mut report = RoomGraphReport::default();
     let mut link_anomalies: BTreeMap<&str, (RoomLinkAnomalies, String)> = BTreeMap::new();
-    let mut incomplete = HashSet::new();
-    incomplete.extend(damaged_placement_cells.into_iter().flatten().copied());
+    report.occluders = occluders.count;
+    report.invalid_occluders_skipped = occluders.invalid;
+    let mut incomplete = occluders.incomplete_cells;
     if let Some(RoomLinkSources::Typed(decoded)) = &sources {
         incomplete.extend(&decoded.damaged_cell_groups);
         // A winning placement can lose fields before reaching the runtime projection.
@@ -1216,7 +1325,10 @@ fn project_room_graph(
             continue;
         }
         let base = base_of(record);
-        if base == ROOM_MARKER_BASE || base == PORTAL_MARKER_BASE {
+        if matches!(
+            base,
+            ROOM_MARKER_BASE | PORTAL_MARKER_BASE | OCCLUSION_MARKER_BASE
+        ) {
             continue;
         }
         let view = SubrecordView::new(&record.subrecords);
@@ -1233,7 +1345,10 @@ fn project_room_graph(
             "unknown"
         } else if record.flags & shared::records::MULTIBOUND_REFERENCE_FLAG != 0 {
             "none"
-        } else if view.find(b"XPRM").is_some() {
+        } else if view.find(b"XPRM").is_some()
+            || matches!(&sources, Some(RoomLinkSources::Typed(decoded))
+                if decoded.records.get(&id).is_some_and(|source| source.rejected_fields.contains(b"XPRM")))
+        {
             // Native occlusion primitives can substitute their shape's translation for NiBound.
             "unknown"
         } else {
@@ -1253,6 +1368,7 @@ fn project_room_graph(
             let base = base_of(record);
             if base == ROOM_MARKER_BASE
                 || base == PORTAL_MARKER_BASE
+                || base == OCCLUSION_MARKER_BASE
                 || record.flags & shared::records::MULTIBOUND_REFERENCE_FLAG != 0
             {
                 continue;
@@ -1281,11 +1397,13 @@ fn project_room_graph(
          WHERE source.cell_id=?1 AND NOT EXISTS(SELECT 1 FROM room_bounds target \
          WHERE target.ref_id=l.linked_ref AND target.cell_id=?1))",
     )?;
-    let certificate_cells: BTreeSet<_> = rooms_by_cell
+    let cells: BTreeSet<_> = rooms_by_cell
         .keys()
-        .chain(incomplete.intersection(interior_cells))
+        .copied()
+        .chain(occluders.cells)
+        .chain(incomplete.intersection(interior_cells).copied())
         .collect();
-    for &cell in certificate_cells {
+    for cell in cells {
         let dangling: bool = dangling_links.query_row([cell], |row| row.get(0))?;
         tx.execute(
             "INSERT INTO room_graph_cells VALUES (?1,?2)",

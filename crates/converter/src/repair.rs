@@ -1,10 +1,13 @@
 //! Targeted repair of a published pack, including asset-aware database finalization.
 use crate::{
-    archive::{ArchiveExtractor, archive_reader_version, safe_relative_path},
-    asset_path::{AssetKind, canonical_asset_path, is_authoring_resource, resolve_asset_uri},
+    archive::{ArchiveExtractor, ArchiveSelection, archive_reader_version, safe_relative_path},
+    asset_path::{
+        AssetKind, canonical_asset_path, canonical_literal_asset_path, is_authoring_resource,
+        is_authoring_source_name, resolve_asset_uri,
+    },
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestionCacheEntry,
-        configuration_hash, hash_file, link_or_copy,
+        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestedFile,
+        IngestionCacheEntry, configuration_hash, hash_file, link_or_copy,
     },
     check::{CheckMode, CheckProblem, check_output},
     config::{PipelineConfig, TextureEncoder},
@@ -29,7 +32,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::OnceCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -420,7 +423,17 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             );
         }
         unique_archive_asset_keys(entry, &archive)?;
-        for file in &entry.files {
+        if let Err(error) = validate_legacy_archive_paths(entry, &archive) {
+            fs::remove_dir_all(&directory)
+                .wrap_err("cannot discard repair staging for a stale archive path")?;
+            return Err(error).wrap_err_with(|| {
+                format!(
+                    "cannot verify cached paths for {}; run a normal conversion before repair",
+                    archive.display()
+                )
+            });
+        }
+        for file in runtime_archive_files(entry) {
             let Some((asset_kind, ext, _)) = kind(&file.path) else {
                 continue;
             };
@@ -446,10 +459,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     }
     // Loose files override archives, just as in the main conversion pipeline.
     for (relative, path) in &resolved {
-        if let Some((asset_kind, ext, _)) = kind(relative) {
-            let Ok(key) = canonical_asset_path(relative, asset_kind, ext) else {
-                continue;
-            };
+        if let Some(key) = runtime_loose_asset_key(relative) {
             ensure!(
                 !sources
                     .get(&key)
@@ -480,14 +490,14 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         });
         let unsupported_archive_member = active_archive_keys.iter().any(|archive_key| {
             manifest.archives.get(archive_key).is_some_and(|entry| {
-                entry.files.iter().any(|file| {
+                runtime_archive_files(entry).any(|file| {
                     key_matches_prefixes(&file.path, &prefixes) && kind(&file.path).is_none()
                 })
             })
         });
         let unavailable_archive_member = manifest.archives.iter().any(|(archive_key, entry)| {
             !active_archive_keys.contains(archive_key)
-                && entry.files.iter().any(|file| {
+                && runtime_archive_files(entry).any(|file| {
                     key_matches_prefixes(&file.path, &prefixes)
                         && !archive_file_has_current_winner(&file.path, &sources)
                 })
@@ -911,12 +921,40 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     Ok(report)
 }
 
+fn runtime_archive_files(entry: &IngestionCacheEntry) -> impl Iterator<Item = &IngestedFile> {
+    entry
+        .files
+        .iter()
+        .filter(|file| !is_authoring_source_name(&file.path))
+}
+
+/// Older all-files inventories could flatten an authoring path to a runtime name.
+fn validate_legacy_archive_paths(entry: &IngestionCacheEntry, archive: &Path) -> Result<()> {
+    if entry.selection != ArchiveSelection::All || entry.recipe == ArchiveSelection::All.recipe() {
+        return Ok(());
+    }
+    let runtime_paths: HashSet<_> = ArchiveExtractor::list_runtime_paths(archive)?
+        .into_iter()
+        .collect();
+    for file in runtime_archive_files(entry) {
+        if let Some((asset_kind, ext, _)) = kind(&file.path) {
+            let stored = canonical_literal_asset_path(&file.path, asset_kind, ext)?;
+            ensure!(
+                runtime_paths.contains(Path::new(&stored)),
+                "no runtime archive member for cached path {}",
+                file.path
+            );
+        }
+    }
+    Ok(())
+}
+
 fn unique_archive_asset_keys(
     entry: &IngestionCacheEntry,
     archive: &Path,
 ) -> Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
-    for file in &entry.files {
+    for file in runtime_archive_files(entry) {
         if let Some((asset_kind, ext, _)) = kind(&file.path)
             && let Ok(key) = canonical_asset_path(&file.path, asset_kind, ext)
         {
@@ -1085,11 +1123,16 @@ fn recoverable_failure_asset_key(key: &str, data_root: &Path) -> Option<String> 
 fn resolved_loose_asset_keys(resolved: &BTreeMap<String, PathBuf>) -> BTreeSet<String> {
     resolved
         .keys()
-        .filter_map(|relative| {
-            let (asset_kind, ext, _) = kind(relative)?;
-            canonical_asset_path(relative, asset_kind, ext).ok()
-        })
+        .filter_map(|relative| runtime_loose_asset_key(relative))
         .collect()
+}
+
+fn runtime_loose_asset_key(relative: &str) -> Option<String> {
+    if is_authoring_source_name(relative) {
+        return None;
+    }
+    let (asset_kind, ext, _) = kind(relative)?;
+    canonical_asset_path(relative, asset_kind, ext).ok()
 }
 
 fn canonical_failure_asset_key(key: &str, data_root: &Path) -> Result<Option<String>> {

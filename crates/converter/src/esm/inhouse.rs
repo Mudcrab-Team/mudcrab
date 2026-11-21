@@ -26,9 +26,7 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-/// Version 14 projects STAT MODS texture swaps.
-/// Later LAND item recovery shares this identity; reconvert to pick up recovered paint.
-pub const ADAPTER_VERSION: u32 = 14;
+pub const ADAPTER_VERSION: u32 = 15;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
@@ -113,6 +111,8 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "script_property_values",
     "room_bounds",
     "room_portals",
+    "room_occluders",
+    "room_occluder_links",
     "room_links",
     "room_reference_rules",
     "room_model_bounds",
@@ -137,6 +137,8 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "reference_linked_refs",
     "reference_activate_parents",
     "reference_details",
+    "reference_authored_targets",
+    "reference_authored_changes",
     "door_links",
     "emittance",
 ];
@@ -1388,7 +1390,8 @@ fn convert_plugins_with_text_sources_report_impl(
             incomplete.execute([cell])?;
         }
         tx.execute(
-            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES
+             ('visibility_version',2),('occlusion_version',1)",
             [],
         )?;
     }
@@ -1515,12 +1518,11 @@ fn validate_candidate_with_string_sources(
         } else if record.rejected_fields.contains(b"DATA") {
             // Rejected nonfinite coordinates disappear from the typed projection. A short
             // source field can still carry a canonical record with no spatial row.
-            record.framed_source_subrecords().is_some_and(|fields| {
-                fields
-                    .into_iter()
-                    .filter(|(tag, _)| tag == b"DATA")
-                    .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
-            })
+            record
+                .framed_source_prefix()
+                .into_iter()
+                .filter(|(tag, _)| tag == b"DATA")
+                .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
         } else {
             true
         };

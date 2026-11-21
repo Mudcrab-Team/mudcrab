@@ -186,6 +186,10 @@ pub struct DecodedRecord {
 }
 
 impl DecodedRecord {
+    pub(crate) fn framed_source_prefix(&self) -> Vec<([u8; 4], &[u8])> {
+        decoder::framed_source_prefix(&self.raw_payload)
+    }
+
     pub(crate) fn validate_placement_base(&self) -> Result<(), String> {
         if self.rejected_fields.contains(b"NAME") {
             return Err("rejected placed base NAME".into());
@@ -602,6 +606,10 @@ impl TruncatedPlacement {
         })
     }
 
+    pub(crate) fn could_be_reference(self) -> bool {
+        b"REFR".starts_with(self.signature)
+    }
+
     pub(crate) fn runtime_id(self, plugin: usize, order: &LoadOrder) -> Option<u32> {
         source_identity::header_runtime_id(
             // silent-ok: A partial signature cannot establish a runtime record identity.
@@ -693,6 +701,8 @@ pub struct ReadResult {
     pub(crate) deleted_ids: HashSet<u32>,
     /// Runtime cell IDs potentially affected by discarded source frames.
     pub(crate) damaged_cell_groups: HashSet<u32>,
+    /// An unread frame or REFR could hide outgoing PlaneMarker links into another cell.
+    pub(crate) unverified_occluder_links: bool,
     /// Physical placement omissions explained by the later deletion of a usable base.
     pub(crate) retired_placements: HashSet<(u32, u64)>,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
@@ -713,8 +723,8 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 }
 
 pub(crate) use decoder::{
-    DeletedBases, PlacementFailure, PreparedSchemas, localized_field_bank, prepare_runtime_schema,
-    string_table_with_prepared, unique_source_subrecord, validate_placement_targets,
+    DeletedBases, PlacementFailure, PreparedSchemas, framed_source_prefix, localized_field_bank,
+    prepare_runtime_schema, string_table_with_prepared, validate_placement_targets,
 };
 
 fn validate_live_candidate(
@@ -722,14 +732,51 @@ fn validate_live_candidate(
     previous: Option<&DecodedRecord>,
     validate: &mut impl FnMut(&DecodedRecord) -> std::result::Result<(), String>,
 ) -> std::result::Result<(), String> {
+    if record.rejected_fields.contains(b"NAME")
+        && crate::esm::is_placed_record_type(&record.record_type)
+    {
+        return Err("rejected placed base NAME".into());
+    }
     crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
-    if crate::esm::is_placed_record_type(&record.record_type) && previous.is_some() {
-        if !record.valid_override_transform() {
+    if crate::esm::is_placed_record_type(&record.record_type) {
+        if previous.is_some() && !record.valid_override_transform() {
             return Err("invalid placement override transform".into());
         }
-        record.validate_placement_base()?;
+        // The record reader can retain a first definition as a link target without a NAME.
+        // Spatial export validates the base separately before projecting the placement.
+        if previous.is_some()
+            || record
+                .fields
+                .iter()
+                .any(|field| field.signature == *b"NAME")
+        {
+            record.validate_placement_base()?;
+        }
     }
     validate(record)
+}
+
+// A fully framed REFR can still hide authored PlaneMarker links if admission rejects it.
+fn has_authored_occluder_links(record: &DecodedRecord, plugin: usize, order: &LoadOrder) -> bool {
+    if !record
+        .fields
+        .iter()
+        .any(|field| field.signature == *b"XORD")
+        && !record.rejected_fields.contains(b"XORD")
+    {
+        return false;
+    }
+    let fields = record.framed_source_prefix();
+    if !fields
+        .iter()
+        .any(|(tag, bytes)| tag == b"XORD" && crate::esm::rooms::xord_may_link(bytes))
+    {
+        return false;
+    }
+    let names = fields
+        .iter()
+        .filter_map(|(tag, bytes)| (tag == b"NAME").then_some(*bytes));
+    crate::esm::rooms::may_name_occlusion_marker(names, plugin, order)
 }
 
 fn incomplete_override(record: &DecodedRecord, previous: Option<&DecodedRecord>) -> bool {
@@ -821,8 +868,11 @@ fn read_plugins_with_prepared(
         "plugin/order length mismatch"
     );
     let mut result = ReadResult::default();
-    let mut unknown_discarded_scope = false;
     let mut truncated_placements = HashMap::new();
+    let mut unknown_cell_scope = false;
+    let mut unreadable_refs = HashMap::new();
+    let mut linked_marker_candidates = HashMap::new();
+    let mut unresolved_linked_markers = HashSet::new();
     let mut recovery = decoder::RecoveryCandidates::default();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
@@ -833,10 +883,14 @@ fn read_plugins_with_prepared(
         let mut diagnostics = PluginDiagnostics::default();
         let mut seen = HashMap::new();
         let history = std::cell::RefCell::new(Vec::<history::HistoryEntry>::new());
-        let observe = |header| {
-            history
-                .borrow_mut()
-                .push(history::header_entry(header, order, index));
+        let mut unreadable_headers = Vec::new();
+        let observe = |header: scanner::ObservedHeader| {
+            let unreadable = header.failure.is_some() && header.record_type == *b"REFR";
+            let entry = history::header_entry(header, order, index);
+            if unreadable {
+                unreadable_headers.push((entry.source_record_offset, entry.form_id));
+            }
+            history.borrow_mut().push(entry);
         };
         let mut rejected_cells = HashSet::new();
         let receive = |scanned: scanner::ScannedRecord, diagnostics: &mut PluginDiagnostics| {
@@ -865,6 +919,10 @@ fn read_plugins_with_prepared(
                 Err(error) => {
                     rejected_cells.extend(source_cell);
                     if let Some(entry) = history.borrow_mut().last_mut() {
+                        if entry.record_type == *b"REFR" && entry.flags & 0x20 == 0 {
+                            let id = entry.form_id.filter(|&id| id != 0);
+                            unreadable_refs.insert(id, (plugin_index, offset));
+                        }
                         entry.reason = Some(error.clone());
                     }
                     if diagnostics
@@ -880,6 +938,25 @@ fn read_plugins_with_prepared(
             };
             if !record.payload_complete {
                 rejected_cells.extend(source_cell);
+            }
+            if record.record_type == *b"REFR" && record.flags & 0x20 == 0 {
+                let position = (plugin_index, offset);
+                if !record.payload_complete {
+                    let id = history.borrow().last().and_then(|entry| entry.form_id);
+                    unreadable_refs.insert(id.filter(|&id| id != 0), position);
+                } else if has_authored_occluder_links(&record, index, order) {
+                    let identity = source_identity::resolve(
+                        &record.record_type,
+                        record.source_form_id,
+                        index,
+                        order,
+                    );
+                    if identity.state == source_identity::SourceIdentityState::Resolved {
+                        linked_marker_candidates.insert(record.form_id, (position, identity));
+                    } else {
+                        unresolved_linked_markers.insert(position);
+                    }
+                }
             }
             if record.record_type == *b"TES4" {
                 result.headers.push(record);
@@ -1113,7 +1190,16 @@ fn read_plugins_with_prepared(
                 );
             } else {
                 let id = record.form_id;
-                recovery.deleted.restored(id, record.load_order);
+                if !placement {
+                    recovery.restore_before_replacement(
+                        &record,
+                        &result.records,
+                        order,
+                        schema,
+                        prepared,
+                        &mut validate,
+                    );
+                }
                 let tentative = decoder::record_contains_deferred(&record) || placement;
                 let previous = result.records.insert(id, record);
                 if tentative {
@@ -1126,11 +1212,46 @@ fn read_plugins_with_prepared(
             }
         };
         let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
-        for (offset, placement) in damage.truncated_placements {
-            if let Some(id) = placement.runtime_id(index, order) {
-                truncated_placements.insert(id, (plugin_index, offset));
+        let history = history.into_inner();
+        let overruns = history
+            .iter()
+            .filter(|entry| {
+                !entry.frame_complete
+                    && entry.flags & 0x20 == 0
+                    && crate::esm::is_placed_record_type(&entry.record_type)
+            })
+            .map(|entry| {
+                (
+                    entry.source_record_offset,
+                    entry.form_id.filter(|&id| id != 0),
+                )
+            });
+        unreadable_headers.extend(
+            damage
+                .truncated_placements
+                .iter()
+                .filter(|(_, placement)| placement.could_be_reference())
+                .map(|(offset, placement)| (*offset, placement.runtime_id(index, order))),
+        );
+        for (offset, id) in unreadable_headers {
+            let position = (plugin_index, offset);
+            let latest = unreadable_refs
+                .entry(id.filter(|&id| id != 0))
+                .or_insert(position);
+            *latest = (*latest).max(position);
+        }
+        let partial_headers = damage
+            .truncated_placements
+            .into_iter()
+            .map(|(offset, placement)| (offset, placement.runtime_id(index, order)));
+        for (offset, id) in overruns.chain(partial_headers) {
+            if let Some(id) = id {
+                let latest = truncated_placements
+                    .entry(id)
+                    .or_insert((plugin_index, offset));
+                *latest = (*latest).max((plugin_index, offset));
             } else {
-                unknown_discarded_scope = true;
+                unknown_cell_scope = true;
             }
         }
         for scope in damage
@@ -1142,10 +1263,13 @@ fn read_plugins_with_prepared(
                 DiscardedFrameScope::Cell(cell) => {
                     result.damaged_cell_groups.insert(cell);
                 }
-                DiscardedFrameScope::Unknown => unknown_discarded_scope = true,
+                DiscardedFrameScope::Unknown => {
+                    unknown_cell_scope = true;
+                    result.unverified_occluder_links = true;
+                }
             }
         }
-        result.history.extend(history.into_inner());
+        result.history.extend(history);
         result.diagnostics.insert(name.clone(), diagnostics);
     }
     scan_stage.finish(result.records.len());
@@ -1171,7 +1295,50 @@ fn read_plugins_with_prepared(
             result.damaged_cell_groups.extend(winner.cell_form_id);
         }
     }
-    if unknown_discarded_scope {
+    // Only a later admitted record (including a tombstone) with proven native
+    // ownership settles the identity of an unread replacement.
+    if !unreadable_refs.is_empty()
+        || !linked_marker_candidates.is_empty()
+        || !unresolved_linked_markers.is_empty()
+    {
+        for entry in result.history.iter().filter(|entry| entry.accepted) {
+            let Some(id) = entry.form_id else { continue };
+            let position = (entry.plugin_index, entry.source_record_offset);
+            if unreadable_refs
+                .get(&Some(id))
+                .is_some_and(|&damage| damage < position)
+                && source_identity::header_runtime_id(
+                    b"REFR",
+                    entry.source_form_id,
+                    entry.plugin_index as usize,
+                    order,
+                ) == Some(id)
+            {
+                unreadable_refs.remove(&Some(id));
+            }
+            // An admitted occurrence accounts for its own XORD even without native ownership.
+            unresolved_linked_markers.remove(&position);
+            if linked_marker_candidates
+                .get(&id)
+                .is_some_and(|(candidate, identity)| {
+                    *candidate <= position
+                        && *identity
+                            == source_identity::resolve(
+                                &entry.record_type,
+                                entry.source_form_id,
+                                entry.plugin_index as usize,
+                                order,
+                            )
+                })
+            {
+                linked_marker_candidates.remove(&id);
+            }
+        }
+        result.unverified_occluder_links |= !unreadable_refs.is_empty()
+            || !linked_marker_candidates.is_empty()
+            || !unresolved_linked_markers.is_empty();
+    }
+    if unknown_cell_scope {
         result.damaged_cell_groups.extend(
             result
                 .records

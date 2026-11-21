@@ -9,9 +9,9 @@ use crate::esm::{
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
     esm::records::record_type::vmad::parse_vmad,
-    records::ReadResult,
+    records::{DecodedRecord, ReadResult, source_identity},
 };
-use rusqlite::{Connection, Result, Statement, ToSql, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Result, Statement, ToSql, Transaction, params};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
@@ -363,7 +363,11 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
 }
 
 /// Adds each `(name, declaration)` column `table` lacks.
-fn add_missing_columns(conn: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<()> {
+pub(super) fn add_missing_columns(
+    conn: &Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> Result<()> {
     for (name, declaration) in columns {
         let present: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
@@ -423,13 +427,14 @@ struct ExportOptions<'a> {
     trusted_portal_nulls: bool,
     deleted_ids: Option<&'a HashSet<u32>>,
     room_link_sources: Option<RoomLinkSources<'a>>,
+    subset_sources: Option<(&'a HashMap<u32, DecodedRecord>, &'a LoadOrder)>,
     damaged_placement_cells: Option<&'a HashSet<u32>>,
 }
 
 /// Export selected records without changing existing provenance. Grass records
 /// outside this subset are preserved; movement projections are rebuilt from it.
 /// Synthetic records without a source load order have no formid_map entry.
-/// Export a legacy subset without replacing complete-load-order metadata.
+/// Placed deletions use the deleted header flag and a resolved FormID.
 pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Result<()> {
     export_records(
         conn,
@@ -444,6 +449,79 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             trusted_portal_nulls: true,
             deleted_ids: None,
             room_link_sources: None,
+            subset_sources: None,
+            damaged_placement_cells: None,
+        },
+    )
+}
+
+/// Apply decoded, resolved Skyrim placements and header-only deletions to an existing pack.
+/// Use an append-only load order with the pack's existing slots intact. The physical source
+/// fields provide XORD slot provenance. The original conversion's source archive is preserved;
+/// new FormIDs receive their stable owning-plugin identity.
+pub fn export_placed_subset_with_sources(
+    conn: &Connection,
+    records: &HashMap<u32, DecodedRecord>,
+    deleted: &[u32],
+    order: &LoadOrder,
+) -> Result<()> {
+    let mut master = HashMap::new();
+    for (&id, record) in records {
+        let supplier = record.load_order as usize;
+        if id == 0
+            || id != record.form_id
+            || record.record_type != *b"REFR"
+            || supplier >= order.names.len()
+            || supplier >= order.metadata.len()
+            || source_identity::header_runtime_id(b"REFR", record.source_form_id, supplier, order)
+                != Some(id)
+        {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "expected a resolved REFR for {id:08X}"
+            )));
+        }
+        master.insert(id, record.to_raw_record());
+    }
+    for &id in deleted {
+        if order.identity(id).is_err() {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "unresolved placed deletion {id:08X}"
+            )));
+        }
+        if master
+            .insert(
+                id,
+                RawRecord {
+                    form_id: id,
+                    record_type: *b"REFR",
+                    flags: 0x20,
+                    subrecords: Vec::new(),
+                    cell_form_id: None,
+                    worldspace_form_id: None,
+                    load_order: 0,
+                },
+            )
+            .is_some()
+        {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "duplicate placed change for {id:08X}"
+            )));
+        }
+    }
+    export_records(
+        conn,
+        &master,
+        None,
+        None,
+        None,
+        None,
+        ExportOptions {
+            runtime_views: true,
+            scalar_scripts: false,
+            trusted_portal_nulls: false,
+            deleted_ids: None,
+            room_link_sources: None,
+            subset_sources: Some((records, order)),
             damaged_placement_cells: None,
         },
     )
@@ -471,6 +549,7 @@ pub fn export_to_db_with_load_order(
             trusted_portal_nulls: true,
             deleted_ids: None,
             room_link_sources: None,
+            subset_sources: None,
             damaged_placement_cells: None,
         },
     )
@@ -499,6 +578,7 @@ pub(super) fn export_plugins_to_db(
             trusted_portal_nulls: true,
             deleted_ids: Some(&merged.deleted_ids),
             room_link_sources: Some(RoomLinkSources::Legacy(&merged.room_link_layouts)),
+            subset_sources: None,
             damaged_placement_cells: Some(&merged.damaged_cells),
         },
     )
@@ -527,6 +607,7 @@ pub(crate) fn export_inhouse_to_db(
             trusted_portal_nulls: false,
             deleted_ids: Some(&decoded.deleted_ids),
             room_link_sources: Some(RoomLinkSources::Typed(decoded)),
+            subset_sources: None,
             damaged_placement_cells: None,
         },
     )
@@ -554,6 +635,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
             trusted_portal_nulls: false,
             deleted_ids: Some(deleted_ids),
             room_link_sources: None,
+            subset_sources: None,
             damaged_placement_cells: None,
         },
     )
@@ -568,7 +650,6 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS record_overrides;
         DROP TABLE IF EXISTS room_placement_edits;
         DROP TABLE IF EXISTS room_placement_layers;
-        DROP TABLE IF EXISTS reference_link_subset_sources;
         DROP TABLE IF EXISTS subset_nonplacement_deletions;
         DROP TABLE IF EXISTS inhouse_schema_addons;
         DROP TABLE IF EXISTS inhouse_unresolved_terrain_textures;
@@ -601,6 +682,10 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS worldspaces;
         DROP TABLE IF EXISTS records;
         DROP TABLE IF EXISTS formid_map;
+        DROP TABLE IF EXISTS subset_placement_deletions;
+        DROP TABLE IF EXISTS reference_link_subset_sources;
+        DROP TABLE IF EXISTS reference_authored_targets;
+        DROP TABLE IF EXISTS reference_authored_changes;
         DROP TABLE IF EXISTS lod_chunks_spatial;
         DROP TABLE IF EXISTS lod_chunks;
         DROP TABLE IF EXISTS lod_build;
@@ -614,6 +699,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
     }
     create_tables(tx)?;
+    super::reference_links::create_authored_index(tx)?;
     // Every complete snapshot owns these derived rows, including archive-only exports
     // that deliberately defer all runtime projections.
     crate::esm::rooms::clear(tx)?;
@@ -693,6 +779,7 @@ fn export_records(
         trusted_portal_nulls,
         deleted_ids,
         room_link_sources,
+        subset_sources,
         damaged_placement_cells,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
@@ -709,9 +796,12 @@ fn export_records(
                 )))
             })?;
         }
-    }
-    if order.is_none() && runtime_views {
-        tx.execute_batch(super::reference_links::SUBSET_SOURCES_SQL)?;
+    } else {
+        // Older packs acquire this only when edited. Mapped deletions retain formid_map instead.
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS subset_placement_deletions (form_id INTEGER PRIMARY KEY)",
+        )?;
+        super::reference_links::ensure_subset_sources(&tx)?;
     }
     tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     if let Some(ids) = deleted_ids {
@@ -730,7 +820,7 @@ fn export_records(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='script_properties')",
         [], |row| row.get::<_, bool>(0),
     )?;
-    if runtime_views {
+    if runtime_views && (order.is_some() || subset_sources.is_none()) {
         tx.prepare_cached("DELETE FROM movement_types")?
             .execute([])?;
         tx.prepare_cached("DELETE FROM movement_game_settings")?
@@ -774,6 +864,18 @@ fn export_records(
         .map(|(&form_id, _)| form_id)
         .collect();
 
+    let only_occluders = if runtime_views && order.is_none() {
+        crate::esm::rooms::update_subset_occluders(
+            &tx,
+            master,
+            subset_sources,
+            &HashMap::new(),
+            &mut omissions,
+        )?
+        .only_occluders
+    } else {
+        HashSet::new()
+    };
     let mut ordered: Vec<_> = master.iter().collect();
     ordered.sort_unstable_by_key(|(form_id, _)| **form_id);
     // Keep the hot statement checked out. Repeated cache checkout/return recreates
@@ -786,24 +888,93 @@ fn export_records(
         check_record_insert(&statement)?;
         Some(statement)
     };
-    let insert_links = |record: &RawRecord| {
-        super::reference_links::insert(
-            &tx,
-            &super::reference_links::Context {
-                master,
-                order,
-                subset: order.is_none(),
-                deleted_ids,
-            },
-            record,
-            &SubrecordView::new(&record.subrecords),
-        )
+    let link_context = super::reference_links::Context {
+        master,
+        order,
+        subset: order.is_none(),
+        deleted_ids,
     };
     let mut subset_link_sources = Vec::new();
     let mut unavailable_link_targets = Vec::new();
     let mut available_link_targets = HashSet::new();
     let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
+        let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
+        let subset_placement = order.is_none() && super::is_placed_record_type(&record.record_type);
+        if subset_placement && (subset_sources.is_some() || record.is_deleted()) {
+            let type_mismatch: bool = tx
+                .prepare_cached(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM records WHERE form_id=?1 AND record_type<>?2
+                         UNION ALL
+                         SELECT 1 FROM formid_map WHERE form_id=?1 AND record_type<>?2
+                     )",
+                )?
+                .query_row(params![form_id, type_str], |row| row.get(0))?;
+            if type_mismatch {
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "placed edit {form_id:08X} does not match its existing record type"
+                )));
+            }
+        }
+        if let Some(identity_order) = order.or(subset_sources.map(|(_, order)| order)) {
+            let identity = identity_order.identity(form_id).map_err(|error| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("record {form_id:08X}: {error}"),
+                )))
+            })?;
+            if order.is_some() {
+                tx.prepare_cached(
+                    "INSERT OR REPLACE INTO formid_map(form_id, plugin_name, internal_id, record_type) VALUES (?1, ?2, ?3, ?4)",
+                )?.execute(params![form_id, identity.plugin, identity.local_id, type_str])?;
+            } else {
+                let written = tx.prepare_cached(
+                    "INSERT INTO formid_map(form_id, plugin_name, internal_id, record_type) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(form_id) DO UPDATE SET record_type=excluded.record_type
+                     WHERE plugin_name=excluded.plugin_name AND internal_id=excluded.internal_id AND record_type=excluded.record_type",
+                )?.execute(params![form_id, identity.plugin, identity.local_id, type_str])?;
+                if written == 0 {
+                    return Err(rusqlite::Error::InvalidParameterName(format!(
+                        "subset load order changes the existing identity of {form_id:08X}"
+                    )));
+                }
+            }
+        }
+
+        if subset_placement {
+            if type_str == "REFR" {
+                edited_references.insert(form_id);
+            }
+            if !only_occluders.contains(&form_id) {
+                // A regular placement can change room membership that a subset cannot rebuild.
+                tx.prepare_cached(
+                    "INSERT INTO room_graph_cells(cell_id,complete)
+                     SELECT cell_id,0 FROM [references] WHERE id=?1 AND cell_id<>0
+                     UNION SELECT ?2,0 WHERE ?2 IS NOT NULL AND ?2<>0
+                     ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+                )?
+                .execute(params![form_id, record.cell_form_id])?;
+            }
+            tx.prepare_cached("DELETE FROM reference_rooms WHERE reference_id=?1")?
+                .execute([form_id])?;
+            if record.is_deleted() {
+                delete_reference_scripts(&tx, form_id, scalar_script_storage)?;
+                clear_reference_placement(&tx, form_id)?;
+                super::reference_links::forget_subset_source(&tx, form_id)?;
+                tx.prepare_cached("DELETE FROM records WHERE form_id=?1")?
+                    .execute([form_id])?;
+                if (1..0x800).contains(&form_id) {
+                    tx.prepare_cached(
+                        "INSERT OR IGNORE INTO subset_placement_deletions(form_id)
+                         SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM formid_map WHERE form_id=?1)",
+                    )?
+                    .execute([form_id])?;
+                }
+                unavailable_link_targets.push(form_id);
+                continue;
+            }
+        }
         let link_target =
             form_id != 0 && super::reference_links::accepts_link_target(&record.record_type);
         let target_changed = order.is_none()
@@ -811,7 +982,6 @@ fn export_records(
             && form_id != 0
             && !record.is_deleted()
             && super::reference_links::target_kind_changed(&tx, form_id, &record.record_type)?;
-        let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
         let blob = serialize_subrecords(&record.subrecords);
         let insert = records_insert.as_mut().expect("nonempty record loop");
         insert_canonical_record(
@@ -844,18 +1014,6 @@ fn export_records(
                 }
             }
         }
-        if let Some(order) = order {
-            let identity = order.identity(form_id).map_err(|error| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("record {form_id:08X}: {error}"),
-                )))
-            })?;
-            tx.prepare_cached(
-                "INSERT OR REPLACE INTO formid_map(form_id, plugin_name, internal_id, record_type) VALUES (?1, ?2, ?3, ?4)")?.execute(
-                params![form_id, identity.plugin, identity.local_id, type_str],
-            )?;
-        }
 
         if !runtime_views {
             // Canonical records/formid_map are complete; only materialized runtime views defer.
@@ -868,30 +1026,11 @@ fn export_records(
         if record.record_type == *b"STAT" {
             super::object_materials::insert(&tx, master, record, &view)?;
         }
-        if order.is_none() && super::is_placed_record_type(&record.record_type) {
-            tx.prepare_cached(
-                "INSERT OR REPLACE INTO reference_link_subset_sources(form_id) VALUES(?1)",
-            )?
-            .execute([form_id])?;
-            // A subset cannot rebuild the cell graph. Invalidate the old and new cells.
-            tx.prepare_cached(
-                "INSERT INTO room_graph_cells(cell_id,complete)
-                 SELECT cell_id,0 FROM [references] WHERE id=?1 AND cell_id<>0
-                 UNION SELECT ?2,0 WHERE ?2 IS NOT NULL AND ?2<>0
-                 ON CONFLICT(cell_id) DO UPDATE SET complete=0",
-            )?
-            .execute(params![form_id, record.cell_form_id])?;
-            tx.prepare_cached("DELETE FROM reference_rooms WHERE reference_id=?1")?
-                .execute([form_id])?;
-            if type_str == "REFR" {
-                edited_references.insert(form_id);
-            }
+        if order.is_none()
+            && super::is_placed_record_type(&record.record_type)
+            && !record.is_deleted()
+        {
             delete_reference_scripts(&tx, form_id, scalar_script_storage)?;
-            if record.is_deleted() {
-                clear_reference_placement(&tx, form_id)?;
-                unavailable_link_targets.push(form_id);
-                continue;
-            }
         }
         let vmad_bytes = view.find(b"VMAD");
         if let Some(vmad_bytes) = vmad_bytes {
@@ -952,18 +1091,28 @@ fn export_records(
             }
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
+                let mut cell = cells.get(&cell_id).copied();
+                if subset_placement && cell.is_none() {
+                    cell = tx
+                        .prepare_cached(
+                            "SELECT grid_x,grid_y,worldspace_id FROM cells WHERE id=?1",
+                        )?
+                        .query_row([cell_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                        .optional()?;
+                }
                 let inserted = insert_reference_with_canonical_data(
                     &tx,
                     form_id,
                     cell_id,
-                    cells.get(&cell_id).copied(),
+                    cell,
                     record.flags,
                     &record.subrecords,
                     &canonical_record.subrecords,
                 )?;
                 if !inserted {
-                    if order.is_none() {
+                    if subset_placement {
                         unavailable_link_targets.push(form_id);
+                        super::reference_links::forget_subset_source(&tx, form_id)?;
                     }
                     omissions.record(
                         OmissionCategory::ReferenceUnusableData,
@@ -977,6 +1126,12 @@ fn export_records(
                     continue;
                 }
                 if order.is_none() {
+                    if (1..0x800).contains(&form_id) {
+                        tx.prepare_cached(
+                            "DELETE FROM subset_placement_deletions WHERE form_id=?1",
+                        )?
+                        .execute([form_id])?;
+                    }
                     subset_link_sources.push(canonical_record);
                     if !link_target {
                         unavailable_link_targets.push(form_id);
@@ -984,7 +1139,13 @@ fn export_records(
                         available_link_targets.insert(form_id);
                     }
                 } else {
-                    insert_links(record)?;
+                    let typed = match (&room_link_sources, order) {
+                        (Some(RoomLinkSources::Typed(decoded)), Some(order)) => {
+                            decoded.records.get(&form_id).map(|source| (source, order))
+                        }
+                        _ => None,
+                    };
+                    super::reference_links::insert(&tx, &link_context, record, typed)?;
                 }
             }
             "LAND" => {
@@ -1009,7 +1170,7 @@ fn export_records(
                 write_static_model(
                     &tx,
                     form_id,
-                    record,
+                    canonical_record,
                     &view,
                     model.as_deref(),
                     order.is_none(),
@@ -1042,7 +1203,7 @@ fn export_records(
                 write_static_model(
                     &tx,
                     form_id,
-                    record,
+                    canonical_record,
                     &view,
                     model.as_deref(),
                     order.is_none(),
@@ -1184,13 +1345,19 @@ fn export_records(
     // A later edit can remove a placement while retaining its canonical record.
     for source in subset_link_sources {
         let projection = runtime_projection(source, unresolved_fields);
-        insert_links(projection.as_ref().unwrap_or(source))?;
+        let projected = projection.as_ref().unwrap_or(source);
+        let typed = subset_sources
+            .and_then(|(records, order)| Some((records.get(&source.form_id)?, order)));
+        super::reference_links::insert(&tx, &link_context, projected, typed)?;
     }
-    super::reference_links::refresh_incoming(
-        &tx,
-        &unavailable_link_targets,
-        &available_link_targets,
-    )?;
+    if order.is_none() {
+        super::reference_links::refresh_incoming(
+            &tx,
+            &unavailable_link_targets,
+            &available_link_targets,
+            &master.keys().copied().collect::<Vec<_>>(),
+        )?;
+    }
     // Derived snapshots like the actor model catalog and the grass tables: only a full load-order
     // export owns them, so the movement annotator's subset export leaves them alone, and
     // diagnostic archives defer them. The emittance pass holds every reference and the records
@@ -1202,15 +1369,16 @@ fn export_records(
             master,
             &interior_cells,
             room_link_sources,
-            &order.names,
+            Some(order),
             damaged_placement_cells,
+            &mut omissions,
         )?;
         if !trusted_portal_nulls {
             // Canonical nulls need their source provenance. Keep legacy-safe semantics until
             // the full in-house source transaction verifies and publishes them.
             tx.execute("UPDATE room_portals SET unbounded_a=0,unbounded_b=0", [])?;
             tx.execute(
-                "DELETE FROM room_graph_stats WHERE name='visibility_version'",
+                "DELETE FROM room_graph_stats WHERE name IN ('visibility_version','occlusion_version')",
                 [],
             )?;
         }
@@ -1249,11 +1417,12 @@ fn write_static_model(
             .optional()?
     {
         let previous = previous.as_deref();
-        let unchanged = previous == model
-            || previous.zip(model).is_some_and(|(old, new)| {
-                let key = shared::world_assets::streamed_model_path;
-                key(old).is_some_and(|old_key| Some(old_key) == key(new))
-            });
+        let unchanged = !record.is_deleted()
+            && (previous == model
+                || previous.zip(model).is_some_and(|(old, new)| {
+                    let key = shared::world_assets::streamed_model_path;
+                    key(old).is_some_and(|old_key| Some(old_key) == key(new))
+                }));
         if unchanged && model.is_some() {
             // A different source spelling can identify the same converted GLB.
             // Keep its measured render bounds as well as its room evidence.
@@ -1751,6 +1920,10 @@ fn delete_reference_scripts(
 /// Incoming authored links may still name the canonical record; usable neighbors stay intact.
 /// Extend the table list when adding a placement table keyed on `reference_id`.
 fn clear_reference_placement(tx: &Transaction<'_>, form_id: u32) -> Result<()> {
+    if super::rooms::table_exists(tx, "room_reference_rules")? {
+        tx.prepare_cached("DELETE FROM room_reference_rules WHERE reference_id=?1")?
+            .execute([form_id])?;
+    }
     for table in super::reference_links::REFERENCE_LINK_TABLES {
         tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
             .execute([form_id])?;
@@ -3575,11 +3748,33 @@ mod tests {
             }],
         )
         .unwrap();
+        let mut occluder = portal(0x3002, 0x100, None);
+        occluder
+            .subrecords
+            .iter_mut()
+            .find(|(tag, _)| tag.as_slice() == b"NAME")
+            .unwrap()
+            .1 = rooms::OCCLUSION_MARKER_BASE.to_le_bytes().to_vec();
+        occluder.subrecords.push((
+            b"XORD".to_vec(),
+            [0x3003u32, 0, 0, 0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        ));
         let records = vec![
             interior_cell(0x100),
             room(0x1001, 0x100, [0.0; 3], [0.0; 3], [100.0; 3], vec![]),
             portal(0x3001, 0x100, Some((0x1001, 0))),
-            reference(0x2001, 0x100, 0x500, [20.0, 0.0, 0.0], [0.0; 3]),
+            marker(
+                0x2001,
+                0x100,
+                0x500,
+                [20.0, 0.0, 0.0],
+                [0.0; 3],
+                vec![(b"XLKR", word(0x1001))],
+            ),
+            occluder,
         ];
         let master: HashMap<u32, RawRecord> = records
             .into_iter()
@@ -3599,13 +3794,44 @@ mod tests {
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
         assert_eq!((expected.rooms, expected.portals), (1, 1));
+        assert_eq!(expected.occluders, 1);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(
+            conn.query_row(
+                "SELECT target_id FROM reference_authored_targets WHERE reference_id=0x2001",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0x1001
+        );
+        assert!(
+            !conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='occlusion_version')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
 
         conn.execute("INSERT INTO room_model_bounds VALUES(1280,1,2,3,4)", [])
             .unwrap();
         export_to_db(&conn, &HashMap::new()).unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM room_occluders", [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM room_occluder_links", [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
         assert_eq!(
             conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r
                 .get::<_, u32>(0))
@@ -3618,6 +3844,8 @@ mod tests {
         for table in [
             "room_bounds",
             "room_portals",
+            "room_occluders",
+            "room_occluder_links",
             "room_links",
             "room_graph_cells",
             "reference_rooms",
@@ -3629,6 +3857,8 @@ mod tests {
             "projection_omission_samples",
             "cells",
             "references",
+            "reference_authored_targets",
+            "reference_authored_changes",
         ] {
             let count: u64 = conn
                 .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |row| {
@@ -3640,7 +3870,7 @@ mod tests {
         let canonical_rows: u64 = conn
             .query_row("SELECT count(*) FROM records", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(canonical_rows, 4);
+        assert_eq!(canonical_rows, 5);
         export_inhouse_to_db(
             &conn,
             &master,
@@ -3676,13 +3906,124 @@ mod tests {
     }
 
     #[test]
+    fn sourced_subset_deletion_checks_owning_identity_and_type_on_retries() {
+        use crate::esm::binary::PluginMetadata;
+
+        let db = Connection::open_in_memory().unwrap();
+        let id = 0x0100_0800;
+        let order = |owner: &str| {
+            LoadOrder::from_metadata(
+                vec!["Skyrim.esm".into(), owner.into()],
+                vec![PluginMetadata::default(), PluginMetadata::default()],
+            )
+            .unwrap()
+        };
+        let matching = order("First.esp");
+        let foreign = order("Second.esp");
+        export_to_db_with_load_order(
+            &db,
+            &[(id, reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]))].into(),
+            &matching,
+        )
+        .unwrap();
+        db.execute("INSERT INTO scripts VALUES (?1,'Test',X'','[]')", [id])
+            .unwrap();
+        let delete = |order| export_placed_subset_with_sources(&db, &HashMap::new(), &[id], order);
+        let counts = || {
+            db.query_row(
+                "SELECT (SELECT count(*) FROM [references] WHERE id=?1),
+                        (SELECT count(*) FROM scripts WHERE form_id=?1),
+                        (SELECT count(*) FROM records WHERE form_id=?1)",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, u32>(2)?,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+        assert!(
+            delete(&foreign)
+                .unwrap_err()
+                .to_string()
+                .contains("identity")
+        );
+        assert_eq!(counts(), (1, 1, 1));
+        db.execute(
+            "UPDATE formid_map SET internal_id=0x801 WHERE form_id=?1",
+            [id],
+        )
+        .unwrap();
+        assert!(
+            delete(&matching)
+                .unwrap_err()
+                .to_string()
+                .contains("identity")
+        );
+        assert_eq!(counts(), (1, 1, 1));
+        db.execute(
+            "UPDATE formid_map SET internal_id=0x800 WHERE form_id=?1",
+            [id],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE records SET record_type='ACHR' WHERE form_id=?1",
+            [id],
+        )
+        .unwrap();
+        assert!(
+            delete(&matching)
+                .unwrap_err()
+                .to_string()
+                .contains("record type")
+        );
+        assert_eq!(counts(), (1, 1, 1));
+        db.execute(
+            "UPDATE records SET record_type='REFR' WHERE form_id=?1",
+            [id],
+        )
+        .unwrap();
+
+        delete(&matching).unwrap();
+        assert_eq!(counts(), (0, 0, 0));
+        delete(&matching).unwrap();
+        assert!(
+            delete(&foreign)
+                .unwrap_err()
+                .to_string()
+                .contains("identity")
+        );
+        db.execute(
+            "UPDATE formid_map SET record_type='ACHR' WHERE form_id=?1",
+            [id],
+        )
+        .unwrap();
+        assert!(
+            delete(&matching)
+                .unwrap_err()
+                .to_string()
+                .contains("record type")
+        );
+        assert_eq!(counts(), (0, 0, 0));
+    }
+
+    #[test]
     fn subset_reference_links_use_pack_targets_and_the_current_edit_set() {
         let db = Connection::open_in_memory().unwrap();
         create_tables(&db).unwrap();
         let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
         let target = 0x810;
         let keyword = 0x811;
-        let deleted_target = 0x812;
+        let deleted_target = 0x700;
+        let mapped_deleted_target = 0x701;
+        db.execute(
+            "INSERT INTO formid_map VALUES (?1,'skyrim.esm',?1,'REFR')",
+            [mapped_deleted_target],
+        )
+        .unwrap();
         let new_target = 0x910;
         let edited = 0x900;
         let unusable = 0x911;
@@ -3692,6 +4033,7 @@ mod tests {
                 (target, placed(target)),
                 (keyword, record(keyword, b"KYWD", None, None, Vec::new())),
                 (deleted_target, placed(deleted_target)),
+                (mapped_deleted_target, placed(mapped_deleted_target)),
                 (unusable, placed(unusable)),
             ]
             .into(),
@@ -3702,6 +4044,7 @@ mod tests {
         for id in [
             target,
             deleted_target,
+            mapped_deleted_target,
             new_target,
             unusable,
             keyword,
@@ -3717,10 +4060,14 @@ mod tests {
                 .subrecords
                 .push((b"XLKR".to_vec(), [word(keyword), word(id)].concat()));
         }
-        let mut deleted = record(deleted_target, b"REFR", None, None, Vec::new());
-        deleted.flags = 0x20;
+        let deleted = |id| {
+            let mut record = record(id, b"REFR", None, None, Vec::new());
+            record.flags = 0x20;
+            (id, record)
+        };
         let expected = [
             Some(target),
+            None,
             None,
             Some(new_target),
             None,
@@ -3729,17 +4076,54 @@ mod tests {
             Some(0x14),
             None,
         ];
-        for edits in [
+        let mut mismatches = Vec::new();
+        let restore_targets = || {
             [
-                (edited, source.clone()),
-                (deleted_target, deleted),
-                (new_target, placed(new_target)),
-                (unusable, record(unusable, b"REFR", None, None, Vec::new())),
+                (deleted_target, placed(deleted_target)),
+                (mapped_deleted_target, placed(mapped_deleted_target)),
             ]
-            .into(),
-            [(edited, source)].into(),
+            .into()
+        };
+        for (label, edits, restored, control) in [
+            (
+                "source and targets edited together",
+                [
+                    (edited, source.clone()),
+                    deleted(deleted_target),
+                    deleted(mapped_deleted_target),
+                    (new_target, placed(new_target)),
+                    (unusable, record(unusable, b"REFR", None, None, Vec::new())),
+                ]
+                .into(),
+                false,
+                true,
+            ),
+            (
+                "source-only while targets absent",
+                [(edited, source.clone())].into(),
+                false,
+                true,
+            ),
+            ("target-only restoration", restore_targets(), true, false),
+            (
+                "source-only with targets present",
+                [(edited, source)].into(),
+                true,
+                true,
+            ),
+            (
+                "target-only deletion",
+                [deleted(deleted_target), deleted(mapped_deleted_target)].into(),
+                false,
+                false,
+            ),
         ] {
             export_to_db(&db, &edits).unwrap();
+            let mut expected = expected;
+            if restored {
+                expected[1] = Some(deleted_target);
+                expected[2] = Some(mapped_deleted_target);
+            }
             let parents = db
                 .prepare(
                     "SELECT parent_ref_id, delay FROM reference_activate_parents
@@ -3764,9 +4148,148 @@ mod tests {
                 .unwrap()
                 .collect::<Result<Vec<_>>>()
                 .unwrap();
-            assert_eq!(parents, expected.map(|id| (id, 1.0)));
-            assert_eq!(linked, expected.map(|id| (keyword, id)));
+            let expected_parents = expected.map(|id| (id, 1.0));
+            let expected_linked = expected.map(|id| (keyword, id));
+            if control {
+                assert_eq!(parents, expected_parents, "{label}");
+                assert_eq!(linked, expected_linked, "{label}");
+            } else if parents != expected_parents || linked != expected_linked {
+                mismatches.push(format!(
+                    "{label}: XAPR {parents:?}, XLKR {linked:?}, expected targets {expected:?}"
+                ));
+            }
         }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    }
+
+    #[test]
+    fn subset_incoming_links_use_effective_source_positions_and_roll_back() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let target = 0x810;
+        let source = 0x900;
+        let other = 0x811;
+        let key = 0x812;
+        let order = LoadOrder::from_metadata(
+            vec!["Skyrim.esm".into()],
+            vec![crate::esm::binary::PluginMetadata::default()],
+        )
+        .unwrap();
+        let mut initial = placed(source);
+        initial.subrecords.extend([
+            (b"XLKR".to_vec(), word(other)),
+            (b"XLKR".to_vec(), vec![0; 6]),
+            (b"XLKR".to_vec(), [word(target), word(other)].concat()),
+            (b"XAPR".to_vec(), vec![0; 12]),
+            (
+                b"XAPR".to_vec(),
+                [word(target), 2.0f32.to_le_bytes().to_vec()].concat(),
+            ),
+            (b"XAPD".to_vec(), vec![3]),
+            (
+                b"XLOC".to_vec(),
+                [vec![50, 0, 0, 0], word(key), vec![4, 0, 0, 0]].concat(),
+            ),
+        ]);
+        export_to_db_with_load_order(
+            &db,
+            &[
+                (source, initial.clone()),
+                (other, placed(other)),
+                (key, record(key, b"KEYM", None, None, Vec::new())),
+            ]
+            .into(),
+            &order,
+        )
+        .unwrap();
+        let links = || {
+            db.query_row(
+                "SELECT x0.linked_ref_id,x1.keyword_id,x1.linked_ref_id,p.parent_ref_id,p.delay,d.activate_parent_flags,d.lock_key_id
+                 FROM reference_linked_refs x0
+                 JOIN reference_linked_refs x1 ON x1.reference_id=x0.reference_id AND x1.position=1
+                 JOIN reference_activate_parents p ON p.reference_id=x0.reference_id AND p.position=0
+                 JOIN reference_details d ON d.reference_id=x0.reference_id
+                 WHERE x0.reference_id=?1 AND x0.position=0",
+                [source],
+                |row| Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, Option<u32>>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, Option<u32>>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, u32>(5)?,
+                    row.get::<_, u32>(6)?,
+                )),
+            )
+            .unwrap()
+        };
+        let restore = |record| export_to_db(&db, &[(target, record)].into());
+        let absent = (other, None, other, None, 2.0, 3, key);
+        assert_eq!(links(), absent);
+        // The original archive may be absent from the placement mirror in an older pack.
+        db.execute("UPDATE [references] SET data=NULL WHERE id=?1", [source])
+            .unwrap();
+        let mut wrong_type = placed(target);
+        wrong_type.record_type = *b"ACRE";
+        restore(wrong_type).unwrap();
+        assert_eq!(links(), absent);
+        db.execute_batch(
+            "CREATE TRIGGER reject_incoming BEFORE UPDATE OF keyword_id ON reference_linked_refs
+             BEGIN SELECT RAISE(ABORT, 'reject incoming link'); END;",
+        )
+        .unwrap();
+        assert!(
+            restore(placed(target))
+                .unwrap_err()
+                .to_string()
+                .contains("reject incoming link")
+        );
+        assert_eq!(links(), absent);
+        let kind: String = db
+            .query_row(
+                "SELECT record_type FROM records WHERE form_id=?1",
+                [target],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "ACRE");
+        db.execute_batch("DROP TRIGGER reject_incoming").unwrap();
+        restore(placed(target)).unwrap();
+        assert_eq!(
+            links(),
+            (other, Some(target), other, Some(target), 2.0, 3, key)
+        );
+
+        // A room placement layer can retain a different original archive for the same FormID.
+        db.execute_batch(
+            "CREATE TABLE room_placement_edits (
+                layer_id INTEGER, form_id INTEGER, source_form_id INTEGER, deleted INTEGER,
+                PRIMARY KEY(form_id,layer_id)
+             );",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO room_placement_edits VALUES (1,?1,0x01000800,0)",
+            [source],
+        )
+        .unwrap();
+        let (_, authored_link) = initial
+            .subrecords
+            .iter_mut()
+            .find(|(tag, data)| tag == b"XLKR" && data.len() == 8)
+            .unwrap();
+        authored_link[..4].fill(0);
+        db.execute(
+            "UPDATE [references] SET data=?2 WHERE id=?1",
+            params![source, serialize_subrecords(&initial.subrecords)],
+        )
+        .unwrap();
+
+        export_placed_subset_with_sources(&db, &HashMap::new(), &[target], &order).unwrap();
+        assert_eq!(links(), absent);
+        restore(placed(target)).unwrap();
+        assert_eq!(links(), (other, None, other, Some(target), 2.0, 3, key));
     }
 
     #[test]
@@ -4045,9 +4568,13 @@ mod tests {
             .unwrap()
         };
         assert!(details().is_empty());
-
+        // A pack made before the index existed must backfill sparse sources on first use.
+        db.execute_batch("DROP TRIGGER changed_authored_placement; DROP TABLE reference_authored_targets; DROP TABLE reference_authored_changes;").unwrap();
         export_to_db(&db, &[(attachment, placed(attachment))].into()).unwrap();
         assert_eq!(details(), [(0x880, Some(attachment), None, false, false)]);
+        // After the one-time backfill, restoring the owner must not decode an unrelated source.
+        db.execute("UPDATE records SET data=x'01' WHERE form_id=0x882", [])
+            .unwrap();
         export_to_db(
             &db,
             &[(owner, record(owner, b"FACT", None, None, Vec::new()))].into(),
@@ -5162,12 +5689,13 @@ mod tests {
     #[test]
     fn subset_base_model_updates_invalidate_spheres_and_referencing_cells() {
         for kind in [b"STAT", b"LIGH"] {
-            for (replacement, unchanged) in [
-                (Some("A.nif"), true),
-                (Some(r"Meshes\A.NIF"), true),
-                (Some(r"Meshes\%41.NIF"), false),
-                (Some("B.nif"), false),
-                (None, false),
+            for (replacement, deleted, unchanged) in [
+                (Some("A.nif"), false, true),
+                (Some(r"Meshes\A.NIF"), false, true),
+                (Some(r"Meshes\%41.NIF"), false, false),
+                (Some("A.nif"), true, false),
+                (Some("B.nif"), false, false),
+                (None, false, false),
             ] {
                 let base = |model: Option<&str>| {
                     let mut fields = model
@@ -5196,7 +5724,11 @@ mod tests {
                      UPDATE statics SET bounds_valid=1,bounds_min_x=-12 WHERE id=1280",
                 )
                 .unwrap();
-                export_to_db(&conn, &HashMap::from([(0x500, base(replacement))])).unwrap();
+                let mut updated = base(replacement);
+                if deleted {
+                    updated.flags |= 0x20;
+                }
+                export_to_db(&conn, &HashMap::from([(0x500, updated)])).unwrap();
                 let measured: bool = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM statics WHERE id=1280 AND bounds_valid=1 AND bounds_min_x=-12)",
                     [], |row| row.get(0)
@@ -5335,6 +5867,156 @@ mod tests {
                 .unwrap();
             assert!(unrelated);
         }
+    }
+
+    #[test]
+    fn raw_load_order_ignores_deleted_room_markers() {
+        let mut deleted = room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]);
+        deleted.flags = 0x20;
+        let mut missing_transform = room(0x1004, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]);
+        missing_transform
+            .subrecords
+            .retain(|(tag, _)| tag != b"DATA");
+        let records = [
+            interior_cell(0x100),
+            interior_cell(0x200),
+            deleted,
+            room(0x1002, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x1003, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            missing_transform,
+        ]
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+        let order = LoadOrder::from_metadata(
+            vec!["Skyrim.esm".into()],
+            vec![crate::esm::binary::PluginMetadata::default()],
+        )
+        .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        export_to_db_with_load_order(&conn, &records, &order).unwrap();
+        let projected = conn
+            .prepare(
+                "SELECT b.ref_id,g.complete FROM room_bounds b
+                 JOIN room_graph_cells g USING (cell_id) ORDER BY b.ref_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(projected, [(0x1002, true), (0x1003, false)]);
+    }
+
+    #[test]
+    fn subset_placed_update_accepts_the_previous_room_schema() {
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+            reference(0x2002, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+        ]);
+        let mut deleted = reference(0x2002, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        deleted.flags = 0x20;
+        export_to_db(&conn, &HashMap::from([(deleted.form_id, deleted.clone())])).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM room_reference_rules WHERE reference_id=0x2002",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
+        conn.execute_batch(
+            "DROP TABLE room_occluder_links; DROP TABLE room_occluders; DROP TABLE room_reference_rules;",
+        )
+        .unwrap();
+        let updated = reference(0x2001, 0x100, 0x500, [12.0, 0.0, 0.0], [0.0; 3]);
+        export_to_db(&conn, &HashMap::from([(updated.form_id, updated)])).unwrap();
+        let pos_x: f32 = conn
+            .query_row(
+                "SELECT pos_x FROM [references] WHERE id=0x2001",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!((pos_x - 12.0).abs() < f32::EPSILON);
+        deleted.form_id = 0x2001;
+        export_to_db(&conn, &HashMap::from([(deleted.form_id, deleted)])).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM [references] WHERE id=0x2001",
+                [],
+                |row| { row.get::<_, u32>(0) }
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn subset_occluder_changes_invalidate_old_and_new_cross_cell_targets() {
+        let occluder = |id, cell, target| {
+            let mut extra = vec![(b"XPRM", xprm([10.0; 3], 3))];
+            if let Some(target) = target {
+                extra.push((b"XORD", [word(0), word(target), word(0), word(0)].concat()));
+            }
+            marker(
+                id,
+                cell,
+                rooms::OCCLUSION_MARKER_BASE,
+                [0.0; 3],
+                [0.0; 3],
+                extra,
+            )
+        };
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            interior_cell(0x200),
+            interior_cell(0x300),
+            interior_cell(0x400),
+            occluder(0x1001, 0x100, Some(0x2001)),
+            occluder(0x2001, 0x200, None),
+            occluder(0x3001, 0x300, None),
+            occluder(0x4001, 0x400, None),
+        ]);
+        let complete = |cell| {
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        assert!([0x100, 0x200, 0x300, 0x400].into_iter().all(complete));
+        let updated = HashMap::from([(0x1001, occluder(0x1001, 0x100, Some(0x3001)))]);
+        let linked_target = || {
+            conn.query_row(
+                "SELECT link_index,linked_ref FROM room_occluder_links WHERE ref_id=0x1001",
+                [],
+                |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .unwrap()
+        };
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER fail_subset BEFORE INSERT ON records WHEN NEW.form_id=0x1001
+             BEGIN SELECT RAISE(ABORT, 'placement insert failed'); END;",
+        )
+        .unwrap();
+        let error = export_to_db(&conn, &updated).unwrap_err();
+        assert!(error.to_string().contains("placement insert failed"));
+        assert_eq!(linked_target(), (1, 0x2001));
+        assert!([0x100, 0x200, 0x300, 0x400].into_iter().all(complete));
+
+        conn.execute_batch("DROP TRIGGER fail_subset").unwrap();
+        export_to_db(&conn, &updated).unwrap();
+        assert_eq!(linked_target(), (1, 0x3001));
+        for cell in [0x100, 0x200, 0x300] {
+            assert!(!complete(cell), "cell {cell:08X} stayed complete");
+        }
+        assert!(complete(0x400));
     }
 
     #[test]

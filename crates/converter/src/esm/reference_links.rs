@@ -5,17 +5,17 @@
 //! Layouts follow xEdit 4.1.5f `Core/wbDefinitionsTES5.pas` and the in-house schema.
 
 use super::{
-    extractors::SubrecordView, load_order::LoadOrder, records::RawRecord, types::ArchivedRecordData,
+    extractors::{SubrecordView, serialize_subrecords},
+    load_order::LoadOrder,
+    records::RawRecord,
+    types::ArchivedRecordData,
 };
+use crate::records::{DecodedRecord, framed_source_prefix, history::stored_order, source_identity};
 use rusqlite::{OptionalExtension, Result, Transaction, params};
 use std::collections::{HashMap, HashSet};
 
 pub(super) const SUBSET_NONPLACEMENT_DELETIONS_SQL: &str =
     "CREATE TABLE IF NOT EXISTS subset_nonplacement_deletions (form_id INTEGER PRIMARY KEY)";
-
-// A subset replacement supersedes the source retained in the full snapshot.
-pub(super) const SUBSET_SOURCES_SQL: &str =
-    "CREATE TABLE IF NOT EXISTS reference_link_subset_sources (form_id INTEGER PRIMARY KEY)";
 
 /// Tables this module owns. A complete export drops and recreates them.
 pub(crate) const REFERENCE_LINK_TABLES: [&str; 3] = [
@@ -159,6 +159,22 @@ impl Context<'_> {
                 StoredTarget::Live(kind) => return Ok(targets.contains(&&kind).then_some(id)),
                 StoredTarget::Absent => {}
             }
+            if id < 0x800 {
+                // Subset deletions remove the placement and archive row. Owning identities
+                // survive; edits without an identity leave a separate marker.
+                let known: bool = tx
+                    .prepare_cached(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM formid_map WHERE form_id=?1
+                             UNION ALL
+                             SELECT 1 FROM subset_placement_deletions WHERE form_id=?1
+                         )",
+                    )?
+                    .query_row([id], |row| row.get(0))?;
+                if known {
+                    return Ok(None);
+                }
+            }
         }
         Ok((id < 0x800 && !self.deleted_ids.is_some_and(|ids| ids.contains(&id))).then_some(id))
     }
@@ -207,25 +223,111 @@ pub(super) fn has_live_target(tx: &Transaction<'_>, id: u32) -> Result<bool> {
     Ok(kind.is_some_and(|kind| accepts_placement_target(kind.as_bytes())))
 }
 
-/// Recover a single retained owner word only when the supplier proves this placement's identity.
-fn authored_owner(row: &rusqlite::Row<'_>, id: u32, order: &LoadOrder) -> Result<Option<u32>> {
-    use crate::records::source_identity::header_runtime_id;
-    let supplier: usize = row.get(1)?;
-    let raw_id = row.get(2)?;
-    let kind: String = row.get(3)?;
-    let Ok(kind) = kind.as_bytes().try_into() else {
-        return Ok(None);
-    };
-    if supplier >= order.names.len() || header_runtime_id(kind, raw_id, supplier, order) != Some(id)
-    {
-        return Ok(None);
+// Subset exports preserve the original conversion's provenance. A row marks a
+// replacement, with recovered runtime link words when it came from a typed source.
+pub(super) fn ensure_subset_sources(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS reference_link_subset_sources (
+            form_id INTEGER PRIMARY KEY, data BLOB
+        )",
+    )?;
+    super::exporter::add_missing_columns(tx, "reference_link_subset_sources", &[("data", "BLOB")])
+}
+
+pub(super) fn forget_subset_source(tx: &Transaction<'_>, id: u32) -> Result<()> {
+    tx.prepare_cached("DELETE FROM reference_link_subset_sources WHERE form_id=?1")?
+        .execute([id])?;
+    Ok(())
+}
+
+/// Recover authored words for surviving canonical occurrences. The typed decoder
+/// drops malformed widths and nonfinite delays. For other dropped occurrences,
+/// compare the earliest and latest possible order-preserving matches.
+fn authored_link_fields<'a>(
+    canonical: impl Iterator<Item = ([u8; 4], &'a [u8])> + Clone,
+    payload: &[u8],
+    supplier: usize,
+    order: &LoadOrder,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut restored = Vec::new();
+    let mut native = None;
+    for (tag, widths) in [
+        (*b"XLKR", &[4, 8][..]),
+        (*b"XAPR", &[8][..]),
+        (*b"XOWN", &[4][..]),
+        (*b"XATR", &[4][..]),
+    ] {
+        let canonical: Vec<_> = canonical
+            .clone()
+            .filter_map(|(sig, data)| (sig == tag && widths.contains(&data.len())).then_some(data))
+            .collect();
+        if canonical.is_empty() {
+            continue;
+        }
+        let word_end = |data: &[u8]| if tag == *b"XAPR" { 4 } else { data.len() };
+        let authored: Vec<_> = native
+            .get_or_insert_with(|| framed_source_prefix(payload))
+            .iter()
+            .filter_map(|&(sig, bytes)| {
+                if sig != tag || !widths.contains(&bytes.len()) {
+                    return None;
+                }
+                if tag == *b"XAPR" && !f32::from_bits(u32_at(bytes, 4)?).is_finite() {
+                    return None;
+                }
+                let mut data = bytes.to_vec();
+                for word in data[..word_end(bytes)].as_chunks_mut::<4>().0 {
+                    let raw = u32::from_le_bytes(*word);
+                    let mapped = source_identity::header_runtime_id(b"REFR", raw, supplier, order)
+                        .unwrap_or(0);
+                    *word = mapped.to_le_bytes();
+                }
+                Some(data)
+            })
+            .collect();
+        let compatible = |projected: &[u8], source: &[u8]| {
+            projected.len() == source.len()
+                && projected[word_end(projected)..] == source[word_end(source)..]
+                && (0..word_end(projected)).step_by(4).all(|offset| {
+                    u32_at(projected, offset) == Some(0)
+                        || u32_at(projected, offset) == u32_at(source, offset)
+                })
+        };
+        let mut occurrences = authored.iter().enumerate();
+        let earliest: Option<Vec<_>> = canonical
+            .iter()
+            .map(|projected| {
+                occurrences
+                    .find(|(_, source)| compatible(projected, source))
+                    .map(|(index, _)| index)
+            })
+            .collect();
+        let mut occurrences = authored.iter().enumerate().rev();
+        let latest: Option<Vec<_>> = canonical
+            .iter()
+            .rev()
+            .map(|projected| {
+                occurrences
+                    .find(|(_, source)| compatible(projected, source))
+                    .map(|(index, _)| index)
+            })
+            .collect();
+        for (position, projected) in canonical.into_iter().enumerate() {
+            let data = match (&earliest, &latest) {
+                (Some(first), Some(last)) if first[position] == last[last.len() - 1 - position] => {
+                    authored[first[position]].clone()
+                }
+                _ => projected.to_vec(),
+            };
+            restored.push((tag.to_vec(), data));
+        }
     }
-    let payload = row.get_ref(0)?.as_blob()?;
-    let owner = crate::records::unique_source_subrecord(payload, b"XOWN")
-        .filter(|field| field.len() == 4)
-        .and_then(|field| u32_at(field, 0))
-        .and_then(|raw| header_runtime_id(b"REFR", raw, supplier, order));
-    Ok(owner)
+    restored
+}
+
+fn has_table(tx: &Transaction<'_>, name: &str) -> Result<bool> {
+    tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)")?
+        .query_row([name], |row| row.get(0))
 }
 
 /// Refresh only the target columns. In particular, a source outside the edit retains its delay,
@@ -234,7 +336,12 @@ pub(super) fn refresh_incoming(
     tx: &Transaction<'_>,
     unavailable: &[u32],
     available: &HashSet<u32>,
+    changed_sources: &[u32],
 ) -> Result<()> {
+    let indexed = has_table(tx, "reference_authored_targets")?;
+    if indexed || !available.is_empty() {
+        index_authored_targets(tx, changed_sources, !indexed)?;
+    }
     if unavailable.is_empty() && available.is_empty() {
         return Ok(());
     }
@@ -284,40 +391,11 @@ pub(super) fn refresh_incoming(
     if kinds.is_empty() {
         return Ok(());
     }
-    let restored_target = |value: Option<u32>, allowed: &[&[u8; 4]]| {
-        value.filter(|id| kinds.get(id).is_some_and(|kind| allowed.contains(&kind)))
-    };
-
-    // Older packs may have no placement mirror. For layered sources the original archive
-    // can instead be stale. The history lookup uses the resolved FormID, not source_form_id.
-    let has_layers: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema
-         WHERE type='table' AND name='room_placement_edits')",
-        [],
-        |row| row.get(0),
+    let targets = serde_json::json!(kinds.keys().collect::<Vec<_>>()).to_string();
+    let mut entries = tx.prepare_cached(
+        "SELECT reference_id, position, slot, target_id FROM reference_authored_targets
+         WHERE target_id IN (SELECT value FROM json_each(?1))",
     )?;
-    let data = if has_layers {
-        "CASE WHEN EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)
-              THEN r.data ELSE coalesce(raw.data,r.data) END"
-    } else {
-        "coalesce(raw.data,r.data)"
-    };
-    // A source with only an unresolved detail can have no detail row.
-    // Materialize the candidate IDs before updating the link tables.
-    let mut sources = tx.prepare(&format!(
-        "WITH candidates(id) AS MATERIALIZED (
-             SELECT reference_id FROM reference_linked_refs WHERE ?1 AND linked_ref_id IS NULL
-             UNION SELECT reference_id FROM reference_linked_refs WHERE ?2 AND keyword_id IS NULL
-             UNION SELECT reference_id FROM reference_activate_parents WHERE ?1 AND parent_ref_id IS NULL
-             UNION SELECT reference_id FROM reference_details
-                   WHERE (?3 AND attached_ref_id IS NULL) OR (?4 AND owner_id IS NULL)
-             UNION SELECT id FROM [references] r WHERE (?3 OR ?4)
-                   AND NOT EXISTS(SELECT 1 FROM reference_details WHERE reference_id=r.id)
-         )
-         SELECT r.id, {data} FROM candidates
-         JOIN [references] r ON r.id=candidates.id
-         LEFT JOIN records raw ON raw.form_id=r.id"
-    ))?;
     let mut linked = tx.prepare_cached(
         "UPDATE reference_linked_refs SET linked_ref_id=?3
          WHERE reference_id=?1 AND position=?2 AND linked_ref_id IS NULL",
@@ -340,46 +418,141 @@ pub(super) fn refresh_incoming(
          ON CONFLICT(reference_id) DO UPDATE SET owner_id=excluded.owner_id
          WHERE reference_details.owner_id IS NULL",
     )?;
-    let can_restore = |allowed: &[&[u8; 4]]| kinds.values().any(|kind| allowed.contains(&kind));
-    let has_table = |name: &str| -> Result<bool> {
-        tx.prepare_cached(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
-        )?
-        .query_row([name], |row| row.get(0))
+    let mut rows = entries.query([targets])?;
+    while let Some(row) = rows.next()? {
+        let id: u32 = row.get(0)?;
+        let position: i64 = row.get(1)?;
+        let slot: String = row.get(2)?;
+        let target: u32 = row.get(3)?;
+        let kind = &kinds[&target];
+        match slot.as_str() {
+            "XLKR.ref" if LINKED_REFERENCE.contains(&kind) => {
+                linked.execute(params![id, position, target])?
+            }
+            "XLKR.keyword" if LINKED_KEYWORD.contains(&kind) => {
+                keyword.execute(params![id, position, target])?
+            }
+            "XAPR" if LINKED_REFERENCE.contains(&kind) => {
+                parent.execute(params![id, position, target])?
+            }
+            "XATR" if ATTACHED_REFERENCE.contains(&kind) => {
+                attached.execute(params![id, target])?
+            }
+            "XOWN" if OWNER.contains(&kind) => owner.execute(params![id, target])?,
+            _ => continue,
+        };
+    }
+    Ok(())
+}
+
+pub(super) fn create_authored_index(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE reference_authored_targets (
+            reference_id INTEGER NOT NULL, slot TEXT NOT NULL, position INTEGER NOT NULL,
+            target_id INTEGER NOT NULL, PRIMARY KEY(reference_id,slot,position)
+        );
+        CREATE INDEX idx_reference_authored_target ON reference_authored_targets(target_id);
+        CREATE TABLE reference_authored_changes (reference_id INTEGER PRIMARY KEY);
+        CREATE TRIGGER changed_authored_placement AFTER UPDATE OF data ON [references] BEGIN
+            INSERT OR IGNORE INTO reference_authored_changes VALUES(NEW.id);
+        END;",
+    )
+}
+
+fn index_slots<'a>(
+    tx: &Transaction<'_>,
+    id: u32,
+    links: impl Iterator<Item = &'a [u8]>,
+    parents: impl Iterator<Item = &'a [u8]>,
+    owner: Option<u32>,
+    attached: Option<u32>,
+) -> Result<()> {
+    let index = |slot: &str, position: usize, target: Option<u32>| -> Result<()> {
+        if let Some(target) = target.filter(|&target| target != 0) {
+            tx.prepare_cached("INSERT INTO reference_authored_targets(reference_id,slot,position,target_id) VALUES(?1,?2,?3,?4)")?
+                .execute(params![id, slot, position, target])?;
+        }
+        Ok(())
     };
-    let mut native = if can_restore(OWNER)
-        && has_table("inhouse_source_records")?
-        && has_table("record_overrides")?
-    {
-        let (order, _) = crate::records::history::stored_order(tx).map_err(|error| {
+    for (position, (key, target)) in linked_refs(links).enumerate() {
+        index("XLKR.keyword", position, key)?;
+        index("XLKR.ref", position, target)?;
+    }
+    for (position, field) in activate_parents(parents).enumerate() {
+        index("XAPR", position, u32_at(field, 0))?;
+    }
+    index("XOWN", 0, owner)?;
+    index("XATR", 0, attached)
+}
+
+/// Older snapshots can recover typed links only after their plugin provenance is installed.
+/// Backfill once, in the first edit transaction that needs recovery. Later edits replace
+/// index entries only for the sources they changed.
+fn index_authored_targets(tx: &Transaction<'_>, changed: &[u32], backfill: bool) -> Result<()> {
+    if backfill {
+        create_authored_index(tx)?;
+    } else {
+        // Placement writers can update their archived bytes independently of the canonical record.
+        tx.prepare_cached(
+            "INSERT OR IGNORE INTO reference_authored_changes SELECT value FROM json_each(?1)",
+        )?
+        .execute([serde_json::json!(changed).to_string()])?;
+        let empty: bool = tx.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM reference_authored_changes)",
+            [],
+            |row| row.get(0),
+        )?;
+        if empty {
+            return Ok(());
+        }
+        tx.execute("DELETE FROM reference_authored_targets WHERE reference_id IN reference_authored_changes", [])?;
+    }
+    let source_filter = if backfill {
+        ""
+    } else {
+        "WHERE r.id IN reference_authored_changes"
+    };
+    let layered = if has_table(tx, "room_placement_edits")? {
+        "EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)"
+    } else {
+        "0"
+    };
+    let order = if has_table(tx, "inhouse_source_records")? && has_table(tx, "record_overrides")? {
+        let (order, _) = stored_order(tx).map_err(|error| {
             rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
                 error.to_string(),
             )))
         })?;
-        let complete = order.names.len()
-            == tx.query_row("SELECT count(*) FROM plugins", [], |r| r.get::<_, usize>(0))?;
-        let mut sql = String::from("SELECT n.payload,n.load_order,n.source_form_id,n.record_type FROM inhouse_source_records n
-            JOIN records r USING(form_id,load_order,record_type) WHERE n.form_id=?1");
-        if has_layers {
-            sql.push_str(" AND NOT EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=?1)");
-        }
-        if has_table("reference_link_subset_sources")? {
-            sql.push_str(
-                " AND NOT EXISTS(SELECT 1 FROM reference_link_subset_sources WHERE form_id=?1)",
-            );
-        }
-        complete
-            .then(|| tx.prepare(&sql).map(|statement| (order, statement)))
-            .transpose()?
+        let plugin_count: usize =
+            tx.query_row("SELECT count(*) FROM plugins", [], |row| row.get(0))?;
+        (order.names.len() == plugin_count).then_some(order)
     } else {
         None
     };
-    let mut sources = sources.query(params![
-        can_restore(LINKED_REFERENCE),
-        can_restore(LINKED_KEYWORD),
-        can_restore(ATTACHED_REFERENCE),
-        can_restore(OWNER),
-    ])?;
+    let (native_join, native_data) = if order.is_some() {
+        (
+            format!(
+                "LEFT JOIN inhouse_source_records native ON native.form_id=r.id
+          AND native.load_order=raw.load_order AND native.record_type=raw.record_type
+          AND subset.form_id IS NULL AND NOT ({layered})"
+            ),
+            "native.payload, native.load_order, native.source_form_id, native.record_type",
+        )
+    } else {
+        (String::new(), "NULL, NULL, NULL, NULL")
+    };
+    let mut sources = tx.prepare(&format!(
+        "SELECT r.id,
+                CASE WHEN subset.form_id IS NOT NULL THEN coalesce(subset.data,r.data,raw.data)
+                     WHEN {layered} THEN r.data ELSE coalesce(raw.data,r.data) END,
+                {native_data},
+                CASE WHEN subset.data IS NOT NULL THEN coalesce(r.data,raw.data) END
+         FROM [references] r
+         LEFT JOIN records raw ON raw.form_id=r.id
+         LEFT JOIN reference_link_subset_sources subset ON subset.form_id=r.id
+         {native_join} {source_filter}"
+    ))?;
+    let mut sources = sources.query([])?;
     while let Some(row) = sources.next()? {
         let id: u32 = row.get(0)?;
         let Some(blob): Option<Vec<u8>> = row.get(1)? else {
@@ -394,42 +567,74 @@ pub(super) fn refresh_incoming(
                 )
             },
         )?;
-        let fields = |tag| {
-            record
-                .subrecords
-                .iter()
-                .filter_map(move |sub| (sub.tag == tag).then_some(sub.data.as_slice()))
-        };
-        for (position, (key, target)) in linked_refs(fields(*b"XLKR")).enumerate() {
-            if let Some(value) = restored_target(key, LINKED_KEYWORD) {
-                keyword.execute(params![id, position as i64, value])?;
-            }
-            if let Some(value) = restored_target(target, LINKED_REFERENCE) {
-                linked.execute(params![id, position as i64, value])?;
-            }
-        }
-        for (position, field) in activate_parents(fields(*b"XAPR")).enumerate() {
-            if let Some(value) = restored_target(u32_at(field, 0), LINKED_REFERENCE) {
-                parent.execute(params![id, position as i64, value])?;
-            }
-        }
-        let mut ownership = sized(fields(*b"XOWN").next(), &[4]).and_then(|field| u32_at(field, 0));
-        if ownership == Some(0)
-            && let Some((order, lookup)) = &mut native
+        let canonical = record
+            .subrecords
+            .iter()
+            .map(|sub| (sub.tag, sub.data.as_slice()));
+        let mut restored = None;
+        if let Some(order) = &order
+            && let Some(payload) = row.get::<_, Option<Vec<u8>>>(2)?
         {
-            ownership = lookup
-                .query_row([id], |row| authored_owner(row, id, order))
-                .optional()?
-                .flatten();
+            let supplier = row.get::<_, usize>(3)?;
+            let source_id = row.get(4)?;
+            let kind: String = row.get(5)?;
+            if let Ok(kind) = <&[u8; 4]>::try_from(kind.as_bytes())
+                && supplier < order.names.len()
+                && source_identity::header_runtime_id(kind, source_id, supplier, order) == Some(id)
+            {
+                restored = Some(authored_link_fields(
+                    canonical.clone(),
+                    &payload,
+                    supplier,
+                    order,
+                ));
+            }
         }
-        if let Some(value) = restored_target(ownership, OWNER) {
-            owner.execute(params![id, value])?;
-        }
-        let attachment = sized(fields(*b"XATR").next(), &[4]).and_then(|field| u32_at(field, 0));
-        if let Some(value) = restored_target(attachment, ATTACHED_REFERENCE) {
-            attached.execute(params![id, value])?;
-        }
+        let fields = |tag| {
+            let recovered = restored
+                .iter()
+                .flatten()
+                .filter_map(move |(sig, data)| (sig == &tag).then_some(data.as_slice()));
+            let use_canonical = restored.is_none();
+            let effective = canonical
+                .clone()
+                .filter_map(move |(sig, data)| (sig == tag && use_canonical).then_some(data));
+            recovered.chain(effective)
+        };
+        // Older typed subset blobs contain only XLKR and XAPR. Recover XOWN and
+        // XATR from their placement payload when the auxiliary blob lacks them.
+        let placement = row
+            .get::<_, Option<Vec<u8>>>(6)?
+            .map(|blob| rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob))
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Blob,
+                    Box::new(error),
+                )
+            })?;
+        let form_id = |tag| {
+            let data = fields(tag).next().or_else(|| {
+                placement
+                    .as_ref()?
+                    .subrecords
+                    .iter()
+                    .find(|sub| sub.tag == tag)
+                    .map(|sub| sub.data.as_slice())
+            });
+            sized(data, &[4]).and_then(|field| u32_at(field, 0))
+        };
+        index_slots(
+            tx,
+            id,
+            fields(*b"XLKR"),
+            fields(*b"XAPR"),
+            form_id(*b"XOWN"),
+            form_id(*b"XATR"),
+        )?;
     }
+    tx.execute("DELETE FROM reference_authored_changes", [])?;
     Ok(())
 }
 
@@ -438,9 +643,55 @@ pub(crate) fn insert(
     tx: &Transaction<'_>,
     context: &Context<'_>,
     record: &RawRecord,
-    view: &SubrecordView<'_>,
+    source: Option<(&DecodedRecord, &LoadOrder)>,
 ) -> Result<()> {
     let id = record.form_id;
+    let view = SubrecordView::new(&record.subrecords);
+    let source = source.filter(|(source, order)| {
+        let supplier = source.load_order as usize;
+        supplier < order.names.len()
+            && source_identity::header_runtime_id(
+                &source.record_type,
+                source.source_form_id,
+                supplier,
+                order,
+            ) == Some(id)
+    });
+    let recovered = source.map(|(source, order)| {
+        let fields = record.subrecords.iter().filter_map(|(tag, bytes)| {
+            // silent-ok: Only four-byte tags can identify authored link fields.
+            Some((<[u8; 4]>::try_from(tag.as_slice()).ok()?, bytes.as_slice()))
+        });
+        authored_link_fields(
+            fields,
+            &source.raw_payload,
+            source.load_order as usize,
+            order,
+        )
+    });
+    if context.subset {
+        let data = recovered
+            .as_ref()
+            .filter(|fields| !fields.is_empty())
+            .map(|fields| serialize_subrecords(fields));
+        tx.prepare_cached(
+            "INSERT OR REPLACE INTO reference_link_subset_sources(form_id,data) VALUES (?1,?2)",
+        )?
+        .execute(params![id, data])?;
+    }
+    let authored = SubrecordView::new(recovered.as_deref().unwrap_or(&record.subrecords));
+    if !context.subset {
+        let id_field = |tag| sized(authored.find(tag), &[4]).and_then(|data| u32_at(data, 0));
+        index_slots(
+            tx,
+            id,
+            authored.find_all(b"XLKR"),
+            authored.find_all(b"XAPR"),
+            id_field(b"XOWN"),
+            id_field(b"XATR"),
+        )?;
+    }
+    let link_fields = if context.subset { &authored } else { &view };
     for table in REFERENCE_LINK_TABLES {
         tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
             .execute([id])?;
@@ -448,7 +699,7 @@ pub(crate) fn insert(
 
     // XLKR: one subrecord per link, a keyword and a reference, or (14 official references) the
     // reference alone.
-    for (position, (keyword, reference)) in linked_refs(view.find_all(b"XLKR")).enumerate() {
+    for (position, (keyword, reference)) in linked_refs(link_fields.find_all(b"XLKR")).enumerate() {
         tx.prepare_cached(
             "INSERT INTO reference_linked_refs(reference_id, position, keyword_id, linked_ref_id) VALUES (?1, ?2, ?3, ?4)",
         )?
@@ -461,7 +712,7 @@ pub(crate) fn insert(
     }
 
     // XAPR: one subrecord per activate parent, a reference then an f32 delay.
-    for (position, parent) in activate_parents(view.find_all(b"XAPR")).enumerate() {
+    for (position, parent) in activate_parents(link_fields.find_all(b"XAPR")).enumerate() {
         let delay = f32::from_le_bytes(parent[4..8].try_into().expect("eight-byte XAPR"));
         tx.prepare_cached(
             "INSERT INTO reference_activate_parents(reference_id, position, parent_ref_id, delay) VALUES (?1, ?2, ?3, ?4)",
@@ -474,14 +725,14 @@ pub(crate) fn insert(
         ])?;
     }
 
-    let link = |tag: &[u8; 4], targets: &[&[u8; 4]]| {
+    let link = |fields: &SubrecordView<'_>, tag: &[u8; 4], targets: &[&[u8; 4]]| {
         context.resolve(
             tx,
-            sized(view.find(tag), &[4]).and_then(|bytes| u32_at(bytes, 0)),
+            sized(fields.find(tag), &[4]).and_then(|bytes| u32_at(bytes, 0)),
             targets,
         )
     };
-    let owner = link(b"XOWN", OWNER)?;
+    let owner = link(link_fields, b"XOWN", OWNER)?;
     let owner_rank = sized(view.find(b"XRNK"), &[4]).and_then(|bytes| u32_at(bytes, 0));
     let activate_parent_flags = sized(view.find(b"XAPD"), &[1]).map(|bytes| bytes[0]);
     // XLOC: level byte, three unused, key FormID, flags byte (0x04 leveled lock), padding. It is
@@ -500,16 +751,16 @@ pub(crate) fn insert(
     let lock_key = context.resolve(tx, remapped_lock_key, &[b"KEYM"])?;
     let open_by_default = view.find(b"ONAM").is_some();
     let map_marker = view.find(b"XMRK").is_some();
-    let location = link(b"XLCN", &[b"LCTN"])?;
-    let location_ref_type = link(b"XLRL", &[b"LCRT", b"LCTN"])?;
-    let encounter_zone = link(b"XEZN", &[b"ECZN"])?;
-    let attached = link(b"XATR", ATTACHED_REFERENCE)?;
+    let location = link(&view, b"XLCN", &[b"LCTN"])?;
+    let location_ref_type = link(&view, b"XLRL", &[b"LCRT", b"LCTN"])?;
+    let encounter_zone = link(&view, b"XEZN", &[b"ECZN"])?;
+    let attached = link(link_fields, b"XATR", ATTACHED_REFERENCE)?;
     // A later target-only edit can fill an authored slot on a subset source.
     // Complete snapshots retain their sparse projection for invalid detail links.
     let pending_detail = context.subset
         && [b"XATR", b"XOWN"]
             .iter()
-            .any(|tag| sized(view.find(tag), &[4]).is_some());
+            .any(|tag| sized(link_fields.find(tag), &[4]).is_some());
     let any = owner.is_some()
         || owner_rank.is_some()
         || activate_parent_flags.is_some()

@@ -919,6 +919,16 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Unusable placement DATA omits activate-parent rows owned by that reference. Field-level semantics remain deferred."
     },
+    "reference_authored_changes": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#762)",
+      "reason": "Records placement sources whose archived payload changed before the next authored link index refresh."
+    },
+    "reference_authored_targets": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#762)",
+      "reason": "Subset edits index authored link slots by target to restore incoming projections from unchanged sources."
+    },
     "reference_details": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
@@ -979,6 +989,16 @@
       "owner": "Mudcrab maintainers (#298; room culling #188)",
       "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
     },
+    "room_occluder_links": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-occluder projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
+    "room_occluders": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-occluder projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
     "room_placement_edits": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#745)",
@@ -1028,6 +1048,11 @@
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#744)",
       "reason": "Subset updates retain deleted non-placement identities so later edits can validate incoming links. Restoring the record clears its entry. A full export replaces the subset history."
+    },
+    "subset_placement_deletions": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#762)",
+      "reason": "A subset records a deleted placement whose low FormID has no stored identity so later edits keep incoming links unresolved. A live replacement clears the deletion."
     },
     "texture_sets": {
       "classification": "deferred",

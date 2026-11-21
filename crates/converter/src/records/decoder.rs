@@ -470,6 +470,11 @@ pub(crate) fn framed_source_subrecords(payload: &[u8]) -> Option<Vec<([u8; 4], &
     framed.complete.then_some(framed.fields)
 }
 
+/// Retain framed occurrences before a damaged boundary for partial source projections.
+pub(crate) fn framed_source_prefix(payload: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    subrecords(payload, &mut PluginDiagnostics::default(), 0).fields
+}
+
 /// Frame subrecords with XXXX lengths; an unrecoverable boundary drops only this remainder.
 fn subrecords<'a>(
     payload: &'a [u8],
@@ -787,15 +792,19 @@ fn decode_with_identity_inner(
     let framed = subrecords(&scanned.payload, diagnostics, scanned.source_form_id);
     if scanned.flags & 0x20 == 0
         && crate::esm::is_placed_record_type(&scanned.record_type)
-        && framed
+        && let Some((position, _)) = framed
             .fields
             .iter()
-            .filter(|(tag, _)| tag == b"NAME")
+            .enumerate()
+            .filter(|(_, (tag, _))| tag == b"NAME")
             .nth(1)
-            .is_some()
     {
-        diagnostics.set_field("NAME".into());
-        return Err("placement contains multiple NAME fields".into());
+        // Keep the authored fields available to the occluder-link evidence pass before admission.
+        rejected_fields.push(*b"NAME");
+        if potential_deferred {
+            rejections.push((position, *b"NAME"));
+            observed_rejections = rejected_fields.len();
+        }
     }
     let link_kind = |source_id| {
         let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
@@ -3002,6 +3011,7 @@ fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
 #[derive(Default)]
 pub(crate) struct DeletedBases(HashMap<u32, Vec<BaseDeletion>>);
 
+#[derive(Clone)]
 struct BaseDeletion {
     priority: u32,
     prior_kind: Option<[u8; 4]>,
@@ -3021,6 +3031,14 @@ impl DeletedBases {
         if let Some(previous) = self.0.get_mut(&id).and_then(|events| events.last_mut()) {
             previous.restored.get_or_insert(priority);
         }
+    }
+
+    /// The latest tombstone has no validated live successor yet.
+    pub(crate) fn needs_restoration(&self, id: u32) -> bool {
+        self.0
+            .get(&id)
+            .and_then(|events| events.last())
+            .is_some_and(|event| event.restored.is_none())
     }
 
     pub(crate) fn record(
@@ -3295,8 +3313,9 @@ impl RecoveryCandidates {
         chain: impl Iterator<Item = &'a DecodedRecord>,
         catalogue: &PlacementCatalogue<'_>,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+        mut deletions: Option<&mut DeletedBases>,
     ) -> (Option<&'a DecodedRecord>, Option<GroupedPlacement>) {
-        let mut previous = None;
+        let mut previous: Option<&DecodedRecord> = None;
         let mut grouped = None;
         for primary in chain {
             for candidate in
@@ -3307,10 +3326,23 @@ impl RecoveryCandidates {
                     previous,
                     grouped.as_slice(),
                     &self.deleted,
+                    deletions.is_some(),
                     validate,
                 ) else {
                     continue;
                 };
+                if let Some(deletions) = deletions.as_deref_mut() {
+                    if candidate.flags & 0x20 != 0 {
+                        deletions.record(
+                            candidate.form_id,
+                            candidate.load_order,
+                            candidate.record_type,
+                            previous.map(|prior| prior.record_type),
+                        );
+                    } else {
+                        deletions.restored(candidate.form_id, candidate.load_order);
+                    }
+                }
                 previous = (candidate.flags & 0x20 == 0).then_some(candidate);
                 grouped = grouped_owner(&resolved, grouped);
                 break;
@@ -3330,28 +3362,94 @@ impl RecoveryCandidates {
     ) {
         let id = tombstone.form_id;
         let previous = records.get(&id);
-        let chain = self.predecessor_chain(id);
-        let prior_kind = previous.and_then(|prior| {
-            if crate::esm::is_placed_record_type(&prior.record_type)
-                || record_contains_deferred(prior)
-            {
-                let catalogue = PlacementCatalogue {
-                    order,
-                    schema,
-                    prepared,
-                    kinds: records,
-                };
-                self.effective_predecessor(chain.iter().chain([prior]), &catalogue, validate)
-                    .0
-                    .map(|record| record.record_type)
-            } else {
-                Some(prior.record_type)
-            }
-        });
+        if previous.is_some_and(|prior| {
+            crate::esm::is_placed_record_type(&prior.record_type) || record_contains_deferred(prior)
+        }) || self.has_queued_predecessor(self.predecessor_chain(id))
+        {
+            let catalogue = PlacementCatalogue {
+                order,
+                schema,
+                prepared,
+                kinds: records,
+            };
+            self.record_replayed_deletion(tombstone, previous, &catalogue, validate);
+        } else {
+            self.deleted.record(
+                id,
+                tombstone.load_order,
+                tombstone.record_type,
+                previous.map(|record| record.record_type),
+            );
+        }
         let previous = records.remove(&id);
-        self.deleted
-            .record(id, tombstone.load_order, tombstone.record_type, prior_kind);
         self.end_predecessor_chain(id, previous);
+    }
+
+    /// Validate any earlier placement restoration before recording a non-placement successor.
+    pub(super) fn restore_before_replacement(
+        &mut self,
+        record: &DecodedRecord,
+        records: &HashMap<u32, DecodedRecord>,
+        order: &LoadOrder,
+        schema: &Schema,
+        prepared: &PreparedSchemas,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) {
+        let id = record.form_id;
+        if self.deleted.needs_restoration(id)
+            && let Some(previous) = records.get(&id)
+        {
+            let catalogue = PlacementCatalogue {
+                order,
+                schema,
+                prepared,
+                kinds: records,
+            };
+            let (history, _) =
+                self.replay_deletion_history(id, Some(previous), &catalogue, validate);
+            self.deleted.0.extend(history.0);
+        }
+        self.deleted.restored(id, record.load_order);
+    }
+
+    fn record_replayed_deletion(
+        &mut self,
+        tombstone: &DecodedRecord,
+        latest: Option<&DecodedRecord>,
+        catalogue: &PlacementCatalogue<'_>,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) {
+        let id = tombstone.form_id;
+        let (mut history, previous_kind) =
+            self.replay_deletion_history(id, latest, catalogue, validate);
+        history.record(
+            id,
+            tombstone.load_order,
+            tombstone.record_type,
+            previous_kind,
+        );
+        self.deleted.0.extend(history.0);
+    }
+
+    fn replay_deletion_history(
+        &self,
+        id: u32,
+        latest: Option<&DecodedRecord>,
+        catalogue: &PlacementCatalogue<'_>,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) -> (DeletedBases, Option<[u8; 4]>) {
+        // Validate against the same catalogue while rebuilding this ID's deletion intervals.
+        let mut history = DeletedBases::default();
+        if let Some(events) = self.deleted.0.get(&id) {
+            history.0.insert(id, events.clone());
+        }
+        let (previous, _) = self.effective_predecessor(
+            self.predecessor_chain(id).iter().chain(latest),
+            catalogue,
+            validate,
+            Some(&mut history),
+        );
+        (history, previous.map(|record| record.record_type))
     }
 
     pub(super) fn end_predecessor_chain(&mut self, id: u32, previous: Option<DecodedRecord>) {
@@ -3429,7 +3527,7 @@ impl RecoveryCandidates {
                         let prior = if next.payload_complete {
                             chain.last()
                         } else {
-                            self.effective_predecessor(chain.iter(), catalogue, validate)
+                            self.effective_predecessor(chain.iter(), catalogue, validate, None)
                                 .0
                         };
                         let failure = if require_complete
@@ -3452,19 +3550,7 @@ impl RecoveryCandidates {
                     }
                     self.record_default_object(&next);
                     if deleted {
-                        let previous = self
-                            .effective_predecessor(
-                                self.predecessor_chain(id).iter(),
-                                catalogue,
-                                validate,
-                            )
-                            .0;
-                        self.deleted.record(
-                            id,
-                            next.load_order,
-                            next.record_type,
-                            previous.map(|record| record.record_type),
-                        );
+                        self.record_replayed_deletion(&next, None, catalogue, validate);
                         self.end_predecessor_chain(id, None);
                         return None;
                     }
@@ -3590,6 +3676,7 @@ impl RecoveryCandidates {
                     previous,
                     grouped.as_slice(),
                     &self.deleted,
+                    false,
                     validate,
                 ) {
                     Ok(resolved) => {
@@ -3632,6 +3719,7 @@ impl PlacementCatalogue<'_> {
         previous: Option<&DecodedRecord>,
         grouped: &[GroupedPlacement],
         deleted: &DeletedBases,
+        settling_deletion_history: bool,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
     ) -> Result<std::borrow::Cow<'a, DecodedRecord>, PlacementFailure> {
         let mut resolved = std::borrow::Cow::Borrowed(candidate);
@@ -3639,16 +3727,21 @@ impl PlacementCatalogue<'_> {
             return Ok(resolved);
         }
         validate_live_duplicate(candidate, previous, validate)?;
-        if record_contains_deferred(candidate) {
+        let targets = if record_contains_deferred(candidate) {
             self.validate_superseded(
                 resolved.to_mut(),
                 previous.is_some(),
                 grouped,
                 deleted,
                 validate,
-            )?;
+            )
         } else {
-            self.validate_superseded_targets(candidate, grouped, deleted)?;
+            self.validate_superseded_targets(candidate, grouped, deleted)
+        };
+        match targets {
+            // A later deletion omits the placement but preserves its earlier live interval.
+            Err(PlacementFailure::RetiredBase(_)) if settling_deletion_history => {}
+            result => result?,
         }
         Ok(resolved)
     }
@@ -3963,6 +4056,7 @@ pub(crate) fn resolve_deferred(
                                     chain.iter(),
                                     &catalogue,
                                     &mut **validate_candidate.borrow_mut(),
+                                    None,
                                 )
                                 .1
                                 .into_iter()
@@ -4539,6 +4633,88 @@ mod tests {
             bytes.to_vec(),
         ]
         .concat()
+    }
+
+    #[test]
+    fn duplicate_placement_name_survives_deferred_ownership_replay() {
+        let addons = super::super::addons::RuntimeSchemas::from_addon_bytes(&[br#"{
+            "version": 1,
+            "name": "placement-ownership",
+            "records": [{
+                "signature": "REFR",
+                "extends": true,
+                "fields": [{"signature": "COED", "definition": "inventory_extra"}]
+            }]
+        }"#])
+        .unwrap();
+        let schema = addons.schema();
+        let prepared = prepare_runtime_schema(&addons);
+        let order =
+            LoadOrder::from_metadata(vec!["Base.esm".into()], vec![Default::default()]).unwrap();
+        let context = Context {
+            order: &order,
+            plugin_index: 0,
+            localized: false,
+            winning_types: None,
+        };
+        let scanned = ScannedRecord {
+            record_type: *b"REFR",
+            flags: 0,
+            version_control: 0,
+            form_version: 44,
+            header_unknown: 0,
+            source_form_id: 0x850,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            source_topic_form_id: None,
+            topic_group_offset: None,
+            source_record_offset: 24,
+            payload: [
+                replay_probe_subrecord(b"NAME", &0x17u32.to_le_bytes()),
+                replay_probe_subrecord(
+                    b"COED",
+                    &[
+                        0x900u32.to_le_bytes(),
+                        0u32.to_le_bytes(),
+                        1.0f32.to_le_bytes(),
+                    ]
+                    .concat(),
+                ),
+                replay_probe_subrecord(b"NAME", &0x17u32.to_le_bytes()),
+                replay_probe_subrecord(b"DATA", &[0; 24]),
+            ]
+            .concat(),
+        };
+        let mut record = decode_with_prepared(
+            scanned,
+            schema,
+            &prepared,
+            &context,
+            &mut PluginDiagnostics::default(),
+        )
+        .unwrap();
+        assert_eq!(record.deferred_fields[0].rejections, [(2, *b"NAME")]);
+        assert!(record.validate_placement_base().is_err());
+
+        let kinds = HashMap::from([(0x900, *b"FACT")]);
+        let context = Context {
+            winning_types: Some(&kinds),
+            ..context
+        };
+        let mut source = DeferredSource::take(&mut record);
+        replay_deferred(
+            &mut record,
+            &mut source,
+            schema,
+            &context,
+            &mut PluginDiagnostics::default(),
+            &mut PluginDiagnostics::default(),
+            &prepared,
+        )
+        .unwrap();
+        assert!(!record_contains_deferred(&record));
+        assert!(record.rejected_fields.contains(b"NAME"));
+        assert!(record.validate_placement_base().is_err());
     }
 
     /// Copy diagnostic summaries into an independent journal for the legacy oracle.
