@@ -1,0 +1,84 @@
+name: milestone
+
+# Every open issue and pull request carries a milestone. A pull request with
+# none inherits the milestone of the issues it links when they agree. Anything
+# else gets the `needs milestone` label and one comment, and the label is
+# removed when a milestone is set. The daily run fails while an open item has
+# no milestone, so a missed one stays visible to maintainers.
+#
+# It runs on pull_request_target and issues so that the rule also reaches a
+# pull request from a fork. It never checks out or runs pull request code: the
+# only checkout is the default branch, restricted to scripts/, and titles and
+# bodies reach the job only as data from the REST API through the workflow
+# token. Keep both properties when you edit this file. The workflow file from
+# the default branch runs, not the copy in the pull request.
+#
+# The per-item runs exit 0 even when the item has no milestone, because a
+# contributor cannot set one. Only the schedule and a manual run fail red.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, milestoned, demilestoned]
+  issues:
+    types: [opened, reopened, edited, milestoned, demilestoned]
+  schedule:
+    # Daily at 07:17 UTC; the run fails while an open item has no milestone.
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the changes without writing them
+        type: boolean
+        default: false
+
+permissions:
+  contents: read        # the checkout of the default branch
+  issues: write         # labels, comments and milestones
+  pull-requests: write  # the milestone on a pull request
+
+concurrency:
+  # The daily scan and an item event can touch the same item. One writer at a
+  # time keeps the comment check and its post together. Queue up to 100 pending
+  # runs, so a burst of events does not cancel the daily scan.
+  group: milestone
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  milestone:
+    name: Give every open item a milestone
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the trusted milestone script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Assign, label and report milestones
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          arguments=(
+            --repository "$REPOSITORY"
+            --default-branch "$DEFAULT_BRANCH"
+          )
+          if [ "$DRY_RUN" = "true" ]; then
+            arguments+=(--dry-run)
+          fi
+          if [ -n "$PR_NUMBER" ]; then
+            arguments+=(--item "$PR_NUMBER")
+          elif [ -n "$ISSUE_NUMBER" ]; then
+            arguments+=(--item "$ISSUE_NUMBER")
+          else
+            arguments+=(--all)
+          fi
+          python3 -B scripts/assign_milestones.py "${arguments[@]}"

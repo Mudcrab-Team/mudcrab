@@ -200,6 +200,12 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    The record readers also have a scheduled `cargo-mutants` run that lists tests which pass
    without testing a change. [`docs/contributing/mutants.md`](docs/contributing/mutants.md)
    explains the report and how to run one locally.
+
+   Every open issue and pull request also needs a milestone. A pull request inherits the
+   milestone of the issues it links when they agree; anything else gets the `needs milestone`
+   label, and the daily check fails while an open item has none. Contributors cannot set a
+   milestone, so a maintainer assigns one within one working day. See
+   [workflow.md](docs/contributing/workflow.md#milestones).
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.
