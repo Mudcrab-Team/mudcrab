@@ -469,8 +469,10 @@ jobs:
 
       - name: Clippy check and added-line cast gate
         # One pass, so the job keeps the cost of the plain `cargo clippy` run. The pass cannot
-        # use `-D warnings`: it denies the four allow-by-default gate lints, and `-W` cannot
-        # lower a deny from a lint group. `--force-warn` also overrides
+        # use `-D warnings`: the four gate lints are allow-by-default, but `-W` makes one a
+        # warning and `-D warnings` turns every warning into an error. A probe on `v as u8`
+        # with `-- -D warnings -W clippy::cast_possible_truncation` exits 101, and its note
+        # says the cast lint is implied by `-D warnings`. `--force-warn` also overrides
         # `#[allow(..., reason = ...)]` exceptions. So the gate fails on every warning outside
         # the four lints, and Clippy's exit code still gates hard errors. The workflow and the
         # script must agree on the flag list, and the gate fails when they do not.
@@ -492,14 +494,22 @@ jobs:
             echo "script: $scripted_flags"
             exit 2
           fi
-          # A pull request runs on the merge commit, so its merge base with origin/main is the
-          # base it merges into. A push compares with the previous tip of its branch. A manual
-          # run compares with origin/main.
-          base="$PUSH_BEFORE"
-          if [[ "$EVENT_NAME" == "pull_request" || -z "$base" || "$base" =~ ^0+$ ]]; then
+          # A pull request runs on the merge commit, whose first parent is the branch it merges
+          # into, so the diff covers exactly the lines the pull request adds. That holds for
+          # `develop` and `release/**` too. A push compares with the previous tip of its branch.
+          # A manual run, or an event without a base, compares with origin/main.
+          clippy_status=0
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if ! base="$(git rev-parse HEAD^1)"; then
+              echo "::error::cannot read the first parent of the pull request merge commit"
+              exit 2
+            fi
+          else
+            base="$PUSH_BEFORE"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
             base="origin/main"
           fi
-          clippy_status=0
           cargo clippy --workspace --all-targets --all-features --message-format=json \
             -- "${lint_flags[@]}" > "$RUNNER_TEMP/clippy-casts.json" || clippy_status=$?
           gate_status=0

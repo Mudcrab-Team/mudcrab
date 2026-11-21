@@ -31,22 +31,24 @@ def run_git(repo, *args):
     )
 
 
-def artifact(crate, kind="lib", name=None):
+def artifact(crate, kind="lib", name=None, test=False):
     """A Cargo JSON record that shows a crate target was built."""
     return {
         "reason": "compiler-artifact",
         "package_id": f"path+file:///repo/crates/{crate}#{crate}@0.1.0",
         "manifest_path": f"/repo/crates/{crate}/Cargo.toml",
         "target": {"name": name or crate, "kind": [kind]},
+        "profile": {"test": test},
     }
 
 
 def required_artifacts():
     """Every artifact that the gate requires, one per record."""
     return [
-        artifact(crate, kind)
+        artifact(crate, kind, test=test)
         for crate in ratchet.CRATES
         for kind in ratchet.REQUIRED_KINDS[crate]
+        for test in (False, True)
     ]
 
 
@@ -60,27 +62,46 @@ def diagnostic(
     level="warning",
     path=None,
     macro_call_line=None,
+    macro_call_lines=None,
+    macro_call_path=None,
+    macro_call_paths=None,
+    line_end=None,
+    column=5,
     target=True,
     spans=True,
 ):
-    """A Clippy diagnostic with one primary span."""
+    """A Clippy diagnostic with one primary span and optional macro call sites."""
     if path is None:
         path = f"crates/{crate}/src/lib.rs"
+    if macro_call_path is None:
+        macro_call_path = path
+    if macro_call_lines is None:
+        macro_call_lines = [] if macro_call_line is None else [macro_call_line]
+    if macro_call_paths is None:
+        macro_call_paths = [macro_call_path] * len(macro_call_lines)
     span = {
         "file_name": path,
         "line_start": line,
-        "column_start": 5,
+        "line_end": line if line_end is None else line_end,
+        "column_start": column,
         "is_primary": True,
     }
-    if macro_call_line is not None:
-        span["expansion"] = {
+    # The first entry is the innermost call site; each later entry wraps it.
+    enclosing = span
+    for index, (call_path, call_line) in enumerate(
+        zip(macro_call_paths, macro_call_lines)
+    ):
+        expansion = {
             "span": {
-                "file_name": path,
-                "line_start": macro_call_line,
+                "file_name": call_path,
+                "line_start": call_line,
+                "line_end": call_line,
                 "column_start": 9,
             },
-            "macro_decl_name": "lossy!",
+            "macro_decl_name": f"lossy{index}!",
         }
+        enclosing["expansion"] = expansion
+        enclosing = expansion["span"]
     record = {
         "reason": "compiler-message",
         "package_id": f"path+file:///repo/crates/{crate}#{crate}@0.1.0",
@@ -222,25 +243,106 @@ class GateTests(unittest.TestCase):
         self.assertIn("1 existing hit(s) on unchanged lines", output)
 
     def test_a_moved_line_is_not_new(self):
-        self.repo.append(
+        cast = "pub fn probe(value: u32) -> u8 { value as u8 }"
+        head = ["pub fn f1() {}"]
+        other = [f"pub fn f{i}() {{}}" for i in range(2, 7)]
+        tail = [f"pub fn g{i}() {{}}" for i in range(1, 7)]
+        self.repo.write(
             "crates/converter/src/lib.rs",
-            "pub fn probe(value: u32) -> u8 { value as u8 }\n",
+            "\n".join(["pub fn f1() {}", *other, cast, *tail]) + "\n",
         )
-        self.repo.commit("add the cast on main")
+        self.repo.commit("add the cast in the middle")
         self.repo.mark_base()
         self.repo.write(
             "crates/converter/src/lib.rs",
-            "pub fn probe(value: u32) -> u8 { value as u8 }\n"
-            "pub fn convert() {}\n",
+            "\n".join([*head, cast, *other, *tail]) + "\n",
         )
         self.repo.commit("move the cast to the top")
         write_log(
             self.log,
-            [diagnostic("converter", "clippy::cast_possible_truncation", 1)],
+            [diagnostic("converter", "clippy::cast_possible_truncation", 2)],
         )
         code, output = self.run_gate()
         self.assertEqual(code, 0)
         self.assertIn("1 existing hit(s)", output)
+
+    def test_a_moved_line_across_files_is_not_new(self):
+        self.repo.write(
+            "crates/converter/src/old.rs",
+            "pub fn keep() {}\n"
+            "pub fn probe(value: u32) -> u8 { value as u8 }\n",
+        )
+        self.repo.commit("add the cast in another file")
+        self.repo.mark_base()
+        self.repo.append(
+            "crates/converter/src/lib.rs",
+            "pub fn probe(value: u32) -> u8 { value as u8 }\n",
+        )
+        self.repo.write("crates/converter/src/old.rs", "pub fn keep() {}\n")
+        self.repo.commit("move the cast into lib.rs")
+        write_log(
+            self.log,
+            [diagnostic("converter", "clippy::cast_possible_truncation", 2)],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 0)
+        self.assertIn("1 existing hit(s)", output)
+
+    def test_a_move_out_of_a_deleted_file_is_not_new(self):
+        self.repo.write(
+            "crates/converter/src/old.rs",
+            "pub fn probe(value: u32) -> u8 { value as u8 }\n",
+        )
+        self.repo.commit("add a module with a cast")
+        self.repo.mark_base()
+        run_git(self.repo.root, "rm", "-q", "crates/converter/src/old.rs")
+        self.repo.append(
+            "crates/converter/src/lib.rs",
+            "pub fn probe(value: u32) -> u8 { value as u8 }\n",
+        )
+        self.repo.commit("move the cast out of the deleted module")
+        write_log(
+            self.log,
+            [diagnostic("converter", "clippy::cast_possible_truncation", 2)],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 0)
+        self.assertIn("1 existing hit(s)", output)
+
+    def test_a_cast_that_ends_on_an_added_line_fails(self):
+        self.repo.write(
+            "crates/converter/src/lib.rs",
+            "pub fn convert() {}\n"
+            "pub fn probe(value: u32) -> u8 {\n"
+            "    let wide = value;\n"
+            "}\n",
+        )
+        self.repo.commit("add the function")
+        self.repo.mark_base()
+        self.repo.write(
+            "crates/converter/src/lib.rs",
+            "pub fn convert() {}\n"
+            "pub fn probe(value: u32) -> u8 {\n"
+            "    let wide = value;\n"
+            "        as u8\n"
+            "}\n",
+        )
+        self.repo.commit("add the cast on a continuation line")
+        write_log(
+            self.log,
+            [
+                diagnostic(
+                    "converter",
+                    "clippy::cast_possible_truncation",
+                    3,
+                    line_end=4,
+                )
+            ],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("crates/converter/src/lib.rs:4", output)
+        self.assertIn("1 new Clippy hit(s)", output)
 
     def test_a_duplicated_line_is_new(self):
         self.repo.append(
@@ -315,6 +417,42 @@ class GateTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("1 existing hit(s)", output)
 
+    def test_a_rename_with_an_edit_is_not_new(self):
+        self.repo.write(
+            "crates/converter/src/old.rs",
+            "pub fn convert() {}\n"
+            "pub fn probe(value: u32) -> u8 { value as u8 }\n",
+        )
+        self.repo.commit("add the old module")
+        self.repo.mark_base()
+        run_git(
+            self.repo.root,
+            "mv",
+            "crates/converter/src/old.rs",
+            "crates/converter/src/new.rs",
+        )
+        self.repo.write(
+            "crates/converter/src/new.rs",
+            "pub fn convert() {}\n"
+            "pub fn probe(value: u32) -> u8 { value as u8 }\n"
+            "pub fn extra() {}\n",
+        )
+        self.repo.commit("rename the module and add a line")
+        write_log(
+            self.log,
+            [
+                diagnostic(
+                    "converter",
+                    "clippy::cast_possible_truncation",
+                    2,
+                    path="crates/converter/src/new.rs",
+                )
+            ],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 0)
+        self.assertIn("1 existing hit(s)", output)
+
     def test_a_macro_call_site_on_an_added_line_fails(self):
         self.repo.append("crates/converter/src/lib.rs", "probe!(value);\n")
         self.repo.commit("use the macro")
@@ -333,12 +471,46 @@ class GateTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("crates/converter/src/lib.rs:2", output)
 
-    def test_a_macro_use_on_an_unchanged_line_passes(self):
+    def test_a_macro_use_on_unchanged_lines_passes(self):
+        self.repo.write(
+            "crates/converter/src/macros.rs",
+            "pub fn body() -> u8 { 1 }\n",
+        )
         self.repo.append("crates/converter/src/lib.rs", "probe!(value);\n")
-        self.repo.commit("use the macro")
+        self.repo.commit("add the macro and its use")
         self.repo.mark_base()
-        self.repo.append("crates/converter/src/lib.rs", "pub fn other() {}\n")
-        self.repo.commit("change the macro body")
+        self.repo.write("crates/converter/src/other.rs", "pub fn other() {}\n")
+        self.repo.commit("change another module")
+        write_log(
+            self.log,
+            [
+                diagnostic(
+                    "converter",
+                    "clippy::cast_possible_truncation",
+                    1,
+                    path="crates/converter/src/macros.rs",
+                    macro_call_lines=[1],
+                )
+            ],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 0)
+        self.assertIn("1 existing hit(s)", output)
+
+    def test_a_cast_added_to_a_macro_body_fails(self):
+        self.repo.write(
+            "crates/converter/src/macros.rs",
+            "pub fn body() {}\n",
+        )
+        self.repo.append("crates/converter/src/lib.rs", "probe!(value);\n")
+        self.repo.commit("add the macro and its use")
+        self.repo.mark_base()
+        self.repo.write(
+            "crates/converter/src/macros.rs",
+            "pub fn body() {}\n"
+            "let narrowed = value as u8;\n",
+        )
+        self.repo.commit("add a cast to the macro body")
         write_log(
             self.log,
             [
@@ -346,13 +518,48 @@ class GateTests(unittest.TestCase):
                     "converter",
                     "clippy::cast_possible_truncation",
                     2,
-                    macro_call_line=1,
+                    path="crates/converter/src/macros.rs",
+                    macro_call_lines=[1],
+                    macro_call_path="crates/converter/src/lib.rs",
                 )
             ],
         )
         code, output = self.run_gate()
-        self.assertEqual(code, 0)
-        self.assertIn("1 existing hit(s)", output)
+        self.assertEqual(code, 1)
+        self.assertIn("crates/converter/src/macros.rs:2", output)
+        self.assertIn("1 new Clippy hit(s)", output)
+
+    def test_a_nested_macro_call_on_an_added_line_fails(self):
+        self.repo.write(
+            "crates/converter/src/macros.rs",
+            "macro_rules! inner { () => { value as u8 } }\n"
+            "macro_rules! outer { () => { inner!() } }\n",
+        )
+        self.repo.append("crates/converter/src/lib.rs", "outer!();\n")
+        self.repo.commit("add the nested macros and one use")
+        self.repo.mark_base()
+        self.repo.append("crates/converter/src/lib.rs", "outer!();\n")
+        self.repo.commit("add a second outer use")
+        write_log(
+            self.log,
+            [
+                diagnostic(
+                    "converter",
+                    "clippy::cast_possible_truncation",
+                    1,
+                    path="crates/converter/src/macros.rs",
+                    macro_call_lines=[2, 3],
+                    macro_call_paths=[
+                        "crates/converter/src/macros.rs",
+                        "crates/converter/src/lib.rs",
+                    ],
+                )
+            ],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("crates/converter/src/lib.rs:3", output)
+        self.assertIn("1 new Clippy hit(s)", output)
 
     def test_a_bin_target_on_an_added_line_fails(self):
         self.repo.write(
@@ -443,6 +650,27 @@ class GateTests(unittest.TestCase):
                     "clippy::cast_possible_truncation",
                     11,
                     macro_call_line=2,
+                ),
+            ],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("2 new Clippy hit(s)", output)
+
+    def test_two_casts_on_one_line_stay_apart(self):
+        self.repo.append(
+            "crates/converter/src/lib.rs",
+            "pub fn probe(a: u32, b: u32) { let _ = (a as u8, b as u8); }\n",
+        )
+        self.repo.commit("add two casts on one line")
+        write_log(
+            self.log,
+            [
+                diagnostic(
+                    "converter", "clippy::cast_possible_truncation", 2, column=42
+                ),
+                diagnostic(
+                    "converter", "clippy::cast_possible_truncation", 2, column=51
                 ),
             ],
         )
@@ -571,6 +799,20 @@ class GateTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no span", output)
 
+    def test_a_log_without_the_unit_test_builds_is_an_error(self):
+        artifacts = [
+            artifact(crate, kind, test=test)
+            for crate in ratchet.CRATES
+            for kind in ratchet.REQUIRED_KINDS[crate]
+            for test in (False, True)
+            if (crate, kind, test) != ("converter", "bin", True)
+        ]
+        write_log(self.log, [], artifacts=artifacts)
+        code, output = self.run_gate()
+        self.assertEqual(code, 2)
+        self.assertIn("converter bin test", output)
+        self.assertIn("--all-targets", output)
+
     def test_a_missing_base_is_a_usage_error(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -624,6 +866,19 @@ class GateTests(unittest.TestCase):
         for lint in ratchet.LINTS:
             self.assertIn(f"-W {lint}", out.getvalue())
 
+    def test_lint_flags_with_gate_arguments_is_a_usage_error(self):
+        for extra in (
+            ["--base", "origin/main"],
+            ["--clippy-json", str(self.log)],
+            ["--base", "origin/main", "--clippy-json", str(self.log)],
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as raised:
+                    ratchet.main(["--lint-flags", *extra])
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("run the gate in a second command", err.getvalue())
+
     def test_lint_flags_match_the_workflow_list(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -642,10 +897,18 @@ class GateTests(unittest.TestCase):
         self.assertNotIn("-D warnings", script)
         self.assertNotIn("--force-warn", script)
         self.assertIn("--message-format=json", script)
+        self.assertIn("--all-targets", script)
         self.assertIn("--lint-flags", script)
         self.assertIn("--base", script)
         job = workflow_job("clippy")
         self.assertIn("fetch-depth: 0", job)
+
+    def test_the_workflow_compares_a_pull_request_with_its_base(self):
+        script = workflow_step_script(workflow_job("clippy"), CLIPPY_STEP)
+        self.assertIn('EVENT_NAME" == "pull_request"', script)
+        self.assertIn('base="$(git rev-parse HEAD^1)"', script)
+        self.assertIn("PUSH_BEFORE", script)
+        self.assertIn("origin/main", script)
 
     def test_there_is_no_committed_count(self):
         self.assertFalse(SCRIPT.with_name("baseline.json").exists())

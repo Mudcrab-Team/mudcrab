@@ -14,29 +14,38 @@ lints fires on a line the change adds, in the `converter` or `shared` crate:
 The added lines come from `git diff --unified=0 -M -C <merge-base>...HEAD`. An
 added line whose exact text was also deleted in the same diff is a move, not a
 new line; the match is a multiset, as in `scripts/check_retail_claims.py`. A
-diagnostic counts when its primary span is on a new line, or, for a macro
-expansion, when the call site is. An existing cast on an unchanged line is
-reported in one information line and never fails a pull request.
+diagnostic counts when any line of its primary span is new, or when any line of
+a macro call site is, at every expansion level. An existing cast on unchanged
+lines is reported in one information line and never fails a pull request.
+
+The guarantee is "no net-new identical cast line", not "no new cast": a change
+can add a cast and delete the byte-identical line anywhere in the same diff,
+including a file this gate ignores.
 
 There is no count file. A committed count would be a merge-conflict hotspot:
 every change that adds or removes a cast would edit the same line, and two
 changes that each add one cast could both pass alone and still leave the count
 on main wrong.
 
-The pass runs no `-D warnings`. The four lints are allow-by-default, and `-W`
-raises them. `-D warnings` cannot stay: it denies the four as well, and a
-specific `-W` cannot lower a deny from the `warnings` group. `--force-warn`
-overrides `#[allow(..., reason = "...")]`, which would hide the approved sites.
-Clippy exits 0 when the tree has only warnings, so this script also fails on
-every warning outside the four lints; a hard error still makes Clippy exit
-nonzero, and the workflow keeps that status.
+The pass runs no `-D warnings`, because that deny still catches the four lints.
+The four lints are allow-by-default, but `-W` makes one a warning, and a
+`-D warnings` deny turns every warning into an error. Clippy says so in the
+diagnostic: `-D clippy::cast-possible-truncation` is implied by `-D warnings`.
+A probe confirms it: `cargo clippy -- -D warnings -W
+clippy::cast_possible_truncation` on `v as u8` exits 101 with the cast as an
+`error`. `--force-warn` would avoid the error, but it overrides
+`#[allow(..., reason = "...")]`, which would hide the approved sites. Clippy
+exits 0 when the tree has only warnings, so this script also fails on every
+warning outside the four lints; a hard error still makes Clippy exit nonzero,
+and the workflow keeps that status.
 
 The gate covers the `lib` and `bin` targets of the two crates. `--all-targets`
-also builds the test harness of every lib and bin, and a message record has no
-`profile` field, so unit-test casts count too. Integration tests, benches and
-examples are excluded by `target.kind`. Only messages whose crate is in
-`CRATES` are considered; path dependencies such as `mo2` and the vendored
-parsers report their own hits, which are outside this gate.
+also builds the test harness of every lib and bin, so unit-test casts count too;
+the completeness check requires those test artifacts as well as the ordinary
+ones. Integration tests, benches and examples are excluded by `target.kind`.
+Only messages whose crate is in `CRATES` are considered; path dependencies such
+as `mo2` and the vendored parsers report their own hits, which are outside this
+gate.
 
 An exception needs a reason at the site, so the reason stays with the cast:
 
@@ -74,7 +83,9 @@ LINTS = (
 )
 CRATES = ("converter", "shared")
 TARGET_KINDS = {"lib", "bin"}
-# A log that lacks one of these undercounts the crate, so the run is an error.
+# A log that lacks one of these under `lib` or `bin`, in the ordinary build or in
+# the unit-test build (`--all-targets`), undercounts the crate, so the run is an
+# error.
 REQUIRED_KINDS = {"converter": ("lib", "bin"), "shared": ("lib",)}
 COUNTING_LEVELS = {"warning", "error"}
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -110,60 +121,83 @@ def crate_of(record):
     return None
 
 
-def call_site_of(span):
-    """The macro call site of a span, or an empty dict.
+def call_sites_of(span):
+    """Every macro call site of a span, innermost first.
 
     Cargo puts the expansion under `expansion.span`; some Cargo versions also
-    expose `expansion.call_site`.
+    expose `expansion.call_site`. A span for an expansion can itself expand, so
+    a nested macro has one call site per level. The walk stops at a repeated
+    span, which also protects against a cycle.
     """
-    expansion = span.get("expansion") or {}
-    return expansion.get("call_site") or expansion.get("span") or {}
+    sites = []
+    seen = set()
+    current = span
+    while True:
+        expansion = current.get("expansion") or {}
+        site = expansion.get("call_site") or expansion.get("span") or {}
+        key = (
+            site.get("file_name"),
+            site.get("line_start"),
+            site.get("line_end"),
+            site.get("column_start"),
+        )
+        if site.get("file_name") is None or key in seen:
+            break
+        seen.add(key)
+        sites.append(site)
+        current = site
+    return sites
+
+
+def span_sites(message):
+    """Each primary span, followed by its macro call sites, innermost first."""
+    spans = message.get("spans") or []
+    primary = [span for span in spans if span.get("is_primary")] or spans
+    return [site for span in primary for site in [span, *call_sites_of(span)]]
+
+
+def span_ranges(message):
+    """The file and line range of each primary span and each macro call site."""
+    ranges = []
+    for site in span_sites(message):
+        path = site.get("file_name")
+        start = site.get("line_start")
+        if path is None or start is None:
+            continue
+        end = site.get("line_end") or start
+        ranges.append((path, int(start), max(int(end), int(start))))
+    return tuple(dict.fromkeys(ranges))
 
 
 def identity_of(message):
     """A stable key for a diagnostic, so the lib and bin reports collapse.
 
     A local `macro_rules!` reports every use at the definition span. The key
-    includes both the primary span and its call site, so two casts in one
-    expansion stay apart while the lib and lib-test reports of one cast share a
-    key, as the count did before the gate.
+    includes the primary span and every call site, with their columns, so two
+    casts on one line or in one expansion stay apart while the lib and lib-test
+    reports of one cast share a key, as the count did before the gate.
     """
-    spans = message.get("spans") or []
-    primary = [span for span in spans if span.get("is_primary")] or spans
-    key = []
-    for span in primary:
-        call_site = call_site_of(span)
-        key.append(
-            (
-                span.get("file_name"),
-                span.get("line_start"),
-                span.get("column_start"),
-                call_site.get("file_name"),
-                call_site.get("line_start"),
-                call_site.get("column_start"),
-            )
+    return tuple(
+        (
+            site.get("file_name"),
+            site.get("line_start"),
+            site.get("line_end"),
+            site.get("column_start"),
+            site.get("column_end"),
         )
-    return tuple(key)
+        for site in span_sites(message)
+    )
 
 
 def locations_of(message):
-    """The file and line of every primary span, or its macro call site.
+    """The file and line range of every primary span, and of its macro call sites.
 
-    A local `macro_rules!` reports every use at the definition span, so the call
-    site is the line that the change can add. Without a primary span the
-    diagnostic cannot be placed, and the caller fails closed.
+    A local `macro_rules!` reports its cast at the definition span, with the
+    invocation as the call site. A change can add either one: a new invocation
+    is a new use, and a new body line is a new cast. Both count. Without a
+    primary span the diagnostic cannot be placed, and the caller fails closed.
     """
-    spans = message.get("spans") or []
-    primary = [span for span in spans if span.get("is_primary")] or spans
-    locations = []
-    for span in primary:
-        site = call_site_of(span) or span
-        path = site.get("file_name")
-        line = site.get("line_start")
-        if path is None or line is None:
-            continue
-        locations.append((path, int(line)))
-    return tuple(locations)
+    return span_ranges(message)
 
 
 def read_log(path):
@@ -203,7 +237,8 @@ def read_log(path):
                 crate = crate_of(record)
                 if crate:
                     kinds = (record.get("target") or {}).get("kind") or []
-                    artifacts.update((crate, kind) for kind in kinds)
+                    test = bool((record.get("profile") or {}).get("test"))
+                    artifacts.update((crate, kind, test) for kind in kinds)
                 continue
             if reason != "compiler-message":
                 continue
@@ -265,16 +300,18 @@ def read_log(path):
             f"{path}: no successful build-finished record; the Clippy run did not finish"
         )
     missing = [
-        f"{crate} {kind}"
+        f"{crate} {kind}{' test' if test else ''}"
         for crate in CRATES
         for kind in REQUIRED_KINDS[crate]
-        if (crate, kind) not in artifacts
+        for test in (False, True)
+        if (crate, kind, test) not in artifacts
     ]
     if missing:
         problems.append(
             f"{path}: no compiler-artifact record for "
             + ", ".join(missing)
-            + "; check that the Clippy command selects every gated target"
+            + "; check that the Clippy command selects every gated target and "
+            "builds its unit-test harness with --all-targets"
         )
     return diagnostics, ungated, problems
 
@@ -318,7 +355,12 @@ def read_diff(root, base, head="HEAD"):
 
 
 def parse_diff(text):
-    """Return added lines per path and the multiset of deleted line texts."""
+    """Return added lines per path and the multiset of deleted line texts.
+
+    A whole-file deletion prints `+++ /dev/null`, so it has no path and no new
+    lines. Its `-` lines still count as deleted text: a cast that moves out of
+    a deleted file is a move, not a new cast.
+    """
     added = {}
     removed = Counter()
     path = None
@@ -341,10 +383,11 @@ def parse_diff(text):
             if match is None:
                 raise DiffError(f"cannot parse diff hunk: {raw}")
             new_line = int(match.group(1))
-            in_hunk = path is not None
+            in_hunk = True
         elif in_hunk and new_line is not None:
             if raw.startswith("+"):
-                added[path][new_line] = raw[1:]
+                if path is not None:
+                    added[path][new_line] = raw[1:]
                 new_line += 1
             elif raw.startswith("-"):
                 removed[raw[1:]] += 1
@@ -383,11 +426,13 @@ def relative_to_root(path, root):
 
 
 def added_location(locations, added, root):
-    """The first location that sits on a new added line, or None."""
-    for path, line in locations:
+    """The first line that is added inside a diagnostic span, or None."""
+    for path, start, end in locations:
         relative = relative_to_root(path, root)
-        if line in added.get(relative, ()):
-            return relative, line
+        present = added.get(relative, ())
+        for line in range(start, end + 1):
+            if line in present:
+                return relative, line
     return None
 
 
@@ -418,6 +463,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.lint_flags:
+        if args.clippy_json is not None or args.base is not None:
+            parser.error(
+                "--lint-flags prints the flags and runs nothing; run the gate in a "
+                "second command with --clippy-json and --base"
+            )
         print(" ".join(f"-W {lint}" for lint in LINTS))
         return 0
     if args.clippy_json is None:
