@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Unusable placement DATA omits linked-reference rows owned by that reference. A usable record may still retain an authored link to the canonical record. Field-level semantics remain deferred.",
+  "table": "reference_linked_refs"
+}

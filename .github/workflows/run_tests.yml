@@ -169,6 +169,9 @@ jobs:
       - name: Test pull request size labeler
         run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
 
+      - name: Test branch sync conflict rules
+        run: python3 -B -m unittest discover -s scripts/tests -p test_sync_branch.py -v
+
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
 

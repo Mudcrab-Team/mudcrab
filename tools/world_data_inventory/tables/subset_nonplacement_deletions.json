@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#744)",
+  "reason": "Subset updates retain deleted non-placement identities so later edits can validate incoming links. Restoring the record clears its entry. A full export replaces the subset history.",
+  "table": "subset_nonplacement_deletions"
+}
