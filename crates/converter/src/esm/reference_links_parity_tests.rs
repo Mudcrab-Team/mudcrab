@@ -129,9 +129,13 @@ fn lock(level: u8, key: u32, flags: u8) -> Vec<u8> {
 }
 
 fn interior(references: &[u8]) -> Vec<u8> {
+    interior_with_id(CELL, references)
+}
+
+fn interior_with_id(cell_id: u32, references: &[u8]) -> Vec<u8> {
     let cell = record(
         b"CELL",
-        CELL,
+        cell_id,
         &[sub(b"EDID", b"Vault\0"), sub(b"DATA", &[1, 0])].concat(),
     );
     top(
@@ -142,7 +146,7 @@ fn interior(references: &[u8]) -> Vec<u8> {
             &group(
                 3,
                 0,
-                &[cell, group(6, CELL, &group(9, CELL, references))].concat(),
+                &[cell, group(6, cell_id, &group(9, cell_id, references))].concat(),
             ),
         ),
     )
@@ -513,4 +517,240 @@ fn both_record_readers_publish_the_same_reference_links() {
         plain, 0,
         "references without any of these fields get no row"
     );
+}
+
+#[test]
+fn typed_target_only_additions_create_sparse_link_details() {
+    use super::exporter::{export_placed_subset_with_sources, export_to_db};
+    use super::load_order::LoadOrder;
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let patch = dir.path().join("Patch.esp");
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", CRATE),
+            interior(
+                &[
+                    reference(CHEST, &[sub(b"XATR", &le(LEVER))]),
+                    reference(TRAP, &[sub(b"XOWN", &le(FACTION))]),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let (db, _) = publish(RecordReader::Inhouse, dir.path(), &["Skyrim.esm"]);
+    let details = || {
+        db.prepare(
+            "SELECT reference_id,attached_ref_id,owner_id FROM reference_details ORDER BY reference_id",
+        ).unwrap().query_map([], |row| {
+            Ok((row.get::<_, u32>(0)?, row.get::<_, Option<u32>>(1)?, row.get::<_, Option<u32>>(2)?))
+        }).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    assert!(details().is_empty());
+
+    fs::write(
+        &patch,
+        [
+            header(0, &["Skyrim.esm"]),
+            group(6, CELL, &group(9, CELL, &reference(LEVER, &[]))),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let paths = [base.clone(), patch];
+    let order = LoadOrder::read(&paths).unwrap();
+    let mut decoded = crate::records::read_plugins(&paths, &order).unwrap();
+    export_placed_subset_with_sources(
+        &db,
+        &[(LEVER, decoded.records.remove(&LEVER).unwrap())].into(),
+        &[],
+        &order,
+    )
+    .unwrap();
+    assert_eq!(details(), [(CHEST, Some(LEVER), None)]);
+
+    let owner = dir.path().join("Owner.esp");
+    fs::write(
+        &owner,
+        [header(0, &["Skyrim.esm"]), named(b"FACT", FACTION)].concat(),
+    )
+    .unwrap();
+    let mut merged = EsmParser::merge_plugins(&[base, owner]).unwrap();
+    export_to_db(&db, &[(FACTION, merged.remove(&FACTION).unwrap())].into()).unwrap();
+    assert_eq!(
+        details(),
+        [(CHEST, Some(LEVER), None), (TRAP, None, Some(FACTION))]
+    );
+}
+
+fn plane_marker(id: u32, link: Option<u32>) -> Vec<u8> {
+    let mut primitive = [0; 32];
+    primitive[..4].copy_from_slice(&10.0f32.to_le_bytes());
+    primitive[8..12].copy_from_slice(&10.0f32.to_le_bytes());
+    primitive[28..].copy_from_slice(&le(3));
+    let mut fields = [
+        sub(b"NAME", &le(super::rooms::OCCLUSION_MARKER_BASE)),
+        sub(b"XPRM", &primitive),
+        sub(b"DATA", &[0; 24]),
+    ]
+    .concat();
+    if let Some(link) = link {
+        fields.extend(sub(b"XORD", &[0, 0, link, 0].map(le).concat()));
+    }
+    record(b"REFR", id, &fields)
+}
+
+#[test]
+fn native_empty_occluder_slots_preserve_cell_completeness() {
+    use super::placement_edits::{PlacementSource, apply};
+    use super::rooms::OCCLUSION_MARKER_BASE;
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let db_path = dir.path().join("skyrim_world.db");
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", OCCLUSION_MARKER_BASE),
+            interior(&plane_marker(CHEST, None)),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    EsmParser::convert_plugins_with_reader(&[base], &db_path, RecordReader::Inhouse, dir.path())
+        .unwrap();
+    let db = Connection::open(db_path).unwrap();
+    let complete = || {
+        get::<bool>(
+            &db,
+            "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+        )
+    };
+    assert!(complete());
+
+    let path = dir.path().join("occluder.json");
+    let id = 0xff00_0800u32;
+    let edit = |links| {
+        serde_json::json!({
+            "edits": [{
+                "op": "put", "id": id, "cell": CELL, "base": OCCLUSION_MARKER_BASE,
+                "position": [0, 0, 0],
+                "shape": {"kind": "plane", "half_width": 8, "half_height": 8},
+                "links": links
+            }]
+        })
+        .to_string()
+    };
+    let source = edit([0; 4]);
+    fs::write(&path, &source).unwrap();
+    apply(dir.path(), PlacementSource::NativeJson(&path)).unwrap();
+    assert!(complete());
+    let has_links = || {
+        get::<bool>(
+            &db,
+            "SELECT has_links FROM room_occluders WHERE ref_id=0xff000800",
+        )
+    };
+    assert!(!has_links());
+    assert_eq!(
+        get::<Vec<u8>>(
+            &db,
+            "SELECT source FROM room_placement_layers ORDER BY id DESC LIMIT 1"
+        ),
+        source.as_bytes(),
+    );
+
+    fs::write(&path, edit([0, 0, CHEST, 0])).unwrap();
+    apply(dir.path(), PlacementSource::NativeJson(&path)).unwrap();
+    assert!(has_links());
+    assert_eq!(
+        db.query_row(
+            "SELECT link_index,linked_ref FROM room_occluder_links WHERE ref_id=?1",
+            [id],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+        )
+        .unwrap(),
+        (2, CHEST),
+    );
+}
+
+#[test]
+fn typed_occluder_link_survives_target_only_addition_in_another_cell() {
+    use super::exporter::export_placed_subset_with_sources;
+    use super::load_order::LoadOrder;
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let patch = dir.path().join("Patch.esp");
+    let other_cell = CELL + 1;
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", super::rooms::OCCLUSION_MARKER_BASE),
+            interior(&plane_marker(CHEST, Some(LEVER))),
+            interior_with_id(other_cell, &plane_marker(TRAP, None)),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let (db, _) = publish(RecordReader::Inhouse, dir.path(), &["Skyrim.esm"]);
+    let complete = |cell| {
+        db.query_row(
+            "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+            [cell],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    };
+    let verified = || {
+        get::<bool>(
+            &db,
+            "SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'",
+        )
+    };
+    assert!(!complete(CELL));
+    assert!(complete(other_cell));
+    assert!(verified());
+
+    fs::write(
+        &patch,
+        [
+            header(0, &["Skyrim.esm"]),
+            group(
+                6,
+                other_cell,
+                &group(9, other_cell, &plane_marker(LEVER, None)),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let paths = [base, patch];
+    let order = LoadOrder::read(&paths).unwrap();
+    let mut decoded = crate::records::read_plugins(&paths, &order).unwrap();
+    export_placed_subset_with_sources(
+        &db,
+        &[(LEVER, decoded.records.remove(&LEVER).unwrap())].into(),
+        &[],
+        &order,
+    )
+    .unwrap();
+    assert!(complete(other_cell));
+    assert!(verified());
+    let incoming: (u32, u32, u32) = db
+        .query_row(
+            "SELECT link.ref_id,link.link_index,target.cell_id FROM room_occluder_links link
+         JOIN room_occluders target ON target.ref_id=link.linked_ref WHERE link.linked_ref=?1",
+            [LEVER],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(incoming, (CHEST, 2, other_cell));
 }

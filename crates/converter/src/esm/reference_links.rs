@@ -247,7 +247,12 @@ fn authored_link_fields<'a>(
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut restored = Vec::new();
     let mut native = None;
-    for (tag, widths) in [(*b"XLKR", &[4, 8][..]), (*b"XAPR", &[8][..])] {
+    for (tag, widths) in [
+        (*b"XLKR", &[4, 8][..]),
+        (*b"XAPR", &[8][..]),
+        (*b"XOWN", &[4][..]),
+        (*b"XATR", &[4][..]),
+    ] {
         let canonical: Vec<_> = canonical
             .clone()
             .filter_map(|(sig, data)| (sig == tag && widths.contains(&data.len())).then_some(data))
@@ -410,6 +415,7 @@ pub(super) fn refresh_incoming(
     } else {
         (String::new(), "NULL, NULL, NULL, NULL")
     };
+    // A source with only an unresolved detail can have no detail row.
     // Materialize the candidate IDs before updating these same tables.
     let mut sources = tx.prepare(&format!(
         "WITH candidates(id) AS MATERIALIZED (
@@ -418,6 +424,8 @@ pub(super) fn refresh_incoming(
              UNION SELECT reference_id FROM reference_activate_parents WHERE ?1 AND parent_ref_id IS NULL
              UNION SELECT reference_id FROM reference_details
                    WHERE (?3 AND attached_ref_id IS NULL) OR (?4 AND owner_id IS NULL)
+             UNION SELECT id FROM [references] r WHERE (?3 OR ?4)
+                   AND NOT EXISTS(SELECT 1 FROM reference_details WHERE reference_id=r.id)
          )
          SELECT r.id,
                 CASE WHEN subset.form_id IS NOT NULL THEN coalesce(subset.data,r.data,raw.data)
@@ -442,10 +450,14 @@ pub(super) fn refresh_incoming(
          WHERE reference_id=?1 AND position=?2 AND parent_ref_id IS NULL",
     )?;
     let mut attached = tx.prepare_cached(
-        "UPDATE reference_details SET attached_ref_id=?2 WHERE reference_id=?1 AND attached_ref_id IS NULL",
+        "INSERT INTO reference_details(reference_id,attached_ref_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET attached_ref_id=excluded.attached_ref_id
+         WHERE reference_details.attached_ref_id IS NULL",
     )?;
     let mut owner = tx.prepare_cached(
-        "UPDATE reference_details SET owner_id=?2 WHERE reference_id=?1 AND owner_id IS NULL",
+        "INSERT INTO reference_details(reference_id,owner_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET owner_id=excluded.owner_id
+         WHERE reference_details.owner_id IS NULL",
     )?;
     let can_restore = |allowed: &[&[u8; 4]]| kinds.values().any(|kind| allowed.contains(&kind));
     let mut sources = sources.query(params![
@@ -515,8 +527,8 @@ pub(super) fn refresh_incoming(
                 parent.execute(params![id, position as i64, value])?;
             }
         }
-        // A typed subset stores recovered XLKR/XAPR fields in its auxiliary blob.
-        // Its current placement payload still owns XOWN and XATR, including in older packs.
+        // Older typed subset blobs contain only XLKR and XAPR. Recover XOWN and
+        // XATR from their placement payload when the auxiliary blob lacks them.
         let placement = row
             .get::<_, Option<Vec<u8>>>(6)?
             .map(|blob| rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob))
@@ -528,14 +540,16 @@ pub(super) fn refresh_incoming(
                     Box::new(error),
                 )
             })?;
-        let effective = placement.as_ref().unwrap_or(&record);
         let form_id = |tag| {
-            effective
-                .subrecords
-                .iter()
-                .find(|sub| sub.tag == tag)
-                .and_then(|sub| sized(Some(sub.data.as_slice()), &[4]))
-                .and_then(|field| u32_at(field, 0))
+            let data = fields(tag).next().or_else(|| {
+                placement
+                    .as_ref()?
+                    .subrecords
+                    .iter()
+                    .find(|sub| sub.tag == tag)
+                    .map(|sub| sub.data.as_slice())
+            });
+            sized(data, &[4]).and_then(|field| u32_at(field, 0))
         };
         if let Some(value) = restored_target(form_id(*b"XOWN"), OWNER) {
             owner.execute(params![id, value])?;
@@ -613,14 +627,14 @@ pub(crate) fn insert(
         ])?;
     }
 
-    let link = |tag: &[u8; 4], targets: &[&[u8; 4]]| {
+    let link = |fields: &SubrecordView<'_>, tag: &[u8; 4], targets: &[&[u8; 4]]| {
         context.resolve(
             tx,
-            sized(view.find(tag), &[4]).and_then(|bytes| u32_at(bytes, 0)),
+            sized(fields.find(tag), &[4]).and_then(|bytes| u32_at(bytes, 0)),
             targets,
         )
     };
-    let owner = link(b"XOWN", OWNER)?;
+    let owner = link(&link_fields, b"XOWN", OWNER)?;
     let owner_rank = sized(view.find(b"XRNK"), &[4]).and_then(|bytes| u32_at(bytes, 0));
     let activate_parent_flags = sized(view.find(b"XAPD"), &[1]).map(|bytes| bytes[0]);
     // XLOC: level byte, three unused, key FormID, flags byte (0x04 leveled lock), padding. It is
@@ -639,16 +653,16 @@ pub(crate) fn insert(
     let lock_key = context.resolve(tx, remapped_lock_key, &[b"KEYM"])?;
     let open_by_default = view.find(b"ONAM").is_some();
     let map_marker = view.find(b"XMRK").is_some();
-    let location = link(b"XLCN", &[b"LCTN"])?;
-    let location_ref_type = link(b"XLRL", &[b"LCRT", b"LCTN"])?;
-    let encounter_zone = link(b"XEZN", &[b"ECZN"])?;
-    let attached = link(b"XATR", ATTACHED_REFERENCE)?;
+    let location = link(&view, b"XLCN", &[b"LCTN"])?;
+    let location_ref_type = link(&view, b"XLRL", &[b"LCRT", b"LCTN"])?;
+    let encounter_zone = link(&view, b"XEZN", &[b"ECZN"])?;
+    let attached = link(&link_fields, b"XATR", ATTACHED_REFERENCE)?;
     // A later target-only edit can fill an authored slot on a subset source.
     // Complete snapshots retain their sparse projection for invalid detail links.
     let pending_detail = context.subset
         && [b"XATR", b"XOWN"]
             .iter()
-            .any(|tag| sized(view.find(tag), &[4]).is_some());
+            .any(|tag| sized(link_fields.find(tag), &[4]).is_some());
     let any = owner.is_some()
         || owner_rank.is_some()
         || activate_parent_flags.is_some()

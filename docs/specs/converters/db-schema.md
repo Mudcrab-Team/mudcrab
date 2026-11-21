@@ -1436,11 +1436,12 @@ Columns and rules:
   [xEdit 4.1.5f's TES5 `REFR.XORD` definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278)
 
   `link_index` is `occurrence * 4 + slot` using the original source position, including gaps for
-  earlier malformed occurrences. The converter remaps all four FormIDs. Links
-  remain when the converter skips source geometry, so a linked target cannot become an
-  independent occluder. An unreadable occurrence sets the source cell's `complete` flag to
-  false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
-  publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
+  earlier malformed occurrences. The converter keeps each remapped nonzero FormID when it skips
+  source geometry or the target is absent. The edge still suppresses the target if a later subset
+  adds it. An unreadable occurrence sets the source cell's `complete` flag to false. In-house
+  exports also clear that flag for unresolved FormIDs and targets without a live `REFR`.
+  A full in-house export publishes `occlusion_version = 1` in `room_graph_stats`.
+  It sets `occlusion_links_verified`
   to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
   Full in-house exports and plugin placement imports also clear the flag when a discarded
   frame has unknown scope, a `REFR` fails before its links can be read, or a rejected
@@ -1742,8 +1743,9 @@ flag on an existing room. A new room defaults to `false`.
 For a PlaneMarker, use base 23 and supply a shape such as
 `{"kind":"plane","half_width":8,"half_height":8}` or
 `{"kind":"box","half_extents":[8,12,16]}`. Optional `links` holds four
-runtime FormIDs in physical XORD order. Use zero for an empty slot. Skyrim
-placement plugins can supply the same fields on a PlaneMarker. Occluder edits
+runtime FormIDs in physical XORD order. Use zero for an empty slot. Four zeros have
+the same effect as omitting `links`. Skyrim placement plugins can supply the same
+fields on a PlaneMarker. Occluder edits
 require a pack with a source-verified occluder projection.
 
 One transaction creates the runtime cell rows and updates placements, ownership rules, and the room

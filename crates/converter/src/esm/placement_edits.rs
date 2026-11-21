@@ -1193,7 +1193,7 @@ impl NativeEdit {
                         .subrecords
                         .push((b"XPRM".to_vec(), shape.primitive_bytes()?));
                 }
-                if let Some(slots) = links {
+                if let Some(slots) = links.filter(|slots| slots.iter().any(|&id| id != 0)) {
                     record
                         .subrecords
                         .push((b"XORD".to_vec(), slots.map(u32::to_le_bytes).concat()));
