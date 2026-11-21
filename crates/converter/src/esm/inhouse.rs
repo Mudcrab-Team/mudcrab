@@ -1507,7 +1507,25 @@ fn validate_candidate_with_string_sources(
 ) -> std::result::Result<(), String> {
     if super::is_placed_record_type(&record.record_type) {
         record.validate_placement_base()?;
-        if !record.has_placement_transform() {
+        let valid_transform = if record.rejected_fields.contains(b"DATA") {
+            // Rejected nonfinite coordinates disappear from the typed projection. A short
+            // source field can still carry a canonical record with no spatial row.
+            record.framed_source_subrecords().is_some_and(|fields| {
+                fields
+                    .into_iter()
+                    .filter(|(tag, _)| tag == b"DATA")
+                    .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
+            })
+        } else {
+            let data = record
+                .fields
+                .iter()
+                .find(|field| field.signature == *b"DATA");
+            super::valid_initial_placement_transform(
+                data.map(|field| field.canonical_bytes.as_slice()),
+            )
+        };
+        if !valid_transform {
             return Err("invalid placement transform".into());
         }
     }

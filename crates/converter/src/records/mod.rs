@@ -204,7 +204,7 @@ impl DecodedRecord {
         Ok(())
     }
 
-    pub(crate) fn has_placement_transform(&self) -> bool {
+    fn has_placement_transform(&self) -> bool {
         !self.rejected_fields.contains(b"DATA")
             && crate::esm::valid_placement_transform(
                 self.fields

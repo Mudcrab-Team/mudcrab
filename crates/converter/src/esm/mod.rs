@@ -437,8 +437,13 @@ impl EsmParser {
                             validate_placement_parent(&record_type, record.cell_form_id, || None)
                                 .map_err(color_eyre::eyre::Report::msg)?;
                             let view = extractors::SubrecordView::new(&record.subrecords);
+                            let valid_transform = if merged.contains_key(&record.form_id) {
+                                valid_placement_transform(view.find_all(b"DATA"))
+                            } else {
+                                valid_initial_placement_transform(view.find(b"DATA"))
+                            };
                             color_eyre::eyre::ensure!(
-                                valid_placement_transform(view.find_all(b"DATA")),
+                                valid_transform,
                                 "invalid placement transform"
                             );
                             color_eyre::eyre::ensure!(
@@ -1148,17 +1153,24 @@ fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME" && is_placed_record_type(record_type)
 }
 
-/// A publishable placement transform is exactly one position/rotation tuple.
+/// A first definition with no projectable DATA retains its canonical identity.
+fn valid_initial_placement_transform(data: Option<&[u8]>) -> bool {
+    data.and_then(|bytes| bytes.first_chunk::<24>())
+        .is_none_or(|transform| {
+            transform
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|word| f32::from_le_bytes(*word).is_finite())
+        })
+}
+
+/// Replacing a placement requires exactly one position/rotation tuple.
 pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a [u8]>) -> bool {
     let Some(data) = fields.next().filter(|bytes| bytes.len() == 24) else {
         return false;
     };
-    fields.next().is_none()
-        && data
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|word| f32::from_le_bytes(*word).is_finite())
+    fields.next().is_none() && valid_initial_placement_transform(Some(data))
 }
 
 /// A missing parent disqualifies an override only if a usable predecessor owns a cell.
