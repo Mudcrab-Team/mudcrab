@@ -426,6 +426,30 @@ class GateTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("1 new Clippy hit(s)", output)
 
+    def test_two_casts_in_one_macro_expansion_stay_apart(self):
+        self.repo.append("crates/converter/src/lib.rs", "probe!(value);\n")
+        self.repo.commit("use the macro")
+        write_log(
+            self.log,
+            [
+                diagnostic(
+                    "converter",
+                    "clippy::cast_possible_truncation",
+                    10,
+                    macro_call_line=2,
+                ),
+                diagnostic(
+                    "converter",
+                    "clippy::cast_possible_truncation",
+                    11,
+                    macro_call_line=2,
+                ),
+            ],
+        )
+        code, output = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("2 new Clippy hit(s)", output)
+
     def test_a_warning_outside_the_four_lints_fails(self):
         write_log(
             self.log,

@@ -120,6 +120,32 @@ def call_site_of(span):
     return expansion.get("call_site") or expansion.get("span") or {}
 
 
+def identity_of(message):
+    """A stable key for a diagnostic, so the lib and bin reports collapse.
+
+    A local `macro_rules!` reports every use at the definition span. The key
+    includes both the primary span and its call site, so two casts in one
+    expansion stay apart while the lib and lib-test reports of one cast share a
+    key, as the count did before the gate.
+    """
+    spans = message.get("spans") or []
+    primary = [span for span in spans if span.get("is_primary")] or spans
+    key = []
+    for span in primary:
+        call_site = call_site_of(span)
+        key.append(
+            (
+                span.get("file_name"),
+                span.get("line_start"),
+                span.get("column_start"),
+                call_site.get("file_name"),
+                call_site.get("line_start"),
+                call_site.get("column_start"),
+            )
+        )
+    return tuple(key)
+
+
 def locations_of(message):
     """The file and line of every primary span, or its macro call site.
 
@@ -187,7 +213,7 @@ def read_log(path):
             crate = crate_of(record)
             if level not in COUNTING_LEVELS:
                 continue
-            key = (crate, code, message.get("message"), level, locations_of(message))
+            key = (crate, code, message.get("message"), level, identity_of(message))
             if level == "error" and message.get("rendered") and key not in reported:
                 reported.add(key)
                 print(message["rendered"], file=sys.stderr)
@@ -221,7 +247,7 @@ def read_log(path):
                     f"{path}:{number}: {code} in {crate} has no span, so the gate cannot "
                     "tell whether the line is new; check the Cargo JSON format"
                 )
-            key = (crate, code, message.get("message"), locations)
+            key = (crate, code, message.get("message"), identity_of(message))
             if key in seen:
                 continue
             seen.add(key)
