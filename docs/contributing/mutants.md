@@ -19,7 +19,8 @@ how to run one locally.
 
 - Schedule: Monday 04:17 UTC.
 - Manual: Actions, `mutants`, "Run workflow". Leave the `files` input empty for the scheduled
-  scope, or give your own space-separated `--file` globs.
+  scope, or give your own space-separated `--file` globs. The `shards` input defaults to 8; lower
+  it only when the scope is small enough that eight jobs would each cost more startup than work.
 - Never on a pull request. One mutant rebuilds the converter and reruns its tests, so a full
   shard takes tens of minutes. That is too slow for a PR gate.
 
@@ -37,10 +38,17 @@ shards of two hours. To cover more, dispatch a run with the next file, for examp
 `crates/converter/src/records/**` and `crates/converter/src/esm/**`, are 4965 mutants and do not
 fit one run. Size a wider run from `outcomes.json` first.
 
-The run is split into eight shards with `--shard k/8`, where `k` is 0 to 7. Each job has a
-two-hour cap, and the run step stops at 105 minutes, so a shard that reaches that cap still
-uploads a partial report. Read the `not tested` count in the summary before you conclude that a
-shard was complete: it is the planned mutants that have no outcome yet.
+The run is split into shards with `--shard k/n`, where `k` is 0 to `n - 1` and `n` is the
+`shards` input, 8 by default. The plan job publishes the count, so the matrix and the report use
+the same number. Each job has a two-hour cap, and the run step stops at 105 minutes, so a shard
+that reaches that cap still uploads a partial report. Read the `not tested` count in the summary
+before you conclude that a shard was complete: it is the planned mutants that have no outcome
+yet.
+
+A dispatch whose scope has fewer mutants than shards leaves some shards with no mutants. Those
+shards succeed and upload an artifact with `shard-empty.txt`, because the scope is valid and the
+other shards cover it. The run fails only when the whole filtered scope is empty, which means a
+bad `--file` glob.
 
 ## Read the report
 
@@ -54,12 +62,24 @@ Each shard uploads an artifact named `mutants-shard-<k>`, holding the contents o
 | `unviable.txt` | Mutants that did not compile. Usually an equivalent change. |
 | `mutants.json` | The mutants the shard planned to test, with file, line, column and diff. |
 | `outcomes.json` | One entry per finished mutant: outcome, phase timings and process status. Use it to size a scope change. |
+| `shard-empty.txt` | Present only when the shard was assigned no mutants. It names the scope total, which other shards test. |
 | `log/<mutant>.log` | Build and test output for one mutant. |
 | `diff/<mutant>.diff` | The exact change that was applied. |
 
 The `mutants-report` artifact merges every shard's survivors into one `surviving-mutants.txt`, and
 the `report` job writes the per-outcome counts to its job summary. You do not have to open eight
 artifacts to see the list.
+
+The report job fails, after it uploads the partial list, when any shard did not report. A shard
+reports when it has a readable `outcomes.json`, the outcome lists, or `shard-empty.txt`. The job
+also fails when no shard reported a `Mutant` outcome, so a baseline-only run does not look clean.
+A partial `surviving-mutants.txt` says which shards are missing instead of claiming that no
+mutant survived.
+
+If a shard has no `outcomes.json`, the summary and the report count `caught.txt`, `missed.txt`,
+`timeout.txt` and `unviable.txt` instead. Those lists are appended after each outcome and are the
+documented artifact. A folder with neither `outcomes.json` nor the lists is an error, not a zero
+row.
 
 For each survivor, in this order:
 
