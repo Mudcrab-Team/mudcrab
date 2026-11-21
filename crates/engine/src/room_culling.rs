@@ -1105,6 +1105,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             "0,0"
         };
         // A private comparison pack can carry the registration order of one retail load.
+        // See docs/research/skyrim-culling-rea-parity.md for the observed portal lists.
         // Accept a complete permutation only. Duplicate physical markers need the legacy walk.
         let captured_order = graph.supports_unbounded
             && visit_index_column

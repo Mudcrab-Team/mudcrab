@@ -116,7 +116,7 @@ Two captures used the same plane in the destination. One left ownership automati
 
 ## Camera and portal boundary rules are more specific than a distance constant
 
-The main-camera builder at RVA `0x1a97b0` constructs the containment point with this formula. Light-owned preparation at `0x1512540` uses the same calculation.
+The camera and room-order observations in this section used SkyrimSE.exe 1.7.104.0 (SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`). The main-camera builder at RVA `0x1a97b0` constructs the containment point with this formula. Light-owned preparation at `0x1512540` uses the same calculation.
 
 ```
 point = camera.translation + camera.near_distance * matrix_column_0
