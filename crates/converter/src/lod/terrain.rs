@@ -611,7 +611,14 @@ fn emit_chunk_glb(
             "doubleSided": true,
         }],
     });
-    let mut json_bytes = serde_json::to_vec(&json)?;
+    assemble_glb(&json, &binary)
+}
+
+/// Wraps a glTF JSON document and its single binary buffer into a GLB container: the 12-byte
+/// header, the JSON chunk padded with spaces to four bytes, then the binary chunk. Shared by the
+/// terrain and object LOD compilers so both write the same container.
+pub(super) fn assemble_glb(json: &serde_json::Value, binary: &[u8]) -> Result<Vec<u8>> {
+    let mut json_bytes = serde_json::to_vec(json)?;
     while !json_bytes.len().is_multiple_of(4) {
         json_bytes.push(b' ');
     }
@@ -625,7 +632,7 @@ fn emit_chunk_glb(
     glb.extend_from_slice(&json_bytes);
     glb.extend_from_slice(&(binary.len() as u32).to_le_bytes());
     glb.extend_from_slice(b"BIN\x00");
-    glb.extend_from_slice(&binary);
+    glb.extend_from_slice(binary);
     Ok(glb)
 }
 
@@ -642,13 +649,13 @@ fn cell_bounds(positions: &[f32], start_vertex: usize) -> ([f32; 3], [f32; 3]) {
     (min, max)
 }
 
-fn f32_slice_bytes(values: &[f32]) -> &[u8] {
+pub(super) fn f32_slice_bytes(values: &[f32]) -> &[u8] {
     // SAFETY: `f32` is `repr(Rust)` but plain-old-data with no padding; a
     // shared slice reborrow as bytes reads exactly the values' storage.
     unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
 }
 
-fn pad_to_4(bytes: &mut Vec<u8>) {
+pub(super) fn pad_to_4(bytes: &mut Vec<u8>) {
     while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
     }

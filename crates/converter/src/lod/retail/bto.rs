@@ -12,8 +12,8 @@
 //!   semantics are not decoded (about 64% of base-game object shapes are large references).
 //!
 //! Vertex positions are block-local as stored. A retail block carries a shape transform
-//! (translation and a scale of 4 in the base game) that the importer applies; it is returned
-//! here unapplied.
+//! (a translation to the block origin, and a scale equal to the block level: 4 at level 4, 16 at
+//! level 16) that the importer applies; it is returned here unapplied.
 
 use crate::mesh::{MeshConverter, parse_skyrim_header};
 use color_eyre::{
@@ -54,7 +54,7 @@ pub struct ObjectLodShape {
     pub translation: [f32; 3],
     /// Shape rotation as three columns (not applied).
     pub rotation_columns: [[f32; 3]; 3],
-    /// Shape scale as stored (not applied); 4.0 in the base game.
+    /// Shape scale as stored (not applied): the block level, 4.0 at level 4 and 16.0 at level 16.
     pub scale: f32,
     /// Raw block reference of the shader property, for the importer's material lookup.
     pub shader_property: u32,
