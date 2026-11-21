@@ -758,7 +758,9 @@ pub(crate) fn insert_record(
                 let decoded_ok = function_allows_parameter_type(function, parameter_type)
                     && match (parameter_type, epfd) {
                         (None, None) | (Some(0), _) => true,
-                        // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins with no spell (`None` or null FormID `0`).
+                        // `add_activate_choice` (fn=9, EPFT=4) can provide button label/flags with
+                        // no spell (`None` or null FormID `0`; see
+                        // https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas).
                         (Some(4), None) => activate_choice_spell_optional,
                         // `select_spell` (EPFT=5) can legitimately omit `EPFD` in official plugins
                         // (e.g. Gray Cowl `PERK` `0x810` effect 0). Reader-rejected `EPFD` payloads

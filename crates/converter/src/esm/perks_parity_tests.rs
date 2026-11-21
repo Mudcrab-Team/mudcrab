@@ -46,7 +46,7 @@ fn header(flags: u32, masters: &[&str]) -> Vec<u8> {
     record_with_flags(b"TES4", 0, flags, &payload)
 }
 
-/// Write an ESM/ESP string table in Skyrim's `.strings` / `.dlstrings` binary format.
+/// Write a synthetic localized `.strings` / `.dlstrings` table (`docs/specs/converters/db-schema.md`).
 fn write_string_table(path: &Path, entries: &[(u32, &str)], length_prefixed: bool) {
     let mut directory = Vec::new();
     let mut blob = Vec::new();

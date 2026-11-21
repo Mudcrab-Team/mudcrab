@@ -2351,9 +2351,11 @@ and cleared to `0` (`param*_form_id = NULL`).
 
 For `parameter_type = 2` (`actor_value_multiplier` on entry-point functions `5`, `12`, `13`, `14`),
 retail Skyrim SE stores an IEEE-754 `f32` in the first four bytes of `EPFD` (e.g., `145.0f32` for
-actor value `145`); `perk_entry_points.actor_value` decodes that `f32` and rounds it to the
-semantic integer actor-value ID (matching xEdit's `wbEPFDActorValueToStr`), while typed record
-output in `crates/converter/src/records/families/perks.json` continues to retain raw `u32` bits.
+actor value `145`; see xEdit's `wbEPFDActorValueToStr` in
+<https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas>);
+`perk_entry_points.actor_value` decodes that `f32` and rounds it to the semantic integer
+actor-value ID, while typed record output in `crates/converter/src/records/families/perks.json`
+continues to retain raw `u32` bits.
 
 ## Optional terrain default metadata
 
