@@ -42,8 +42,8 @@ The NONE-floor pose is above reference 769925. Its floor remains visible in all 
 the enabled mesh list falls from 153 to 63. The named-floor pose is above reference 457767, whose
 authored target is room 454223 while the camera lies in room 454224. Its floor remains visible in
 retail and the enabled view, with 48 of 255 meshes retained. The full-render control instead covers
-much of that view with a close shell surface. Both Mudcrab modes still differ from retail in props
-and material sampling. These images do not identify the owner of every visible pixel.
+much of that view with a close shell surface. The side-by-side captures show differences in props and material sampling
+between Skyrim and both Mudcrab modes. These images do not identify the owner of every visible pixel.
 
 The fresh combined-stack recheck has 48 settled images at eight poses, three runs per mode.
 It includes the review toggle and gap fixes plus the upper layer's bounds support. It is recorded
@@ -88,5 +88,5 @@ bases and cells are untouched. A light that loses its model also loses its old d
 
 The nonempty-subset regression failed when replacing `A.nif` with `B.nif`: the old sphere survived.
 It now covers replacement, removal, and unchanged-model updates for both `STAT` and modeled `LIGH`
-records, including affected cells and unrelated controls. This fixes derived ownership metadata;
-the existing retail images were not rerun for subset conversion.
+records, including affected cells and unrelated controls. This regression checks the derived ownership metadata.
+The existing screenshots predate the subset fix.

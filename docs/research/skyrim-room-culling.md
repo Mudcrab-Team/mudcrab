@@ -187,7 +187,7 @@ In the converted Bards College interior (cell `00016A0C`), static `000F717E` has
 geometric membership or multibound override. The pack contains eight rooms and nine portals,
 all between rooms. The authored loader classifies the static as unbounded using the source
 sphere for `SMDAFloSol04` (center at the model origin, radius 181.02). This is a pack and
-loader check. Visibility of this floor piece in retail has not been measured.
+loader check. Visibility of this floor piece at the same viewpoint in Skyrim remains unverified.
 
 Legacy graphs retain pivot/overlap candidates, conservative box/portal sharing, open links,
 touching-box edges that preserve the incoming visibility volume, and reached-portal-less-room fallbacks. Loose items and authored overrides retain
