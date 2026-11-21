@@ -9032,7 +9032,7 @@ fn plugin_occluder_import_reports_linked_cells_and_keeps_authored_null_links_loc
             "linked",
             [0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
             vec![0x900, 0x901],
-            [false, false],
+            [true, false],
             true,
         ),
         ("malformed", vec![0; 12], vec![0x900], [false, true], false),
@@ -9063,6 +9063,19 @@ fn plugin_occluder_import_reports_linked_cells_and_keeps_authored_null_links_loc
         );
         let report = apply(&assets, PlacementSource::SkyrimPlugin(&source)).unwrap();
         let db = rusqlite::Connection::open(path).unwrap();
+        if name == "linked" {
+            // A verified single edge preserves the source certificate. The target cell
+            // loses its certificate, and the receipt includes both cells.
+            let edge: (u32, u32, bool) = db
+                .query_row(
+                    "SELECT link_index, linked_ref, single_target_verified
+                     FROM room_occluder_links WHERE ref_id=0x801",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(edge, (0, 0x802, true));
+        }
         let certificates = [0x900, 0x901].map(|cell| placement_certificate(&db, cell));
         let links_verified = db
             .query_row(
