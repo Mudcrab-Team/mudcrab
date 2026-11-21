@@ -786,11 +786,10 @@ Rules:
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
-- When a subset export or placement layer removes a placement, its incoming `XATR`, `XAPR` and `XLKR`
-  slots become NULL in the same transaction. Adding or restoring a target resolves matching
-  slots from the effective source payload, including sources outside the edit batch.
-  Supply the live target record on restoration. A keyword-only deletion or restoration
-  updates the keyword slot without changing the linked reference.
+- Subset exports refresh incoming `XLKR`, `XAPR`, `XATR` and `XOWN` links when a target is
+  added, deleted, restored or changes record type. The exporter reads each surviving source's
+  effective payload to refill compatible links and preserves unrelated columns, including owner rank.
+  Placement layers also refresh affected links in the same transaction.
   For an unedited in-house source, the converter uses the original plugin payload and master
   list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
   occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
@@ -1712,6 +1711,8 @@ target, or `{"kind": "target", "room": 2048}` for a named room.
 
 `put_room` adds or replaces a box room marker. Its `half_extents` array gives finite, nonnegative
 X, Y, and Z half-extents in Creation units. Optional `links` name joined rooms in authored order.
+Set `master` to `true` or `false` to change the room's master flag. Omitting it preserves the
+flag on an existing room. A new room defaults to `false`.
 `put_portal` adds or replaces a portal marker with finite, positive X and Z `half_extents`. Its
 `endpoints` array names two rooms in that cell. Use `0` for an explicit outside endpoint.
 

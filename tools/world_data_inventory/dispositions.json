@@ -1029,6 +1029,11 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
+    "subset_nonplacement_deletions": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#744)",
+      "reason": "Subset updates retain deleted non-placement identities so later edits can validate incoming links. Restoring the record clears its entry. A full export replaces the subset history."
+    },
     "texture_sets": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
