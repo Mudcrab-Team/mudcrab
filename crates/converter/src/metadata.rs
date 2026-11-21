@@ -514,7 +514,14 @@ fn new_output_path(output: &Path, source: &Path, data: &Path) -> Result<PathBuf>
     Ok(output)
 }
 
-fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<String>)> {
+fn matched_plugins(
+    source: &Path,
+    data: &Path,
+) -> Result<(
+    Vec<PathBuf>,
+    Vec<String>,
+    Vec<crate::esm::binary::PluginMetadata>,
+)> {
     let connection = Connection::open_with_flags(
         source.join("skyrim_world.db"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -527,6 +534,7 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
     let mut seen = BTreeSet::new();
     let mut plugins = Vec::with_capacity(rows.len());
     let mut hashes = Vec::with_capacity(rows.len());
+    let mut metadata = Vec::with_capacity(rows.len());
     for (index, (name, priority, expected)) in rows.into_iter().enumerate() {
         ensure!(
             priority == index as i64,
@@ -546,14 +554,59 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
             "duplicate plugin name {name}"
         );
         let path = data.join(&name);
+        // Authenticate the TES4 header and the package checksum from one checked view. The
+        // rebuild's slot read must not admit a replacement these bytes never contained.
+        let reader = crate::esm::mmap_reader::EsmReader::open(&path)?;
+        let header = crate::esm::binary::parse_plugin_metadata_bytes(reader.as_slice())
+            .wrap_err_with(|| format!("failed to read plugin header {name}"))?;
         ensure!(
-            hash_file(&path)? == expected,
+            hash_bytes(reader.as_slice()) == expected,
             "plugin checksum mismatch: {name}"
         );
+        reader.verify_source()?;
         plugins.push(path);
         hashes.push(expected);
+        metadata.push(header);
     }
-    Ok((plugins, hashes))
+    Ok((plugins, hashes, metadata))
+}
+
+/// Admission flags that decide the full/light namespace and localized master decoding.
+const ADMISSION_FLAGS: u32 = 0x1 | 0x80 | 0x200;
+
+/// Require the rebuild's slot read to use the header facts authenticated with each package.
+///
+/// `LoadOrder::read` opens the plugin headers again. A temporary ESL-flagged replacement seen
+/// only by that read moves one plugin into the light namespace and shifts every later full slot;
+/// a healthy neighbor then exports unchanged bytes at a slot the source package never assigned.
+/// Refuse that mismatch instead of publishing shifted FormIDs. Both sides decode the same TES4
+/// facts: `authenticated` from the bytes `matched_plugins` hashed, `order` from its own read.
+fn verify_admitted_order(
+    order: &crate::esm::load_order::LoadOrder,
+    authenticated: &[crate::esm::binary::PluginMetadata],
+) -> Result<()> {
+    ensure!(
+        order.metadata.len() == authenticated.len(),
+        "plugin order/authentication length mismatch"
+    );
+    for (index, (name, admitted)) in order.names.iter().zip(&order.metadata).enumerate() {
+        let expected = &authenticated[index];
+        let flags_match = (admitted.flags ^ expected.flags) & ADMISSION_FLAGS == 0;
+        let masters_match = admitted.masters.len() == expected.masters.len()
+            && admitted
+                .masters
+                .iter()
+                .zip(&expected.masters)
+                .all(|(admitted, expected)| {
+                    shared::plugin_selection::normalize_plugin_name(admitted)
+                        == shared::plugin_selection::normalize_plugin_name(expected)
+                });
+        ensure!(
+            flags_match && masters_match,
+            "plugin {name}: the header read for slot assignment differs from the checksum-authenticated source package; refusing to rebuild metadata with shifted plugin slots"
+        );
+    }
+    Ok(())
 }
 
 /// Enforce retained source identity for every ordinary LTEX diffuse.
@@ -699,7 +752,11 @@ async fn rebuild_into(
     config: &PipelineConfig,
     source: &Path,
     staging: &Path,
-    matched: &(Vec<PathBuf>, Vec<String>),
+    matched: &(
+        Vec<PathBuf>,
+        Vec<String>,
+        Vec<crate::esm::binary::PluginMetadata>,
+    ),
     metadata: SourceMetadata<'_>,
     progress: &Sender<ProgressEvent>,
     ownership: Arc<LodWorkerOwnership>,
@@ -713,9 +770,10 @@ async fn rebuild_into(
         source_script_abi,
         source_lineage,
     } = metadata;
-    let (plugins, plugin_hashes) = matched;
+    let (plugins, plugin_hashes, authenticated_metadata) = matched;
     // Retain slot/master metadata before copying assets and extracting archive inputs.
     let admitted_order = crate::esm::load_order::LoadOrder::read(plugins)?;
+    verify_admitted_order(&admitted_order, authenticated_metadata)?;
     progress_event(
         progress,
         ProgressStage::Validating,

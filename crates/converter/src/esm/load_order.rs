@@ -501,6 +501,52 @@ pub(crate) fn after_load_order_read_for_test() {
     }
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    /// A deterministic temporary source edit spanning one header read, in debug builds.
+    static LOAD_ORDER_READ_EDIT: std::cell::RefCell<
+        Option<(Box<dyn FnOnce()>, Box<dyn FnOnce()>)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Clears [`load_order_read_edit_for_test`] if the read never ran (debug builds only).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[must_use = "the edit is cleared when this guard drops"]
+pub struct LoadOrderReadEditGuard;
+
+#[cfg(debug_assertions)]
+impl Drop for LoadOrderReadEditGuard {
+    fn drop(&mut self) {
+        LOAD_ORDER_READ_EDIT.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// Run `edit` for the next header read and `restore` immediately after it.
+///
+/// Metadata rebuild tests use this to show a replacement header only to the slot read, then give
+/// the source back before decoding. Release builds have no hook and no callback.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn load_order_read_edit_for_test(
+    edit: impl FnOnce() + 'static,
+    restore: impl FnOnce() + 'static,
+) -> LoadOrderReadEditGuard {
+    LOAD_ORDER_READ_EDIT.with(|slot| {
+        *slot.borrow_mut() = Some((Box::new(edit), Box::new(restore)));
+    });
+    LoadOrderReadEditGuard
+}
+
+#[cfg(debug_assertions)]
+fn begin_load_order_read_edit_for_test() -> Option<Box<dyn FnOnce()>> {
+    let pending = LOAD_ORDER_READ_EDIT.with(|slot| slot.borrow_mut().take());
+    pending.map(|(edit, restore)| {
+        edit();
+        restore
+    })
+}
+
 /// Validated plugin order with forward mappings and constant-time ownership lookup.
 #[derive(Clone, Debug)]
 pub struct LoadOrder {
@@ -517,6 +563,8 @@ impl LoadOrder {
     /// This strict API keeps metadata aligned with every supplied path; callers must
     /// remove cyclic, inverted and overflow plugins and their dependents before reading it.
     pub fn read(paths: &[PathBuf]) -> Result<Self> {
+        #[cfg(debug_assertions)]
+        let restore = begin_load_order_read_edit_for_test();
         let order = Self::from_metadata_readers(paths.iter().map(|path| {
             let name = normalize_plugin_name(
                 &path
@@ -525,7 +573,12 @@ impl LoadOrder {
                     .to_string_lossy(),
             );
             Ok((name, move || parse_plugin_metadata(path)))
-        }))?;
+        }));
+        #[cfg(debug_assertions)]
+        if let Some(restore) = restore {
+            restore();
+        }
+        let order = order?;
         #[cfg(test)]
         after_load_order_read_for_test();
         Ok(order)
