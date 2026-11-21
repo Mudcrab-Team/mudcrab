@@ -1247,32 +1247,38 @@ pub(crate) fn prune_stale_reader_packs(
 
 /// Inspect only the bounded header/index of an immutable converter-owned pack.
 fn pack_reader_version(path: &Path, source_hash: &str, recipe: &str) -> Option<u32> {
-    let mut file = File::open(path).ok()?;
-    let file_len = file.metadata().ok()?.len();
-    if !(16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len) {
-        return None;
-    }
+    // silent-ok: an unreadable or mismatched pack is not reusable; the caller rebuilds it.
+    checked_pack_reader_version(path, source_hash, recipe).ok()
+}
+
+/// The bounded header/index checks behind `pack_reader_version`, with the reason for each refusal.
+fn checked_pack_reader_version(path: &Path, source_hash: &str, recipe: &str) -> Result<u32> {
+    let mut file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    ensure!(
+        (16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len),
+        "pack size {file_len} is outside the accepted range"
+    );
     let mut header = [0; 16];
-    file.read_exact(&mut header).ok()?;
-    if &header[..8] != PACK_MAGIC {
-        return None;
-    }
-    let length = usize::try_from(u64::from_le_bytes(header[8..16].try_into().ok()?)).ok()?;
-    if length > MAX_INDEX_BYTES || length as u64 > file_len - 16 {
-        return None;
-    }
+    file.read_exact(&mut header)?;
+    ensure!(&header[..8] == PACK_MAGIC, "pack magic mismatch");
+    let length = usize::try_from(u64::from_le_bytes(header[8..16].try_into()?))?;
+    ensure!(
+        length <= MAX_INDEX_BYTES && length as u64 <= file_len - 16,
+        "pack index length {length} is out of range"
+    );
     let mut bytes = vec![0; length];
-    file.read_exact(&mut bytes).ok()?;
-    let index: PackIndex = serde_json::from_slice(&bytes).ok()?;
-    if !matches!(index.version, 1 | PACK_VERSION)
-        || index.source_hash != source_hash
-        || index.recipe != recipe
-    {
-        return None;
-    }
+    file.read_exact(&mut bytes)?;
+    let index: PackIndex = serde_json::from_slice(&bytes)?;
+    ensure!(
+        matches!(index.version, 1 | PACK_VERSION)
+            && index.source_hash == source_hash
+            && index.recipe == recipe,
+        "pack version, source or recipe does not match"
+    );
     let base = 16 + length;
-    validate_pack_layout(&index, base, usize::try_from(file_len).ok()?).ok()?;
-    Some(index.reader_version)
+    validate_pack_layout(&index, base, usize::try_from(file_len)?)?;
+    Ok(index.reader_version)
 }
 
 #[allow(clippy::too_many_arguments)]
