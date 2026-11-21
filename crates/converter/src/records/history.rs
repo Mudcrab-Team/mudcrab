@@ -1039,7 +1039,7 @@ mod normalized_masters_tests {
                     payload.extend(u16::try_from(text.len()).unwrap().to_le_bytes());
                     payload.extend(text);
                     let offset = bytes.len() as u64;
-                    let size = payload.len() as u32;
+                    let size = u32::try_from(payload.len()).unwrap();
                     bytes.extend(native_frame(b"KYWD", 0x0300_0812, 0, &payload));
                     let mut entry = header_entry(
                         scanner::ObservedHeader {
@@ -1071,7 +1071,7 @@ mod normalized_masters_tests {
                 };
                 conn.execute(
                     "UPDATE plugins SET checksum=?1 WHERE id=?2",
-                    params![checksum, index as u32],
+                    params![checksum, u32::try_from(index).unwrap()],
                 )
                 .unwrap();
                 if index == missing {

@@ -108,7 +108,10 @@ pub(crate) fn map_input(file: &File, path: &Path) -> Result<InputMap> {
     if before.length <= MEMORY_SNAPSHOT_LIMIT {
         let mut source = file.try_clone()?;
         source.seek(SeekFrom::Start(0))?;
-        let mut snapshot = MmapMut::map_anon(before.length as usize)?;
+        let mut snapshot = MmapMut::map_anon(
+            usize::try_from(before.length)
+                .wrap_err_with(|| format!("input too large: {}", path.display()))?,
+        )?;
         source.read_exact(&mut snapshot).wrap_err_with(changed)?;
         let mut extra = [0];
         ensure!(source.read(&mut extra)? == 0, "{}", changed());

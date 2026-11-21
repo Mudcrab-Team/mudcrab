@@ -667,7 +667,7 @@ mod tests {
             b"STAT",
             0x303,
             0,
-            &vec![0; crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize],
+            &vec![0; usize::try_from(crate::source_input::MEMORY_SNAPSHOT_LIMIT).unwrap()],
         ));
         assert!(bytes.len() as u64 > crate::source_input::MEMORY_SNAPSHOT_LIMIT);
         std::fs::write(&path, bytes).unwrap();
@@ -740,7 +740,7 @@ mod tests {
             b"STAT",
             0x402,
             0,
-            &vec![b'x'; crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize],
+            &vec![b'x'; usize::try_from(crate::source_input::MEMORY_SNAPSHOT_LIMIT).unwrap()],
         ));
         assert!(bytes.len() as u64 > crate::source_input::MEMORY_SNAPSHOT_LIMIT);
         std::fs::write(&path, &bytes).unwrap();

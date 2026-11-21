@@ -815,13 +815,14 @@ mod tests {
     fn large_plugin_bytes() -> Vec<u8> {
         let chunk = vec![b'x'; 60 * 1024];
         let mut payload = Vec::new();
-        while payload.len() <= crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize {
+        while payload.len() <= usize::try_from(crate::source_input::MEMORY_SNAPSHOT_LIMIT).unwrap()
+        {
             payload.extend_from_slice(b"EDID");
-            payload.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&u16::try_from(chunk.len()).unwrap().to_le_bytes());
             payload.extend_from_slice(&chunk);
         }
         let mut bytes = b"TES4".to_vec();
-        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
         bytes.extend_from_slice(&payload);

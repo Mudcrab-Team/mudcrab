@@ -107,7 +107,10 @@ fn assert_missing_admitted_plugin_publishes(reader: crate::config::RecordReader)
         .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
     assert_eq!(rows.len(), 3);
     for (index, (id, name, priority, checksum_len, checksum_type)) in rows.iter().enumerate() {
-        assert_eq!((*id, *priority), (index as i64, index as i64));
+        assert_eq!(
+            (*id, *priority),
+            (i64::try_from(index).unwrap(), i64::try_from(index).unwrap())
+        );
         assert_eq!(name, paths[index].file_name().unwrap().to_str().unwrap());
         assert_eq!(*checksum_len, if index == 1 { 0 } else { 32 });
         assert_eq!(checksum_type, "blob");

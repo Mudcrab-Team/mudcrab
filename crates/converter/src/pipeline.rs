@@ -16423,11 +16423,11 @@ mod tests {
                 let mut payload = Vec::new();
                 for (tag, value) in fields {
                     payload.extend_from_slice(*tag);
-                    payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+                    payload.extend_from_slice(&u16::try_from(value.len()).unwrap().to_le_bytes());
                     payload.extend(value);
                 }
                 let mut bytes = signature.to_vec();
-                bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
                 bytes.extend_from_slice(&0u32.to_le_bytes());
                 bytes.extend_from_slice(&id.to_le_bytes());
                 bytes.extend_from_slice(&0u32.to_le_bytes());
@@ -16586,11 +16586,11 @@ mod tests {
             let mut payload = Vec::new();
             for (tag, value) in fields {
                 payload.extend_from_slice(*tag);
-                payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+                payload.extend_from_slice(&u16::try_from(value.len()).unwrap().to_le_bytes());
                 payload.extend(value);
             }
             let mut bytes = signature.to_vec();
-            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
             bytes.extend_from_slice(&0u32.to_le_bytes());
             bytes.extend_from_slice(&id.to_le_bytes());
             bytes.extend_from_slice(&0u32.to_le_bytes());

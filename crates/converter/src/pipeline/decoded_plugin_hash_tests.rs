@@ -12,12 +12,17 @@ fn small_plugin(id: u32) -> Vec<u8> {
     ]
     .concat();
     let sub = |tag: &[u8; 4], bytes: &[u8]| {
-        [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
+        [
+            tag.as_slice(),
+            &u16::try_from(bytes.len()).unwrap().to_le_bytes(),
+            bytes,
+        ]
+        .concat()
     };
     let record = |tag: &[u8; 4], id: u32, payload: Vec<u8>| {
         [
             tag.as_slice(),
-            &(payload.len() as u32).to_le_bytes(),
+            &u32::try_from(payload.len()).unwrap().to_le_bytes(),
             &0u32.to_le_bytes(),
             &id.to_le_bytes(),
             &[0; 8],
