@@ -199,6 +199,18 @@ pub struct LodObjectResponse {
     pub generation: u64,
     pub worldspace_id: u32,
     pub result: std::result::Result<Vec<LodChunkMetadata>, LodQueryFailure>,
+    /// The worldspace's shared atlas, when its chunks reference one (format 3). `Ok(None)` for a
+    /// pack whose chunks embed the atlas.
+    pub atlas: std::result::Result<Option<LodObjectAtlas>, LodQueryFailure>,
+}
+
+/// The shared object LOD atlas of a worldspace: a KTX2 file every object chunk of the worldspace
+/// references (the additive `lod_object_atlases` table).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LodObjectAtlas {
+    pub worldspace_id: u32,
+    pub payload_path: String,
+    pub content_hash: String,
 }
 
 /// Whether an asynchronous query failed temporarily or rejected invalid metadata.
@@ -1074,19 +1086,30 @@ fn worker(
                 worldspace_id,
                 queued_at: _,
             } => {
-                let result = match &setup {
-                    Ok((connection, _)) => load_lod_object_chunks(connection, worldspace_id)
-                        .map_err(LodQueryFailure::from_error),
-                    Err(error) => Err(LodQueryFailure {
-                        transient: false,
-                        reason: error.clone(),
-                    }),
+                let (result, atlas) = match &setup {
+                    Ok((connection, _)) => (
+                        load_lod_object_chunks(connection, worldspace_id)
+                            .map_err(LodQueryFailure::from_error),
+                        load_lod_object_atlas(connection, worldspace_id)
+                            .map_err(LodQueryFailure::from_error),
+                    ),
+                    Err(error) => (
+                        Err(LodQueryFailure {
+                            transient: false,
+                            reason: error.clone(),
+                        }),
+                        Err(LodQueryFailure {
+                            transient: false,
+                            reason: error.clone(),
+                        }),
+                    ),
                 };
                 if lod_object_responses
                     .send(LodObjectResponse {
                         generation,
                         worldspace_id,
                         result,
+                        atlas,
                     })
                     .is_err()
                 {
@@ -1244,6 +1267,68 @@ pub fn load_lod_object_chunks(
         )
     })
     .collect()
+}
+
+/// The shared object LOD atlas of a worldspace, from the additive `lod_object_atlases` table.
+///
+/// `Ok(None)` for a pack without that table or without a row for the worldspace: its chunks embed
+/// the atlas. A row with a non-canonical path or hash is an error.
+pub fn load_lod_object_atlas(
+    connection: &Connection,
+    worldspace_id: u32,
+) -> Result<Option<LodObjectAtlas>> {
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_atlases')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(None);
+    }
+    let row: Option<(String, String)> = connection
+        .query_row(
+            "SELECT payload_path, content_hash FROM lod_object_atlases WHERE worldspace_id=?1",
+            [worldspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let Some((payload_path, content_hash)) = row else {
+        return Ok(None);
+    };
+    let canonical = shared::lod::object_atlas_path(worldspace_id);
+    color_eyre::eyre::ensure!(
+        is_safe_relative_asset_path(&payload_path) && payload_path == canonical,
+        "object LOD atlas of worldspace {worldspace_id} has unsafe or non-canonical path {payload_path:?}; expected {canonical:?}"
+    );
+    color_eyre::eyre::ensure!(
+        is_canonical_sha256(&content_hash),
+        "object LOD atlas of worldspace {worldspace_id} has an invalid content hash"
+    );
+    Ok(Some(LodObjectAtlas {
+        worldspace_id,
+        payload_path,
+        content_hash,
+    }))
+}
+
+/// Checks that the shared atlas file exists under `assets` and matches its recorded SHA-256. A
+/// missing or damaged atlas is an error that names the file.
+pub fn verify_lod_object_atlas(assets: &Path, atlas: &LodObjectAtlas) -> Result<()> {
+    crate::streaming::lod::verify_payload_hash(
+        assets.join(&atlas.payload_path),
+        atlas.content_hash.clone(),
+    )
+    .map_err(|failure| {
+        color_eyre::eyre::eyre!(
+            "the shared object LOD atlas {} failed its integrity check: {}",
+            atlas.payload_path,
+            failure.reason()
+        )
+    })
 }
 
 /// Checks that every object LOD chunk's file exists under `assets` and matches its recorded
@@ -4200,5 +4285,46 @@ mod tests {
                 .iter()
                 .all(|reference| reference.door.is_none())
         );
+    }
+
+    #[test]
+    fn the_shared_object_atlas_row_is_read_validated_and_hash_checked() {
+        let connection = Connection::open_in_memory().unwrap();
+        // A pack without the table: its chunks embed the atlas.
+        assert_eq!(load_lod_object_atlas(&connection, 60).unwrap(), None);
+        connection
+            .execute_batch(
+                "CREATE TABLE lod_object_atlases(worldspace_id INTEGER PRIMARY KEY, payload_path TEXT NOT NULL, content_hash TEXT NOT NULL);",
+            )
+            .unwrap();
+        assert_eq!(load_lod_object_atlas(&connection, 60).unwrap(), None);
+        let hash = "ab".repeat(32);
+        connection
+            .execute(
+                "INSERT INTO lod_object_atlases VALUES (60, 'lod/0000003c/objects_atlas.ktx2', ?1)",
+                [&hash],
+            )
+            .unwrap();
+        let atlas = load_lod_object_atlas(&connection, 60).unwrap().unwrap();
+        assert_eq!(atlas.payload_path, "lod/0000003c/objects_atlas.ktx2");
+        // A missing file is an error that names the atlas, not a silent skip.
+        let assets = tempfile::tempdir().unwrap();
+        let message = format!(
+            "{:#}",
+            verify_lod_object_atlas(assets.path(), &atlas).unwrap_err()
+        );
+        assert!(message.contains("shared object LOD atlas"), "{message}");
+        // A non-canonical path or a bad hash is refused.
+        connection
+            .execute("UPDATE lod_object_atlases SET payload_path='../x.ktx2'", [])
+            .unwrap();
+        assert!(load_lod_object_atlas(&connection, 60).is_err());
+        connection
+            .execute(
+                "UPDATE lod_object_atlases SET payload_path='lod/0000003c/objects_atlas.ktx2', content_hash='nope'",
+                [],
+            )
+            .unwrap();
+        assert!(load_lod_object_atlas(&connection, 60).is_err());
     }
 }

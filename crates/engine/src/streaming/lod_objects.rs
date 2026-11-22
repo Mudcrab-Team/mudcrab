@@ -41,7 +41,10 @@ use crate::{
     config::{EngineConfig, TerrainLodDistances},
     world::{
         components::{CELL_SIZE, StreamingCamera},
-        database::{LodChunkMetadata, WorldDatabase, verify_lod_object_payloads},
+        database::{
+            LodChunkMetadata, LodObjectAtlas, WorldDatabase, verify_lod_object_atlas,
+            verify_lod_object_payloads,
+        },
     },
 };
 use bevy::{
@@ -86,6 +89,13 @@ pub struct LodObjects {
     roots: HashMap<ChunkKey, Entity>,
     /// Roots that are no longer wanted but stay until the wanted ones have attached.
     retiring: HashMap<ChunkKey, Entity>,
+    /// The worldspace's shared atlas file, when its chunks reference one, with its integrity check
+    /// in flight until `atlas_ready`. Chunks draw only after the atlas check has passed too.
+    atlas: Option<LodObjectAtlas>,
+    atlas_check: Option<Task<Result<(), String>>>,
+    atlas_ready: bool,
+    /// Keeps the shared atlas loaded once for every chunk that references it.
+    atlas_handle: Option<Handle<Image>>,
     /// The pack (assets folder) the state above belongs to.
     pack: Option<PathBuf>,
     /// The camera cell and distances the current selection was made for.
@@ -135,6 +145,10 @@ impl LodObjects {
         self.checking.clear();
         self.checked.clear();
         self.chunks.clear();
+        self.atlas = None;
+        self.atlas_check = None;
+        self.atlas_ready = false;
+        self.atlas_handle = None;
         // `failure` stays: it belongs to the pack, not to the worldspace.
     }
 
@@ -179,9 +193,22 @@ impl LodObjects {
         true
     }
 
-    /// Starts one payload check per row of every tier.
-    fn start_checks(&mut self, chunks: Vec<LodChunkMetadata>, assets: &std::path::Path) {
+    /// Starts one payload check per row of every tier, and one for the shared atlas file.
+    fn start_checks(
+        &mut self,
+        chunks: Vec<LodChunkMetadata>,
+        atlas: Option<LodObjectAtlas>,
+        assets: &std::path::Path,
+    ) {
         self.checked.clear();
+        self.atlas_ready = atlas.is_none();
+        self.atlas_check = atlas.clone().map(|atlas| {
+            let assets = assets.to_owned();
+            IoTaskPool::get().spawn(async move {
+                verify_lod_object_atlas(&assets, &atlas).map_err(|error| format!("{error:#}"))
+            })
+        });
+        self.atlas = atlas;
         self.checking = chunks
             .into_iter()
             .map(|chunk| {
@@ -199,8 +226,21 @@ impl LodObjects {
     /// Collects finished checks. The first failure turns object LOD off for the pack and cancels
     /// the rest; when every check passed, the chunks become drawable.
     fn poll_checks(&mut self) {
-        if self.checking.is_empty() || self.failure.is_some() {
+        if self.failure.is_some() {
             return;
+        }
+        if let Some(task) = self.atlas_check.take() {
+            if task.is_finished() {
+                match block_on(task) {
+                    Ok(()) => self.atlas_ready = true,
+                    Err(reason) => {
+                        self.fail(format!("object LOD is off for this pack: {reason}"));
+                        return;
+                    }
+                }
+            } else {
+                self.atlas_check = Some(task);
+            }
         }
         for (chunk, task) in std::mem::take(&mut self.checking) {
             if !task.is_finished() {
@@ -210,20 +250,25 @@ impl LodObjects {
             match block_on(task) {
                 Ok(()) => self.checked.push(chunk),
                 Err(reason) => {
-                    let reason = format!("object LOD is off for this pack: {reason}");
-                    error!("{reason}");
-                    self.failure = Some(reason);
-                    self.checking.clear();
-                    self.checked.clear();
+                    self.fail(format!("object LOD is off for this pack: {reason}"));
                     return;
                 }
             }
         }
-        if self.checking.is_empty() {
+        if self.checking.is_empty() && self.atlas_ready && !self.checked.is_empty() {
             let mut chunks = std::mem::take(&mut self.checked);
             chunks.sort_by_key(|chunk| chunk.key);
             self.chunks = chunks;
         }
+    }
+
+    /// Turns object LOD off for the pack, once, with the reason logged as an error.
+    fn fail(&mut self, reason: String) {
+        error!("{reason}");
+        self.failure = Some(reason);
+        self.checking.clear();
+        self.checked.clear();
+        self.atlas_check = None;
     }
 }
 
@@ -318,10 +363,18 @@ pub(super) fn update_lod_objects(
         if response.generation != objects.generation || response.worldspace_id != worldspace_id {
             continue;
         }
-        match response.result {
-            Ok(chunks) if chunks.is_empty() => {}
-            Ok(chunks) => objects.start_checks(chunks, &config.assets_dir),
-            Err(failure) => {
+        match (response.result, response.atlas) {
+            (Ok(chunks), _) if chunks.is_empty() => {}
+            (Ok(_), Err(failure)) => {
+                let reason = format!(
+                    "object LOD is off for this pack: the shared atlas row is invalid: {}",
+                    failure.reason
+                );
+                error!("{reason}");
+                objects.failure = Some(reason);
+            }
+            (Ok(chunks), Ok(atlas)) => objects.start_checks(chunks, atlas, &config.assets_dir),
+            (Err(failure), _) => {
                 let reason = format!("object LOD chunk rows are invalid: {}", failure.reason);
                 error!("{reason}");
                 objects.failure = Some(reason);
@@ -333,6 +386,12 @@ pub(super) fn update_lod_objects(
         return;
     }
 
+    // The shared atlas is loaded once and kept, so every chunk that references it shares the image.
+    if objects.atlas_handle.is_none()
+        && let Some(atlas) = &objects.atlas
+    {
+        objects.atlas_handle = Some(asset_server.load(atlas.payload_path.clone()));
+    }
     objects.finish_retirement(&mut commands, &attached);
     let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
     if !objects.selection_changed(center, &config.terrain_lod) {
@@ -777,6 +836,7 @@ mod tests {
             },
         ))
         .init_asset::<WorldAsset>()
+        .init_asset::<Image>()
         .insert_resource(EngineConfig {
             assets_dir: assets.path().into(),
             worldspace_id: 60,
@@ -845,6 +905,18 @@ mod tests {
         /// Runs one frame, takes the system's row request and answers it with `chunks`. The
         /// answer carries the request's generation plus `generation_offset`.
         fn answer(&mut self, chunks: Vec<LodChunkMetadata>, generation_offset: u64) {
+            self.answer_with_atlas(chunks, Ok(None), generation_offset);
+        }
+
+        fn answer_with_atlas(
+            &mut self,
+            chunks: Vec<LodChunkMetadata>,
+            atlas: std::result::Result<
+                Option<LodObjectAtlas>,
+                crate::world::database::LodQueryFailure,
+            >,
+            generation_offset: u64,
+        ) {
             self.app.update();
             let Ok(DatabaseRequest::LoadLodObjectChunks {
                 generation,
@@ -859,8 +931,25 @@ mod tests {
                     generation: generation + generation_offset,
                     worldspace_id,
                     result: Ok(chunks),
+                    atlas,
                 })
                 .unwrap();
+        }
+
+        /// Writes `bytes` as the worldspace's shared atlas and returns its row.
+        fn write_atlas(&self, bytes: &[u8]) -> LodObjectAtlas {
+            let payload_path = shared::lod::object_atlas_path(60);
+            let path = self.assets.path().join(&payload_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+            LodObjectAtlas {
+                worldspace_id: 60,
+                payload_path,
+                content_hash: Sha256::digest(bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            }
         }
 
         /// Runs frames until `done` holds, or fails after a deadline.
@@ -959,6 +1048,78 @@ mod tests {
         rig.answer(vec![drawable, missing], 0);
         rig.run_until("the failure", |rig| rig.objects().failure().is_some());
         assert_eq!(rig.root_count(), 0);
+    }
+
+    #[test]
+    fn a_verified_shared_atlas_is_loaded_once_and_chunks_draw() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        let atlas = rig.write_atlas(b"ktx2 bytes");
+        rig.answer_with_atlas(vec![chunk], Ok(Some(atlas)), 0);
+        rig.run_until("the root", |rig| rig.objects().resident() == 1);
+        assert!(rig.objects().failure().is_none());
+        assert!(
+            rig.objects().atlas_handle.is_some(),
+            "the atlas is held, loaded once for every chunk"
+        );
+    }
+
+    #[test]
+    fn a_missing_shared_atlas_turns_object_lod_off_once_with_a_clear_message() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        let atlas = rig.write_atlas(b"ktx2 bytes");
+        std::fs::remove_file(rig.assets.path().join(&atlas.payload_path)).unwrap();
+        rig.answer_with_atlas(vec![chunk], Ok(Some(atlas)), 0);
+        rig.run_until("the failure", |rig| rig.objects().failure().is_some());
+        let reason = rig.objects().failure().unwrap().to_owned();
+        assert!(
+            reason.contains("shared object LOD atlas") && reason.contains("integrity"),
+            "{reason}"
+        );
+        assert_eq!(
+            rig.root_count(),
+            0,
+            "the chunks do not draw without their atlas"
+        );
+        assert!(rig.objects().atlas_handle.is_none());
+    }
+
+    #[test]
+    fn a_damaged_shared_atlas_fails_closed_with_its_hash() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        let atlas = rig.write_atlas(b"ktx2 bytes");
+        std::fs::write(rig.assets.path().join(&atlas.payload_path), b"damaged").unwrap();
+        rig.answer_with_atlas(vec![chunk], Ok(Some(atlas)), 0);
+        rig.run_until("the failure", |rig| rig.objects().failure().is_some());
+        assert!(rig.objects().failure().unwrap().contains("SHA-256"));
+        assert_eq!(rig.root_count(), 0);
+    }
+
+    #[test]
+    fn an_invalid_atlas_row_turns_object_lod_off_too() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        rig.answer_with_atlas(
+            vec![chunk],
+            Err(crate::world::database::LodQueryFailure {
+                transient: false,
+                reason: "non-canonical path".into(),
+            }),
+            0,
+        );
+        rig.run_until("the failure", |rig| rig.objects().failure().is_some());
+        assert!(
+            rig.objects()
+                .failure()
+                .unwrap()
+                .contains("atlas row is invalid")
+        );
     }
 
     #[test]
