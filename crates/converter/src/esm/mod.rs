@@ -25,6 +25,7 @@ pub mod grass_cache;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
+pub(crate) mod large_references;
 mod legacy_text;
 pub mod load_order;
 pub mod lodsettings;
@@ -75,6 +76,7 @@ pub(crate) struct RecordConversion {
 }
 
 struct LegacyPluginMerge {
+    large_references: large_references::LargeReferences,
     deleted_ids: HashSet<u32>,
     conversion: RecordConversion,
     damaged_cells: HashSet<u32>,
@@ -356,6 +358,7 @@ impl EsmParser {
         let mut damaged_cells = HashSet::new();
         let mut unknown_discarded_scope = false;
         let mut room_link_layouts = HashMap::new();
+        let mut large_references = large_references::LargeReferences::default();
         let mut placement_candidates = BTreeMap::new();
         let mut deleted_ids = crate::records::DeletedBases::default();
         let mut summaries = Vec::new();
@@ -531,6 +534,9 @@ impl EsmParser {
                 }
                 sources.insert(remapped_source_id, (source_id, out_of_range));
                 let id = record.form_id;
+                if record.record_type == *b"WRLD" && !record.is_deleted() {
+                    large_references.collect(&record, source_id, priority, order);
+                }
                 let previous_layout = room_link_layouts.remove(&id);
                 if let Some(layout) = room_link_layout {
                     room_link_layouts.insert(id, layout);
@@ -610,6 +616,7 @@ impl EsmParser {
         damaged_placements.unknown_scope |= unknown_discarded_scope;
         damaged_cells.extend(damaged_placements.affected_cells(&merged));
         Ok(LegacyPluginMerge {
+            large_references,
             deleted_ids: deleted_ids.absent_from(&merged),
             conversion: RecordConversion {
                 records: merged,

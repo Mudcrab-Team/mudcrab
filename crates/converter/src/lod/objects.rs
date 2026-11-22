@@ -37,8 +37,8 @@ use shared::lod::{
 use std::path::Path;
 
 /// Explicit producer revision of the object chunk compiler. Terrain chunk reuse is unaffected.
-/// Version 4 uses stored segment ranges, requires UVs and uses back-face culling.
-pub const OBJECT_COMPILER_VERSION: u32 = 4;
+/// Version 5 carries the per-shape large-reference marker into width-4 piece names.
+pub const OBJECT_COMPILER_VERSION: u32 = 5;
 
 /// Alpha-test reference of the retail object LOD material: 128 of 255, discard strictly below.
 pub const ALPHA_CUTOFF: f64 = 128.0 / 255.0;
@@ -251,9 +251,8 @@ pub fn segment_cell_fit(block: &ObjectLodFile, block_cell: (i32, i32)) -> (usize
 /// world's object atlas, already encoded as a KTX2 container, embedded as the single base-colour
 /// texture.
 ///
-/// At level 4 each nonempty segment becomes a mesh tagged with its cell. Large-reference data (`BSDistantObjectLargeRefExtraData`,
-/// level 8 and 4) is kept undecoded and not applied: the engine hides a level-4 segment only for
-/// cells it has loaded, and does not implement the large-reference takeover of cells beyond them.
+/// At level 4 each nonempty segment becomes a mesh tagged with its cell and the shape's
+/// large-reference marker. See https://github.com/Mudcrab-Team/skyrim_decomp/pull/821 G04.
 ///
 /// Fails for a tier that is not 16, 8 or 4, for a block with no geometry, for a shape with several
 /// segments outside level 4 (never seen), for a level-4 shape with more than 16 segments, for
@@ -527,7 +526,8 @@ fn emit_object_glb(
         let (shape_min, shape_max) = bounds(positions);
         nodes_json.push(match piece.cell {
             Some((cell_x, cell_y)) => serde_json::json!({
-                "name": format!("object_cell_{cell_x}_{cell_y}_{index}"),
+                "name": format!("object_cell_{cell_x}_{cell_y}_{index}{}",
+                    if shape.large_reference { "_large" } else { "" }),
                 "extras": { "source_block": shape.block_index, "cell": [cell_x, cell_y] },
                 "mesh": index,
             }),
@@ -1332,6 +1332,7 @@ mod tests {
     /// `extra`, one segment holding every triangle.
     fn shape(block_index: usize, extra: [f32; 3]) -> ObjectLodShape {
         ObjectLodShape {
+            large_reference: false,
             block_index,
             flags: 0,
             translation: [0.0 + extra[0], -16.0 * 4096.0 + extra[1], extra[2]],
@@ -1460,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn level_8_compiles_like_level_16_and_keeps_large_reference_data_undecoded() {
+    fn level_8_compiles_like_level_16_and_counts_large_reference_data() {
         let tier8 = ChunkKey::new(60, LodTier::Tier8, ChunkAnchor::new(12, 10));
         let mut marked = block(vec![shape(1, [0.0; 3])]);
         marked.large_ref_blocks.push(OpaqueBlock {

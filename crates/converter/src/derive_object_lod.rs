@@ -637,6 +637,7 @@ mod tests {
             color: Some([255; 4]),
         };
         ObjectLodShape {
+            large_reference: false,
             block_index: 1,
             flags: 0,
             translation: [0.0, -65_536.0, 0.0],

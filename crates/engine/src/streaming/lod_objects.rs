@@ -21,7 +21,7 @@
 //!
 //! **Loaded cells.** A tier-4 chunk splits its geometry into cell-local pieces. Each piece stays
 //! visible until the cell's full-detail models are ready, then stays hidden until the cell unloads.
-//! Large-reference takeover beyond the loaded grid is unimplemented.
+//! Marked pieces also yield to ready large references beyond the ordinary grid.
 //!
 //! The system runs before `update_render_origin`, so a root spawned in the frame the origin shifts
 //! is rebased in that frame. Spawns follow the streaming controls and the commit budget that
@@ -31,6 +31,7 @@
 use super::{
     ActiveSpace, CellStatus, PendingAssetProfile, PendingModel, RenderOrigin,
     StreamingCommitBudget, StreamingWorld,
+    large_references::LargeReferences,
     lod::{LodChunkGridOrigin, chunk_min_grid, lod_worldspace},
     runtime::StreamingRuntime,
 };
@@ -608,12 +609,18 @@ pub fn object_cell_of_name(name: &str) -> Option<IVec2> {
     let x = parse_number::<i32>(parts.next()?)?;
     let y = parse_number::<i32>(parts.next()?)?;
     parse_number::<u32>(parts.next()?)?;
-    parts.next().is_none().then_some(IVec2::new(x, y))
+    match (parts.next(), parts.next()) {
+        (None | Some("large"), None) => Some(IVec2::new(x, y)),
+        _ => None,
+    }
 }
 
 /// The cell a level-4 piece covers, on the node of a spawned object LOD scene.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LodObjectCell(CellKey);
+pub struct LodObjectCell(pub(super) CellKey);
+
+#[derive(Component)]
+pub(super) struct LargeReferencePiece;
 
 /// Tags only pieces inside their owning tier-4 chunk. Ordinary model scenes may use any name.
 pub(super) fn tag_object_cells(
@@ -636,13 +643,15 @@ pub(super) fn tag_object_cells(
         let x = i64::from(cell.x) - grid.grid_x;
         let y = i64::from(cell.y) - grid.grid_y;
         if root.key.tier == LodTier::Tier4 && (0..side).contains(&x) && (0..side).contains(&y) {
-            commands
-                .entity(entity)
-                .insert(LodObjectCell(CellKey::Exterior {
-                    worldspace_id: root.key.worldspace_id,
-                    grid_x: cell.x,
-                    grid_y: cell.y,
-                }));
+            let mut piece = commands.entity(entity);
+            piece.insert(LodObjectCell(CellKey::Exterior {
+                worldspace_id: root.key.worldspace_id,
+                grid_x: cell.x,
+                grid_y: cell.y,
+            }));
+            if name.ends_with("_large") {
+                piece.insert(LargeReferencePiece);
+            }
         }
     }
 }
@@ -653,11 +662,12 @@ pub(super) fn hide_loaded_object_cells(
     streaming: Res<StreamingWorld>,
     children: Query<&Children>,
     pending: Query<(), Or<(With<PendingModel>, With<PendingAssetProfile>)>>,
-    mut pieces: Query<(&LodObjectCell, &mut Visibility)>,
+    large: Option<Res<LargeReferences>>,
+    mut pieces: Query<(&LodObjectCell, Has<LargeReferencePiece>, &mut Visibility)>,
     mut ready: Local<HashMap<CellKey, bool>>,
 ) {
     ready.clear();
-    for (cell, mut visibility) in &mut pieces {
+    for (cell, marked, mut visibility) in &mut pieces {
         let loaded = *ready.entry(cell.0).or_insert_with(|| {
             let Some(CellStatus::Resident { root } | CellStatus::Retiring { root }) =
                 streaming.cells.get(&cell.0)
@@ -668,11 +678,13 @@ pub(super) fn hide_loaded_object_cells(
                 .chain(children.iter_descendants(*root))
                 .any(|entity| pending.contains(entity))
         });
-        let wanted = if loaded {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        };
+        // The tier-4 tag proves node overlap when its cell is inside the active square.
+        let wanted =
+            if loaded || (marked && large.as_ref().is_some_and(|large| large.suppresses(cell.0))) {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            };
         if *visibility != wanted {
             *visibility = wanted;
         }

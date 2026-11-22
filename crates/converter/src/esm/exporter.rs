@@ -324,6 +324,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(crate::animation::authoring::RACE_ANIMATION_SOURCES_SQL)?;
     // Optional projection omission counters (db-schema.md section 18, #297).
     conn.execute_batch(crate::esm::projection_omissions::PROJECTION_OMISSION_TABLES_SQL)?;
+    conn.execute_batch(super::large_references::TABLE_SQL)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the optional
     // display-name columns (#269), so a subset export can still insert into it.
     for table in ["worldspaces", "cells", "statics"] {
@@ -438,6 +439,7 @@ pub(crate) type RejectedLightFields = HashMap<u32, RejectedLightInputs>;
 
 /// Select runtime projections and script storage independently of snapshot ownership.
 struct ExportOptions<'a> {
+    large_references: Option<&'a super::large_references::LargeReferences>,
     /// Emit runtime views as well as the canonical record archive.
     runtime_views: bool,
     /// Replace in-house script snapshots using their normalized scalar layout.
@@ -465,6 +467,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
         None,
         None,
         ExportOptions {
+            large_references: None,
             runtime_views: true,
             scalar_scripts: false,
             rejected_light_fields: None,
@@ -538,6 +541,7 @@ pub fn export_placed_subset_with_sources(
         None,
         None,
         ExportOptions {
+            large_references: None,
             runtime_views: true,
             scalar_scripts: false,
             rejected_light_fields: None,
@@ -567,6 +571,7 @@ pub fn export_to_db_with_load_order(
         None,
         None,
         ExportOptions {
+            large_references: None,
             runtime_views: true,
             scalar_scripts: false,
             rejected_light_fields: None,
@@ -597,6 +602,7 @@ pub(super) fn export_plugins_to_db(
         Some(unresolved_fields),
         None,
         ExportOptions {
+            large_references: Some(&merged.large_references),
             runtime_views: true,
             scalar_scripts: false,
             rejected_light_fields: None,
@@ -630,6 +636,7 @@ pub(crate) fn export_inhouse_to_db(
         Some(unresolved_fields),
         Some(terrain_offsets),
         ExportOptions {
+            large_references: Some(&decoded.large_references),
             runtime_views: true,
             scalar_scripts: true,
             rejected_light_fields,
@@ -659,6 +666,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
         None,
         None,
         ExportOptions {
+            large_references: None,
             runtime_views: false,
             scalar_scripts: true,
             rejected_light_fields: None,
@@ -712,6 +720,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS worldspaces;
         DROP TABLE IF EXISTS records;
         DROP TABLE IF EXISTS formid_map;
+        DROP TABLE IF EXISTS large_references;
         DROP TABLE IF EXISTS lod_object_atlases;
         DROP TABLE IF EXISTS lod_object_chunks_spatial;
         DROP TABLE IF EXISTS lod_object_chunks;
@@ -807,6 +816,7 @@ fn export_records(
     options: ExportOptions<'_>,
 ) -> Result<()> {
     let ExportOptions {
+        large_references,
         runtime_views,
         scalar_scripts,
         rejected_light_fields,
@@ -1422,6 +1432,9 @@ fn export_records(
     // diagnostic archives defer them. The emittance pass holds every reference and the records
     // their XEMI names, and may run on a database older than `emittance_id`.
     if runtime_views && let Some(order) = order {
+        if let Some(large_references) = large_references {
+            large_references.write(&tx)?;
+        }
         insert_actor_models_and_race_authoring(&tx, master, &mut omissions)?;
         crate::esm::rooms::export_room_graph_with_sources(
             &tx,
@@ -3325,6 +3338,7 @@ mod tests {
             None,
             None,
             ExportOptions {
+                large_references: None,
                 runtime_views: true,
                 scalar_scripts: false,
                 rejected_light_fields: Some(&rejected),

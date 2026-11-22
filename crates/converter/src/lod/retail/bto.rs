@@ -5,10 +5,9 @@
 //! that splits the triangles into runs. The base game's 2,392 object shapes all satisfy
 //! "segment primitive counts sum to the triangle count", which the NIF parser enforces.
 //!
-//! This reader returns the shapes as plain data and keeps two things opaque on purpose:
-//! - the segment table (`flag`, `start_index`, `num_primitives`) as stored;
-//! - every `BSDistantObjectLargeRefExtraData` block as raw bytes, because large-reference
-//!   semantics are not decoded (about 64% of base-game object shapes are large references).
+//! The reader preserves stored segment ranges and the raw large-reference blocks. It reads the
+//! Boolean from each shape's linked `BSDistantObjectLargeRefExtraData` block.
+//! See https://github.com/Mudcrab-Team/skyrim_decomp/pull/821 G04.
 //!
 //! Vertex positions are block-local as stored. A retail block carries a shape transform
 //! (a translation to the block origin, and a scale equal to the block level: 4 at level 4, 16 at
@@ -49,6 +48,8 @@ pub struct ObjectLodSegment {
 pub struct ObjectLodShape {
     /// Index of the block in the file.
     pub block_index: usize,
+    /// True when the shape references a true BSDistantObjectLargeRefExtraData marker.
+    pub large_reference: bool,
     /// Serialized `NiAVObject` flags. The runtime grouped-draw flags in skyrim_decomp#675 B3
     /// are a different field and are unavailable to this reader.
     pub flags: u32,
@@ -104,6 +105,7 @@ impl ObjectLodFile {
 pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
     let (nif, diagnostics) = MeshConverter::parse_nif_bytes(bytes, label)?;
     let mut shapes = Vec::new();
+    let mut shape_extra_data = Vec::new();
     for shape in nif.get_seg_shapes() {
         let base = &shape.bs_tri_shape;
         let vertices = base
@@ -138,8 +140,10 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
             label.display(),
             vertices.len()
         );
+        shape_extra_data.push(base.av.extra_data_refs.clone());
         shapes.push(ObjectLodShape {
             block_index: 0,
+            large_reference: false,
             flags: base.av.flags.bits(),
             translation: base.av.translation.0.0.to_array(),
             rotation_columns: base.av.rotation.0.0.to_cols_array_2d(),
@@ -194,8 +198,28 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
         seg_shape_indices.len(),
         shapes.len()
     );
-    for (shape, index) in shapes.iter_mut().zip(seg_shape_indices) {
+    let marker_blocks: BTreeMap<_, _> = large_ref_blocks
+        .iter()
+        .map(|block| (block.block_index, &block.bytes))
+        .collect();
+    for ((shape, index), extra_data) in shapes
+        .iter_mut()
+        .zip(seg_shape_indices)
+        .zip(shape_extra_data)
+    {
         shape.block_index = index;
+        for reference in extra_data {
+            let block = usize::try_from(reference).wrap_err("extra data index is out of range")?;
+            if let Some(bytes) = marker_blocks.get(&block) {
+                let flag = bytes.get(4).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "{} large-reference marker block {block} lacks a Boolean",
+                        label.display()
+                    )
+                })?;
+                shape.large_reference |= *flag != 0;
+            }
+        }
     }
 
     Ok(ObjectLodFile {
@@ -341,7 +365,7 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_transforms_block_indices_and_exact_opaque_bytes() {
-        let first = shape_block(
+        let mut first = shape_block(
             [100.0, -200.0, 300.0],
             4.0,
             &[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]],
@@ -350,6 +374,7 @@ pub(crate) mod tests {
             true,
             false,
         );
+        first.splice(4..8, [1_u32.to_le_bytes(), 0_u32.to_le_bytes()].concat());
         let second = shape_block(
             [0.0; 3],
             1.0,
@@ -398,6 +423,8 @@ pub(crate) mod tests {
         assert_eq!((parsed.triangle_count(), parsed.vertex_count()), (3, 6));
 
         // The large-reference blocks come back untouched, with their block indices.
+        assert!(parsed.shapes[0].large_reference);
+        assert!(!parsed.shapes[1].large_reference);
         assert_eq!(parsed.large_ref_blocks.len(), 2);
         assert_eq!(parsed.large_ref_blocks[0].block_index, 0);
         assert_eq!(parsed.large_ref_blocks[0].block_type, LARGE_REF_BLOCK_TYPE);

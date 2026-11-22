@@ -691,6 +691,7 @@ impl DiscardedFrameScope {
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
+    pub(crate) large_references: crate::esm::large_references::LargeReferences,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -1177,6 +1178,11 @@ fn read_plugins_with_prepared(
                 chain.push(source);
             } else if source.deleted {
                 result.overrides.insert(record.form_id, vec![source]);
+            }
+            if record.record_type == *b"WRLD" && !deleted {
+                result
+                    .large_references
+                    .collect(&record.to_raw_record(), source_id, index, order);
             }
             recovery.record_default_object(&record);
             if deleted {

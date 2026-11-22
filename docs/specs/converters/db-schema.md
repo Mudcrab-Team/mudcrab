@@ -942,6 +942,28 @@ the shared atlas of a worldspace (`lod/<world>/objects_atlas.opensky-srgb.ktx2`,
 its object chunks reference. A worldspace without a row has chunks that embed the atlas. The manifest
 field `object_atlases` maps each atlas path to its SHA-256.
 
+#### Large-reference membership (`large_references`)
+
+This additive projection stores the defining plugin's filtered `WRLD.RNAM` membership.
+The importer remaps each FormID in the supplying plugin's load order and accepts tuples whose
+header and placement cell keys match. It omits and counts malformed or unresolved input.
+The cell coordinates describe the placement bucket, including when the reference's parent
+cell differs. See [reviewed retail facts, G01](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+
+```sql
+CREATE TABLE IF NOT EXISTS large_references (
+    worldspace_id INTEGER NOT NULL,
+    grid_x INTEGER NOT NULL,
+    grid_y INTEGER NOT NULL,
+    reference_id INTEGER NOT NULL,
+    PRIMARY KEY (worldspace_id, grid_x, grid_y, reference_id)
+);
+```
+
+The engine uses the first three columns to find exterior buckets and resolves the full
+reference by `reference_id`. Older packs without the table have no projected membership.
+The schema version is unchanged.
+
 ---
 
 ### 9. Script attachments (`scripts`)

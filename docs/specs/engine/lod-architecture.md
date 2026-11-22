@@ -122,7 +122,14 @@ object path (`streaming/lod_objects.rs`) works as follows.
   and any available replacements draw. Retail fade and hysteresis are unverified (skyrim_decomp#675).
 - **Loaded cells.** A tier-4 chunk carries cell-tagged pieces (`object_cell_<x>_<y>_<n>`, with
   `LodObjectCell`). A piece stays visible until its cell's full-detail models are ready, then stays
-  hidden until the full-detail cell unloads. Large-reference takeover beyond those cells is unimplemented.
+  hidden until the full-detail cell unloads.
+- **Large references.** The engine loads full models for projected `WRLD.RNAM` members beyond
+  the ordinary grid in a 9 × 9 square. Fixed-center worldspaces skip this path. At most one
+  tracked cell outside the square demotes per frame during exterior movement. A marked tier-4
+  piece inside the square yields after its cell's deadline passes. The engine sets that
+  deadline 2,000 ms after the promoted models become ready. See
+  [reviewed retail facts, G01–G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+  STAND-IN(#913): Mudcrab's model readiness and visibility pass supply the unverified attachment and refresh timing.
 - **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
   KTX2 file (`lod/<world>/objects_atlas.opensky-srgb.ktx2`). The engine hash-checks it like a chunk, loads it
   once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an
@@ -140,8 +147,7 @@ object path (`streaming/lod_objects.rs`) works as follows.
   controls: an object chunk is one asset-server load, bounded by the commit budget.
 - **Doors.** The verified rows are kept while the worldspace is unchanged, so an interior visit
   drops the roots but does not read or hash the rows again.
-- **Not yet.** No fade, no scene-name validation of object chunk GLBs, and no large-reference
-  takeover.
+- **Not yet.** Fade and scene-name validation of object chunk GLBs remain unimplemented.
 
 Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 70000 and 250000 with a multiplier of 1.5
@@ -155,7 +161,7 @@ replaced it, so `--ini` values no longer reproduce those runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
-(Phase 3), `uLargeRefLODGridSize` (large references are omitted; so is retail's
+(Phase 3), custom `uLargeRefLODGridSize` values and retail's
 flag 0x8000, RF-LOD-006, which forces level 4 in blocks touching that square: no
 difference at the default High preset, but at Low, `fSplitDistanceMult` 0.5,
 retail would force level 4 out to about 18,000 units and Mudcrab does not), and the

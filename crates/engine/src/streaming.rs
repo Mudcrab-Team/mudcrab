@@ -23,8 +23,8 @@ use crate::{
             WorldPosition, WorldTransform,
         },
         database::{
-            AssetCatalog, CellKey, CellPayload, DatabaseRequest, WaterColors, WaterNoise,
-            WorldDatabase,
+            AssetCatalog, CellKey, CellPayload, DatabaseRequest, ReferenceRow, WaterColors,
+            WaterNoise, WorldDatabase,
         },
         water::{FlatWater, FlatWaterBody},
     },
@@ -57,6 +57,7 @@ use std::time::Instant;
 
 pub(crate) mod admission;
 pub(crate) mod control;
+mod large_references;
 #[cfg(test)]
 mod local_light_tests;
 pub(crate) mod lod;
@@ -145,6 +146,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingCommitBudget>()
             .init_resource::<lod::LodStreaming>()
             .init_resource::<lod_objects::LodObjects>()
+            .init_resource::<large_references::LargeReferences>()
             .init_resource::<DiagnosticFallbackAssets>()
             .init_resource::<TerrainContinuity>()
             .init_resource::<SceneSpawnBatch>()
@@ -184,11 +186,11 @@ impl Plugin for StreamingPlugin {
                     plan_cells,
                     despawn_cells,
                     lod::plan_lod_chunks,
-                    collect_cells,
+                    (collect_cells, large_references::update).chain(),
                     lod::collect_lod_chunks,
                     requests::dispatch_scene_requests,
                     arm_pending_models,
-                    track_asset_readiness,
+                    (track_asset_readiness, large_references::set_deadlines).chain(),
                     track_surface_readiness,
                     track_merged_surface_readiness,
                     lod::track_lod_readiness,
@@ -467,6 +469,7 @@ pub struct StreamingMetrics {
     pub retire_backlog_overflows: u64,
     pub resident_cells: usize,
     pub loading_cells: usize,
+    pub loading_large_reference_cells: usize,
     pub peak_resident_cells: usize,
     pub peak_loading_cells: usize,
     pub total_query_micros: u64,
@@ -1607,6 +1610,41 @@ fn roots_outside_window<'a>(
         })
 }
 
+/// Resolve a full-detail reference transform in the owning root's coordinate system.
+fn reference_placement(
+    key: CellKey,
+    reference: &ReferenceRow,
+) -> (
+    WorldPosition,
+    Transform,
+    Option<ExpectedModelBounds>,
+    Option<InstanceBounds>,
+) {
+    let creation_position = Vec3::from_array(reference.position);
+    let world_position = WorldPosition::from_creation_units(creation_position);
+    let translation = match key {
+        CellKey::Exterior { grid_x, grid_y, .. } => {
+            let cell_origin = IVec2::new(grid_x, grid_y);
+            creation_to_bevy(world_position.relative_to(cell_origin))
+        }
+        CellKey::Interior(_) => creation_to_bevy(creation_position),
+    };
+    let rotation = creation_rotation_to_bevy(reference.rotation);
+    let transform = Transform::from_translation(translation)
+        .with_rotation(rotation)
+        .with_scale(Vec3::splat(reference.scale));
+    let model_bounds = reference.bounds_valid.then(|| {
+        ExpectedModelBounds::new(
+            Vec3::from_array(reference.bounds_min),
+            Vec3::from_array(reference.bounds_max),
+        )
+    });
+    let model_bounds = model_bounds.flatten();
+    let bounds = model_bounds
+        .map(|bounds| InstanceBounds::transformed(bounds.min, bounds.max, transform.to_matrix()));
+    (world_position, transform, model_bounds, bounds)
+}
+
 /// Build a cell hierarchy and request its model scenes, recording their IDs for optional tracing.
 #[allow(clippy::too_many_arguments)]
 fn spawn_cell(
@@ -1902,29 +1940,8 @@ fn spawn_cell(
             if !reference.initially_enabled {
                 continue;
             }
-            let creation_position = Vec3::from_array(reference.position);
-            let world_position = WorldPosition::from_creation_units(creation_position);
-            let translation = match payload.key {
-                CellKey::Exterior { grid_x, grid_y, .. } => {
-                    let cell_origin = IVec2::new(grid_x, grid_y);
-                    creation_to_bevy(world_position.relative_to(cell_origin))
-                }
-                CellKey::Interior(_) => creation_to_bevy(creation_position),
-            };
-            let rotation = creation_rotation_to_bevy(reference.rotation);
-            let transform = Transform::from_translation(translation)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(reference.scale));
-            let model_bounds = reference.bounds_valid.then(|| {
-                ExpectedModelBounds::new(
-                    Vec3::from_array(reference.bounds_min),
-                    Vec3::from_array(reference.bounds_max),
-                )
-            });
-            let model_bounds = model_bounds.flatten();
-            let bounds = model_bounds.map(|bounds| {
-                InstanceBounds::transformed(bounds.min, bounds.max, transform.to_matrix())
-            });
+            let (world_position, transform, model_bounds, bounds) =
+                reference_placement(payload.key, &reference);
             // A referenced `NPC_` with a catalog row becomes one actor entity. A row the catalog
             // could not resolve, or one with no body to draw, skips the reference entirely: no
             // placeholder, no static mesh, and exactly one diagnostic naming the base FormID.
@@ -3103,6 +3120,7 @@ type PendingAssetQuery<'world, 'state> = Query<
         &'static GlobalTransform,
         &'static WorldTransform,
         Option<&'static ExpectedModelBounds>,
+        Option<&'static mut large_references::LargeReferenceModel>,
     ),
 >;
 
@@ -3331,7 +3349,7 @@ fn track_asset_readiness(
     mut commands: Commands,
     config: Res<EngineConfig>,
     asset_server: Res<AssetServer>,
-    pending: PendingAssetQuery,
+    mut pending: PendingAssetQuery,
     unarmed: Query<(), (With<PendingAssetProfile>, Without<WorldAssetRoot>)>,
     children: Query<&Children>,
     scene_extras: Query<&GltfSceneExtras>,
@@ -3364,7 +3382,9 @@ fn track_asset_readiness(
     // Live dynamic clutter bodies, including the ones this scan spawns (their commands are
     // deferred, so the query cannot see them yet). The cap bounds what a cell arrival can create.
     let mut live_clutter = clutter.iter().count();
-    for (entity, root, pending, local, global, world_transform, expected_bounds) in &pending {
+    for (entity, root, pending, local, global, world_transform, expected_bounds, large_model) in
+        &mut pending
+    {
         if completed_this_scan != 0
             && runtime
                 .as_ref()
@@ -3684,6 +3704,9 @@ fn track_asset_readiness(
             metrics.max_asset_ready_micros = metrics.max_asset_ready_micros.max(micros);
             profiler.record_completed_latency_micros("assets/model_ready", micros);
             profiler.event(&pending.path, "asset_ready", Some(micros as f64 / 1000.0));
+            if let Some(mut model) = large_model {
+                model.ready = true;
+            }
             commands.entity(entity).remove::<PendingAssetProfile>();
             completed_this_scan += 1;
         }

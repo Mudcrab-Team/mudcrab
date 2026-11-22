@@ -158,9 +158,10 @@ terrain chunk of the same key (`lod/<world>/<tier>/objects_<x>_<y>.glb`).
   index ranges for alignment, bounds, and complete coverage. Our geometry check (mean vertex of a
   segment within 0.75 cell of its cell) fits 6,706 of 6,708 Tamriel multi-segment slots; the research's own test
   gave 6,698. A misfit is geometry that reaches beyond its cell (an inference). The derive receipt
-  keeps the count. Large-reference data (`BSDistantObjectLargeRefExtraData`, 496 of 517
-  Tamriel level-4 blocks) is kept undecoded and not applied (counted in the LOD warnings), because
-  the engine does not implement the large-reference takeover (issue #899). A block with no geometry, a shape with
+  keeps the count. A width-4 shape with a true `BSDistantObjectLargeRefExtraData` Boolean adds
+  `_large` to its piece names. The engine can then hide those pieces in cells whose large-reference
+  promotion deadline has passed. See [reviewed retail facts, G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+  A block with no geometry, a shape with
   several segments outside level 4, a level-4 shape with more than 16 segments, large-reference data
   at level 16, unreadable input, missing UVs, or a non-finite vertex causes the block to be omitted
   and counted. Normal and color streams are included when the shape stores them.
@@ -169,7 +170,7 @@ terrain chunk of the same key (`lod/<world>/<tier>/objects_<x>_<y>.glb`).
   `lod/<world>/objects_atlas.opensky-srgb.ktx2`. Every chunk of the worldspace references it with the image URI
   `../objects_atlas.opensky-srgb.ktx2` (relative to the chunk file, so it is the same file for every tier). The
   file has a row in the additive table `lod_object_atlases` (path and SHA-256) and an entry in the
-  `object_atlases` field of `lod-manifest.json`. `OBJECT_COMPILER_VERSION` is 4. A chunk that embeds
+  `object_atlases` field of `lod-manifest.json`. `OBJECT_COMPILER_VERSION` is 5. A chunk that embeds
   the atlas (format 2, from an earlier derive) is still valid and still loads.
 - **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
   128/255 with no blending. The grouped draw uses runtime flags unavailable in the BTO reader
