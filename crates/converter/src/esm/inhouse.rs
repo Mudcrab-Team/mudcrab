@@ -88,6 +88,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "worldspaces",
     "cells",
     "references",
+    "large_references",
     "exterior_spatial",
     "land",
     "statics",

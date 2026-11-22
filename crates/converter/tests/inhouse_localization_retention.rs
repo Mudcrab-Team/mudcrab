@@ -1033,6 +1033,7 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "worldspaces",
             "cells",
             "references",
+            "large_references",
             "exterior_spatial",
             "land",
             "statics",
