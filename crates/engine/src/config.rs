@@ -332,7 +332,8 @@ pub struct EngineConfig {
     pub hidden_window: bool,
     /// Open the window below other windows and leave focus where it was.
     pub background_window: bool,
-    /// Whole color pipeline; fixed for the run because stages never mix across profiles.
+    /// Whole color pipeline; defaults to `skyrim` and is fixed for the run because stages never
+    /// mix across profiles.
     pub visual_profile: VisualProfile,
     /// Select the cinematic A/B experiment without changing scene lighting.
     pub color_grade: SceneGradeMode,
@@ -516,7 +517,7 @@ impl Default for EngineConfig {
             headless: false,
             hidden_window: false,
             background_window: false,
-            visual_profile: VisualProfile::Mudcrab,
+            visual_profile: VisualProfile::Skyrim,
             color_grade: SceneGradeMode::SnapshotSrgb,
             visual_preset: SceneVisualPreset::CoolGray,
             grade_preset: None,
@@ -677,15 +678,15 @@ Benchmark and profiling:
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
-  --visual-profile <mudcrab|skyrim>    color pipeline (default: mudcrab); changing it requires a restart
-  --color-grade <mode>                 off|saturation|full|snapshot-srgb|snapshot-linear|record-srgb (default: snapshot-srgb)
-  --grade-preset <json>                approved-look JSON override (snapshot-srgb and Cool Gray sky)
-  --tone-map <tony|retail-curve>       display transform (default: tony); retail curve is experimental
-  --tone-map-params <json>             explicit curve/scales and fixed luminance samples; requires selected IMGS
+  --visual-profile <mudcrab|skyrim>    color pipeline (default: skyrim); changing it requires a restart
+  --color-grade <mode>                 off|saturation|full|snapshot-srgb|snapshot-linear|record-srgb (default: snapshot-srgb; mudcrab only)
+  --grade-preset <json>                approved-look JSON override (snapshot-srgb and Cool Gray sky; mudcrab only)
+  --tone-map <tony|retail-curve>       display transform (default: tony; mudcrab only); retail curve is experimental
+  --tone-map-params <json>             explicit curve/scales and fixed luminance samples; requires selected IMGS (mudcrab only)
   --image-space <FormID>               load an authored IMGS record for record-srgb experiments
   --image-space-weather <FormID>       select an authored WTHR image-space slot, not live weather
   --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
-  --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
+  --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray; mudcrab only)
   --game-hour <hour>                   initial hour, 0 <= hour < 24 (default 8; captures freeze)
   --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
@@ -3059,7 +3060,14 @@ mod tests {
             ("vivid", SceneVisualPreset::Vivid),
             ("COOL-GRAY", SceneVisualPreset::CoolGray),
         ] {
-            let config = run_config(&["--visual-preset", value, "--color-grade", "saturation"]);
+            let config = run_config(&[
+                "--visual-profile",
+                "mudcrab",
+                "--visual-preset",
+                value,
+                "--color-grade",
+                "saturation",
+            ]);
             assert_eq!(config.visual_preset, expected);
             assert_eq!(config.color_grade, SceneGradeMode::Saturation);
         }
@@ -3074,6 +3082,8 @@ mod tests {
     #[test]
     fn parses_explicit_image_space_sources_and_rejects_ambiguous_selections() {
         let direct = run_config(&[
+            "--visual-profile",
+            "mudcrab",
             "--color-grade",
             "record-srgb",
             "--image-space",
@@ -3095,7 +3105,12 @@ mod tests {
             })
         );
         for args in [
-            &["--color-grade", "record-srgb"][..],
+            &[
+                "--visual-profile",
+                "mudcrab",
+                "--color-grade",
+                "record-srgb",
+            ][..],
             &[
                 "--image-space",
                 "100",
@@ -3119,10 +3134,10 @@ mod tests {
     }
 
     #[test]
-    fn visual_profile_defaults_to_mudcrab_and_parses_both_profiles() {
+    fn visual_profile_defaults_to_skyrim_and_parses_both_profiles() {
         assert_eq!(
             EngineConfig::default().visual_profile,
-            VisualProfile::Mudcrab
+            VisualProfile::Skyrim
         );
         for (value, expected) in [
             ("mudcrab", VisualProfile::Mudcrab),
@@ -3176,6 +3191,8 @@ mod tests {
         assert!(default.tone_map_params.is_none());
         assert_eq!(default.color_grade, SceneGradeMode::SnapshotSrgb);
         let experiment = run_config(&[
+            "--visual-profile",
+            "mudcrab",
             "--tone-map",
             "retail-curve",
             "--tone-map-params",
@@ -3190,7 +3207,7 @@ mod tests {
         );
         assert!(experiment.image_space_selection().unwrap().is_some());
         assert!(
-            run_config(&["--tone-map", "retail-curve"])
+            run_config(&["--visual-profile", "mudcrab", "--tone-map", "retail-curve"])
                 .image_space_selection()
                 .is_err()
         );
@@ -3206,7 +3223,10 @@ mod tests {
             ("SNAPSHOT-SRGB", SceneGradeMode::SnapshotSrgb),
             ("snapshot-linear", SceneGradeMode::SnapshotLinear),
         ] {
-            assert_eq!(run_config(&["--color-grade", value]).color_grade, wanted);
+            assert_eq!(
+                run_config(&["--visual-profile", "mudcrab", "--color-grade", value]).color_grade,
+                wanted
+            );
         }
         assert_eq!(
             EngineConfig::default().color_grade,

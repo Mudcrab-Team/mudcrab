@@ -2906,7 +2906,46 @@ mod tests {
     }
 
     #[test]
-    fn saved_visual_profile_selects_the_run_and_still_refuses_foreign_flags() {
+    fn fresh_settings_use_skyrim_and_a_saved_mudcrab_profile_is_kept() {
+        use crate::visual_profile::VisualProfile;
+        assert_eq!(
+            RenderingSettings::default().visual_profile,
+            VisualProfile::Skyrim.index()
+        );
+        let mut config = EngineConfig::default();
+        let (loaded, _) = prepare_settings_at(&mut config, None);
+        assert_eq!(config.visual_profile, VisualProfile::Skyrim);
+        assert_eq!(loaded.visual_profile, VisualProfile::Skyrim.index());
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = RenderingSettings {
+            visual_profile: VisualProfile::Mudcrab.index(),
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+        // The file stores the stable index: mudcrab stays 0 after the default changed.
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["visual_profile"], 0);
+
+        let mut config = EngineConfig::default();
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path.clone()));
+        assert_eq!(config.visual_profile, VisualProfile::Mudcrab);
+        assert_eq!(loaded.visual_profile, VisualProfile::Mudcrab.index());
+        config.check_visual_profile().unwrap();
+
+        // An explicit flag still wins over the saved value.
+        let mut config = launch(&["--visual-profile".into(), "skyrim".into()]);
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(config.visual_profile, VisualProfile::Skyrim);
+        assert_eq!(loaded.visual_profile, VisualProfile::Skyrim.index());
+    }
+
+    /// The post-settings check refuses a profile-owned launch option after a saved profile
+    /// replaces the parsed one, because settings are applied after the command line.
+    #[test]
+    fn saved_skyrim_profile_refuses_a_mudcrab_option_after_settings_apply() {
         use crate::visual_profile::VisualProfile;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -2915,15 +2954,14 @@ mod tests {
             ..default()
         };
         save_settings(&path, &saved).unwrap();
-
-        let mut config = EngineConfig::default();
-        prepare_settings_at(&mut config, Some(path.clone()));
+        let mut config = EngineConfig {
+            visual_profile: VisualProfile::Mudcrab,
+            settings_overrides: vec!["--tone-map".into()],
+            ..EngineConfig::default()
+        };
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(loaded.visual_profile, VisualProfile::Skyrim.index());
         assert_eq!(config.visual_profile, VisualProfile::Skyrim);
-        config.check_visual_profile().unwrap();
-
-        // The parser accepted --tone-map under the default profile; the saved one refuses it.
-        let mut config = launch(&["--tone-map".into(), "tony".into()]);
-        prepare_settings_at(&mut config, Some(path.clone()));
         assert!(matches!(
             config.check_visual_profile(),
             Err(crate::config::ConfigError::ForeignToProfile {
@@ -2931,12 +2969,6 @@ mod tests {
                 ..
             })
         ));
-
-        let mut config = launch(&["--visual-profile".into(), "mudcrab".into()]);
-        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
-        assert_eq!(config.visual_profile, VisualProfile::Mudcrab);
-        assert_eq!(loaded.visual_profile, VisualProfile::Mudcrab.index());
-
         let unknown = RenderingSettings {
             visual_profile: 2,
             ..default()
@@ -3032,6 +3064,8 @@ mod tests {
         save_settings(&path, &saved).unwrap();
 
         let mut custom_grade = launch(&[
+            "--visual-profile".into(),
+            "mudcrab".into(),
             "--color-grade".into(),
             "snapshot-linear".into(),
             "--visual-preset".into(),
@@ -3054,7 +3088,12 @@ mod tests {
         assert_eq!(persisted.grade_brightness, saved.grade_brightness);
         assert_eq!(persisted.hud, active.hud);
 
-        let mut visual_only = launch(&["--visual-preset".into(), "vivid".into()]);
+        let mut visual_only = launch(&[
+            "--visual-profile".into(),
+            "mudcrab".into(),
+            "--visual-preset".into(),
+            "vivid".into(),
+        ]);
         let (active, _) = prepare_settings_at(&mut visual_only, Some(path));
         assert_eq!(active.color_grade, saved.color_grade);
         assert_eq!(active.visual_preset, 0);
@@ -3074,9 +3113,24 @@ mod tests {
         save_settings(&path, &saved).unwrap();
 
         for args in [
-            vec!["--grade-preset".into(), "custom.json".into()],
-            vec!["--tone-map".into(), "retail-curve".into()],
-            vec!["--tone-map-params".into(), "curve.json".into()],
+            vec![
+                "--visual-profile".into(),
+                "mudcrab".into(),
+                "--grade-preset".into(),
+                "custom.json".into(),
+            ],
+            vec![
+                "--visual-profile".into(),
+                "mudcrab".into(),
+                "--tone-map".into(),
+                "retail-curve".into(),
+            ],
+            vec![
+                "--visual-profile".into(),
+                "mudcrab".into(),
+                "--tone-map-params".into(),
+                "curve.json".into(),
+            ],
         ] {
             let mut config = launch(&args);
             let (mut active, mut file) = prepare_settings_at(&mut config, Some(path.clone()));

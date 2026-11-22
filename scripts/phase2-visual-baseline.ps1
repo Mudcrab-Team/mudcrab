@@ -123,6 +123,8 @@ try {
     $stderr = Join-Path $output "engine.stderr.log"
     $arguments = @(
         "--no-grass",
+        # The stored visual baselines are the approved pipeline.
+        "--visual-profile", "mudcrab",
         "--assets", $resolvedAssets,
         "--worldspace", $Worldspace,
         "--grid-x", "$GridX",

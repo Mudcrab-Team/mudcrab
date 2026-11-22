@@ -174,6 +174,7 @@ runner.run_one(args, {{'cache_policy': 'test'}}, run, lambda: {{}})
             commands[mode] = RUNNER.command(args, run, Path("/tmp/run"))
         for command in commands.values():
             self.assertIn("--no-grass", command)
+            self.assertEqual(command[command.index("--visual-profile") + 1], "mudcrab")
         fixed = commands["fixed64"]
         self.assertNotIn("--adaptive-streaming", fixed)
         self.assertNotIn("--streaming-costs", fixed)

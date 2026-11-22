@@ -155,6 +155,7 @@ def command(args, run, directory):
     mode = MODES[run["mode"]]
     result = [str(args.engine), "--no-grass", "--assets", str(args.assets), "--worldspace", "0x3c",
               "--grid-x", "5", "--grid-y", "-12", "--stream-radius", "2",
+              "--visual-profile", "mudcrab",
               "--prioritize-streaming", "--max-scene-loads", str(mode["jobs"]),
               "--max-model-spawns-per-frame", str(mode["activations"]),
               "--max-upload-mib-per-frame", str(mode["upload_mib"]),
