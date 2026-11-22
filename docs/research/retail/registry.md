@@ -4,6 +4,13 @@ Build for every entry unless stated: `SkyrimSE.exe` 1.7.104.0, SHA-256 `846efccf
 Methods: **trace** = static instruction/decompiler trace; **data** = record or setting bytes; **xcheck** = agreement with another source. Confidence: high / medium-high / medium / low.
 Detail for each entry: the `qN-*.md` file named in the entry.
 
+Kind: a row may start its Fact cell with `kind: rule`, `kind: quirk` or `kind: defect`. A row without the field is a rule. The kinds follow [ADR-0015](../../adr/0015-retail-rule-quirk-defect.md).
+- **rule**: intended behaviour. Mudcrab copies it.
+- **quirk**: odd but observable, and content may depend on it. Mudcrab copies it in the `skyrim` profile. A fix may exist in `mudcrab` mode.
+- **defect**: a crash, undefined contents, memory corruption, unbounded growth, a race, frame-rate-coupled physics or precision loss. Mudcrab does not copy it. The row says what Mudcrab does instead.
+
+A research finding whose trace shows undefined behaviour, unbounded growth, a race or frame-rate coupling is tagged "possible defect" until review sets the kind. `scripts/check_retail_claims.py` rejects an added row with an invalid kind, or a row that says quirk or defect without a `kind:` field.
+
 | ID | Fact (own words) | Address(es) | Method | Conf. | Cross-checked | Used by |
 |---|---|---|---|---|---|---|
 | RF-WATER-001 | WATR DNAM is copied (max 0xE8 bytes) to TESWaterForm +0xD0. Noise wind direction[i] at form +0x134+4i, wind speed[i] at +0x140+4i. | `0x1403065e0`, `0x1403068c1`, `0x140306970` | trace | high | xEdit / CommonLib DNAM layout (#299 water.md) | #299 |

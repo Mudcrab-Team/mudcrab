@@ -541,6 +541,87 @@ class BlockTests(unittest.TestCase):
         self.assertEqual(mapping[3], mapping[5])
 
 
+class RegistryKindTests(unittest.TestCase):
+    REGISTRY = "docs/research/retail/registry.md"
+    HEADER = "| ID | Fact |\n|---|---|\n"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Repository(self.temporary.name)
+
+    def run_with_rows(self, rows):
+        self.repo.write(self.REGISTRY, "# Registry\n\n" + self.HEADER + rows)
+        self.repo.commit("registry rows")
+        result = self.repo.run()
+        return result.returncode, result.stdout, result.stderr
+
+    def test_row_without_kind_is_a_rule_and_passes(self):
+        code, out, err = self.run_with_rows("| RF-EX-001 | A formula. |\n")
+        self.assertEqual(code, 0, err)
+        self.assertIn("all labelled", out)
+
+    def test_each_valid_kind_passes(self):
+        rows = (
+            "| RF-EX-001 | kind: rule. A formula. |\n"
+            "| RF-EX-002 | kind: quirk. An odd test. |\n"
+            "| RF-EX-003 | kind: defect. Reads undefined lanes. |\n"
+            "| RF-EX-004 | Kind: Quirk. Capital letters pass. |\n"
+        )
+        code, _, err = self.run_with_rows(rows)
+        self.assertEqual(code, 0, err)
+
+    def test_invalid_kind_fails(self):
+        code, _, err = self.run_with_rows("| RF-EX-001 | kind: oddity. A formula. |\n")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{self.REGISTRY}:5", err)
+        self.assertIn('invalid kind "oddity"', err)
+        self.assertIn("1 registry row(s) have a kind problem", err)
+        self.assertNotIn("need a source", err)
+
+    def test_two_kind_fields_fail(self):
+        code, _, err = self.run_with_rows(
+            "| RF-EX-001 | kind: quirk. A test. kind: defect. |\n"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("more than one kind field", err)
+
+    def test_quirk_word_without_kind_fails(self):
+        code, _, err = self.run_with_rows("| RF-EX-001 | The portal test is a quirk. |\n")
+        self.assertEqual(code, 1)
+        self.assertIn("has no kind field", err)
+
+    def test_defect_word_without_kind_fails(self):
+        code, _, err = self.run_with_rows("| RF-EX-001 | Unwritten lanes are a defect. |\n")
+        self.assertEqual(code, 1)
+        self.assertIn("has no kind field", err)
+
+    def test_kind_rule_is_not_checked_outside_the_registry(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\n| RF-EX-001 | kind: oddity. A defect. |\n",
+        )
+        self.repo.commit("row-like text elsewhere")
+        code, _, err = self.check_result()
+        self.assertEqual(code, 0, err)
+
+    def test_unchanged_bad_row_is_ignored(self):
+        self.repo.write(self.REGISTRY, "# Registry\n\n" + self.HEADER
+                        + "| RF-EX-001 | kind: oddity. A formula. |\n")
+        self.repo.commit("old bad row")
+        self.repo.mark_base()
+        self.repo.write(self.REGISTRY, "# Registry\n\n" + self.HEADER
+                        + "| RF-EX-001 | kind: oddity. A formula. |\n"
+                        + "| RF-EX-002 | A formula. |\n")
+        self.repo.commit("add a good row")
+        code, _, err = self.check_result()
+        self.assertEqual(code, 0, err)
+
+    def check_result(self):
+        result = self.repo.run()
+        return result.returncode, result.stdout, result.stderr
+
+
 class WorkflowTests(unittest.TestCase):
     def test_push_without_a_base_fails(self):
         with tempfile.TemporaryDirectory() as directory:
