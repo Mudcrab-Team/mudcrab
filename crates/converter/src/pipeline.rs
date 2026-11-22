@@ -1771,15 +1771,14 @@ impl AssetPipeline {
                 }
             }
         }
-        // Keep the requested configuration/cache identity unchanged. Only this run's terrain
-        // consumers use white when a failed winner leaves bytes that cannot be removed.
-        let default_config = withdraw_default.then(|| {
-            let mut fallback = config.clone();
-            fallback.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
-            fallback.terrain_ini = None;
-            fallback
-        });
-        let terrain_config = default_config.as_ref().unwrap_or(config);
+        // A failed winner whose stale bytes cannot be removed leaves no trustworthy default.
+        // The conversion fails; it does not switch to a generated white texture (#811, SI-23).
+        ensure!(
+            !withdraw_default,
+            "the default land texture input could not be replaced by its winning copy; \
+             no white texture is generated in its place. See the notices for the file"
+        );
+        let terrain_config = config;
         let lod_started = Instant::now();
         compile_lod_chunks_with_cancel(
             terrain_config,
@@ -4381,14 +4380,15 @@ fn plugin_paths_with_diagnostics(
     Ok(plugins)
 }
 
-/// Discards a failed optional default's staged bytes; true withdraws the default for this run.
+/// Discards a failed default's staged bytes; true means the stale bytes remain and the
+/// conversion must fail.
 fn discard_failed_default_input(path: &Path, report: &mut PipelineReport) -> bool {
     match fs::remove_file(path) {
         Ok(()) => false,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => {
             report.notices.push(format!(
-                "configured default withdrawn: failed to remove {}: {error}; using legacy null-base behaviour",
+                "failed to remove stale default land input {}: {error}",
                 path.display(),
             ));
             true
@@ -6934,6 +6934,17 @@ mod tests {
 
     use super::*;
     use crate::esm::cell_cache::write_cell_cache;
+
+    /// A config that selects the labelled `--terrain-default white` option. Fixtures without
+    /// landscape images need it: an unusable `skyrim-ini` default fails the conversion (#811).
+    fn white_default_config(
+        data: impl Into<PathBuf>,
+        output: impl Into<PathBuf>,
+    ) -> PipelineConfig {
+        let mut config = PipelineConfig::new(data, output);
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
+        config
+    }
 
     fn cpu_lod_config(data: impl Into<PathBuf>, output: impl Into<PathBuf>) -> PipelineConfig {
         let mut config = PipelineConfig::new(data, output);
@@ -12975,7 +12986,7 @@ mod tests {
             dummy_content::nif::static_shape(&shape).unwrap(),
         )
         .unwrap();
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(white_default_config(&data, &output)).await;
         assert!(first.complete, "{:?}", first.warnings);
         assert!(first.integration.as_ref().unwrap().passed);
         let mesh = output.join("meshes/architecture/deep.glb");
@@ -13023,7 +13034,7 @@ mod tests {
             .unwrap();
         fs::remove_file(output.join("grass_cache.rkyv")).unwrap();
 
-        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let report = run_without_progress(white_default_config(&data, &output)).await;
         assert!(
             report.cache_hits > 0,
             "the converted obstruction must be reused"
@@ -13165,7 +13176,7 @@ mod tests {
         for name in ["healthy", "fallback", "broken"] {
             fs::write(data.join(format!("meshes/architecture/{name}.nif")), &nif).unwrap();
         }
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(white_default_config(&data, &output)).await;
         assert!(first.complete, "{:?}", first.warnings);
         assert!(first.integration.as_ref().unwrap().passed);
         let baseline = {
@@ -13241,7 +13252,7 @@ mod tests {
             .unwrap();
         fs::remove_file(output.join("grass_cache.rkyv")).unwrap();
 
-        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let report = run_without_progress(white_default_config(&data, &output)).await;
         assert!(
             report.cache_hits >= 3,
             "all three obstruction assets must be reused"
@@ -13378,7 +13389,7 @@ mod tests {
             ],
         ));
         fs::write(data.join("Grass.esp"), patch).unwrap();
-        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let report = run_without_progress(white_default_config(&data, &output)).await;
         assert!(!report.complete);
         assert!(
             report
@@ -13426,7 +13437,7 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(64);
             let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
             let report = AssetPipeline::rebuild_metadata_async(
-                PipelineConfig::new(data, output),
+                white_default_config(data, output),
                 source,
                 tx,
             )
@@ -13529,7 +13540,7 @@ mod tests {
         for name in ["healthy", "malformed"] {
             fs::write(data.join(format!("meshes/architecture/{name}.nif")), &nif).unwrap();
         }
-        let initial = run_without_progress(PipelineConfig::new(&data, &source)).await;
+        let initial = run_without_progress(white_default_config(&data, &source)).await;
         assert!(initial.complete, "{:?}", initial.warnings);
 
         // Keep readable bounds and a valid GLB container, but exceed the static sampler's depth.
@@ -13695,7 +13706,7 @@ mod tests {
             ],
         ));
         fs::write(data.join("Grass.esp"), patch).unwrap();
-        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let report = run_without_progress(white_default_config(&data, &output)).await;
         assert!(report.integration.as_ref().unwrap().passed);
         assert!(report.complete, "{:?}", report.warnings);
         assert!(
@@ -14895,6 +14906,8 @@ mod tests {
         fs::write(data.join("Grass.esp"), patch).unwrap();
         let mut config = cpu_lod_config(&data, &output);
         config.no_lod = true;
+        // These fixtures supply no landscape images: select the labelled white default.
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
         let cold = run_without_progress(config.clone()).await;
         assert!(cold.complete, "{:?}", cold.warnings);
         let expected = read_cache(&output);
@@ -14970,6 +14983,8 @@ mod tests {
         let mut config = cpu_lod_config(&data, &output);
         config.record_reader = crate::config::RecordReader::Legacy;
         config.no_lod = true;
+        // These fixtures supply no landscape images: select the labelled white default.
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
         let cold = run_without_progress(config.clone()).await;
         assert!(cold.complete && !cold.database_cache_hit);
         let grass = fs::read(output.join("grass_cache.rkyv")).unwrap();

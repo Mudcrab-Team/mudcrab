@@ -46,7 +46,9 @@ fn land(cell: u32, base_grass: bool, overlays: bool) -> Vec<u8> {
     } else {
         BARE_TEXTURE
     };
-    let mut fields = field(b"BTXT", &[base.to_le_bytes(), [0; 4]].concat());
+    // The authored flat height field: LAND without VHGT is omitted, never zero-filled (#811).
+    let mut fields = field(b"VHGT", &[0u8; 4 + 33 * 33 + 3]);
+    fields.extend(field(b"BTXT", &[base.to_le_bytes(), [0; 4]].concat()));
     if overlays {
         for slot in 0u16..6 {
             let texture = if !base_grass && slot == 5 {
@@ -173,6 +175,8 @@ fn fixture(root: &Path, reader: RecordReader) -> PipelineConfig {
     config.no_lod = true;
     config.cpu_jobs = 2;
     config.io_jobs = 1;
+    // The fixture has no landscape images, so it selects the labelled white default (#811).
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::White;
     config
 }
 
@@ -457,6 +461,7 @@ async fn check_broken_null_paint(reader: RecordReader, broken_links: bool) {
     let path = config.data_dir.join("Layers.esp");
     let mut bytes = fs::read(&path).unwrap();
     let mut fields = [
+        field(b"VHGT", &[0u8; 4 + 33 * 33 + 3]),
         field(b"BTXT", &[GRASS_TEXTURE.to_le_bytes(), [0; 4]].concat()),
         field(b"ATXT", &[0; 8]),
         field(
@@ -661,6 +666,7 @@ async fn check_duplicate_land_precedence(reader: RecordReader) {
         .concat()
     };
     let fields = [
+        field(b"VHGT", &[0u8; 4 + 33 * 33 + 3]),
         field(b"BTXT", &[BARE_TEXTURE.to_le_bytes(), [0; 4]].concat()),
         field(b"BTXT", &[GRASS_TEXTURE.to_le_bytes(), [0; 4]].concat()),
         field(b"ATXT", &[BARE_TEXTURE.to_le_bytes(), [0; 4]].concat()),

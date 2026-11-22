@@ -31,7 +31,7 @@ formid_map|form_id=65536|plugin_name="skyrim.esm"|internal_id=65536|record_type=
 formid_map|form_id=65537|plugin_name="skyrim.esm"|internal_id=65537|record_type="REFR"
 formid_map|form_id=219149|plugin_name="skyrim.esm"|internal_id=219149|record_type="MOVT"
 ## land (1 rows)
-land|cell_id=16|heightmap=blob:5eebf4d5a9061c19:1096|vtex=blob:e3b0c44298fc1c14:0|vclr=blob:e3b0c44298fc1c14:0|normals=blob:e3b0c44298fc1c14:0
+land|cell_id=16|heightmap=blob:5eebf4d5a9061c19:1096|vtex=NULL|vclr=NULL|normals=NULL
 ## landscape_textures (1 rows)
 landscape_textures|id=4|editor_id="GeneratedLandscape"|texture_set_id=2|material_type=8|friction=30.000000000|restitution=30.000000000
 ## npcs (1 rows)

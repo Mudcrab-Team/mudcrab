@@ -367,6 +367,9 @@ CREATE TABLE IF NOT EXISTS worldspaces (
 );
 ```
 
+A `WRLD` without `EDID` gets no `worldspaces` row and no worldspace environment row. The converter
+does not invent an editor id for it. The export reports it as `worldspace_missing_editor_id`.
+
 ---
 
 ### 4. Cell Registry (`cells`)
@@ -676,6 +679,13 @@ door transitions involving it, and related room rows. Room graph publication exc
 unusable placements before projecting markers or memberships; it cannot recreate an origin
 from their canonical bytes. Incoming authored links may still name the retained canonical record.
 
+The same omission applies to the other required placement fields (#811, section 19). A
+placed record with no four-byte `NAME`, with an `XSCL` that is present but shorter than four
+bytes, or with no parent cell gets no placement row and no spatial row. The converter stores
+no base form 0, no scale 1.0 and no cell 0 for it. An absent `XSCL` is different: it is an
+authored scale of 1.0 and stays so. Each omission is reported as `reference_missing_base`,
+`reference_short_scale` or `reference_missing_cell`, with the form ID and the field.
+
 The typed record reader can retain a first definition without `NAME` as a target for
 package and faction links. Runtime plugin export requires exactly one nonzero base `NAME`.
 It omits the record, its `references` and `exterior_spatial` rows, and resolves incoming
@@ -870,6 +880,15 @@ CREATE TABLE IF NOT EXISTS land (
     normals BLOB                        -- VNML: vertex normals
 );
 ```
+
+A `LAND` without a `VHGT` field (or with an empty one) gets no `land` row, and the terrain cell
+cache and merged terrain mesh publish no cell for it. The converter stores no empty blob and no
+zero heights (#811). The export reports it as `land_missing_heights`; the cell cache and the mesh
+builder print a counted warning and skip the cell. Retail's behaviour for a height-less `LAND` is
+unverified. `vtex`, `vclr` and `normals` are `NULL` when the record has no `VTEX`, `VCLR` or `VNML`
+(earlier output stored an empty blob). Missing or zero `VNML` vectors are still rebuilt from the
+authored heights in the cell cache: that derivation is not default fill, and the retail rule for a
+zero vector is unverified (open item on #811).
 
 ---
 
@@ -1510,6 +1529,9 @@ Columns and rules:
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). Exactly one 24-byte `DATA`
   supplies the transform. An invalid transform omits the room and marks its cell incomplete.
+  A marker with no `XRMR` authors no flags, so `flags` is `0`. A marker whose `XRMR` header is
+  present but unreadable (short, repeated or unframed) has unknown flags: it gets no row, its
+  cell is incomplete and the export reports `room_marker_unreadable_flags` (#811).
   Exactly one 32-byte box `XPRM` supplies the `half_*` extents in the room’s own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
   (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
 - A **`room_portals`** row describes a doorway in the marker's local X-Z plane, with its normal along +Y.
@@ -2013,7 +2035,7 @@ CREATE TABLE IF NOT EXISTS actor_model_parts (
     npc_id INTEGER NOT NULL,
     slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
     model_path TEXT NOT NULL,
-    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25)
+    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25); NULL when RNAM is absent
     skin_texture_set_id INTEGER,     -- ARMA/NAM0 (male) or NAM1 (female), a TXST
     PRIMARY KEY (npc_id, slot)
 );
@@ -2033,7 +2055,8 @@ targets. The detailed source and evidence boundaries are in
 retail `femalehands_1.nif` has no `_s`, while `NakedHands` (`00000D6C`) gives female hands
 `SkinHandFemale_1` (`0003EDE9`), whose `TX07` is `FemaleHands_1_S.dds`. `skin_texture_set_id`
 stores that FormID (`NULL` when the armature has none for the sex; the other sex's set is not
-used), and `armature_race_id` the armature's own `RNAM`, so `25` marks a part that came from the
+used), and `armature_race_id` the armature's own `RNAM` (`NULL`, never `0`, for an armature with no
+readable `RNAM` that matched through an additional race; `armature_missing_race` reports it), so `25` marks a part that came from the
 shared `DefaultRace` armature. The converter composes the default humanoid body from the
 `DefaultRace` sets: per sex and slot, the set most parts with `armature_race_id = 25` use, applied
 in NIF slot order (`TX00`→0, `TX01`→1, `TX03`→2, `TX04`→3, `TX05`→4, `TX02`→5, `TX06`→6,
@@ -2228,6 +2251,13 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
+| `reference_missing_base` | Placed record without a four-byte `NAME`: no placement or spatial row | data loss |
+| `reference_short_scale` | Placed record whose `XSCL` is present but shorter than four bytes: no placement or spatial row | data loss |
+| `reference_missing_cell` | Placed record with no parent cell: no placement or spatial row | data loss |
+| `worldspace_missing_editor_id` | `WRLD` without `EDID`: no `worldspaces` row | data loss |
+| `land_missing_heights` | `LAND` without `VHGT`: no `land` row | data loss |
+| `armature_missing_race` | `ARMA` without a readable `RNAM`: `actor_model_parts.armature_race_id` is NULL | data loss |
+| `room_marker_unreadable_flags` | Room marker whose `XRMR` header is present but short, repeated or unframed: no `room_bounds` row; its cell is incomplete | data loss |
 | `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row and leaves its cell incomplete | data loss |
 | `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
@@ -2321,8 +2351,10 @@ required for new columns; registered packs remain immutable.
 `terrain_default_texture` is generated after texture conversion for every pack. Its singleton
 row has `id = 0`, nullable `diffuse_path` and `normal_path` (canonical relative KTX2 paths),
 and nullable `source_diffuse` (the canonical DDS path used by the LOD bake). A null diffuse
-means white and has no normal or source. The engine probes for the table so old databases
-keep their white default. Invalid diffuse metadata warns and falls back to white without a
-normal. Invalid normal metadata warns and disables only the normal, keeping a valid diffuse.
+means white and has no normal or source. A null diffuse is written only for `--terrain-default
+white` (a labelled test option) or when no cell needs the default. The engine probes for the table
+so old databases keep their white default. A `skyrim-ini` default diffuse that cannot be used
+fails the conversion; no generated white texture replaces it (#811). Invalid normal metadata
+warns and disables only the normal, keeping a valid diffuse.
 This additive metadata does not change LAND geometry, the cell-cache format, or texture
 producer versions.

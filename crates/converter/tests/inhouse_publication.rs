@@ -5,6 +5,14 @@ use rusqlite::Connection;
 use std::{fs, path::Path};
 
 /// Frame independent supplemental records beside the dummy-content world.
+/// An authored flat height field. A LAND without `VHGT` publishes nothing (#811).
+fn flat_vhgt() -> Vec<u8> {
+    let mut bytes = 0.0f32.to_le_bytes().to_vec();
+    bytes.extend(vec![0; 33 * 33]);
+    bytes.extend([0x19, 0x73, 0xb5]);
+    bytes
+}
+
 fn record(tag: &[u8; 4], id: u32, flags: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut payload = Vec::new();
     for (signature, bytes) in fields {
@@ -121,7 +129,8 @@ fn generate(data: &Path) {
         0xA01,
         0,
         &[
-            (b"DATA", 0xCu32.to_le_bytes().to_vec()),
+            (b"DATA", 0xDu32.to_le_bytes().to_vec()),
+            (b"VHGT", flat_vhgt()),
             (b"VCLR", vec![95; 33 * 33 * 3]),
             (b"ATXT", overlay.clone()),
             (b"VTXT", weight),
@@ -134,7 +143,8 @@ fn generate(data: &Path) {
         0xA02,
         0x800,
         &[
-            (b"DATA", 0x4u32.to_le_bytes().to_vec()),
+            (b"DATA", 0x5u32.to_le_bytes().to_vec()),
+            (b"VHGT", flat_vhgt()),
             (b"ATXT", overlay),
             (b"VTXT", invalid_weight),
         ],
@@ -474,12 +484,13 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
     assert!(output.join("cell_cache.rkyv").is_file());
     assert_eq!(
         db.query_row(
-            "SELECT length(heightmap), length(vclr) FROM land WHERE cell_id=2560",
+            "SELECT length(heightmap), vclr IS NULL FROM land WHERE cell_id=2560",
             [],
-            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
         )
         .unwrap(),
-        (0, 0)
+        (1096, true),
+        "the authored flat height field; the winning LAND has no VCLR, so NULL, not an empty blob"
     );
     assert_eq!(
         db.query_row(
@@ -503,7 +514,7 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             .any(|bytes| bytes == b"VCLR")
     );
     assert!(
-        !original_texture_land
+        original_texture_land
             .windows(4)
             .any(|bytes| bytes == b"VHGT")
     );
@@ -777,7 +788,7 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
                 ),
             ));
             worlds.extend(unordered_cell);
-            // A new genuinely heightless LAND remains usable beside rejected overrides.
+            // A new LAND without VHGT is omitted beside the rejected overrides.
             let mut new_cell = cell(0x0100_0D00, 50);
             new_cell.extend(group(
                 8,
@@ -898,20 +909,23 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
         .unwrap(),
         0
     );
-    let heightless_cell = db
-        .query_row(
-            "SELECT cell_id FROM land WHERE length(heightmap)=0 AND vclr=?1",
+    // A new LAND without VHGT stays out of the database and the cache beside the rejected
+    // overrides: no zero heights are invented for it (#811).
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM land WHERE vclr=?1",
             [vec![111u8; 33 * 33 * 3]],
-            |row| row.get::<_, u32>(0),
+            |row| row.get::<_, u32>(0)
         )
-        .unwrap();
-    let heightless = cache
-        .cells
-        .iter()
-        .find(|cell| cell.cell_id == heightless_cell)
-        .unwrap();
-    assert_eq!(heightless.heights, vec![0.0; 33 * 33]);
-    assert_eq!(heightless.vertex_colors, vec![111; 33 * 33 * 3]);
+        .unwrap(),
+        0
+    );
+    assert!(
+        cache
+            .cells
+            .iter()
+            .all(|cell| cell.vertex_colors != vec![111; 33 * 33 * 3])
+    );
     assert!(cache.cells.iter().any(|cell| cell.cell_id == 0xA00));
     assert_eq!(
         db.query_row(

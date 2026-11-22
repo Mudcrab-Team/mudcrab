@@ -2740,7 +2740,10 @@ mod tests {
                         form_id: id,
                         record_type: *b"LAND",
                         flags: 0,
-                        subrecords: vec![(b"BTXT".to_vec(), btxt)],
+                        subrecords: vec![
+                            (b"VHGT".to_vec(), super::super::cell_cache::flat_test_vhgt()),
+                            (b"BTXT".to_vec(), btxt),
+                        ],
                         cell_form_id: Some(cell),
                         worldspace_form_id: Some(if cell == 12 { 2 } else { 1 }),
                         load_order: 0,

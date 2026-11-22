@@ -106,6 +106,8 @@ fn fixture(root: &Path, reader: RecordReader, grass_loss: bool) -> PipelineConfi
     let mut config = PipelineConfig::new(data, root.join("pack"));
     config.record_reader = reader;
     config.no_lod = true;
+    // The fixture supplies no landscape images: select the labelled white default (#811).
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::White;
     config.cpu_jobs = 2;
     config.io_jobs = 1;
     config
@@ -765,6 +767,8 @@ async fn metadata_rebuild_without_prior_grass_retains_loss_completeness() {
     );
     assert_eq!(config.record_reader, RecordReader::Inhouse);
     config.no_lod = true;
+    // The fixture supplies no landscape images: select the labelled white default (#811).
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::White;
     config.cpu_jobs = 2;
     config.io_jobs = 1;
     let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
