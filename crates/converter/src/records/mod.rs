@@ -691,6 +691,7 @@ impl DiscardedFrameScope {
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
+    pub(crate) large_references: crate::esm::large_references::LargeReferences,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -1178,6 +1179,11 @@ fn read_plugins_with_prepared(
             } else if source.deleted {
                 result.overrides.insert(record.form_id, vec![source]);
             }
+            if record.record_type == *b"WRLD" && !deleted {
+                result
+                    .large_references
+                    .collect(&record.to_raw_record(), source_id, index, order);
+            }
             recovery.record_default_object(&record);
             if deleted {
                 recovery.remove_for_deletion(
@@ -1338,6 +1344,26 @@ fn read_plugins_with_prepared(
             || !linked_marker_candidates.is_empty()
             || !unresolved_linked_markers.is_empty();
     }
+    result.large_references.confirm_removed(|id| {
+        // The final override chain includes tombstones admitted during duplicate
+        // recovery. Supplier-self compatibility alone does not prove RNAM identity.
+        !result.records.contains_key(&id)
+            && !unreadable_refs.contains_key(&Some(id))
+            && recovery.deleted.is_unrestored_reference(id)
+            && result
+                .overrides
+                .get(&id)
+                .and_then(|chain| chain.last())
+                .is_some_and(|source| {
+                    source.deleted
+                        && source_identity::header_runtime_id(
+                            b"REFR",
+                            source.source_form_id,
+                            source.plugin_index as usize,
+                            order,
+                        ) == Some(id)
+                })
+    });
     if unknown_cell_scope {
         result.damaged_cell_groups.extend(
             result

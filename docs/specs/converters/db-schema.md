@@ -942,6 +942,49 @@ the shared atlas of a worldspace (`lod/<world>/objects_atlas.opensky-srgb.ktx2`,
 its object chunks reference. A worldspace without a row has chunks that embed the atlas. The manifest
 field `object_atlases` maps each atlas path to its SHA-256.
 
+#### Large-reference membership (`large_references`)
+
+This additive projection stores the defining plugin's filtered `WRLD.RNAM` membership.
+The importer remaps each FormID in the supplying plugin's load order and accepts tuples whose
+header and placement cell keys match. It omits and counts malformed or unresolved input.
+The cell coordinates describe the placement bucket, including when the reference's parent
+cell differs. See [reviewed retail facts, G01](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+
+```sql
+CREATE TABLE IF NOT EXISTS large_references (
+    worldspace_id INTEGER NOT NULL,
+    grid_x INTEGER NOT NULL,
+    grid_y INTEGER NOT NULL,
+    reference_id INTEGER NOT NULL,
+    PRIMARY KEY (worldspace_id, grid_x, grid_y, reference_id)
+);
+```
+
+The engine uses the first three columns to find exterior buckets. It checks that the winning
+reference has a placement in the matching exterior worldspace and bucket.
+
+`large_reference_omissions` records incomplete input. A row covers one bucket when both
+coordinates are present, or the whole worldspace when both are NULL. The count covers rejected
+RNAM subrecords, unresolved FormIDs, and members without a projected reference or worldspace.
+The separate `confirmed_removed_count` records membership entries with a winning deleted REFR.
+These entries have a known outcome and do not make their bucket incomplete.
+
+```sql
+CREATE TABLE IF NOT EXISTS large_reference_omissions (
+    worldspace_id INTEGER NOT NULL,
+    grid_x INTEGER,
+    grid_y INTEGER,
+    omitted_count INTEGER NOT NULL CHECK(omitted_count >= 0),
+    confirmed_removed_count INTEGER NOT NULL CHECK(confirmed_removed_count >= 0),
+    CHECK(omitted_count > 0 OR confirmed_removed_count > 0),
+    CHECK(confirmed_removed_count = 0 OR grid_x IS NOT NULL),
+    CHECK((grid_x IS NULL) = (grid_y IS NULL))
+);
+```
+
+The engine requires both tables for promotion and preserves marked object LOD for incomplete
+buckets. The schema version is unchanged.
+
 ---
 
 ### 9. Script attachments (`scripts`)

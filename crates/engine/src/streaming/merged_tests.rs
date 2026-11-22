@@ -732,6 +732,7 @@ fn spawn_merged_cell(
         false,
         true,
         false,
+        false,
         CellPayload {
             generation: 1,
             key: key(0),

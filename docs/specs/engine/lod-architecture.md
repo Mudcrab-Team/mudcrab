@@ -122,7 +122,17 @@ object path (`streaming/lod_objects.rs`) works as follows.
   and any available replacements draw. Retail fade and hysteresis are unverified (skyrim_decomp#675).
 - **Loaded cells.** A tier-4 chunk carries cell-tagged pieces (`object_cell_<x>_<y>_<n>`, with
   `LodObjectCell`). A piece stays visible until its cell's full-detail models are ready, then stays
-  hidden until the full-detail cell unloads. Large-reference takeover beyond those cells is unimplemented.
+  hidden until the full-detail cell unloads.
+- **Large references.** The `WRLD.RNAM` importer requires exact equality of the header and
+  placement keys. The reviewed default widths are 5 and 9. The per-cell promotion path
+  skips fixed-center worldspaces and resolves full references. A retail demotion branch has a
+  cap of one cell by default. The marked tier-4 filter uses a strict deadline comparison
+  after a 2,000 ms delay. See [reviewed retail facts, G01–G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+  The engine keeps marked LOD when projected membership or model readiness is incomplete.
+  STAND-IN(#913): Mudcrab sweeps the outer ring around the camera's cell and uses width 9
+  across profiles. It uses Bevy virtual time and switches ownership when a replacement can draw.
+  Same-worldspace moves share the demotion cap, with cells retired in sorted order and
+  admission bounded by one large window.
 - **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
   KTX2 file (`lod/<world>/objects_atlas.opensky-srgb.ktx2`). The engine hash-checks it like a chunk, loads it
   once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an
@@ -140,8 +150,7 @@ object path (`streaming/lod_objects.rs`) works as follows.
   controls: an object chunk is one asset-server load, bounded by the commit budget.
 - **Doors.** The verified rows are kept while the worldspace is unchanged, so an interior visit
   drops the roots but does not read or hash the rows again.
-- **Not yet.** No fade, no scene-name validation of object chunk GLBs, and no large-reference
-  takeover.
+- **Not yet.** Fade and scene-name validation of object chunk GLBs remain unimplemented.
 
 Terrain chunks cut from retail `.btr` blocks (see the
 [LOD compiler](../converters/lod-compiler.md#retail-terrain-import-the-default-source)) use the
@@ -163,7 +172,7 @@ replaced it, so `--ini` values no longer reproduce those runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
-(Phase 3), `uLargeRefLODGridSize` (large references are omitted; so is retail's
+(Phase 3), custom `uLargeRefLODGridSize` values and retail's
 flag 0x8000, RF-LOD-006, which forces level 4 in blocks touching that square: no
 difference at the default High preset, but at Low, `fSplitDistanceMult` 0.5,
 retail would force level 4 out to about 18,000 units and Mudcrab does not), and the

@@ -69,6 +69,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "land",
     "landscape_texture_grasses",
     "landscape_textures",
+    "large_reference_omissions",
+    "large_references",
     "lighting_templates",
     "lights",
     "lod",

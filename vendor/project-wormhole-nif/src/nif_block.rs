@@ -1922,6 +1922,7 @@ pub struct NameIndex {
 #[derive(Debug, Clone)]
 pub struct NiAVObject {
     pub object: NiObjectNET,
+    pub extra_data_refs: Vec<u32>,
     pub flags: NiAVObjectFlags,
     pub translation: NifTranslation,
     pub rotation: NifRotation,
@@ -1961,6 +1962,7 @@ fn parse_compact_av_object(i: &[u8]) -> IResult<&[u8], NiAVObject, nom::error::E
         i,
         NiAVObject {
             object: NiObjectNET { name },
+            extra_data_refs: Vec::new(),
             flags,
             translation,
             rotation,
@@ -1979,8 +1981,11 @@ fn parse_counted_av_object(i: &[u8]) -> IResult<&[u8], NiAVObject, nom::error::E
             nom::error::ErrorKind::Count,
         )));
     }
+    let mut extra_data_refs = Vec::new();
     for _ in 0..extra_data_count {
-        (i, _) = le_u32(i)?;
+        let reference;
+        (i, reference) = le_u32(i)?;
+        extra_data_refs.push(reference);
     }
     let (i, _) = le_u32(i)?; // controller
     let (i, flags) = NiAVObjectFlags::parse(i)?;
@@ -1990,6 +1995,7 @@ fn parse_counted_av_object(i: &[u8]) -> IResult<&[u8], NiAVObject, nom::error::E
     let (i, collision_object) = MaxRef::parse(i)?;
     let av = NiAVObject {
         object: NiObjectNET { name },
+        extra_data_refs,
         flags,
         translation,
         rotation,

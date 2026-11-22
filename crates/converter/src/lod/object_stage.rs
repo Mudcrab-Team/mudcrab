@@ -446,7 +446,7 @@ pub struct LevelCounts {
     pub vertices: usize,
     /// Cell-tagged pieces (level-4 segments).
     pub cell_pieces: usize,
-    /// Chunks whose source `.bto` carries large-reference data (kept undecoded, not applied).
+    /// Chunks whose source `.bto` carries large-reference data.
     pub large_ref_chunks: usize,
     pub bytes: u64,
 }
@@ -572,9 +572,9 @@ pub(crate) fn build_object_lod(
             continue;
         }
         for (level, counts) in level_counts(&chunks) {
-            if counts.large_ref_chunks > 0 {
+            if level != 4 && counts.large_ref_chunks > 0 {
                 stage.warnings.push(format!(
-                    "object LOD {editor_id}: {} level-{level} blocks carry large-reference data, which is kept undecoded and not applied",
+                    "object LOD {editor_id}: {} level-{level} blocks carry large-reference data outside the segmented tier",
                     counts.large_ref_chunks
                 ));
             }

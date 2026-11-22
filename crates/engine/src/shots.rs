@@ -498,7 +498,7 @@ impl SettleCounts {
     ) -> Self {
         let now = Failures::read(streaming, renderer);
         Self {
-            loading_cells: streaming.loading_cells,
+            loading_cells: streaming.loading_cells + streaming.loading_large_reference_cells,
             active_requests: streaming.active_requests,
             pending_asset_instances: streaming.pending_asset_instances,
             pending_surface_instances: streaming.pending_surface_instances,
