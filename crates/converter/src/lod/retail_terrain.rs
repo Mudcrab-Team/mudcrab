@@ -134,9 +134,10 @@ fn clip_half(polygon: &[Point], axis: usize, bound: f64, upper: bool) -> Vec<Poi
 
 /// Cuts the retail `land` shape of a block of `level` cells into quadrant patches.
 ///
-/// Positions are the stored positions times the stored scale (which must equal `level`). Every
-/// quadrant of every cell of the block must receive geometry; a block with a gap is an error,
-/// because the runtime hides terrain LOD per quadrant and a gap would be a hole.
+/// Positions are the stored positions times the stored scale (which must equal `level`). A
+/// quadrant that no retail triangle reaches gets no patch: the retail mesh has no terrain there
+/// (the edge of a worldspace), and nothing is invented to fill it. A block with no terrain at all
+/// is an error.
 pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
     ensure!(
         land.scale == level as f32,
@@ -226,10 +227,7 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                     i64::from(cell_y) * 2 + i64::from(*row),
                 );
                 let Some(polygons) = pieces.get(&key) else {
-                    bail!(
-                        "the block has no terrain in quadrant {} of cell ({cell_x}, {cell_y}) from its south-west cell",
-                        QUADRANTS[quadrant].0
-                    );
+                    continue;
                 };
                 let mut patch = QuadrantPatch::default();
                 let mut seen: HashMap<[u32; 5], u32> = HashMap::new();
@@ -261,6 +259,7 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
             }
         }
     }
+    ensure!(!patches.is_empty(), "the block has no terrain");
     Ok(patches)
 }
 
@@ -314,6 +313,10 @@ pub struct RetailBlock<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockStats {
     pub cells: usize,
+    /// Cells of the block that received no terrain and are not source cells of the chunk.
+    pub empty_cells: usize,
+    /// Source cells with fewer than four quadrants of terrain.
+    pub partial_cells: usize,
     pub vertices: usize,
     pub triangles: usize,
     pub bytes: usize,
@@ -346,11 +349,20 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
     let colour = TextureConverter::convert(block.colour_dds, TextureEncoding::ColorSrgb)
         .wrap_err("the colour map cannot be converted")?;
     let normal = convert_normal_map(block.normal_dds, RETAIL_NORMAL_AXES)?;
-    let cells: Vec<(i32, i32)> = (0..side)
-        .flat_map(|y| (0..side).map(move |x| (x, y)))
-        .map(|(x, y)| (block.cell.0 + x, block.cell.1 + y))
+    // Only cells that received terrain are source cells; the rest lie outside the worldspace.
+    let cells: Vec<(i32, i32)> = (0..side as u32)
+        .flat_map(|y| (0..side as u32).map(move |x| (x, y)))
+        .filter(|(x, y)| (0..4u8).any(|q| patches.contains_key(&(*x, *y, q))))
+        .map(|(x, y)| (block.cell.0 + x as i32, block.cell.1 + y as i32))
         .collect();
-    let glb = emit_glb(key, &cells, &patches, &colour, &normal)?;
+    let partial_cells = cells
+        .iter()
+        .filter(|(x, y)| {
+            let (column, row) = ((x - block.cell.0) as u32, (y - block.cell.1) as u32);
+            (0..4u8).any(|q| !patches.contains_key(&(column, row, q)))
+        })
+        .count();
+    let glb = emit_glb(key, block.cell, &cells, &patches, &colour, &normal)?;
     let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
     for patch in patches.values() {
         for position in &patch.positions {
@@ -375,6 +387,8 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
     ];
     let stats = BlockStats {
         cells: cells.len(),
+        empty_cells: (side * side) as usize - cells.len(),
+        partial_cells,
         vertices: patches.values().map(|patch| patch.positions.len()).sum(),
         triangles: patches.values().map(|patch| patch.indices.len() / 3).sum(),
         bytes: glb.len(),
@@ -397,6 +411,7 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
 /// KTX2, 6 normal KTX2.
 fn emit_glb(
     key: ChunkKey,
+    south_west: (i32, i32),
     cells: &[(i32, i32)],
     patches: &BlockPatches,
     colour: &[u8],
@@ -404,7 +419,7 @@ fn emit_glb(
 ) -> Result<Vec<u8>> {
     let side = key.tier.side_cells() as u32;
     ensure!(
-        patches.len() == cells.len() * 4,
+        !cells.is_empty() && patches.len() >= cells.len() && patches.len() <= cells.len() * 4,
         "chunk {key:?} has {} patches for {} cells",
         patches.len(),
         cells.len()
@@ -474,29 +489,34 @@ fn emit_glb(
     let mut node_list = vec![serde_json::json!({
         "name": chunk_name,
         "matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-        "children": (0..cells.len()).map(|i| 1 + i * 6).collect::<Vec<_>>(),
+        "children": [],
     })];
     let (mut meshes, mut accessors) = (Vec::new(), Vec::new());
-    // Cells are listed row by row from the south-west cell, as the patches are keyed.
-    for (cell_index, (grid_x, grid_y)) in cells.iter().enumerate() {
-        let (column, row) = (cell_index as u32 % side, cell_index as u32 / side);
-        let group = 1 + cell_index * 6 + 1;
+    let mut cell_nodes = Vec::new();
+    for (grid_x, grid_y) in cells {
+        let (column, row) = (
+            (grid_x - south_west.0) as u32,
+            (grid_y - south_west.1) as u32,
+        );
+        ensure!(
+            column < side && row < side,
+            "cell ({grid_x}, {grid_y}) is outside chunk {key:?}"
+        );
+        let cell_node = node_list.len();
+        cell_nodes.push(cell_node);
+        let group = cell_node + 1;
         node_list.push(serde_json::json!({
             "name": nodes::source_cell(*grid_x, *grid_y),
             "extras": { "grid": [grid_x, grid_y] },
             "children": [group],
         }));
-        node_list.push(serde_json::json!({
-            "name": nodes::terrain_group(),
-            "children": (0..4).map(|q| group + 1 + q).collect::<Vec<_>>(),
-        }));
+        node_list.push(serde_json::json!({ "name": nodes::terrain_group(), "children": [] }));
+        let mut quadrant_nodes = Vec::new();
         for (quadrant, (short, full, _, _)) in QUADRANTS.iter().enumerate() {
-            let patch_index = patch_order
-                .get(&(column, row, quadrant as u8))
-                .copied()
-                .ok_or_else(|| {
-                    eyre!("chunk {key:?} lacks the patch for cell ({column}, {row}) {short}")
-                })?;
+            // A quadrant the retail mesh does not reach has no node.
+            let Some(patch_index) = patch_order.get(&(column, row, quadrant as u8)).copied() else {
+                continue;
+            };
             let (vertex_start, vertex_count, index_start, index_count, min, max) =
                 ranges[patch_index];
             let base = accessors.len();
@@ -505,6 +525,7 @@ fn emit_glb(
             accessors.push(serde_json::json!({ "bufferView": 2, "byteOffset": vertex_start * 8, "componentType": 5126, "count": vertex_count, "type": "VEC2" }));
             accessors.push(serde_json::json!({ "bufferView": 3, "byteOffset": vertex_start * 16, "componentType": 5126, "count": vertex_count, "type": "VEC4" }));
             accessors.push(serde_json::json!({ "bufferView": 4, "byteOffset": index_start * 4, "componentType": 5125, "count": index_count, "type": "SCALAR" }));
+            quadrant_nodes.push(node_list.len());
             node_list.push(serde_json::json!({
                 "name": format!("terrain_quadrant_{short}"),
                 "extras": { "quadrant": full },
@@ -519,7 +540,17 @@ fn emit_glb(
                 }],
             }));
         }
+        ensure!(
+            !quadrant_nodes.is_empty(),
+            "cell ({grid_x}, {grid_y}) has no terrain"
+        );
+        node_list[group]["children"] = serde_json::json!(quadrant_nodes);
     }
+    ensure!(
+        meshes.len() == patches.len(),
+        "chunk {key:?} left patches without a cell"
+    );
+    node_list[0]["children"] = serde_json::json!(cell_nodes);
     let json = serde_json::json!({
         "asset": { "version": "2.0", "generator": GENERATOR },
         "extensionsUsed": ["KHR_texture_basisu"],
@@ -616,8 +647,8 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
         let reader = ktx2::Reader::new(image).map_err(|e| eyre!("image view {view}: {e:?}"))?;
         let (width, height) = (reader.header().pixel_width, reader.header().pixel_height);
         ensure!(
-            width == 256 && height == 256,
-            "image view {view} is {width}x{height}, expected 256x256"
+            width == height && width.is_power_of_two() && (4..=1024).contains(&width),
+            "image view {view} is {width}x{height}, expected a square power of two up to 1024"
         );
         ensure!(
             reader.levels().count() > 1,
@@ -749,36 +780,64 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
             );
         }
     }
-    // Node layout: root, then per cell a cell node, a `terrain` group and four quadrant nodes.
+    // Node layout: the root lists cell nodes; a cell node has one `terrain` group; the group
+    // lists one to four quadrant nodes, each with a mesh. Every mesh is used exactly once.
     let node_list = array("nodes")?;
-    ensure!(
-        node_list.len() >= 7 && (node_list.len() - 1) % 6 == 0,
-        "node count does not fit cells of six nodes"
-    );
-    ensure!(
-        node_list.len() - 1 == meshes.len() / 4 * 6,
-        "mesh count does not match four per cell"
-    );
-    let mut seen = std::collections::BTreeSet::new();
-    for cell in 0..(node_list.len() - 1) / 6 {
-        let base = 1 + cell * 6;
-        let name = node_list[base]["name"].as_str().unwrap_or_default();
+    let child_list = |node: &serde_json::Value| -> Result<Vec<usize>> {
+        node["children"]
+            .as_array()
+            .ok_or_else(|| eyre!("a node has no children"))?
+            .iter()
+            .map(|child| {
+                number(child, "child").and_then(|index| {
+                    if index < node_list.len() {
+                        Ok(index)
+                    } else {
+                        bail!("a child index is out of range")
+                    }
+                })
+            })
+            .collect()
+    };
+    let mut seen_cells = std::collections::BTreeSet::new();
+    let mut used_meshes = vec![false; meshes.len()];
+    for cell in child_list(node_list.first().ok_or_else(|| eyre!("no nodes"))?)? {
+        let name = node_list[cell]["name"].as_str().unwrap_or_default();
         let grid = nodes::parse_source_cell(name)
-            .ok_or_else(|| eyre!("node {base} is not a source cell"))?;
-        ensure!(seen.insert(grid), "cell {grid:?} appears twice");
+            .ok_or_else(|| eyre!("node {cell} is not a source cell"))?;
+        ensure!(seen_cells.insert(grid), "cell {grid:?} appears twice");
+        let groups = child_list(&node_list[cell])?;
         ensure!(
-            node_list[base + 1]["name"] == nodes::terrain_group(),
-            "cell node {base} has no terrain group"
+            groups.len() == 1 && node_list[groups[0]]["name"] == nodes::terrain_group(),
+            "cell {grid:?} must have exactly one terrain group"
         );
-        for (quadrant, (short, _, _, _)) in QUADRANTS.iter().enumerate() {
-            let node = &node_list[base + 2 + quadrant];
+        let quadrants = child_list(&node_list[groups[0]])?;
+        ensure!(
+            (1..=4).contains(&quadrants.len()),
+            "cell {grid:?} must have one to four quadrants"
+        );
+        let mut shorts = std::collections::BTreeSet::new();
+        for quadrant in quadrants {
+            let node = &node_list[quadrant];
+            let short = node["name"]
+                .as_str()
+                .and_then(|n| n.strip_prefix("terrain_quadrant_"))
+                .unwrap_or_default();
             ensure!(
-                node["name"] == format!("terrain_quadrant_{short}")
-                    && number(&node["mesh"], "mesh")? == cell * 4 + quadrant,
-                "cell {grid:?} quadrant {short} is wrong"
+                QUADRANTS.iter().any(|q| q.0 == short) && shorts.insert(short),
+                "cell {grid:?} has a bad or repeated quadrant {short:?}"
+            );
+            let mesh = number(&node["mesh"], "mesh")?;
+            ensure!(
+                mesh < meshes.len() && !std::mem::replace(&mut used_meshes[mesh], true),
+                "mesh {mesh} is out of range or used twice"
             );
         }
     }
+    ensure!(
+        !seen_cells.is_empty() && used_meshes.iter().all(|used| *used),
+        "a mesh is not reachable from a cell"
+    );
     ensure!(
         json["materials"][0]["normalTexture"]["index"] == 1
             && json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"] == 0,
@@ -908,15 +967,46 @@ mod tests {
     }
 
     #[test]
-    fn a_block_with_a_gap_is_refused() {
+    fn terrain_the_mesh_does_not_reach_is_left_out_not_invented() {
         let mut shape = land(4, 4, |_, _| 0.0, 0.0);
-        // Drop every triangle of the first grid row: the block has no terrain there.
+        // Drop every triangle of the first grid row: no terrain in the south of the block.
         shape.triangles.drain(0..8);
-        let error = cut_land(&shape, 4).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("no terrain in quadrant"),
-            "{error:#}"
-        );
+        let patches = cut_land(&shape, 4).unwrap();
+        assert_eq!(patches.len(), 4 * 4 * 4 - 4 * 2 * 2);
+        assert!(patches.keys().all(|(_, cell_y, _)| *cell_y >= 1));
+        // The chunk lists only the cells that have terrain, and validates.
+        let dds = bgra_dds([128, 250, 120, 255]);
+        let (chunk, stats) = compile_block(&RetailBlock {
+            world: 60,
+            origin: LodOrigin::new(-96, -96),
+            level: 4,
+            cell: (-96, -96),
+            land: &shape,
+            colour_dds: &dds,
+            normal_dds: &dds,
+        })
+        .unwrap();
+        assert_eq!((stats.cells, stats.empty_cells, stats.partial_cells), (12, 4, 0));
+        assert!(chunk.cells.iter().all(|(_, y)| *y >= -95));
+        crate::lod::terrain::validate_terrain_glb(&chunk.glb).unwrap();
+        // A cell with some quadrants only is a partial cell.
+        // An 8x8 grid: each grid square is one quadrant, so dropping two triangles drops one.
+        let mut shape = land(4, 8, |_, _| 0.0, 0.0);
+        shape.triangles.drain(0..2);
+        let (_, stats) = compile_block(&RetailBlock {
+            world: 60,
+            origin: LodOrigin::new(-96, -96),
+            level: 4,
+            cell: (-96, -96),
+            land: &shape,
+            colour_dds: &dds,
+            normal_dds: &dds,
+        })
+        .unwrap();
+        assert!(stats.partial_cells > 0, "{stats:?}");
+        // A block with no terrain at all is an error.
+        shape.triangles.clear();
+        assert!(cut_land(&shape, 4).is_err());
     }
 
     #[test]

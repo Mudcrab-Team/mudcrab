@@ -5296,13 +5296,32 @@ async fn compile_lod_chunks_inline(
         crate::terrain_pipeline::TerrainDefaultDiffuse::GeneratedWhite,
         crate::terrain_pipeline::TerrainDefaultDiffuse::Image,
     );
+    let retail_terrain = config.terrain_lod_source == crate::config::TerrainLodSource::Retail;
     let (default_textures, default_error) =
         LoadedDefault::load(&default_diffuse, &staging.join("vfs"), &mut texture_cache);
-    if let Some(reason) = default_error {
+    if let Some(reason) = default_error
+        && !retail_terrain
+    {
         report.lod_warnings.push(format!(
             "terrain LOD default land texture falls back to the generated white one: {reason}"
         ));
     }
+    // The retail files, listed once. A listing failure is reported and leaves every world
+    // without terrain LOD; nothing is generated in its place.
+    let retail_files = if retail_terrain {
+        match crate::lod::retail_terrain_source::list(&config.data_dir) {
+            Ok(files) => Some(files),
+            Err(error) => {
+                report.lod_warnings.push(format!(
+                    "the retail terrain LOD files cannot be listed: {error:#}; no terrain LOD is imported"
+                ));
+                Some(Default::default())
+            }
+        }
+    } else {
+        None
+    };
+    let mut retail_inputs: BTreeMap<String, String> = BTreeMap::new();
     let mut chunk_inputs = BTreeMap::new();
     let mut worlds: Vec<(u32, String)> = connection
         .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
@@ -5407,6 +5426,73 @@ async fn compile_lod_chunks_inline(
             )
             .await;
             continue;
+        }
+        if let Some(files) = &retail_files {
+            let file_name = editor_id.to_ascii_lowercase();
+            let ids: Vec<crate::lod::retail_terrain_source::BlockId> = files
+                .blocks
+                .keys()
+                .filter(|(world, ..)| *world == file_name)
+                .cloned()
+                .collect();
+            if ids.is_empty() {
+                report.lod_warnings.push(format!(
+                    "worldspace {editor_id} ({worldspace_id:08X}) has no retail terrain LOD files; its terrain LOD is skipped and nothing is generated in its place"
+                ));
+                if let Some(settings) = world_settings.last_mut() {
+                    settings["status"] = serde_json::json!("no_retail_files");
+                }
+            } else {
+                let world = crate::lod::retail_terrain_import::LodWorld {
+                    id: *worldspace_id,
+                    editor_id: editor_id.clone(),
+                    file_name,
+                    origin,
+                };
+                let imported = crate::lod::retail_terrain_import::import_world(
+                    &connection,
+                    staging,
+                    &world,
+                    files,
+                    &ids,
+                    &compiler_pool,
+                    &mut retail_inputs,
+                    &mut chunk_hashes,
+                )?;
+                let compiled: usize = imported.compiled.values().sum();
+                for (class, count) in &imported.skipped_by_class {
+                    report.lod_warnings.push(format!(
+                        "worldspace {editor_id} ({worldspace_id:08X}): {count} retail terrain LOD blocks skipped ({class}); first: {}",
+                        imported
+                            .skipped
+                            .iter()
+                            .find(|(_, skipped)| skipped.class == *class)
+                            .map_or("", |(_, skipped)| skipped.detail.as_str())
+                    ));
+                }
+                report.notices.push(format!(
+                    "Terrain LOD {editor_id}: {compiled} retail chunks imported ({} blocks found, {} skipped)",
+                    imported.found.values().sum::<usize>(),
+                    imported.skipped.len()
+                ));
+                if let Some(settings) = world_settings.last_mut() {
+                    settings["status"] = serde_json::json!("retail_imported");
+                    settings["retail_chunks"] = serde_json::json!(compiled);
+                    settings["retail_skipped"] = serde_json::json!(imported.skipped.len());
+                }
+                report.lod_chunks += compiled as u64;
+                compiled_worlds += 1;
+            }
+            send(
+                progress_tx,
+                ProgressStage::LodChunks,
+                (index + 1) as u64,
+                worlds.len() as u64,
+                None,
+                "Compiling terrain LOD chunks",
+            )
+            .await;
+            continue 'world;
         }
         let lookup: std::collections::HashMap<u32, (i32, i32)> = cells
             .iter()
@@ -5722,13 +5808,22 @@ async fn compile_lod_chunks_inline(
         current_plugin_hashes == plugin_hashes,
         "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation"
     );
-    let lod_configuration = hash_bytes(&serde_json::to_vec(&serde_json::json!({
+    for relative in retail_inputs.keys() {
+        report.artifacts.push(PathBuf::from(relative));
+    }
+    let mut lod_configuration_json = serde_json::json!({
         "assets": configuration_hash(config)?,
         "atlas_encoder": match config.lod_texture_encoder {
             TextureEncoder::Cpu => "cpu-terrain-uastc-v1".to_owned(),
             TextureEncoder::Gpu { quality, .. } => format!("terrain-atlas{}", texture_gpu::cache_label(quality)),
         },
-    }))?);
+    });
+    if retail_terrain {
+        lod_configuration_json["terrain_lod_source"] = serde_json::json!("retail");
+        lod_configuration_json["retail_import_version"] =
+            serde_json::json!(crate::lod::retail_terrain::IMPORT_VERSION);
+    }
+    let lod_configuration = hash_bytes(&serde_json::to_vec(&lod_configuration_json)?);
     let identity = build_identity(
         plugin_hashes,
         &chunk_hashes,
@@ -5751,6 +5846,20 @@ async fn compile_lod_chunks_inline(
             terrain_sources,
             compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
             chunk_inputs,
+            terrain_lod_source: Some(
+                if retail_terrain {
+                    crate::lod::reuse::TERRAIN_SOURCE_RETAIL
+                } else {
+                    crate::lod::reuse::TERRAIN_SOURCE_SELF_BUILT
+                }
+                .to_owned(),
+            ),
+            retail_terrain_import_version: if retail_terrain {
+                crate::lod::retail_terrain::IMPORT_VERSION
+            } else {
+                0
+            },
+            retail_terrain_inputs: retail_inputs,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -7634,6 +7743,9 @@ mod tests {
                 terrain_sources,
                 compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
                 chunk_inputs,
+                terrain_lod_source: Some(crate::lod::reuse::TERRAIN_SOURCE_SELF_BUILT.to_owned()),
+                retail_terrain_import_version: 0,
+                retail_terrain_inputs: BTreeMap::new(),
             };
             Proof {
                 identity,

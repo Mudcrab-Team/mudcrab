@@ -12,6 +12,7 @@ pub mod compose;
 pub mod config;
 mod controls;
 pub mod derive_outfits;
+pub mod derive_terrain_lod;
 pub mod esm;
 pub mod extensions;
 mod input_inventory;

@@ -6,7 +6,7 @@ use converter::archive::IngestionSync;
 use converter::config::RecordReader;
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
-    config::TerrainDefaultTexture,
+    config::{TerrainDefaultTexture, TerrainLodSource},
     pipeline::{Cancellation, Interrupted, PipelineFailure},
     progress::{ProgressRenderer, format_bytes, format_elapsed},
 };
@@ -47,6 +47,7 @@ struct Cli {
     invalidate_cache: bool,
     verify_cache: bool,
     no_lod: bool,
+    terrain_lod_source: TerrainLodSource,
     merged_terrain: bool,
     terrain_default_texture: TerrainDefaultTexture,
     terrain_ini: Option<PathBuf>,
@@ -71,6 +72,7 @@ impl Cli {
         config.invalidate_cache = self.invalidate_cache;
         config.verify_cache = self.verify_cache;
         config.no_lod = self.no_lod;
+        config.terrain_lod_source = self.terrain_lod_source;
         config.merged_terrain = self.merged_terrain;
         config.terrain_default_texture = self.terrain_default_texture;
         config.terrain_ini = self.terrain_ini.clone();
@@ -230,6 +232,10 @@ async fn main() -> Result<()> {
     if args.first().and_then(|argument| argument.to_str()) == Some("derive-outfits") {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_outfits(&args[1..], command_line);
+    }
+    if args.first().and_then(|argument| argument.to_str()) == Some("derive-terrain-lod") {
+        let command_line = std::env::args().collect::<Vec<String>>();
+        return derive_terrain_lod(&args[1..], command_line);
     }
     let command = parse_command(args)?;
     let mo2 = match &command {
@@ -608,6 +614,9 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
+    if cli.terrain_lod_source != TerrainLodSource::default() {
+        command.push_str(" --terrain-lod self-built");
+    }
     command.push_str(match cli.record_reader {
         RecordReader::Legacy => " --record-reader legacy",
         RecordReader::Inhouse => " --record-reader inhouse",
@@ -922,6 +931,94 @@ fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
     })
 }
 
+/// Usage line of `derive-terrain-lod`, printed by its help and its errors.
+const DERIVE_TERRAIN_LOD_USAGE: &str = "usage: converter derive-terrain-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--force] [--converter-head <sha>]";
+
+/// Parse `derive-terrain-lod` options, import the retail terrain LOD and report the counts.
+fn derive_terrain_lod(args: &[OsString], command_line: Vec<String>) -> Result<()> {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
+        println!("{DERIVE_TERRAIN_LOD_USAGE}");
+        return Ok(());
+    }
+    let (mut positional, mut registry, mut clone_of, mut data) = (Vec::new(), None, None, None);
+    let (mut force, mut converter_head) = (false, None);
+    let mut rest = args.iter().cloned();
+    while let Some(argument) = rest.next() {
+        match argument.to_str() {
+            Some("--registry") => {
+                registry = Some(PathBuf::from(next_value(&mut rest, "--registry")?))
+            }
+            Some("--data") => data = Some(PathBuf::from(next_value(&mut rest, "--data")?)),
+            Some("--clone-of") => {
+                clone_of = Some(
+                    next_value(&mut rest, "--clone-of")?
+                        .into_string()
+                        .map_err(|_| {
+                            color_eyre::eyre::eyre!("--clone-of value is not valid UTF-8")
+                        })?,
+                );
+            }
+            Some("--converter-head") => {
+                converter_head = Some(
+                    next_value(&mut rest, "--converter-head")?
+                        .into_string()
+                        .map_err(|_| {
+                            color_eyre::eyre::eyre!("--converter-head value is not valid UTF-8")
+                        })?,
+                );
+            }
+            Some("--force") => force = true,
+            Some(flag) if flag.starts_with('-') => {
+                bail!("unknown derive-terrain-lod option {flag:?}")
+            }
+            _ => {
+                if !positional.is_empty() {
+                    bail!("{DERIVE_TERRAIN_LOD_USAGE}");
+                }
+                positional.push(PathBuf::from(argument));
+            }
+        }
+    }
+    let (Some(target), Some(registry), Some(clone_of), Some(data)) =
+        (positional.into_iter().next(), registry, clone_of, data)
+    else {
+        bail!("{DERIVE_TERRAIN_LOD_USAGE}");
+    };
+    let report = converter::derive_terrain_lod::run(
+        &converter::derive_terrain_lod::DeriveTerrainLodOptions {
+            target,
+            registry,
+            clone_of,
+            data,
+            force,
+            converter_head,
+            command: command_line,
+        },
+    )?;
+    println!(
+        "Derived retail terrain LOD: {} chunks in {} ms",
+        report.chunks, report.elapsed_ms
+    );
+    for world in &report.worlds {
+        println!(
+            "{}: found {:?}, wrote {:?}, removed {} self-built, skipped {:?}",
+            world.editor_id,
+            world.found,
+            world.compiled,
+            world.old_chunks_removed,
+            world.skipped_by_class
+        );
+    }
+    if !report.kept_self_built.is_empty() {
+        println!(
+            "Kept self-built chunks (no retail files): {:?}",
+            report.kept_self_built
+        );
+    }
+    println!("Receipt: {}", report.receipt.display());
+    Ok(())
+}
+
 /// Parse `derive-outfits` options and report what the overlay produced.
 fn derive_outfits(args: &[OsString], command_line: Vec<String>) -> Result<()> {
     if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
@@ -1033,6 +1130,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut invalidate_cache = false;
     let mut verify_cache = true;
     let mut no_lod = false;
+    let mut terrain_lod_source = TerrainLodSource::default();
     let mut merged_terrain = false;
     let mut terrain_default_texture = TerrainDefaultTexture::default();
     let mut terrain_ini = None;
@@ -1141,6 +1239,14 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
             Some("--no-lod") => no_lod = true,
+            Some("--terrain-lod") => {
+                let value = next_value(&mut args, "--terrain-lod")?;
+                terrain_lod_source = match value.to_str() {
+                    Some("retail") => TerrainLodSource::Retail,
+                    Some("self-built") => TerrainLodSource::SelfBuilt,
+                    _ => bail!("--terrain-lod must be retail or self-built"),
+                };
+            }
             Some("--merged-terrain") => merged_terrain = true,
             Some("--terrain-default-texture") => {
                 let value = next_value(&mut args, "--terrain-default-texture")?;
@@ -1275,6 +1381,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         invalidate_cache,
         verify_cache,
         no_lod,
+        terrain_lod_source,
         merged_terrain,
         terrain_default_texture,
         terrain_ini,
@@ -1346,12 +1453,14 @@ fn usage() -> &'static str {
                  [--schema-addon JSON]
                  [--mo2-instance DIR] [--mo2-profile NAME]
                  [--merged-terrain] [--terrain-default-texture white|skyrim-ini]
+                 [--terrain-lod retail|self-built]
                  [--terrain-ini FILE] [--terrain-allow-downscale]
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
        converter -V | --version
        converter check <output directory> [--full]
        converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)
        converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
+       converter derive-terrain-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--force] [--converter-head <sha>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
@@ -1449,7 +1558,12 @@ changing those source assets. This route does not support MO2 selection; use a n
 conversion with --mo2-instance. It cannot resume or cooperatively cancel.
 
 derive-outfits writes only actor-outfits.json and a receipt into an APFS clone of a registered pack,
-from the records the pack already holds. It reads no game data and never writes into a registered pack."
+from the records the pack already holds. It reads no game data and never writes into a registered pack.
+
+derive-terrain-lod replaces the terrain LOD chunks of an APFS clone of a registered pack with chunks
+compiled from the retail .btr meshes, colour maps and normal maps in the Skyrim Data folder. It
+changes only the terrain chunk files, their database rows and lod-manifest.json, writes a receipt,
+skips and counts any block it cannot read, and never writes into a registered pack."
 }
 
 #[cfg(test)]
@@ -2172,6 +2286,7 @@ mod tests {
             invalidate_cache: false,
             verify_cache: true,
             no_lod: false,
+            terrain_lod_source: TerrainLodSource::default(),
             merged_terrain: false,
             terrain_default_texture: TerrainDefaultTexture::SkyrimIni,
             terrain_ini: None,
