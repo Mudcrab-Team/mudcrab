@@ -241,7 +241,12 @@ impl ApprovedLook {
         })
     }
 
-    fn sky_palette(&self) -> SkyPalette {
+    /// The approved look's sky laid over `base`. This is a Mudcrab-only look, kept because the
+    /// approved snapshot was graded with it: the snapshot replaces the sky
+    /// colours and the Fog Far colour with an approved grey, and divides the fog distances by
+    /// `fog_density_scale` (0.25 draws the weather's fog four times as far out). The fog
+    /// distances and the Fog Near colour stay the weather's.
+    fn sky_palette_over(&self, base: SkyPalette) -> SkyPalette {
         let rgb = |[r, g, b]: [u8; 3]| Color::srgb_u8(r, g, b);
         SkyPalette {
             upper: rgb(self.sky.upper_srgb_u8),
@@ -249,8 +254,12 @@ impl ApprovedLook {
             horizon: rgb(self.sky.horizon_srgb_u8),
             fog_far: rgb(self.sky.fog_far_srgb_u8),
             fog_density_scale: self.sky.fog_density_scale,
-            ..SkyPalette::SKYRIM_CLEAR_DAY
+            ..base
         }
+    }
+
+    fn sky_palette(&self) -> SkyPalette {
+        self.sky_palette_over(SkyPalette::SKYRIM_CLEAR_DAY)
     }
 }
 
@@ -260,6 +269,12 @@ pub struct SceneGradeSource {
     approved: ApprovedLook,
     approved_path: String,
     pub record: Option<LoadedImageSpace>,
+    /// The active weather's sky and fog, read from the world database (#891). `None` for a run
+    /// without one (a fixture): the preset's built-in palette then stands.
+    pub weather: Option<crate::weather_sky::WeatherSky>,
+    /// Which profile's rule picks the palette: `skyrim` takes the weather's, `mudcrab` lays its
+    /// look over the weather's.
+    pub profile: crate::visual_profile::VisualProfile,
 }
 
 impl Default for SceneGradeSource {
@@ -268,6 +283,8 @@ impl Default for SceneGradeSource {
             approved: ApprovedLook::builtin().clone(),
             approved_path: "builtin:presets/approved-snapshot.json".into(),
             record: None,
+            weather: None,
+            profile: crate::visual_profile::VisualProfile::default(),
         }
     }
 }
@@ -284,7 +301,10 @@ impl SceneGradeSource {
         config: &crate::config::EngineConfig,
         retail_world: bool,
     ) -> color_eyre::Result<Self> {
-        let mut source = Self::default();
+        let mut source = Self {
+            profile: config.visual_profile,
+            ..Self::default()
+        };
         if let Some(path) = &config.grade_preset {
             source.approved = ApprovedLook::parse(&std::fs::read_to_string(path)?)?;
             source.approved_path = path.display().to_string();
@@ -305,10 +325,45 @@ impl SceneGradeSource {
         Ok(source)
     }
 
-    pub fn sky_palette(&self, preset: SceneVisualPreset) -> SkyPalette {
-        match preset {
-            SceneVisualPreset::CoolGray => self.approved.sky_palette(),
-            SceneVisualPreset::Vivid => SkyPalette::SKYRIM_CLEAR_DAY,
+    /// This source with the given profile and active weather.
+    pub fn with_weather(
+        self,
+        profile: crate::visual_profile::VisualProfile,
+        weather: Option<crate::weather_sky::WeatherSky>,
+    ) -> Self {
+        Self {
+            profile,
+            weather,
+            ..self
+        }
+    }
+
+    /// The sky and fog palette at a game hour.
+    ///
+    /// - `skyrim` with a weather: the weather's palette and fog distances, untouched. The preset
+    ///   plays no part (`--visual-preset` is refused under `skyrim`).
+    /// - `mudcrab` with a weather: the weather's palette is the starting point. `vivid` keeps it
+    ///   as it is. `cool-gray` lays the approved grey sky and fog colour over it and divides the
+    ///   fog distances by its density scale. These are Mudcrab looks (ADR-0015), kept so that the
+    ///   approved grade still matches its sky. The overlay colours
+    ///   do not change with the hour; the fog distances do.
+    /// - No weather (a fixture run without a world database): the preset's built-in palette, the
+    ///   `SkyrimClear` day column for `vivid` and `skyrim`.
+    pub fn sky_palette(&self, preset: SceneVisualPreset, hour: f64) -> SkyPalette {
+        let weather = self
+            .weather
+            .as_ref()
+            .map(|weather| weather.palette_at(hour));
+        match (self.profile, preset) {
+            (crate::visual_profile::VisualProfile::Skyrim, _) => {
+                weather.unwrap_or(SkyPalette::SKYRIM_CLEAR_DAY)
+            }
+            (crate::visual_profile::VisualProfile::Mudcrab, SceneVisualPreset::CoolGray) => self
+                .approved
+                .sky_palette_over(weather.unwrap_or(SkyPalette::SKYRIM_CLEAR_DAY)),
+            (crate::visual_profile::VisualProfile::Mudcrab, SceneVisualPreset::Vivid) => {
+                weather.unwrap_or(SkyPalette::SKYRIM_CLEAR_DAY)
+            }
         }
     }
 
@@ -385,7 +440,13 @@ impl SceneGradeSource {
             "mode": mode.name(),
             "source_kind": if mode == SceneGradeMode::RecordSrgb { "authored-image-space-record" } else if mode == SceneGradeMode::SnapshotSrgb { "approved-artistic-override" } else { "legacy-preset" },
             "grade_base_identity": if mode == SceneGradeMode::RecordSrgb { "loaded-image-space-record" } else if mode == SceneGradeMode::SnapshotSrgb { self.approved_path.as_str() } else { preset.name() },
-            "approved_override": { "path": self.approved_path, "data": self.approved, "applied_to_grade": mode == SceneGradeMode::SnapshotSrgb, "applied_to_sky": preset == SceneVisualPreset::CoolGray },
+            "approved_override": { "path": self.approved_path, "data": self.approved, "applied_to_grade": mode == SceneGradeMode::SnapshotSrgb, "applied_to_sky": preset == SceneVisualPreset::CoolGray && self.profile == crate::visual_profile::VisualProfile::Mudcrab },
+            "weather_sky": self.weather.as_ref().map(|weather| serde_json::json!({
+                "weather": weather.label(),
+                "colours": "NAM0 colours of the record, mixed by time of day (RF-SUN-005)",
+                "fog_distances": if weather.has_fog() { "FNAM of the record, day and night sets mixed by one day weight (verified, skyrim_decomp#812)" } else { "omitted: the record lacks a fog field" },
+                "fog_omissions": weather.fog_omissions,
+            })),
             "loaded_record": self.record,
             "base_grade": base.as_ref().ok().map(|resolved| resolved.grade),
             "grade_overrides": overrides,
@@ -507,9 +568,13 @@ fn scene_preset_command() -> ConsoleCommand {
                     overrides,
                 )?;
                 *world.resource_mut::<SceneVisualPreset>() = next;
-                let next_palette = world
-                    .get_resource::<SceneGradeSource>()
-                    .map_or_else(|| next.sky_palette(), |source| source.sky_palette(next));
+                let hour = world
+                    .get_resource::<crate::sun::GameClock>()
+                    .map_or(crate::sun::RETAIL_GAME_HOUR, |clock| clock.hour);
+                let next_palette = world.get_resource::<SceneGradeSource>().map_or_else(
+                    || next.sky_palette(),
+                    |source| source.sky_palette(next, hour),
+                );
                 if let Some(mut palette) = world.get_resource_mut::<SkyPalette>() {
                     *palette = next_palette;
                 }
@@ -972,7 +1037,7 @@ mod tests {
         assert_eq!(resolved.post.saturation, 1.66);
         assert_eq!(resolved.post.linear_domain, 0);
         assert_eq!(
-            source.sky_palette(SceneVisualPreset::CoolGray),
+            source.sky_palette(SceneVisualPreset::CoolGray, 12.0),
             SkyPalette {
                 upper: Color::srgb_u8(178, 187, 198),
                 lower: Color::srgb_u8(194, 202, 209),
@@ -1518,22 +1583,139 @@ mod tests {
             actual.directional_light_exponent,
             expected.directional_light_exponent
         );
-        let bevy::pbr::FogFalloff::Atmospheric {
-            extinction,
-            inscattering,
+        let bevy::pbr::FogFalloff::PowerRamp {
+            start, end, power, ..
         } = actual.falloff
         else {
-            panic!("expected atmospheric fog");
+            panic!("expected a power ramp");
         };
-        let bevy::pbr::FogFalloff::Atmospheric {
-            extinction: wanted_extinction,
-            inscattering: wanted_inscattering,
+        let bevy::pbr::FogFalloff::PowerRamp {
+            start: wanted_start,
+            end: wanted_end,
+            power: wanted_power,
+            ..
         } = expected.falloff
         else {
-            panic!("expected atmospheric fog");
+            panic!("expected a power ramp");
         };
-        assert_eq!(extinction, wanted_extinction);
-        assert_eq!(inscattering, wanted_inscattering);
+        assert_eq!(start, wanted_start);
+        assert_eq!(end, wanted_end);
+        assert_eq!(power, wanted_power);
+    }
+
+    /// A weather with distinct colours and distances in every slot, so a swapped field shows.
+    fn test_weather_sky() -> crate::weather_sky::WeatherSky {
+        use crate::world::environment::{TimeOfDay, Weather, WeatherFog};
+        let mut weather = Weather {
+            editor_id: Some("TestClear".to_owned()),
+            fog: WeatherFog {
+                day_near: Some(2_000.0),
+                day_far: Some(90_000.0),
+                night_near: Some(1_000.0),
+                night_far: Some(30_000.0),
+                day_power: Some(0.4),
+                night_power: Some(0.3),
+                day_max: Some(0.8),
+                night_max: Some(0.6),
+            },
+            ..Default::default()
+        };
+        for time in TimeOfDay::ALL {
+            for (index, name) in ["sky_upper", "sky_lower", "horizon", "fog_near", "fog_far"]
+                .into_iter()
+                .enumerate()
+            {
+                let value = 20 + 10 * index as u8;
+                weather
+                    .colors
+                    .insert((name.to_owned(), time), [value, value + 1, value + 2]);
+            }
+        }
+        crate::weather_sky::WeatherSky::from_weather(
+            0x81A,
+            &weather,
+            crate::sun::SunTiming([33, 60, 96, 123]),
+        )
+        .unwrap()
+    }
+
+    /// The `skyrim` profile takes the weather's sky and fog and nothing from a preset, whichever
+    /// preset the resource holds.
+    #[test]
+    fn the_skyrim_profile_reads_the_weather_and_ignores_the_preset() {
+        let source = SceneGradeSource {
+            profile: crate::visual_profile::VisualProfile::Skyrim,
+            weather: Some(test_weather_sky()),
+            ..Default::default()
+        };
+        let weather = source.weather.as_ref().unwrap().palette_at(12.0);
+        for preset in [SceneVisualPreset::Vivid, SceneVisualPreset::CoolGray] {
+            assert_eq!(source.sky_palette(preset, 12.0), weather);
+        }
+        // Nothing of the approved snapshot's grey, density or the built-in constant is left.
+        let palette = source.sky_palette(SceneVisualPreset::CoolGray, 12.0);
+        assert_ne!(palette.fog_far, Color::srgb_u8(210, 222, 235));
+        assert_eq!(palette.fog_density_scale, 1.0);
+        assert_eq!(palette.fog_ramp.unwrap().far, 90_000.0);
+        assert_eq!(palette.fog_far, Color::srgb_u8(60, 61, 62));
+    }
+
+    /// `vivid` starts from the weather and changes nothing. `cool-gray` changes the sky colours,
+    /// the Fog Far colour and the density scale (Mudcrab uses its approved look) and keeps the weather's fog
+    /// distances, Fog Near colour and brightness.
+    #[test]
+    fn mudcrab_looks_start_from_the_weather_and_label_their_changes() {
+        let source = SceneGradeSource {
+            weather: Some(test_weather_sky()),
+            ..Default::default()
+        };
+        let weather = source.weather.as_ref().unwrap().palette_at(12.0);
+        assert_eq!(source.sky_palette(SceneVisualPreset::Vivid, 12.0), weather);
+        let gray = source.sky_palette(SceneVisualPreset::CoolGray, 12.0);
+        assert_eq!(gray.fog_far, Color::srgb_u8(210, 222, 235));
+        assert_eq!(gray.fog_density_scale, 0.25);
+        assert_eq!(gray.fog_ramp, weather.fog_ramp);
+        assert_eq!(gray.fog_near, weather.fog_near);
+        assert_eq!(gray.brightness, weather.brightness);
+        // The fog distances still follow the hour under the look.
+        let night = source.sky_palette(SceneVisualPreset::CoolGray, 0.0);
+        assert_eq!(night.fog_ramp.unwrap().far, 30_000.0);
+        assert_eq!(night.fog_far, gray.fog_far);
+    }
+
+    /// Without a weather (a fixture run), the presets keep their built-in palettes.
+    #[test]
+    fn without_a_weather_the_presets_keep_their_built_in_palettes() {
+        let source = SceneGradeSource::default();
+        for preset in [SceneVisualPreset::Vivid, SceneVisualPreset::CoolGray] {
+            assert_eq!(source.sky_palette(preset, 12.0), preset.sky_palette());
+        }
+        let skyrim = SceneGradeSource {
+            profile: crate::visual_profile::VisualProfile::Skyrim,
+            ..Default::default()
+        };
+        assert_eq!(
+            skyrim.sky_palette(SceneVisualPreset::CoolGray, 12.0),
+            SkyPalette::SKYRIM_CLEAR_DAY
+        );
+    }
+
+    /// The evidence says where the sky came from, and that the approved sky is not applied
+    /// under `skyrim`.
+    #[test]
+    fn evidence_names_the_weather_and_the_omitted_fog_fields() {
+        let source = SceneGradeSource {
+            profile: crate::visual_profile::VisualProfile::Skyrim,
+            weather: Some(test_weather_sky()),
+            ..Default::default()
+        };
+        let evidence = source.evidence(SceneGradeMode::SnapshotSrgb, SceneVisualPreset::CoolGray);
+        assert_eq!(evidence["approved_override"]["applied_to_sky"], false);
+        assert_eq!(evidence["weather_sky"]["weather"], "TestClear (0000081A)");
+        assert_eq!(
+            evidence["weather_sky"]["fog_omissions"],
+            serde_json::json!([])
+        );
     }
 
     #[test]
@@ -1549,7 +1731,7 @@ mod tests {
         let vivid = SceneColorPipeline::default();
         let expected_post = vivid.cinematic_post;
         let transform = Transform::from_xyz(7.0, 11.0, 13.0);
-        let fog = crate::sky::fog_for(&SkyPalette::default());
+        let fog = crate::sky::fog_for(&SkyPalette::default()).unwrap();
         let main = app.world_mut().spawn((vivid, transform, fog.clone())).id();
         let reflection = app.world_mut().spawn(SceneColorPipeline::reflection()).id();
         app.update();
@@ -1565,7 +1747,10 @@ mod tests {
             let preset = *world.resource::<SceneVisualPreset>();
             assert_eq!(*world.resource::<SkyPalette>(), preset.sky_palette());
             if preset == SceneVisualPreset::Vivid {
-                assert_fog_matches(&crate::sky::fog_for(world.resource::<SkyPalette>()), &fog);
+                assert_fog_matches(
+                    &crate::sky::fog_for(world.resource::<SkyPalette>()).unwrap(),
+                    &fog,
+                );
             }
             assert_grading_matches(world.get::<ColorGrading>(main).unwrap(), &preset.grade());
             assert_eq!(

@@ -931,6 +931,9 @@ fn apply_fog(
         return bevy_pbr::fog::exponential_squared_fog(fog_params, input_color, distance, scattering);
     } else if fog_params.mode == mesh_view_types::FOG_MODE_ATMOSPHERIC {
         return bevy_pbr::fog::atmospheric_fog(fog_params, input_color, distance, scattering);
+    } else if fog_params.mode == mesh_view_types::FOG_MODE_POWER_RAMP {
+        // mudcrab: the weather's exterior fog (#891).
+        return bevy_pbr::fog::power_ramp_fog(fog_params, input_color, distance, scattering);
     } else {
         return input_color;
     }
