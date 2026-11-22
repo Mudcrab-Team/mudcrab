@@ -1,0 +1,34 @@
+name: Workspace crash recovery
+
+on:
+  pull_request:
+    branches: [ main, develop, 'release/**' ]
+    paths: &recovery_paths
+      - 'scripts/workspace.py'
+      - 'scripts/tests/test_workspace*.py'
+      - '.agents/skills/verify-workspace-recovery/**'
+      - '.claude/skills/verify-workspace-recovery'
+      - '.github/workflows/workspace-recovery.yml'
+  push:
+    branches: [ main ]
+    paths: *recovery_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The negative controls load the merged #797 and #800 versions with git show.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Reproduce historical data loss and exhaust current crash prefixes
+        run: python3 -I -B .agents/skills/verify-workspace-recovery/check.py --history
