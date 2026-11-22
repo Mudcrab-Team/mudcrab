@@ -1,0 +1,50 @@
+---
+source: crates/converter/tests/snapshots.rs
+expression: snapshot
+---
+# Rows of the 11 tables the older JSON snapshot covered, built from the
+# same preset plugin through the legacy reader (convert_plugins). The dump
+# above covers every table through the default in-house reader. One line
+# per row, in the same format.
+## actor_model_parts (0 rows)
+## actor_models (1 rows)
+actor_models|id=7|race_id=10|sex="male"|skin_armo_id=NULL|head_model=NULL|head_source=NULL|resolution="unresolved"|skin_tone_r=NULL|skin_tone_g=NULL|skin_tone_b=NULL|weight=NULL
+## cells (2 rows)
+cells|id=16|worldspace_id=1|grid_x=0|grid_y=0|interior_name="GeneratedCell"|flags=0|data=blob:8bf1a2c750775224:56|full_name=NULL
+cells|id=65536|worldspace_id=NULL|grid_x=NULL|grid_y=NULL|interior_name="GeneratedInterior"|flags=0|data=blob:ab9a392086ec71fe:84|full_name="Generated Interior"
+## formid_map (17 rows)
+formid_map|form_id=1|plugin_name="skyrim.esm"|internal_id=1|record_type="WRLD"
+formid_map|form_id=2|plugin_name="skyrim.esm"|internal_id=2|record_type="TXST"
+formid_map|form_id=3|plugin_name="skyrim.esm"|internal_id=3|record_type="STAT"
+formid_map|form_id=4|plugin_name="skyrim.esm"|internal_id=4|record_type="LTEX"
+formid_map|form_id=5|plugin_name="skyrim.esm"|internal_id=5|record_type="DOOR"
+formid_map|form_id=6|plugin_name="skyrim.esm"|internal_id=6|record_type="DOOR"
+formid_map|form_id=7|plugin_name="skyrim.esm"|internal_id=7|record_type="NPC_"
+formid_map|form_id=10|plugin_name="skyrim.esm"|internal_id=10|record_type="RACE"
+formid_map|form_id=11|plugin_name="skyrim.esm"|internal_id=11|record_type="GMST"
+formid_map|form_id=12|plugin_name="skyrim.esm"|internal_id=12|record_type="DOBJ"
+formid_map|form_id=16|plugin_name="skyrim.esm"|internal_id=16|record_type="CELL"
+formid_map|form_id=17|plugin_name="skyrim.esm"|internal_id=17|record_type="LAND"
+formid_map|form_id=18|plugin_name="skyrim.esm"|internal_id=18|record_type="REFR"
+formid_map|form_id=19|plugin_name="skyrim.esm"|internal_id=19|record_type="REFR"
+formid_map|form_id=65536|plugin_name="skyrim.esm"|internal_id=65536|record_type="CELL"
+formid_map|form_id=65537|plugin_name="skyrim.esm"|internal_id=65537|record_type="REFR"
+formid_map|form_id=219149|plugin_name="skyrim.esm"|internal_id=219149|record_type="MOVT"
+## land (1 rows)
+land|cell_id=16|heightmap=blob:5eebf4d5a9061c19:1096|vtex=blob:e3b0c44298fc1c14:0|vclr=blob:e3b0c44298fc1c14:0|normals=blob:e3b0c44298fc1c14:0
+## landscape_textures (1 rows)
+landscape_textures|id=4|editor_id="GeneratedLandscape"|texture_set_id=2|material_type=8|friction=30.000000000|restitution=30.000000000
+## npcs (1 rows)
+npcs|id=7|editor_id="Player"|full_name=NULL|race_id=10|class_id=NULL|flags=0
+## references (3 rows)
+references|id=18|cell_id=16|worldspace_id=1|base_form_id=3|is_exterior=1|pos_x=2048.000000000|pos_y=2048.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=2048.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:a996c9c4bd516ec8:60|radius_status=0
+references|id=19|cell_id=16|worldspace_id=1|base_form_id=5|is_exterior=1|pos_x=2048.000000000|pos_y=1024.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=1024.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:f80c00a339781201:104|radius_status=0
+references|id=65537|cell_id=65536|worldspace_id=NULL|base_form_id=6|is_exterior=0|pos_x=128.000000000|pos_y=512.000000000|pos_z=0.000000000|local_x=NULL|local_y=NULL|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:ab774ad964fcaacc:104|radius_status=0
+## statics (3 rows)
+statics|id=3|editor_id="GeneratedStatic"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
+statics|id=5|editor_id="AutoLoadDoor01"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
+statics|id=6|editor_id="GeneratedDoor01"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
+## texture_sets (1 rows)
+texture_sets|id=2|editor_id="GeneratedTextures"|diffuse_path="textures/generated_color.dds"|normal_path="textures/generated_normal.dds"|glow_path=NULL|height_path=NULL|environment_path=NULL|mask_path=NULL|specular_path=NULL|detail_path=NULL
+## worldspaces (1 rows)
+worldspaces|id=1|editor_id="GeneratedWorld"|parent_world=NULL|flags=0|lod_origin_x=NULL|lod_origin_y=NULL|full_name=NULL
