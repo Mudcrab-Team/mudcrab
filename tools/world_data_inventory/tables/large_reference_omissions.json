@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#899)",
+  "reason": "The engine keeps object LOD when RNAM membership or its placement projection is incomplete (#913).",
+  "table": "large_reference_omissions"
+}

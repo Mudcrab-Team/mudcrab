@@ -122,6 +122,7 @@ pub struct LodObjects {
     worldspace_id: Option<u32>,
     generation: u64,
     requested: bool,
+    rows_received: bool,
     /// One payload check per listed chunk, on the IO pool. Dropping the tasks cancels them.
     checking: Vec<Check>,
     /// Chunks whose check has passed while the others are still running.
@@ -147,7 +148,128 @@ pub struct LodObjects {
     failure: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LargeReferenceLod {
+    Absent,
+    Pending,
+    Segmented,
+    Coarse,
+}
+
 impl LodObjects {
+    /// The visible or requested substitute for a large-reference bucket.
+    pub(super) fn large_reference_lod(
+        &self,
+        cell: CellKey,
+        marked_piece_ready: bool,
+    ) -> LargeReferenceLod {
+        let CellKey::Exterior {
+            worldspace_id,
+            grid_x,
+            grid_y,
+        } = cell
+        else {
+            return LargeReferenceLod::Absent;
+        };
+        let Some(origin) = self.chunks.first().map(|chunk| chunk.origin) else {
+            return if self.worldspace_id == Some(worldspace_id)
+                && self.failure.is_none()
+                && (!self.rows_received || !self.checking.is_empty() || self.atlas_check.is_some())
+            {
+                LargeReferenceLod::Pending
+            } else {
+                LargeReferenceLod::Absent
+            };
+        };
+        let covers = |key: ChunkKey| {
+            let (x, y) = chunk_min_grid(key, origin);
+            let side = i64::from(key.tier.side_cells());
+            key.worldspace_id == worldspace_id
+                && (x..x + side).contains(&i64::from(grid_x))
+                && (y..y + side).contains(&i64::from(grid_y))
+        };
+        let active = self
+            .roots
+            .iter()
+            .filter(|(_, root)| root.visible)
+            .map(|(&key, _)| key)
+            .chain(self.retiring.keys().copied());
+        if active.filter(|key| key.tier != LodTier::Tier4).any(covers) {
+            LargeReferenceLod::Coarse
+        } else if marked_piece_ready {
+            LargeReferenceLod::Segmented
+        } else if self.wanted.iter().any(|&key| {
+            covers(key)
+                && !self.failed_scenes.contains(&key)
+                && !self.roots.get(&key).is_some_and(|root| root.visible)
+        }) {
+            LargeReferenceLod::Pending
+        } else {
+            LargeReferenceLod::Absent
+        }
+    }
+
+    pub(super) fn marked_piece_ready(&self, piece: &LargeReferencePiece) -> bool {
+        self.roots
+            .get(&piece.key)
+            .is_some_and(|root| root.visible && root.entity == piece.root)
+            || self
+                .retiring
+                .get(&piece.key)
+                .is_some_and(|root| root.root.entity == piece.root)
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture_large_reference_lod(
+        &mut self,
+        cell: CellKey,
+        state: LargeReferenceLod,
+    ) -> LargeReferencePiece {
+        let CellKey::Exterior {
+            worldspace_id,
+            grid_x,
+            grid_y,
+        } = cell
+        else {
+            panic!("expected exterior fixture");
+        };
+        let tier = if state == LargeReferenceLod::Coarse {
+            LodTier::Tier8
+        } else {
+            LodTier::Tier4
+        };
+        let key = ChunkKey::new(worldspace_id, tier, shared::lod::ChunkAnchor::new(0, 0));
+        self.chunks = vec![LodChunkMetadata {
+            key,
+            origin: shared::lod::LodOrigin::new(grid_x, grid_y),
+            payload_path: String::new(),
+            content_hash: String::new(),
+            bounds: crate::world::database::LodChunkBounds {
+                min: [0.; 3],
+                max: [0.; 3],
+            },
+            source_cells: Vec::new(),
+            build_identity: String::new(),
+        }];
+        self.wanted.clear();
+        self.roots.clear();
+        if state != LargeReferenceLod::Absent {
+            self.wanted.insert(key);
+            self.roots.insert(
+                key,
+                ObjectRoot {
+                    entity: Entity::PLACEHOLDER,
+                    spawned: Instant::now(),
+                    visible: state != LargeReferenceLod::Pending,
+                },
+            );
+        }
+        LargeReferencePiece {
+            key,
+            root: Entity::PLACEHOLDER,
+        }
+    }
+
     /// Why this pack's object LOD is off, when a row or payload failed its checks.
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
@@ -239,6 +361,7 @@ impl LodObjects {
         self.worldspace_id = worldspace_id;
         self.generation = self.generation.wrapping_add(1);
         self.requested = false;
+        self.rows_received = false;
         self.checking.clear();
         self.checked.clear();
         self.chunks.clear();
@@ -468,6 +591,7 @@ pub(super) fn update_lod_objects(
         if response.generation != objects.generation || response.worldspace_id != worldspace_id {
             continue;
         }
+        objects.rows_received = true;
         match (response.result, response.atlas) {
             (Ok(chunks), _) if chunks.is_empty() => {}
             (Ok(_), Err(failure)) => {
@@ -620,7 +744,10 @@ pub fn object_cell_of_name(name: &str) -> Option<IVec2> {
 pub struct LodObjectCell(pub(super) CellKey);
 
 #[derive(Component)]
-pub(super) struct LargeReferencePiece;
+pub(super) struct LargeReferencePiece {
+    key: ChunkKey,
+    root: Entity,
+}
 
 /// Tags only pieces inside their owning tier-4 chunk. Ordinary model scenes may use any name.
 pub(super) fn tag_object_cells(
@@ -633,9 +760,12 @@ pub(super) fn tag_object_cells(
         let Some(cell) = object_cell_of_name(name.as_str()) else {
             continue;
         };
-        let Some((root, grid)) = parents.iter_ancestors(entity).find_map(|parent| {
-            // silent-ok: ordinary scene ancestors do not carry these components.
-            roots.get(parent).ok()
+        let Some((root_entity, root, grid)) = parents.iter_ancestors(entity).find_map(|parent| {
+            roots
+                .get(parent)
+                // silent-ok: ordinary scene ancestors do not carry these components.
+                .ok()
+                .map(|(root, grid)| (parent, root, grid))
         }) else {
             continue;
         };
@@ -650,7 +780,10 @@ pub(super) fn tag_object_cells(
                 grid_y: cell.y,
             }));
             if name.ends_with("_large") {
-                piece.insert(LargeReferencePiece);
+                piece.insert(LargeReferencePiece {
+                    key: root.key,
+                    root: root_entity,
+                });
             }
         }
     }
@@ -679,12 +812,18 @@ pub(super) fn hide_loaded_object_cells(
                 .any(|entity| pending.contains(entity))
         });
         // The tier-4 tag proves node overlap when its cell is inside the active square.
-        let wanted =
-            if loaded || (marked && large.as_ref().is_some_and(|large| large.suppresses(cell.0))) {
-                Visibility::Hidden
-            } else {
-                Visibility::Inherited
-            };
+        let managed = if marked {
+            large
+                .as_ref()
+                .and_then(|large| large.marked_visibility(cell.0))
+        } else {
+            None
+        };
+        let wanted = managed.unwrap_or(if loaded {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        });
         if *visibility != wanted {
             *visibility = wanted;
         }

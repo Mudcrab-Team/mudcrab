@@ -3,7 +3,9 @@
 
 use super::{
     ActiveSpace, CellStatus, PendingAssetProfile, PendingModel, RenderOrigin, StreamingMetrics,
-    StreamingWorld, cell_order_key, cell_translation, requests, spawned_model_path,
+    StreamingWorld, cell_order_key, cell_translation,
+    lod_objects::{LargeReferenceLod, LargeReferencePiece, LodObjectCell, LodObjects},
+    requests, spawned_model_path,
 };
 use crate::{
     config::EngineConfig,
@@ -11,28 +13,49 @@ use crate::{
     render::PLACED_OBJECT_RENDER_LAYERS,
     world::{
         components::{CellRef, ExteriorCellGrid, FormId, MeshHandle, WorldTransform},
-        database::{AssetCatalog, CellKey, DatabaseRequest, LargeReferenceRows, WorldDatabase},
+        database::{
+            AssetCatalog, CellKey, DatabaseRequest, LargeReferenceRows, ReferenceRow,
+            WorldDatabase, large_reference_in_bucket,
+        },
     },
 };
 use bevy::{app::Propagate, gltf::GltfAssetLabel, prelude::*};
 use crossbeam_channel::{Receiver, TryRecvError, bounded};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
+// STAND-IN(#913): Use the reviewed default width across Mudcrab's profiles. Mudcrab has no
+// reviewed mapping to retail's Low, Medium, High and Ultra presets.
 const LARGE_GRID_RADIUS: i32 = 9 / 2;
 const DEMOTIONS_PER_FRAME: usize = 1;
 const LOD_DELAY: Duration = Duration::from_millis(2_000);
+// STAND-IN(#913): Bound admission by one large window, including roots waiting to retire.
+const MAX_BUCKETS: usize = 9 * 9;
 
 type Response = Result<LargeReferenceRows, String>;
 
+struct PendingBucket {
+    response: Receiver<Response>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Drop for PendingBucket {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
 enum Cell {
-    Loading(Receiver<Response>),
+    Loading(PendingBucket),
     Promoted {
         root: Entity,
         models: usize,
-        complete_input: bool,
         deadline: Option<Duration>,
     },
     Failed,
@@ -52,11 +75,54 @@ pub(super) struct LargeReferenceModel {
     pub ready: bool,
 }
 
+#[derive(Component)]
+pub(super) struct OrdinaryLargeReferences {
+    expected: Option<usize>,
+}
+
+pub(super) fn ordinary_members(
+    key: CellKey,
+    members: &HashSet<u32>,
+    rows: &[ReferenceRow],
+) -> OrdinaryLargeReferences {
+    let CellKey::Exterior { grid_x, grid_y, .. } = key else {
+        warn!(
+            ?key,
+            "ordinary large-reference bucket has no exterior coordinates"
+        );
+        return OrdinaryLargeReferences { expected: None };
+    };
+    let (mut resolved, mut enabled) = (0, 0);
+    for row in rows.iter().filter(|row| members.contains(&row.form_id)) {
+        if !row.enable_state_unresolved && large_reference_in_bucket(row, grid_x, grid_y) {
+            resolved += 1;
+            enabled += usize::from(row.initially_enabled);
+        }
+    }
+    let missing = members.len().saturating_sub(resolved);
+    if missing != 0 {
+        warn!(?key, missing, "ordinary large-reference placements omitted");
+    }
+    OrdinaryLargeReferences {
+        expected: (missing == 0).then_some(enabled),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Lod,
+    Ordinary,
+    Promoted,
+}
+
 #[derive(Resource, Default)]
 pub(super) struct LargeReferences {
     cells: HashMap<CellKey, Cell>,
     window: Option<(u32, IVec2)>,
     now: Duration,
+    owners: HashMap<CellKey, Owner>,
+    held_ordinary: HashSet<CellKey>,
+    ordinary_radius: i32,
 }
 
 fn in_window(key: CellKey, window: Option<(u32, IVec2)>) -> bool {
@@ -76,25 +142,59 @@ fn in_window(key: CellKey, window: Option<(u32, IVec2)>) -> bool {
         && grid_y.abs_diff(center.y) <= LARGE_GRID_RADIUS.unsigned_abs()
 }
 
-fn window_enabled(ordinary_radius: i32) -> bool {
+pub(super) fn window_enabled(ordinary_radius: i32) -> bool {
     ordinary_radius < LARGE_GRID_RADIUS
 }
 
 impl LargeReferences {
     fn demotion(&self) -> Option<CellKey> {
+        // STAND-IN(#913): The capped retail path is known. Its selection order is unverified.
         self.cells
             .keys()
             .copied()
-            .filter(|&key| !in_window(key, self.window))
+            .filter(|&key| !in_window(key, self.window) && self.owner(key) != Owner::Promoted)
             .min_by_key(|&key| cell_order_key(key))
     }
 
-    pub(super) fn suppresses(&self, key: CellKey) -> bool {
-        in_window(key, self.window)
-            && matches!(
-                self.cells.get(&key),
-                Some(Cell::Promoted { deadline: Some(deadline), .. }) if *deadline < self.now
-            )
+    fn owner(&self, key: CellKey) -> Owner {
+        self.owners.get(&key).copied().unwrap_or(Owner::Lod)
+    }
+
+    pub(super) fn marked_visibility(&self, key: CellKey) -> Option<Visibility> {
+        self.owners.get(&key).map(|owner| match owner {
+            Owner::Lod => Visibility::Inherited,
+            Owner::Ordinary | Owner::Promoted => Visibility::Hidden,
+        })
+    }
+
+    pub(super) fn holds_ordinary(&self, key: CellKey) -> bool {
+        self.held_ordinary.contains(&key)
+    }
+
+    fn cancel_outside(&mut self, commands: &mut Commands) {
+        let window = self.window;
+        self.cells.retain(|&key, cell| {
+            if in_window(key, window)
+                || matches!(
+                    cell,
+                    Cell::Promoted {
+                        deadline: Some(_),
+                        ..
+                    }
+                )
+            {
+                return true;
+            }
+            // A root that never drew is still loading. Drop its model requests with the root.
+            if let Cell::Promoted { root, .. } = cell {
+                commands.entity(*root).try_despawn();
+            }
+            false
+        });
+    }
+
+    fn can_admit(&self) -> bool {
+        self.cells.len() < MAX_BUCKETS
     }
 }
 
@@ -113,6 +213,7 @@ pub(super) fn update(
     mut profiler: ResMut<ProfilingState>,
 ) {
     let world = space.exterior_worldspace(config.worldspace_id);
+    // STAND-IN(#913): Mudcrab uses its camera-planned grid. Retail's normal caller uses the player.
     let window = (space.interior.is_none() && window_enabled(config.stream_radius))
         .then_some(streaming.planned_center)
         .flatten()
@@ -121,26 +222,18 @@ pub(super) fn update(
         for (_, cell) in large.cells.drain() {
             cell.despawn(&mut commands);
         }
+        large.owners.clear();
+        large.held_ordinary.clear();
     }
     large.window = window;
+    large.ordinary_radius = config.stream_radius;
     let Some((world, center)) = window else {
         metrics.loading_large_reference_cells = 0;
         return;
     };
 
-    // The regular full-cell roots own all their references, including RNAM members.
-    large.cells.retain(|key, cell| {
-        if matches!(
-            streaming.cells.get(key),
-            Some(CellStatus::Resident { .. } | CellStatus::Retiring { .. })
-        ) {
-            if let Cell::Promoted { root, .. } = cell {
-                commands.entity(*root).try_despawn();
-            }
-            return false;
-        }
-        true
-    });
+    large.cancel_outside(&mut commands);
+    // STAND-IN(#913): Mudcrab applies the known cap to all same-worldspace grid moves.
     for _ in 0..DEMOTIONS_PER_FRAME {
         if let Some(key) = large.demotion()
             && let Some(cell) = large.cells.remove(&key)
@@ -160,28 +253,44 @@ pub(super) fn update(
                 grid_x,
                 grid_y,
             };
-            if !catalog.large_reference_cells.contains(&key) {
+            if !catalog.large_references.members.contains_key(&key) {
                 continue;
             }
             let ordinary = dx.abs() <= config.stream_radius && dy.abs() <= config.stream_radius;
-            if ordinary
-                || matches!(
-                    streaming.cells.get(&key),
-                    Some(CellStatus::Resident { .. } | CellStatus::Retiring { .. })
-                )
-            {
+            // STAND-IN(#913): Ordinary cells source their own models. Start the separate sweep
+            // in the outer ring and keep a visible root until its ordinary replacement can draw.
+            if ordinary {
+                if large.owner(key) != Owner::Promoted
+                    && let Some(cell) = large.cells.remove(&key)
+                {
+                    cell.despawn(&mut commands);
+                }
                 continue;
             }
+            let can_admit = large.can_admit();
             match large.cells.entry(key) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
+                    if !can_admit {
+                        outstanding += 1;
+                        continue;
+                    }
                     let (reply, response) = bounded(1);
+                    let cancelled = Arc::new(AtomicBool::new(false));
                     if let Err(reason) =
-                        database.try_request(DatabaseRequest::LoadLargeReferences { key, reply })
+                        database.try_request(DatabaseRequest::LoadLargeReferences {
+                            key,
+                            reply,
+                            omissions: catalog.large_references.omissions(key),
+                            cancelled: cancelled.clone(),
+                        })
                     {
                         // The ordinary worker queue can fill. Keep the cell eligible for retry.
                         debug!(?key, %reason, "large-reference request deferred");
                     } else {
-                        entry.insert(Cell::Loading(response));
+                        entry.insert(Cell::Loading(PendingBucket {
+                            response,
+                            cancelled,
+                        }));
                     }
                     outstanding += 1;
                 }
@@ -189,7 +298,7 @@ pub(super) fn update(
                     let Cell::Loading(reply) = entry.get() else {
                         continue;
                     };
-                    let response = match reply.try_recv() {
+                    let response = match reply.response.try_recv() {
                         Ok(response) => response,
                         Err(TryRecvError::Empty) => {
                             outstanding += 1;
@@ -241,35 +350,37 @@ fn spawn_cell(
         warn!(?key, "large-reference cell has no exterior coordinates");
         return Cell::Failed;
     };
-    let mut models = 0;
     let mut missing = rows.missing;
+    let mut placements = Vec::new();
+    for mut reference in rows.references {
+        if !reference.initially_enabled {
+            continue;
+        }
+        match spawned_model_path(reference.model_path.take(), reference.base_is_marker) {
+            Some(path) => placements.push((reference, path)),
+            None => missing += 1,
+        }
+    }
+    if missing != 0 {
+        warn!(
+            ?key,
+            missing, "large-reference placements omitted; keeping object LOD for the bucket"
+        );
+        return Cell::Failed;
+    }
+    let models = placements.len();
     let root = commands
         .spawn((
             Name::new("Large-reference cell"),
             ExteriorCellGrid(IVec2::new(grid_x, grid_y)),
             Transform::from_translation(cell_translation(key, origin)),
-            Visibility::default(),
+            Visibility::Hidden,
         ))
         .id();
     commands.entity(root).with_children(|parent| {
-        for reference in rows.references {
-            if !reference.initially_enabled {
-                continue;
-            }
-            let Some(path) =
-                spawned_model_path(reference.model_path.clone(), reference.base_is_marker)
-            else {
-                missing += 1;
-                continue;
-            };
+        for (reference, path) in placements {
             let (world_position, transform, model_bounds, bounds) =
                 super::reference_placement(key, &reference);
-            // STAND-IN(#913): Omit moved overrides until the retail placement policy is known.
-            // The ordinary cell at the winning position could otherwise draw the same reference.
-            if world_position.grid != IVec2::new(grid_x, grid_y) {
-                missing += 1;
-                continue;
-            }
             let mut entity = parent.spawn((
                 Name::new(format!("Large reference {:08X}", reference.form_id)),
                 FormId(reference.form_id),
@@ -328,21 +439,212 @@ fn spawn_cell(
                     actor_scene: false,
                 },
             ));
-            models += 1;
         }
     });
-    if missing != 0 {
-        warn!(
-            ?key,
-            missing, "large-reference placements without resolved full models omitted"
-        );
-    }
-    debug!(?key, models, missing, "large-reference cell promoted");
+    debug!(?key, models, "large-reference models queued");
     Cell::Promoted {
         root,
         models,
-        complete_input: missing == 0,
         deadline: None,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Handoff {
+    near: bool,
+    in_large_grid: bool,
+    ordinary_ready: bool,
+    ordinary_drawable: bool,
+    ordinary_resident: bool,
+    promoted_ready: bool,
+    promotion_pending: bool,
+    incomplete: bool,
+    lod: LargeReferenceLod,
+}
+
+impl Handoff {
+    // STAND-IN(#913): Ownership waits for a drawable replacement. Retail attachment, refresh
+    // and release timing are unverified.
+    fn owner(self, previous: Owner) -> Owner {
+        if self.lod == LargeReferenceLod::Coarse
+            || (self.incomplete && self.lod == LargeReferenceLod::Segmented)
+        {
+            return Owner::Lod;
+        }
+        if self.near && self.ordinary_ready {
+            return Owner::Ordinary;
+        }
+        if self.in_large_grid
+            && !self.near
+            && !self.incomplete
+            && (previous == Owner::Promoted
+                || (self.promoted_ready && self.lod != LargeReferenceLod::Pending))
+        {
+            return Owner::Promoted;
+        }
+        if self.ordinary_ready
+            && (self.ordinary_resident
+                || (previous == Owner::Ordinary
+                    && (self.lod == LargeReferenceLod::Pending
+                        || (self.promotion_pending && self.lod == LargeReferenceLod::Absent))))
+        {
+            return Owner::Ordinary;
+        }
+        if previous == Owner::Promoted && (self.near || self.lod == LargeReferenceLod::Pending) {
+            return Owner::Promoted;
+        }
+        if self.ordinary_drawable
+            && self.ordinary_resident
+            && (self.lod == LargeReferenceLod::Absent
+                || (previous == Owner::Ordinary && self.lod == LargeReferenceLod::Pending))
+        {
+            return Owner::Ordinary;
+        }
+        Owner::Lod
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(super) fn resolve_visibility(
+    mut large: ResMut<LargeReferences>,
+    streaming: Res<StreamingWorld>,
+    lod: Res<LodObjects>,
+    catalog: Res<AssetCatalog>,
+    children: Query<&Children>,
+    ordinary_buckets: Query<&OrdinaryLargeReferences>,
+    pending: Query<(), Or<(With<PendingModel>, With<PendingAssetProfile>)>>,
+    marked_pieces: Query<(&LodObjectCell, &LargeReferencePiece)>,
+    mut models: Query<(&LargeReferenceModel, &mut Visibility), With<LargeReferenceModel>>,
+    mut roots: Query<&mut Visibility, Without<LargeReferenceModel>>,
+    mut scratch: Local<(HashSet<CellKey>, HashSet<CellKey>)>,
+) {
+    if large.window.is_none() {
+        return;
+    }
+    let (keys, drawable_lod) = &mut *scratch;
+    keys.clear();
+    keys.extend(large.cells.keys().copied());
+    keys.extend(
+        streaming
+            .cells
+            .keys()
+            .filter(|key| {
+                catalog.large_references.members.contains_key(key)
+                    || catalog.large_references.omissions(**key) != 0
+            })
+            .copied(),
+    );
+    large.owners.retain(|key, _| keys.contains(key));
+    drawable_lod.clear();
+    drawable_lod.extend(marked_pieces.iter().filter_map(|(cell, piece)| {
+        (keys.contains(&cell.0) && lod.marked_piece_ready(piece)).then_some(cell.0)
+    }));
+    large.held_ordinary.clear();
+    for &key in &*keys {
+        let (ordinary_root, ordinary_resident) = match streaming.cells.get(&key) {
+            Some(CellStatus::Resident { root }) => (Some(*root), true),
+            Some(CellStatus::Retiring { root }) => (Some(*root), false),
+            _ => (None, false),
+        };
+        let children_of = |root| {
+            children
+                .get(root)
+                .into_iter()
+                .flat_map(|children| children.iter())
+        };
+        let (promoted_root, deadline, promotion_pending) = match large.cells.get(&key) {
+            Some(Cell::Promoted { root, deadline, .. }) => (
+                Some(*root),
+                *deadline,
+                deadline.is_some() || children_of(*root).any(|entity| pending.contains(entity)),
+            ),
+            Some(Cell::Loading(_)) | None => (None, None, true),
+            Some(Cell::Failed) => (None, None, false),
+        };
+        let (ready_count, ordinary_pending) = ordinary_root
+            .into_iter()
+            .flat_map(children_of)
+            .filter_map(|entity| {
+                // silent-ok: terrain, water and ordinary models have no RNAM marker.
+                let (model, _) = models.get(entity).ok()?;
+                Some((model.ready, pending.contains(entity)))
+            })
+            .fold((0, false), |(count, pending), (ready, loading)| {
+                (count + usize::from(ready), pending || loading)
+            });
+        // silent-ok: an ordinary root without known membership has no bucket component.
+        let ordinary_bucket = ordinary_root.and_then(|root| ordinary_buckets.get(root).ok());
+        let expected_ordinary = ordinary_bucket.and_then(|bucket| bucket.expected);
+        let ordinary_ready = ready_count > 0 && expected_ordinary == Some(ready_count);
+        let near = match (key, large.window) {
+            (
+                CellKey::Exterior {
+                    worldspace_id,
+                    grid_x,
+                    grid_y,
+                },
+                Some((world, center)),
+            ) => {
+                worldspace_id == world
+                    && grid_x.abs_diff(center.x) <= large.ordinary_radius.unsigned_abs()
+                    && grid_y.abs_diff(center.y) <= large.ordinary_radius.unsigned_abs()
+            }
+            _ => false,
+        };
+        let in_large_grid = in_window(key, large.window);
+        let ordinary_incomplete = near
+            && ordinary_bucket.is_some()
+            && (expected_ordinary.is_none()
+                || (expected_ordinary.is_some_and(|expected| ready_count < expected)
+                    && !ordinary_pending));
+        let handoff = Handoff {
+            near,
+            in_large_grid,
+            ordinary_ready,
+            ordinary_drawable: ready_count > 0,
+            ordinary_resident,
+            promoted_ready: deadline.is_some_and(|deadline| deadline < large.now),
+            promotion_pending: promotion_pending && in_large_grid,
+            incomplete: ordinary_incomplete
+                || catalog.large_references.omissions(key) != 0
+                || matches!(large.cells.get(&key), Some(Cell::Failed)),
+            lod: lod.large_reference_lod(key, drawable_lod.contains(&key)),
+        };
+        let owner = handoff.owner(large.owner(key));
+        if promoted_root.is_some()
+            || ordinary_root
+                .is_some_and(|root| children_of(root).any(|entity| models.contains(entity)))
+            || large.cells.contains_key(&key)
+            || handoff.incomplete
+        {
+            large.owners.insert(key, owner);
+        } else {
+            large.owners.remove(&key);
+        }
+        if owner == Owner::Ordinary {
+            large.held_ordinary.insert(key);
+        }
+        for entity in ordinary_root.into_iter().flat_map(children_of) {
+            if let Ok((_, mut visibility)) = models.get_mut(entity) {
+                set_visibility(&mut visibility, owner == Owner::Ordinary);
+            }
+        }
+        if let Some(root) = promoted_root
+            && let Ok(mut visibility) = roots.get_mut(root)
+        {
+            set_visibility(&mut visibility, owner == Owner::Promoted);
+        }
+    }
+}
+
+fn set_visibility(visibility: &mut Mut<Visibility>, visible: bool) {
+    let wanted = if visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    if **visibility != wanted {
+        **visibility = wanted;
     }
 }
 
@@ -353,6 +655,7 @@ pub(super) fn set_deadlines(
     children: Query<&Children>,
     models_ready: Query<&LargeReferenceModel>,
 ) {
+    // STAND-IN(#913): Bevy virtual time supplies the reviewed engine-clock delay.
     let now = time.elapsed();
     large.now = now;
     let window = large.window;
@@ -363,7 +666,6 @@ pub(super) fn set_deadlines(
         let Cell::Promoted {
             root,
             models,
-            complete_input: true,
             deadline,
         } = cell
         else {
@@ -425,13 +727,8 @@ mod tests {
         assert_eq!(large.demotion(), Some(key(-6, 0)));
     }
 
-    #[test]
-    fn loads_only_the_outer_ring_and_retires_one_root_per_frame() {
-        let (database, inbox, _responses) = WorldDatabase::channel_fixture(8);
-        let requested = [key(3, 0), key(4, 0)];
-        let mut catalog = AssetCatalog::default();
-        catalog.large_reference_cells.extend([key(2, 0), key(5, 0)]);
-        catalog.large_reference_cells.extend(requested);
+    fn streaming_fixture(catalog: AssetCatalog) -> (App, Receiver<DatabaseRequest>) {
+        let (database, inbox, _responses) = WorldDatabase::channel_fixture(MAX_BUCKETS);
         let mut app = App::new();
         app.add_plugins(bevy::asset::AssetPlugin::default())
             .insert_resource(database)
@@ -451,10 +748,24 @@ mod tests {
             .init_resource::<StreamingMetrics>()
             .init_resource::<ProfilingState>()
             .add_systems(Update, update);
+        (app, inbox)
+    }
+
+    #[test]
+    fn loads_only_the_outer_ring_and_retires_one_root_per_frame() {
+        let requested = [key(3, 0), key(4, 0)];
+        let mut catalog = AssetCatalog::default();
+        for member_key in [key(2, 0), key(5, 0)].into_iter().chain(requested) {
+            catalog
+                .large_references
+                .members
+                .insert(member_key, HashSet::from([7]));
+        }
+        let (mut app, inbox) = streaming_fixture(catalog);
 
         app.update();
         for expected in requested {
-            let DatabaseRequest::LoadLargeReferences { key, reply } = inbox.try_recv().unwrap()
+            let DatabaseRequest::LoadLargeReferences { key, reply, .. } = inbox.try_recv().unwrap()
             else {
                 panic!("unexpected database request");
             };
@@ -469,11 +780,12 @@ mod tests {
         assert!(inbox.is_empty());
         app.update();
         let roots = requested.map(|key| {
-            let Cell::Promoted { root, .. } = app.world().resource::<LargeReferences>().cells[&key]
-            else {
+            let mut large = app.world_mut().resource_mut::<LargeReferences>();
+            let Cell::Promoted { root, deadline, .. } = large.cells.get_mut(&key).unwrap() else {
                 panic!("cell {key:?} failed to promote");
             };
-            root
+            *deadline = Some(Duration::ZERO);
+            *root
         });
         app.world_mut()
             .resource_mut::<StreamingWorld>()
@@ -485,57 +797,319 @@ mod tests {
         assert!(app.world().get_entity(roots[1]).is_err());
     }
 
-    #[test]
-    fn fallback_hides_only_inside_the_square_after_the_deadline() {
-        use super::super::lod_objects::{
-            LargeReferencePiece, LodObjectCell, hide_loaded_object_cells,
-        };
+    struct HandoffRig {
+        app: App,
+        cell: CellKey,
+        marked: Entity,
+        unmarked: Entity,
+        promoted: Entity,
+        ordinary: Entity,
+        model: Entity,
+    }
 
-        let cell = key(4, 4);
-        let deadline = Duration::from_secs(4);
-        let mut app = App::new();
-        app.init_resource::<StreamingWorld>()
-            .insert_resource(LargeReferences {
-                window: Some((60, IVec2::ZERO)),
-                now: deadline,
-                ..default()
-            })
-            .add_systems(Update, hide_loaded_object_cells);
-        let marked = app
-            .world_mut()
-            .spawn((
-                LodObjectCell(cell),
-                LargeReferencePiece,
-                Visibility::Inherited,
-            ))
-            .id();
-        let ordinary = app
-            .world_mut()
-            .spawn((LodObjectCell(cell), Visibility::Inherited))
-            .id();
-        let visibility = |app: &App, entity| *app.world().get::<Visibility>(entity).unwrap();
-        app.update();
-        assert_eq!(visibility(&app, marked), Visibility::Inherited);
-        app.world_mut()
-            .resource_mut::<LargeReferences>()
-            .cells
-            .insert(
+    impl HandoffRig {
+        fn new(missing: bool) -> Self {
+            use super::super::lod_objects::{LodObjectCell, hide_loaded_object_cells};
+            let cell = key(4, 0);
+            let mut catalog = AssetCatalog::default();
+            catalog
+                .large_references
+                .members
+                .insert(cell, HashSet::from([7]));
+            let mut app = App::new();
+            app.insert_resource(catalog)
+                .init_resource::<StreamingWorld>()
+                .init_resource::<LodObjects>()
+                .init_resource::<EngineConfig>()
+                .init_resource::<StreamingMetrics>()
+                .init_resource::<ProfilingState>()
+                .init_resource::<super::super::TerrainContinuity>()
+                .insert_resource(LargeReferences {
+                    window: Some((60, IVec2::ZERO)),
+                    ordinary_radius: 2,
+                    now: LOD_DELAY,
+                    ..default()
+                })
+                .add_systems(
+                    Update,
+                    (
+                        super::super::despawn_cells,
+                        resolve_visibility,
+                        hide_loaded_object_cells,
+                    )
+                        .chain(),
+                );
+            let world = app.world_mut();
+            let piece = world
+                .resource_mut::<LodObjects>()
+                .fixture_large_reference_lod(cell, LargeReferenceLod::Segmented);
+            let marked = world
+                .spawn((LodObjectCell(cell), piece, Visibility::Inherited))
+                .id();
+            let unmarked = world
+                .spawn((LodObjectCell(cell), Visibility::Inherited))
+                .id();
+            let promoted = world.spawn(Visibility::Hidden).id();
+            world.resource_mut::<LargeReferences>().cells.insert(
                 cell,
-                Cell::Promoted {
-                    root: Entity::PLACEHOLDER,
-                    models: 2,
-                    complete_input: true,
-                    deadline: Some(deadline),
+                if missing {
+                    Cell::Failed
+                } else {
+                    Cell::Promoted {
+                        root: promoted,
+                        models: 1,
+                        deadline: Some(LOD_DELAY),
+                    }
                 },
             );
-        app.update();
-        assert_eq!(visibility(&app, marked), Visibility::Inherited);
-        app.world_mut().resource_mut::<LargeReferences>().now += Duration::from_millis(1);
-        app.update();
-        assert_eq!(visibility(&app, marked), Visibility::Hidden);
-        assert_eq!(visibility(&app, ordinary), Visibility::Inherited);
-        app.world_mut().resource_mut::<LargeReferences>().window = Some((60, IVec2::new(-1, 0)));
-        app.update();
-        assert_eq!(visibility(&app, marked), Visibility::Inherited);
+            let ordinary = world
+                .spawn((
+                    Visibility::Inherited,
+                    OrdinaryLargeReferences { expected: Some(1) },
+                ))
+                .id();
+            let model = world
+                .spawn((
+                    ChildOf(ordinary),
+                    LargeReferenceModel { ready: false },
+                    Visibility::Hidden,
+                ))
+                .id();
+            Self {
+                app,
+                cell,
+                marked,
+                unmarked,
+                promoted,
+                ordinary,
+                model,
+            }
+        }
+
+        fn move_to(&mut self, x: i32) {
+            self.app
+                .world_mut()
+                .resource_mut::<LargeReferences>()
+                .window = Some((60, IVec2::new(x, 0)));
+        }
+
+        fn lod(&mut self, lod: LargeReferenceLod) {
+            let world = self.app.world_mut();
+            let piece = world
+                .resource_mut::<LodObjects>()
+                .fixture_large_reference_lod(self.cell, lod);
+            world.entity_mut(self.marked).insert(piece);
+        }
+
+        fn expect_owner(&mut self, owner: Owner) {
+            self.app.update();
+            let world = self.app.world();
+            let shown = |entity| *world.get::<Visibility>(entity).unwrap() == Visibility::Inherited;
+            assert_eq!(world.resource::<LargeReferences>().owner(self.cell), owner);
+            assert_eq!(shown(self.marked), owner == Owner::Lod);
+            assert_eq!(shown(self.promoted), owner == Owner::Promoted);
+            assert_eq!(shown(self.model), owner == Owner::Ordinary);
+        }
+
+        fn pass_deadline(&mut self) {
+            self.app.world_mut().resource_mut::<LargeReferences>().now += Duration::from_millis(1);
+        }
+    }
+
+    #[test]
+    fn marked_lod_handoff_waits_in_both_directions_at_large_grid_edge() {
+        let mut rig = HandoffRig::new(false);
+        rig.move_to(-1);
+        rig.expect_owner(Owner::Lod);
+        rig.move_to(0);
+        rig.expect_owner(Owner::Lod);
+        rig.pass_deadline();
+        rig.expect_owner(Owner::Promoted);
+        assert_eq!(
+            rig.app.world().get(rig.unmarked),
+            Some(&Visibility::Inherited)
+        );
+        rig.move_to(-1);
+        rig.lod(LargeReferenceLod::Pending);
+        rig.expect_owner(Owner::Promoted);
+        assert_eq!(
+            rig.app.world().resource::<LargeReferences>().demotion(),
+            None
+        );
+        rig.lod(LargeReferenceLod::Segmented);
+        rig.expect_owner(Owner::Lod);
+        assert_eq!(
+            rig.app.world().resource::<LargeReferences>().demotion(),
+            Some(rig.cell)
+        );
+    }
+
+    #[test]
+    fn ordinary_full_model_handoff_waits_in_both_directions_at_near_grid_edge() {
+        let mut rig = HandoffRig::new(false);
+        rig.pass_deadline();
+        rig.expect_owner(Owner::Promoted);
+        rig.move_to(2);
+        rig.app
+            .world_mut()
+            .entity_mut(rig.model)
+            .insert(PendingAssetProfile {
+                started: Instant::now(),
+                scene_spawned: false,
+                path: String::new(),
+                form_id: 7,
+                base_form_id: 7,
+                base_record_type: None,
+                static_physics: false,
+                cell_id: 1,
+                actor_scene: false,
+            });
+        rig.app
+            .world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(rig.cell, CellStatus::Resident { root: rig.ordinary });
+        rig.expect_owner(Owner::Promoted);
+        rig.app
+            .world_mut()
+            .get_mut::<LargeReferenceModel>(rig.model)
+            .unwrap()
+            .ready = true;
+        rig.expect_owner(Owner::Ordinary);
+        assert!(
+            rig.app
+                .world()
+                .resource::<LargeReferences>()
+                .holds_ordinary(rig.cell)
+        );
+        rig.move_to(1);
+        rig.app.world_mut().resource_mut::<LargeReferences>().now = LOD_DELAY;
+        rig.expect_owner(Owner::Ordinary);
+        rig.pass_deadline();
+        rig.expect_owner(Owner::Promoted);
+        assert!(
+            !rig.app
+                .world()
+                .resource::<LargeReferences>()
+                .holds_ordinary(rig.cell)
+        );
+    }
+
+    #[test]
+    fn retiring_ordinary_root_waits_for_admission_and_drawable_replacement() {
+        let mut rig = HandoffRig::new(false);
+        rig.move_to(2);
+        rig.lod(LargeReferenceLod::Absent);
+        let world = rig.app.world_mut();
+        let mut large = world.resource_mut::<LargeReferences>();
+        let promotion = large.cells.remove(&rig.cell).unwrap();
+        world
+            .get_mut::<LargeReferenceModel>(rig.model)
+            .unwrap()
+            .ready = true;
+        world
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(rig.cell, rig.ordinary);
+        rig.expect_owner(Owner::Ordinary);
+        rig.move_to(1);
+        rig.app
+            .world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(rig.cell, CellStatus::Retiring { root: rig.ordinary });
+        rig.expect_owner(Owner::Ordinary);
+        assert!(rig.app.world().get_entity(rig.ordinary).is_ok());
+        rig.app
+            .world_mut()
+            .resource_mut::<LargeReferences>()
+            .cells
+            .insert(rig.cell, promotion);
+        rig.expect_owner(Owner::Ordinary);
+        rig.pass_deadline();
+        rig.expect_owner(Owner::Promoted);
+        rig.app.update();
+        assert!(rig.app.world().get_entity(rig.ordinary).is_err());
+    }
+
+    #[test]
+    fn incomplete_bucket_keeps_marked_lod_and_never_shows_partial_promotion() {
+        let mut rig = HandoffRig::new(true);
+        rig.pass_deadline();
+        rig.expect_owner(Owner::Lod);
+    }
+
+    #[test]
+    fn incomplete_ordinary_bucket_keeps_marked_lod_with_a_ready_model() {
+        let mut rig = HandoffRig::new(false);
+        rig.pass_deadline();
+        rig.expect_owner(Owner::Promoted);
+        rig.move_to(2);
+        let world = rig.app.world_mut();
+        world
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(rig.cell, CellStatus::Resident { root: rig.ordinary });
+        world
+            .entity_mut(rig.ordinary)
+            .insert(OrdinaryLargeReferences { expected: None });
+        world
+            .get_mut::<LargeReferenceModel>(rig.model)
+            .unwrap()
+            .ready = true;
+        rig.expect_owner(Owner::Lod);
+    }
+
+    #[test]
+    fn repeated_teleports_cancel_stale_work_and_bound_retained_buckets() {
+        let centers = [0, 20, 40, 60];
+        let mut catalog = AssetCatalog::default();
+        for x in centers {
+            for dx in -4..=4 {
+                for dy in -4..=4 {
+                    catalog
+                        .large_references
+                        .members
+                        .insert(key(x + dx, dy), HashSet::from([7]));
+                }
+            }
+        }
+        let (mut app, inbox) = streaming_fixture(catalog);
+        let mut stale: Option<Arc<AtomicBool>> = None;
+        for (x, admitted) in centers.into_iter().zip([56, 26, 1, 1]) {
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .planned_center = Some(IVec2::new(x, 0));
+            app.update();
+            if let Some(stale) = stale.take() {
+                assert!(stale.load(Ordering::Relaxed));
+            }
+            let mut requests: Vec<_> = inbox.try_iter().collect();
+            assert_eq!(requests.len(), admitted);
+            let DatabaseRequest::LoadLargeReferences { cancelled, .. } = requests.pop().unwrap()
+            else {
+                panic!("expected a large-reference request");
+            };
+            assert!(!cancelled.load(Ordering::Relaxed));
+            stale = Some(cancelled);
+            for request in requests {
+                let DatabaseRequest::LoadLargeReferences { key, .. } = request else {
+                    panic!("expected a large-reference request");
+                };
+                let world = app.world_mut();
+                let root = world.spawn(Visibility::Inherited).id();
+                let mut large = world.resource_mut::<LargeReferences>();
+                large.cells.insert(
+                    key,
+                    Cell::Promoted {
+                        root,
+                        models: 1,
+                        deadline: Some(LOD_DELAY),
+                    },
+                );
+                // These visible roots are waiting for an outgoing LOD replacement.
+                large.owners.insert(key, Owner::Promoted);
+            }
+            assert!(app.world().resource::<LargeReferences>().cells.len() <= MAX_BUCKETS);
+        }
     }
 }

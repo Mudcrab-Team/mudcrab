@@ -123,13 +123,16 @@ object path (`streaming/lod_objects.rs`) works as follows.
 - **Loaded cells.** A tier-4 chunk carries cell-tagged pieces (`object_cell_<x>_<y>_<n>`, with
   `LodObjectCell`). A piece stays visible until its cell's full-detail models are ready, then stays
   hidden until the full-detail cell unloads.
-- **Large references.** The engine loads full models for projected `WRLD.RNAM` members beyond
-  the ordinary grid in a 9 × 9 square. Fixed-center worldspaces skip this path. At most one
-  tracked cell outside the square demotes per frame during exterior movement. A marked tier-4
-  piece inside the square yields after its cell's deadline passes. The engine sets that
-  deadline 2,000 ms after the promoted models become ready. See
-  [reviewed retail facts, G01–G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
-  STAND-IN(#913): Mudcrab's model readiness and visibility pass supply the unverified attachment and refresh timing.
+- **Large references.** The `WRLD.RNAM` importer requires exact equality of the header and
+  placement keys. The reviewed default widths are 5 and 9. The per-cell promotion path
+  skips fixed-center worldspaces and resolves full references. A retail demotion branch has a
+  cap of one cell by default. The marked tier-4 filter uses a strict deadline comparison
+  after a 2,000 ms delay. See [reviewed retail facts, G01–G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+  The engine keeps marked LOD when projected membership or model readiness is incomplete.
+  STAND-IN(#913): Mudcrab sweeps the outer ring around the camera's cell and uses width 9
+  across profiles. It uses Bevy virtual time and switches ownership when a replacement can draw.
+  Same-worldspace moves share the demotion cap, with cells retired in sorted order and
+  admission bounded by one large window.
 - **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
   KTX2 file (`lod/<world>/objects_atlas.opensky-srgb.ktx2`). The engine hash-checks it like a chunk, loads it
   once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an

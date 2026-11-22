@@ -960,9 +960,25 @@ CREATE TABLE IF NOT EXISTS large_references (
 );
 ```
 
-The engine uses the first three columns to find exterior buckets and resolves the full
-reference by `reference_id`. Older packs without the table have no projected membership.
-The schema version is unchanged.
+The engine uses the first three columns to find exterior buckets. It checks that the winning
+reference has a placement in the matching exterior worldspace and bucket.
+
+`large_reference_omissions` records incomplete input. A row covers one bucket when both
+coordinates are present, or the whole worldspace when both are NULL. The count covers rejected
+RNAM subrecords, unresolved FormIDs, and members without a projected reference or worldspace.
+
+```sql
+CREATE TABLE IF NOT EXISTS large_reference_omissions (
+    worldspace_id INTEGER NOT NULL,
+    grid_x INTEGER,
+    grid_y INTEGER,
+    omitted_count INTEGER NOT NULL CHECK(omitted_count > 0),
+    CHECK((grid_x IS NULL) = (grid_y IS NULL))
+);
+```
+
+The engine requires both tables for promotion and preserves marked object LOD for incomplete
+buckets. The schema version is unchanged.
 
 ---
 

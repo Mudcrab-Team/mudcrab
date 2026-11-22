@@ -163,9 +163,10 @@ impl Plugin for StreamingPlugin {
             .add_systems(
                 PostUpdate,
                 (
-                    lod_objects::tag_object_cells,
-                    lod_objects::hide_loaded_object_cells,
                     lod_objects::update_object_visibility,
+                    lod_objects::tag_object_cells,
+                    large_references::resolve_visibility,
+                    lod_objects::hide_loaded_object_cells,
                 )
                     .chain()
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
@@ -1139,10 +1140,13 @@ fn despawn_cells(world: &mut World) {
     retiring.sort_by_key(|(key, _)| cell_order_key(*key));
     let backlog = retiring.len();
     let overflow = backlog > backlog_bound;
+    if !overflow && let Some(large) = world.get_resource::<large_references::LargeReferences>() {
+        retiring.retain(|(key, _)| !large.holds_ordinary(*key));
+    }
     let budget = if overflow {
         backlog
     } else {
-        budget.min(backlog)
+        budget.min(retiring.len())
     };
     let started = Instant::now();
     let mut entities = 0usize;
@@ -1452,6 +1456,7 @@ fn collect_cells(
                     config.lights,
                     config.interactive_world_physics(),
                     requests::enabled(&config),
+                    large_references::window_enabled(config.stream_radius),
                     payload,
                     terrain,
                     merged,
@@ -1660,6 +1665,7 @@ fn spawn_cell(
     lights: bool,
     terrain_physics: bool,
     schedule_scenes: bool,
+    manage_large_references: bool,
     payload: CellPayload,
     mut terrain: Option<TerrainSnapshot>,
     merged: Option<MergedSpawn>,
@@ -1725,6 +1731,16 @@ fn spawn_cell(
     ));
     if let CellKey::Exterior { grid_x, grid_y, .. } = payload.key {
         root_commands.insert(ExteriorCellGrid(IVec2::new(grid_x, grid_y)));
+    }
+    let large_members = manage_large_references
+        .then(|| catalog.large_references.members.get(&payload.key))
+        .flatten();
+    if let Some(members) = large_members {
+        root_commands.insert(large_references::ordinary_members(
+            payload.key,
+            members,
+            &payload.references,
+        ));
     }
     let root = root_commands.id();
     commands.entity(root).with_children(|parent| {
@@ -1940,6 +1956,14 @@ fn spawn_cell(
             if !reference.initially_enabled {
                 continue;
             }
+            let large_member =
+                large_members.is_some_and(|members| members.contains(&reference.form_id));
+            if large_member
+                && let CellKey::Exterior { grid_x, grid_y, .. } = payload.key
+                && !crate::world::database::large_reference_in_bucket(&reference, grid_x, grid_y)
+            {
+                continue;
+            }
             let (world_position, transform, model_bounds, bounds) =
                 reference_placement(payload.key, &reference);
             // A referenced `NPC_` with a catalog row becomes one actor entity. A row the catalog
@@ -1973,6 +1997,12 @@ fn spawn_cell(
                 // instead of inserted here; see `render::add_placed_object_layer_propagation`.
                 Propagate(PLACED_OBJECT_RENDER_LAYERS),
             ));
+            if large_member {
+                entity.insert((
+                    large_references::LargeReferenceModel { ready: false },
+                    Visibility::Hidden,
+                ));
+            }
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
@@ -9526,6 +9556,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             CellPayload {
                 generation: 1,
                 key: CellKey::Exterior {
@@ -9537,6 +9568,7 @@ mod tests {
                 references: vec![ReferenceRow {
                     form_id: 0x00F9907,
                     initially_enabled: true,
+                    enable_state_unresolved: false,
                     has_multibound_override: false,
                     named_room_target: false,
                     starts_dead: false,
@@ -10587,6 +10619,7 @@ mod tests {
         ReferenceRow {
             form_id,
             initially_enabled: true,
+            enable_state_unresolved: false,
             has_multibound_override: false,
             named_room_target: false,
             starts_dead: false,
@@ -10645,6 +10678,7 @@ mod tests {
                 &mut water_materials,
                 IVec2::ZERO,
                 config.lights,
+                false,
                 false,
                 false,
                 CellPayload {
