@@ -6,7 +6,7 @@
 //! hash the same, and must not be the same files (a hard link would share writes with the pack).
 //! Every refusal names its reason.
 
-use crate::cache::hash_file;
+use crate::{cache::hash_file, integration::require_private_file};
 use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
@@ -15,7 +15,7 @@ use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[derive(Debug, Deserialize)]
@@ -62,11 +62,18 @@ pub fn check_clone(registry_path: &Path, clone_of: &str, target: &Path) -> Resul
     let target = fs::canonicalize(target)?;
     for (name, registered) in &registry {
         // A registered pack that is missing on disk cannot contain the target.
-        let Ok(path) = fs::canonicalize(&registered.path) else {
-            continue;
+        let path = match fs::canonicalize(&registered.path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && name != clone_of => {
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("refused: cannot resolve registered pack `{name}`"));
+            }
         };
         ensure!(
-            target != path,
+            !same_file::is_same_file(&target, &path)?,
             "refused: target {} is the registered pack `{name}`; derive into an APFS clone, never into a registered pack",
             target.display()
         );
@@ -89,24 +96,20 @@ pub fn check_clone(registry_path: &Path, clone_of: &str, target: &Path) -> Resul
         "refused: the registry records no manifest hashes for `{clone_of}`, so the clone cannot be proven"
     );
     for (file, expected) in &source.manifests {
+        require_private_output(&target, Path::new(file))?;
         let candidate = target.join(file);
+        let original = source.path.join(file);
         ensure!(
-            candidate.is_file(),
-            "refused: target has no {file}, so it is not a clone of `{clone_of}`"
+            !same_file::is_same_file(&candidate, &original).wrap_err_with(|| format!(
+                "refused: cannot compare target {file} with the registered pack"
+            ))?,
+            "refused: target {file} is the same file as the registered pack's"
         );
         let actual = hash_file(&candidate)?;
         ensure!(
             &actual == expected,
             "refused: target {file} hash {actual} differs from the registered `{clone_of}` hash {expected}; the target is not an exact clone"
         );
-        // A hard link or a symlink back to the registered file would share storage with the pack.
-        let original = source.path.join(file);
-        if original.is_file() {
-            ensure!(
-                !same_file::is_same_file(&candidate, &original).unwrap_or(false),
-                "refused: target {file} is the same file as the registered pack's; use `cp -c -R` (an APFS clone) to make the target"
-            );
-        }
     }
     Ok(CloneFacts {
         name: clone_of.to_owned(),
@@ -114,6 +117,36 @@ pub fn check_clone(registry_path: &Path, clone_of: &str, target: &Path) -> Resul
         manifests: source.manifests.clone(),
         target,
     })
+}
+
+/// Checks every existing component under a canonical clone root without following symlinks.
+pub(crate) fn require_private_output(root: &Path, relative: &Path) -> Result<()> {
+    let mut parts = relative.components().peekable();
+    let mut path = root.to_path_buf();
+    while let Some(part) = parts.next() {
+        let Component::Normal(name) = part else {
+            bail!("refused: invalid output path {}", relative.display());
+        };
+        path.push(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("refused: cannot inspect {}", path.display()));
+            }
+        };
+        if parts.peek().is_some() {
+            ensure!(
+                metadata.is_dir(),
+                "refused: {} must be a real directory",
+                path.display()
+            );
+        } else {
+            require_private_file(&path, &metadata)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -201,6 +234,6 @@ mod tests {
             fs::hard_link(pack.join(name), clone.join(name)).unwrap();
         }
         let error = check_clone(&registry, "base", &clone).unwrap_err();
-        assert!(format!("{error:#}").contains("same file"));
+        assert!(format!("{error:#}").contains("private copy"));
     }
 }

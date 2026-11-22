@@ -6,8 +6,7 @@
 //! "segment primitive counts sum to the triangle count", which the NIF parser enforces.
 //!
 //! This reader returns the shapes as plain data and keeps two things opaque on purpose:
-//! - the segment table (`flag`, `value`, `num_primitives`) as stored, because the meaning of the
-//!   middle value is not decoded;
+//! - the segment table (`flag`, `start_index`, `num_primitives`) as stored;
 //! - every `BSDistantObjectLargeRefExtraData` block as raw bytes, because large-reference
 //!   semantics are not decoded (about 64% of base-game object shapes are large references).
 //!
@@ -39,8 +38,8 @@ pub struct ObjectLodVertex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectLodSegment {
     pub flag: u8,
-    /// Not decoded; kept as stored.
-    pub value: u32,
+    /// Start in the shape’s index buffer, in indices (skyrim_decomp#816, G02).
+    pub start_index: u32,
     /// Triangles in this segment. All segments of a shape sum to its triangle count.
     pub num_primitives: u32,
 }
@@ -50,8 +49,8 @@ pub struct ObjectLodSegment {
 pub struct ObjectLodShape {
     /// Index of the block in the file.
     pub block_index: usize,
-    /// `NiAVObject` flags of the shape node, as stored. Retail culls back faces unless `flags & 0x108 != 0`
-    /// (RF-LOD, reviewed research; medium confidence, the live draw state is unverified).
+    /// Serialized `NiAVObject` flags. The runtime grouped-draw flags in skyrim_decomp#675 B3
+    /// are a different field and are unavailable to this reader.
     pub flags: u32,
     /// Shape translation as stored (not applied to the vertices).
     pub translation: [f32; 3],
@@ -153,7 +152,7 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
                 .iter()
                 .map(|segment| ObjectLodSegment {
                     flag: segment.flag,
-                    value: segment.value,
+                    start_index: segment.value,
                     num_primitives: segment.num_primitives,
                 })
                 .collect(),
@@ -231,6 +230,7 @@ pub(crate) mod tests {
         triangles: &[[u16; 3]],
         segments: &[(u8, u32, u32)],
         with_positions: bool,
+        with_uvs: bool,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
         push_u32(&mut bytes, u32::MAX); // name
@@ -251,21 +251,30 @@ pub(crate) mod tests {
         push_u32(&mut bytes, u32::MAX); // skin
         push_u32(&mut bytes, u32::MAX); // shader property: none
         push_u32(&mut bytes, u32::MAX); // alpha property
-        // Vertex descriptor: 4 dwords per vertex; flags 0x0401 are position and full precision.
-        let desc: u64 = 4 | (0x0401u64 << 44);
+        // Full-precision positions take four words. The optional half-float UV pair adds one.
+        let words = 4 + u64::from(with_uvs);
+        let uv_descriptor = if with_uvs {
+            (4 << 8) | (0x0002u64 << 44)
+        } else {
+            0
+        };
+        let desc = words | (0x0401u64 << 44) | uv_descriptor;
         bytes.extend(desc.to_le_bytes());
         bytes.extend((triangles.len() as u16).to_le_bytes());
         bytes.extend((vertices.len() as u16).to_le_bytes());
         if with_positions {
             push_u32(
                 &mut bytes,
-                (vertices.len() * 16 + triangles.len() * 6) as u32,
+                (vertices.len() * (16 + 4 * usize::from(with_uvs)) + triangles.len() * 6) as u32,
             );
             for vertex in vertices {
                 for value in vertex {
                     push_f32(&mut bytes, *value);
                 }
                 push_f32(&mut bytes, 0.0);
+                if with_uvs {
+                    push_u32(&mut bytes, 0x3800_3800); // (0.5, 0.5) as two half floats
+                }
             }
             for triangle in triangles {
                 for index in triangle {
@@ -340,6 +349,7 @@ pub(crate) mod tests {
             &[[0, 1, 2]],
             &[(0, 9, 1)],
             true,
+            false,
         );
         let second = shape_block(
             [0.0; 3],
@@ -348,6 +358,7 @@ pub(crate) mod tests {
             &[[2, 1, 0], [0, 1, 2]],
             &[(0, 5, 1), (0, 6, 1)],
             true,
+            false,
         );
         let opaque_a = vec![0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3];
         let opaque_b = vec![0x00, 0xFF, 0x7F];
@@ -376,7 +387,7 @@ pub(crate) mod tests {
             a.segments,
             vec![ObjectLodSegment {
                 flag: 0,
-                value: 9,
+                start_index: 9,
                 num_primitives: 1
             }]
         );
@@ -408,6 +419,7 @@ pub(crate) mod tests {
             &[],
             &[],
             false,
+            false,
         );
         let error = read_object_lod(&nif_bytes(&[(SHAPE, shape)]), label()).unwrap_err();
         assert!(
@@ -425,6 +437,7 @@ pub(crate) mod tests {
             &[[0, 1, 3]],
             &[(0, 0, 1)],
             true,
+            false,
         );
         let error = read_object_lod(&nif_bytes(&[(SHAPE, shape)]), label()).unwrap_err();
         assert!(
@@ -441,7 +454,15 @@ pub(crate) mod tests {
     #[test]
     fn the_shape_node_flags_are_read_from_the_node() {
         let verts = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let mut block = shape_block([0.0; 3], 16.0, &verts, &[[0, 1, 2]], &[(0, 0, 1)], true);
+        let mut block = shape_block(
+            [0.0; 3],
+            16.0,
+            &verts,
+            &[[0, 1, 2]],
+            &[(0, 0, 1)],
+            true,
+            false,
+        );
         let file = |block: &[u8]| {
             read_object_lod(&nif_bytes(&[(SHAPE, block.to_vec())]), label()).unwrap()
         };

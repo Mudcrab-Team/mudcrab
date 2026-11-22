@@ -1,9 +1,7 @@
 //! Object LOD chunk compiler: retail `.bto` blocks into one GLB per chunk (D-03, first slice).
 //!
-//! Slice S1 is Tamriel level 16: one retail block is one chunk of tier 16, and every level-16
-//! shape has exactly one segment and no large-reference marker (verified), so the whole shape is
-//! one mesh and no segment or marker logic is needed. Levels 8 and 4 are not compiled here:
-//! level 8 follows the same path, and level 4 needs the per-cell segment split.
+//! Each retail block becomes one chunk. Levels 8 and 16 keep whole shapes. Level 4 uses the
+//! stored segment index ranges to split shapes into cell-tagged pieces.
 //!
 //! The chunk is a separate file beside the terrain chunk of the same key
 //! (`shared::lod::object_chunk_payload_path`), listed in the additive `lod_object_chunks` table.
@@ -19,11 +17,9 @@
 //! Material, from the reviewed retail research (skyrim_decomp#675, static reading, not match
 //! evidence): the `.bto` carries no alpha property, retail attaches one with alpha test on,
 //! blending off and reference 128, and discards pixels strictly below it. The chunk material is
-//! therefore alpha mask at 128/255 with no blending (high confidence). Retail culls back faces
-//! unless the shape node's flags set mask 0x108, so a shape is single-sided unless
-//! `flags & 0x108 != 0` and then it uses the double-sided material (medium confidence: the live
-//! draw state is unverified). Triangle winding is kept as stored, and the vertex colour stream is
-//! written as stored (whether retail multiplies vertex alpha into the cutout is unverified).
+//! therefore alpha mask at 128/255 with no blending. B3 uses runtime grouped-draw flags, which
+//! the BTO reader does not have. The importer uses back-face culling. Triangle winding and
+//! vertex colors are kept as stored. Retail use of vertex alpha in the cutout is unverified.
 
 use super::{
     retail::bto::{ObjectLodFile, ObjectLodShape},
@@ -41,13 +37,11 @@ use shared::lod::{
 use std::path::Path;
 
 /// Explicit producer revision of the object chunk compiler. Terrain chunk reuse is unaffected.
-/// Version 3: chunks reference one shared atlas file per worldspace instead of embedding it.
-pub const OBJECT_COMPILER_VERSION: u32 = 3;
+/// Version 4 uses stored segment ranges, requires UVs and uses back-face culling.
+pub const OBJECT_COMPILER_VERSION: u32 = 4;
 
 /// Alpha-test reference of the retail object LOD material: 128 of 255, discard strictly below.
 pub const ALPHA_CUTOFF: f64 = 128.0 / 255.0;
-/// Node flag mask that turns back-face culling off (medium confidence, see the module docs).
-pub const DOUBLE_SIDED_FLAG_MASK: u32 = 0x108;
 
 /// Exterior cells of 4096 Creation units.
 const CELL_SIZE: f64 = 4096.0;
@@ -146,6 +140,8 @@ struct Piece {
     shape: usize,
     vertex_start: usize,
     vertex_count: usize,
+    normal_start: Option<usize>,
+    color_start: Option<usize>,
     /// Start in the chunk's index stream, and the index count.
     index_start: usize,
     index_count: usize,
@@ -158,14 +154,56 @@ struct Piece {
 /// Verified in the retail loader (static reading, independently reviewed:
 /// <https://github.com/Mudcrab-Team/skyrim_decomp/pull/816>). Ordinals restart per shape; empty
 /// slots keep their index and are skipped. Only a node whose width is the segmented level (4) is
-/// split per cell: shapes of width 8 and 16 are whole shapes, and a level-4 shape with one segment
-/// carries no cell. [`segment_cell_fit`] checks the rule against the geometry.
+/// split per cell. Shapes of width 8 and 16 are whole shapes. [`segment_cell_fit`] checks the
+/// rule against the geometry.
 fn segment_cell(block: (i32, i32), segment: usize) -> Option<(i32, i32)> {
     let (column, row) = match (i32::try_from(segment / 4), i32::try_from(segment % 4)) {
         (Ok(column), Ok(row)) => (column, row),
         _ => return None,
     };
-    (column < 4).then_some((block.0 + column, block.1 + row))
+    (column < 4)
+        .then(|| Some((block.0.checked_add(column)?, block.1.checked_add(row)?)))
+        .flatten()
+}
+
+/// The nonempty slots and their index-buffer ranges, in slot order (skyrim_decomp#816, G02).
+fn segment_ranges(shape: &ObjectLodShape) -> Result<Vec<(usize, std::ops::Range<usize>)>> {
+    let mut ranges = Vec::new();
+    let limit = shape.triangles.len() * 3;
+    for (slot, segment) in shape.segments.iter().enumerate() {
+        if segment.num_primitives == 0 {
+            continue;
+        }
+        let start = usize::try_from(segment.start_index)?;
+        let count = usize::try_from(segment.num_primitives)?.checked_mul(3);
+        let end = count.and_then(|count| start.checked_add(count));
+        let end = end
+            .filter(|end| start.is_multiple_of(3) && *end <= limit)
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "shape block {} slot {slot} has an invalid index range starting at {start}",
+                    shape.block_index
+                )
+            })?;
+        ranges.push((slot, start..end));
+    }
+    let mut sorted: Vec<_> = ranges.iter().map(|(_, range)| range).collect();
+    sorted.sort_unstable_by_key(|range| range.start);
+    let mut covered = 0;
+    for range in sorted {
+        ensure!(
+            range.start == covered,
+            "shape block {} has overlapping or missing segment indices",
+            shape.block_index
+        );
+        covered = range.end;
+    }
+    ensure!(
+        covered == limit,
+        "shape block {} has uncovered indices",
+        shape.block_index
+    );
+    Ok(ranges)
 }
 
 /// How many non-empty segments of the multi-segment shapes of a level-4 `block` (whose south-west
@@ -175,18 +213,12 @@ fn segment_cell(block: (i32, i32), segment: usize) -> Option<(i32, i32)> {
 pub fn segment_cell_fit(block: &ObjectLodFile, block_cell: (i32, i32)) -> (usize, usize) {
     let (mut fitted, mut total) = (0usize, 0usize);
     for shape in block.shapes.iter().filter(|shape| shape.segments.len() > 1) {
-        let mut start = 0usize;
-        for (index, segment) in shape.segments.iter().enumerate() {
-            let Ok(count) = usize::try_from(segment.num_primitives) else {
-                return (fitted, total);
-            };
-            let Some(triangles) = shape.triangles.get(start..start + count) else {
-                return (fitted, total);
-            };
-            start += count;
-            if count == 0 {
-                continue;
-            }
+        let Ok(ranges) = segment_ranges(shape) else {
+            // Compilation reports the invalid ranges and omits the block.
+            continue;
+        };
+        for (index, range) in ranges {
+            let triangles = &shape.triangles[range.start / 3..range.end / 3];
             let (mut sum_x, mut sum_y, mut vertices) = (0.0f64, 0.0f64, 0.0f64);
             for triangle in triangles {
                 for &vertex in triangle {
@@ -219,8 +251,7 @@ pub fn segment_cell_fit(block: &ObjectLodFile, block_cell: (i32, i32)) -> (usize
 /// world's object atlas, already encoded as a KTX2 container, embedded as the single base-colour
 /// texture.
 ///
-/// A shape with one segment is one mesh. At level 4 a shape with several segments becomes one mesh
-/// per non-empty segment, tagged with its cell. Large-reference data (`BSDistantObjectLargeRefExtraData`,
+/// At level 4 each nonempty segment becomes a mesh tagged with its cell. Large-reference data (`BSDistantObjectLargeRefExtraData`,
 /// level 8 and 4) is kept undecoded and not applied: the engine hides a level-4 segment only for
 /// cells it has loaded, and does not implement the large-reference takeover of cells beyond them.
 ///
@@ -260,6 +291,17 @@ enum AtlasSource<'a> {
     /// The worldspace's atlas file, by relative URI (format 3).
     Shared,
 }
+
+#[derive(Debug)]
+pub(crate) struct MissingObjectUv(usize);
+
+impl std::fmt::Display for MissingObjectUv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "shape block {} lacks required TEXCOORD_0 data", self.0)
+    }
+}
+
+impl std::error::Error for MissingObjectUv {}
 
 fn compile_with_atlas(
     key: ChunkKey,
@@ -303,6 +345,18 @@ fn compile_with_atlas(
         );
         let vertex_start = streams.positions.len() / 3;
         let index_start = streams.indices.len();
+        let normal_start = optional_stream_start(
+            shape,
+            streams.normals.len(),
+            |vertex| vertex.normal.is_some(),
+            "NORMAL",
+        )?;
+        let color_start = optional_stream_start(
+            shape,
+            streams.colors.len(),
+            |vertex| vertex.color.is_some(),
+            "COLOR_0",
+        )?;
         for vertex in &shape.vertices {
             let moved = transform(shape, vertex.position, true);
             let local = [
@@ -319,54 +373,46 @@ fn compile_with_atlas(
                 max[axis] = max[axis].max(local[axis] + block_origin[axis]);
             }
             streams.positions.extend(local);
-            streams.normals.extend(transform(
-                shape,
-                vertex.normal.unwrap_or([0.0, 0.0, 1.0]),
-                false,
-            ));
-            streams.uvs.extend(vertex.uv.unwrap_or([0.0, 0.0]));
-            streams.colors.extend(
-                vertex
-                    .color
-                    .map_or([1.0; 4], |rgba| rgba.map(|byte| f32::from(byte) / 255.0)),
-            );
+            let uv = vertex.uv.ok_or(MissingObjectUv(shape.block_index))?;
+            streams.uvs.extend(uv);
+            if let Some(normal) = vertex.normal {
+                streams.normals.extend(transform(shape, normal, false));
+            }
+            if let Some(color) = vertex.color {
+                streams
+                    .colors
+                    .extend(color.map(|byte| f32::from(byte) / 255.0));
+            }
         }
         for triangle in &shape.triangles {
             streams.indices.extend(triangle.map(u32::from));
         }
         triangles += shape.triangles.len();
-        if shape.segments.len() == 1 {
+        let ranges = if key.tier == LodTier::Tier4 {
+            segment_ranges(shape)?
+        } else {
+            vec![(0, 0..shape.triangles.len() * 3)]
+        };
+        for (slot, range) in ranges {
+            let cell = if key.tier == LodTier::Tier4 {
+                Some(segment_cell((cell_x, cell_y), slot).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "object chunk {key:?}: slot {slot} has no cell in its block"
+                    )
+                })?)
+            } else {
+                None
+            };
             pieces.push(Piece {
                 shape: shape_index,
                 vertex_start,
                 vertex_count: shape.vertices.len(),
-                index_start,
-                index_count: shape.triangles.len() * 3,
-                cell: None,
+                normal_start,
+                color_start,
+                index_start: index_start + range.start,
+                index_count: range.len(),
+                cell,
             });
-            continue;
-        }
-        // The segments partition the shape's triangles in order.
-        let mut start = 0usize;
-        for (segment_index, segment) in shape.segments.iter().enumerate() {
-            let count = usize::try_from(segment.num_primitives)
-                .wrap_err("a segment's triangle count does not fit")?;
-            if count > 0 {
-                let cell = segment_cell((cell_x, cell_y), segment_index).ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "object chunk {key:?}: segment {segment_index} has no cell in a 4 x 4 block"
-                    )
-                })?;
-                pieces.push(Piece {
-                    shape: shape_index,
-                    vertex_start,
-                    vertex_count: shape.vertices.len(),
-                    index_start: index_start + start * 3,
-                    index_count: count * 3,
-                    cell: Some(cell),
-                });
-            }
-            start += count;
         }
     }
 
@@ -389,6 +435,25 @@ fn compile_with_atlas(
     })
 }
 
+fn optional_stream_start(
+    shape: &ObjectLodShape,
+    start: usize,
+    present: impl Fn(&super::retail::bto::ObjectLodVertex) -> bool,
+    name: &str,
+) -> Result<Option<usize>> {
+    let count = shape
+        .vertices
+        .iter()
+        .filter(|vertex| present(vertex))
+        .count();
+    ensure!(
+        count == 0 || count == shape.vertices.len(),
+        "shape block {} has an incomplete {name} stream",
+        shape.block_index
+    );
+    Ok((count > 0).then_some(start))
+}
+
 fn emit_object_glb(
     key: ChunkKey,
     streams: &Streams,
@@ -397,24 +462,40 @@ fn emit_object_glb(
     block: &ObjectLodFile,
 ) -> Result<Vec<u8>> {
     let mut binary: Vec<u8> = Vec::new();
-    binary.extend_from_slice(f32_slice_bytes(&streams.positions));
-    let normal_offset = binary.len();
-    binary.extend_from_slice(f32_slice_bytes(&streams.normals));
-    let uv_offset = binary.len();
-    binary.extend_from_slice(f32_slice_bytes(&streams.uvs));
-    let color_offset = binary.len();
-    binary.extend_from_slice(f32_slice_bytes(&streams.colors));
-    pad_to_4(&mut binary);
-    let index_offset = binary.len();
-    for index in &streams.indices {
-        binary.extend_from_slice(&index.to_le_bytes());
-    }
-    pad_to_4(&mut binary);
-    let atlas_offset = binary.len();
-    if let AtlasSource::Embedded(atlas) = atlas {
-        binary.extend_from_slice(atlas);
+    let mut buffer_views = Vec::new();
+    let mut add_view = |bytes: &[u8], target: Option<u32>| {
+        let view = buffer_views.len();
+        let mut row = serde_json::json!({
+            "buffer": 0, "byteOffset": binary.len(), "byteLength": bytes.len()
+        });
+        if let Some(target) = target {
+            row["target"] = serde_json::json!(target);
+        }
+        buffer_views.push(row);
+        binary.extend_from_slice(bytes);
         pad_to_4(&mut binary);
-    }
+        view
+    };
+    let positions_view = add_view(f32_slice_bytes(&streams.positions), Some(34962));
+    let uv_view = add_view(f32_slice_bytes(&streams.uvs), Some(34962));
+    let normals_view = (!streams.normals.is_empty())
+        .then(|| add_view(f32_slice_bytes(&streams.normals), Some(34962)));
+    let colors_view = (!streams.colors.is_empty())
+        .then(|| add_view(f32_slice_bytes(&streams.colors), Some(34962)));
+    let index_bytes: Vec<_> = streams
+        .indices
+        .iter()
+        .flat_map(|index| index.to_le_bytes())
+        .collect();
+    let indices_view = add_view(&index_bytes, Some(34963));
+    let image_json = match atlas {
+        AtlasSource::Embedded(atlas) => serde_json::json!({
+            "bufferView": add_view(atlas, None), "mimeType": "image/ktx2"
+        }),
+        AtlasSource::Shared => serde_json::json!({
+            "uri": OBJECT_ATLAS_URI, "mimeType": "image/ktx2"
+        }),
+    };
 
     let chunk_name = format!(
         "objects_chunk_{}_{}_{}",
@@ -440,13 +521,8 @@ fn emit_object_glb(
     let mut accessors_json = Vec::new();
     for (index, piece) in pieces.iter().enumerate() {
         let shape = &block.shapes[piece.shape];
-        let (vertex_start, vertex_count, index_start, index_count) = (
-            &piece.vertex_start,
-            &piece.vertex_count,
-            piece.index_start,
-            piece.index_count,
-        );
-        let base = index * 5;
+        let vertex_start = piece.vertex_start;
+        let vertex_count = piece.vertex_count;
         let positions = &streams.positions[vertex_start * 3..(vertex_start + vertex_count) * 3];
         let (shape_min, shape_max) = bounds(positions);
         nodes_json.push(match piece.cell {
@@ -461,65 +537,62 @@ fn emit_object_glb(
                 "mesh": index,
             }),
         });
-        for (view, offset, count, kind, extra) in [
+        let mut attributes = serde_json::Map::new();
+        for (semantic, view, offset, kind) in [
             (
-                0,
-                vertex_start * 12,
-                *vertex_count,
+                "POSITION",
+                Some(positions_view),
+                Some(vertex_start * 12),
                 "VEC3",
-                Some((shape_min, shape_max)),
             ),
-            (1, vertex_start * 12, *vertex_count, "VEC3", None),
-            (2, vertex_start * 8, *vertex_count, "VEC2", None),
-            (3, vertex_start * 16, *vertex_count, "VEC4", None),
+            ("TEXCOORD_0", Some(uv_view), Some(vertex_start * 8), "VEC2"),
+            (
+                "NORMAL",
+                normals_view,
+                piece.normal_start.map(|start| start * 4),
+                "VEC3",
+            ),
+            (
+                "COLOR_0",
+                colors_view,
+                piece.color_start.map(|start| start * 4),
+                "VEC4",
+            ),
         ] {
+            let (Some(view), Some(offset)) = (view, offset) else {
+                continue;
+            };
             let mut accessor = serde_json::json!({
-                "bufferView": view,
-                "byteOffset": offset,
-                "componentType": 5126,
-                "count": count,
-                "type": kind,
+                "bufferView": view, "byteOffset": offset, "componentType": 5126,
+                "count": vertex_count, "type": kind,
             });
-            if let Some((low, high)) = extra {
-                accessor["min"] = serde_json::json!(low);
-                accessor["max"] = serde_json::json!(high);
+            if semantic == "POSITION" {
+                accessor["min"] = serde_json::json!(shape_min);
+                accessor["max"] = serde_json::json!(shape_max);
             }
+            attributes.insert(semantic.into(), serde_json::json!(accessors_json.len()));
             accessors_json.push(accessor);
         }
+        let indices = accessors_json.len();
         accessors_json.push(serde_json::json!({
-            "bufferView": 4,
-            "byteOffset": index_start * 4,
+            "bufferView": indices_view,
+            "byteOffset": piece.index_start * 4,
             "componentType": 5125,
-            "count": index_count,
+            "count": piece.index_count,
             "type": "SCALAR",
         }));
+        // stand-in(#911): B3 in skyrim_decomp#675 uses runtime grouped-draw flags.
+        // A BTO gives us only serialized node flags, so use back-face culling.
         meshes_json.push(serde_json::json!({
             "name": format!("objects_{}_{}_piece_{index}", key.anchor.x, key.anchor.y),
             "primitives": [{
-                "attributes": {
-                    "POSITION": base,
-                    "NORMAL": base + 1,
-                    "TEXCOORD_0": base + 2,
-                    "COLOR_0": base + 3,
-                },
-                "indices": base + 4,
-                "material": usize::from(shape.flags & DOUBLE_SIDED_FLAG_MASK != 0),
+                "attributes": attributes,
+                "indices": indices,
+                "material": 0,
             }],
         }));
     }
-    let mut buffer_views = Vec::new();
-    let image_json = match atlas {
-        AtlasSource::Embedded(atlas) => {
-            buffer_views.push(
-                serde_json::json!({ "buffer": 0, "byteOffset": atlas_offset, "byteLength": atlas.len() }),
-            );
-            serde_json::json!({ "bufferView": 5, "mimeType": "image/ktx2" })
-        }
-        AtlasSource::Shared => {
-            serde_json::json!({ "uri": OBJECT_ATLAS_URI, "mimeType": "image/ktx2" })
-        }
-    };
-    let mut json = serde_json::json!({
+    let json = serde_json::json!({
         "asset": { "version": "2.0", "generator": "OpenSky LOD object compiler" },
         "extensionsUsed": ["KHR_texture_basisu"],
         "scene": 0,
@@ -527,25 +600,13 @@ fn emit_object_glb(
         "nodes": nodes_json,
         "meshes": meshes_json,
         "accessors": accessors_json,
-        "bufferViews": [
-            { "buffer": 0, "byteOffset": 0, "byteLength": streams.positions.len() * 4, "target": 34962 },
-            { "buffer": 0, "byteOffset": normal_offset, "byteLength": streams.normals.len() * 4, "target": 34962 },
-            { "buffer": 0, "byteOffset": uv_offset, "byteLength": streams.uvs.len() * 4, "target": 34962 },
-            { "buffer": 0, "byteOffset": color_offset, "byteLength": streams.colors.len() * 4, "target": 34962 },
-            { "buffer": 0, "byteOffset": index_offset, "byteLength": streams.indices.len() * 4, "target": 34963 },
-        ],
+        "bufferViews": buffer_views,
         "buffers": [{ "byteLength": binary.len() }],
         "images": [image_json],
         "samplers": [{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }],
         "textures": [{ "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } }],
-        "materials": [
-            object_material("lod_objects", false),
-            object_material("lod_objects_double_sided", true),
-        ],
+        "materials": [object_material("lod_objects", false)],
     });
-    if let Some(views) = json["bufferViews"].as_array_mut() {
-        views.extend(buffer_views);
-    }
     assemble_glb(&json, &binary)
 }
 
@@ -762,22 +823,31 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         let primitive = &primitives[0];
         ensure!(
             primitive["mode"].as_u64().unwrap_or(4) == 4
-                && primitive["material"]
-                    .as_u64()
-                    .is_some_and(|material| material < 2),
+                && json_index(&primitive["material"])
+                    .is_some_and(|material| document["materials"].get(material).is_some()),
             "an object batch is not a triangle list on an object material"
         );
         let attributes = primitive["attributes"]
             .as_object()
-            .filter(|attributes| attributes.len() == 4)
+            .filter(|attributes| {
+                attributes.keys().all(|key| {
+                    matches!(
+                        key.as_str(),
+                        "POSITION" | "TEXCOORD_0" | "NORMAL" | "COLOR_0"
+                    )
+                })
+            })
             .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has unexpected attributes"))?;
         let mut vertex_count = None;
-        for (semantic, components) in [
-            ("POSITION", 3),
-            ("NORMAL", 3),
-            ("TEXCOORD_0", 2),
-            ("COLOR_0", 4),
+        for (semantic, components, required) in [
+            ("POSITION", 3, true),
+            ("TEXCOORD_0", 2, true),
+            ("NORMAL", 3, false),
+            ("COLOR_0", 4, false),
         ] {
+            if !required && !attributes.contains_key(semantic) {
+                continue;
+            }
             let (start, count, component_type, found) = attributes
                 .get(semantic)
                 .and_then(json_index)
@@ -822,7 +892,7 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
 
     let materials = document["materials"].as_array();
     ensure!(
-        materials.is_some_and(|materials| materials.len() == 2
+        materials.is_some_and(|materials| (1..=2).contains(&materials.len())
             && [("lod_objects", false), ("lod_objects_double_sided", true)]
                 .iter()
                 .zip(materials)
@@ -833,7 +903,7 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
                         && material["doubleSided"] == *double_sided
                         && material["pbrMetallicRoughness"]["baseColorTexture"]["index"] == 0
                 })),
-        "an object chunk has the two alpha-mask `lod_objects` materials with the atlas as base colour"
+        "an object chunk has the alpha-mask `lod_objects` materials with the atlas as base colour"
     );
     let images = document["images"]
         .as_array()
@@ -955,35 +1025,50 @@ pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
     } else {
         None
     };
-    let listed = manifest
-        .as_ref()
-        .and_then(|manifest| manifest["object_chunks"].as_u64())
-        .unwrap_or(0);
-    let inputs = manifest
-        .as_ref()
-        .and_then(|manifest| manifest["object_chunk_inputs"].as_object())
-        .map_or_else(serde_json::Map::new, Clone::clone);
     if !database_path.is_file() {
-        ensure!(
-            listed == 0 && inputs.is_empty(),
-            "lod-manifest.json lists {listed} object chunks but the pack has no skyrim_world.db"
-        );
-        return Ok(());
+        return validate_no_object_table(manifest.as_ref(), "skyrim_world.db");
     }
     let connection =
         Connection::open_with_flags(&database_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .wrap_err("failed to open the world database to check object LOD")?;
+    validate_object_generation(&connection, manifest.as_ref(), &|path| root.join(path))
+}
+
+fn validate_no_object_table(manifest: Option<&serde_json::Value>, missing: &str) -> Result<()> {
+    ensure!(
+        manifest.is_none_or(|manifest| {
+            manifest["object_chunks"].as_u64().unwrap_or(0) == 0
+                && manifest["object_chunk_inputs"]
+                    .as_object()
+                    .is_none_or(serde_json::Map::is_empty)
+                && manifest["object_atlases"]
+                    .as_object()
+                    .is_none_or(serde_json::Map::is_empty)
+        }),
+        "lod-manifest.json lists object LOD but the pack has no {missing}"
+    );
+    Ok(())
+}
+
+/// Validates unpublished rows and payloads before a derive can replace the active files.
+pub(crate) fn validate_object_generation(
+    connection: &Connection,
+    manifest: Option<&serde_json::Value>,
+    payload: &impl Fn(&str) -> std::path::PathBuf,
+) -> Result<()> {
+    let listed = manifest
+        .and_then(|manifest| manifest["object_chunks"].as_u64())
+        .unwrap_or(0);
+    let inputs = manifest
+        .and_then(|manifest| manifest["object_chunk_inputs"].as_object())
+        .map_or_else(serde_json::Map::new, Clone::clone);
     let has_table: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_chunks')",
         [],
         |row| row.get(0),
     )?;
     if !has_table {
-        ensure!(
-            listed == 0 && inputs.is_empty(),
-            "lod-manifest.json lists {listed} object chunks but the database has no lod_object_chunks table"
-        );
-        return Ok(());
+        return validate_no_object_table(manifest, "lod_object_chunks table");
     }
     let rows: u64 = connection.query_row("SELECT count(*) FROM lod_object_chunks", [], |row| {
         row.get(0)
@@ -1002,7 +1087,6 @@ pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
     );
     ensure!(
         manifest
-            .as_ref()
             .and_then(|manifest| manifest["objects_compiler_version"].as_u64())
             .is_some_and(|version| version > 0),
         "lod-manifest.json has no objects_compiler_version for its object chunks"
@@ -1050,7 +1134,7 @@ pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
             inputs.contains_key(&path),
             "object chunk {path} has no input proof in lod-manifest.json"
         );
-        let bytes = std::fs::read(root.join(&path))
+        let bytes = std::fs::read(payload(&path))
             .wrap_err_with(|| format!("listed object chunk {path} is missing or unreadable"))?;
         ensure!(
             crate::cache::hash_bytes(&bytes) == hash,
@@ -1062,14 +1146,14 @@ pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
             shared_atlas_worlds.insert(worldspace);
         }
     }
-    validate_object_atlases(root, &connection, manifest.as_ref(), &shared_atlas_worlds)
+    validate_object_atlases(payload, connection, manifest, &shared_atlas_worlds)
 }
 
 /// Checks the shared atlas files: every worldspace whose chunks reference the shared atlas has a
 /// row, a file with the recorded SHA-256 that is a valid sRGB KTX2, and a manifest entry; and no
 /// atlas row or manifest entry stands without chunks that use it.
 fn validate_object_atlases(
-    root: &Path,
+    payload: &impl Fn(&str) -> std::path::PathBuf,
     connection: &Connection,
     manifest: Option<&serde_json::Value>,
     needed: &std::collections::BTreeSet<u32>,
@@ -1115,7 +1199,7 @@ fn validate_object_atlases(
             listed.get(&path).and_then(serde_json::Value::as_str) == Some(hash.as_str()),
             "atlas {path} is not listed in lod-manifest.json with its SHA-256"
         );
-        let bytes = std::fs::read(root.join(&path))
+        let bytes = std::fs::read(payload(&path))
             .wrap_err_with(|| format!("listed object atlas {path} is missing or unreadable"))?;
         ensure!(
             crate::cache::hash_bytes(&bytes) == hash,
@@ -1262,7 +1346,7 @@ mod tests {
             triangles: vec![[0, 1, 2]],
             segments: vec![ObjectLodSegment {
                 flag: 0,
-                value: 0,
+                start_index: 0,
                 num_primitives: 1,
             }],
         }
@@ -1397,10 +1481,14 @@ mod tests {
         shape.triangles = vec![[0, 1, 2]; triangles];
         shape.segments = sizes
             .iter()
-            .map(|&num_primitives| ObjectLodSegment {
-                flag: 0,
-                value: 0,
-                num_primitives,
+            .scan(0, |start, &num_primitives| {
+                let segment = ObjectLodSegment {
+                    flag: 0,
+                    start_index: *start,
+                    num_primitives,
+                };
+                *start += num_primitives * 3;
+                Some(segment)
             })
             .collect();
         shape
@@ -1448,10 +1536,14 @@ mod tests {
             .map(|accessor| accessor["count"].as_u64().unwrap())
             .collect();
         assert_eq!(counts, vec![3, 6, 3]);
-        // A shape with one segment at level 4 carries no cell.
+        // A shape with one segment covers slot 0.
         let plain = compile_object_chunk(tier4, ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
             .unwrap();
-        assert_eq!(plain.cell_pieces, 0);
+        assert_eq!(plain.cell_pieces, 1);
+        assert_eq!(
+            json_of(&plain.glb)["nodes"][2]["extras"]["cell"],
+            serde_json::json!([0, -16])
+        );
         // More than 16 segments is refused.
         let too_many = segmented(17, &[1; 17]);
         assert!(compile_object_chunk(tier4, ORIGIN, &block(vec![too_many]), &atlas()).is_err());
@@ -1544,35 +1636,84 @@ mod tests {
     }
 
     #[test]
-    fn the_material_is_an_alpha_cutout_and_culling_follows_the_node_flags() {
+    fn the_alpha_cutout_culls_even_when_node_flags_include_0x108() {
         let mut flagged = shape(2, [0.0; 3]);
         flagged.flags = 0x108;
-        let mut other = shape(3, [0.0; 3]);
-        other.flags = 0x1; // hidden bit only: no 0x108 bit, so it stays single-sided
         let chunk = compile_object_chunk(
             key(),
             ORIGIN,
-            &block(vec![shape(1, [0.0; 3]), flagged, other]),
+            &block(vec![shape(1, [0.0; 3]), flagged]),
             &atlas(),
         )
         .unwrap();
         validate_object_glb(&chunk.glb).unwrap();
         let document = json_of(&chunk.glb);
         let materials = document["materials"].as_array().unwrap();
-        assert_eq!(materials.len(), 2);
-        for material in materials {
-            assert_eq!(material["alphaMode"], "MASK");
-            assert_eq!(material["alphaCutoff"].as_f64(), Some(128.0 / 255.0));
-        }
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0]["alphaMode"], "MASK");
+        assert_eq!(materials[0]["alphaCutoff"].as_f64(), Some(128.0 / 255.0));
         assert_eq!(materials[0]["doubleSided"], false);
-        assert_eq!(materials[1]["doubleSided"], true);
-        let used: Vec<_> = document["meshes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|mesh| mesh["primitives"][0]["material"].as_u64().unwrap())
-            .collect();
-        assert_eq!(used, vec![0, 1, 0]);
+        assert!(
+            document["meshes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|mesh| { mesh["primitives"][0]["material"] == 0 })
+        );
+    }
+
+    #[test]
+    fn tier_four_uses_stored_index_ranges_and_rejects_bad_ranges() {
+        let tier4 = ChunkKey::new(60, LodTier::Tier4, ChunkAnchor::new(24, 20));
+        let mut shape = segmented(2, &[1, 1]);
+        shape.triangles[1] = [2, 1, 0];
+        shape.segments[0].start_index = 3;
+        shape.segments[1].start_index = 0;
+        let compile = |shape| compile_object_chunk(tier4, ORIGIN, &block(vec![shape]), &atlas());
+        let chunk = compile(shape.clone()).unwrap();
+        let doc = json_of(&chunk.glb);
+        let primitive = &doc["meshes"][0]["primitives"][0];
+        let accessor = &doc["accessors"][json_index(&primitive["indices"]).unwrap()];
+        let view = &doc["bufferViews"][json_index(&accessor["bufferView"]).unwrap()];
+        let start = json_offset(view).unwrap() + json_offset(accessor).unwrap();
+        assert_eq!(&binary(&chunk.glb)[start..start + 4], &2u32.to_le_bytes());
+        for invalid in [1, 3, 6, u32::MAX] {
+            shape.segments[1].start_index = invalid;
+            assert!(
+                compile(shape.clone()).is_err(),
+                "accepted start index {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_uv_refuses_the_block_and_missing_optional_streams_are_omitted() {
+        let mut undetailed = shape(1, [0.0; 3]);
+        for vertex in &mut undetailed.vertices {
+            vertex.color = None;
+            vertex.normal = None;
+        }
+        let compile = |shapes| compile_object_chunk(key(), ORIGIN, &block(shapes), &atlas());
+        let mixed = compile(vec![undetailed.clone(), shape(2, [0.0; 3])]).unwrap();
+        validate_object_glb(&mixed.glb).unwrap();
+        let doc = json_of(&mixed.glb);
+        let attrs = |mesh: usize| {
+            doc["meshes"][mesh]["primitives"][0]["attributes"]
+                .as_object()
+                .unwrap()
+        };
+        assert_eq!(attrs(0).len(), 2);
+        assert!(!attrs(0).contains_key("NORMAL"));
+        assert!(!attrs(0).contains_key("COLOR_0"));
+        assert!(attrs(1).contains_key("NORMAL"));
+        assert!(attrs(1).contains_key("COLOR_0"));
+        undetailed.vertices[1].uv = None;
+        assert!(
+            compile(vec![undetailed])
+                .err()
+                .unwrap()
+                .is::<MissingObjectUv>()
+        );
     }
 
     /// Patches `from` to `to` (same length) in the JSON chunk of a GLB.

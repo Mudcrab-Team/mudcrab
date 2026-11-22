@@ -8504,6 +8504,7 @@ mod tests {
             &[[0, 1, 2]],
             &[(0, 0, 1)],
             true,
+            true,
         );
         fs::write(
             meshes.join(format!("{world}.16.{x}.{y}.bto")),

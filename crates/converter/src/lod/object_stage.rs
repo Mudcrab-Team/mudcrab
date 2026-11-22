@@ -12,7 +12,7 @@ use crate::{
     config::PipelineConfig,
     lod::{
         objects::{
-            ObjectChunk, chunk_key_for_block, compile_object_chunk_shared_atlas,
+            MissingObjectUv, ObjectChunk, chunk_key_for_block, compile_object_chunk_shared_atlas,
             object_chunk_input_hash, publish_object_atlas, publish_object_chunk,
         },
         retail::{
@@ -325,7 +325,19 @@ pub(crate) fn read_retail(
         let (Some(cell), Some(level)) = (name.cell, name.level) else {
             continue;
         };
-        match read_provider_bytes(relative, options, &extracted)? {
+        let read = match read_provider_bytes(relative, options, &extracted) {
+            Ok(read) => read,
+            Err(error) => {
+                skipped.push(SkippedBlock {
+                    level,
+                    cell,
+                    class: "block cannot be read",
+                    detail: format!("{relative}: {error:#}"),
+                });
+                continue;
+            }
+        };
+        match read {
             Err(conflict) => skipped.push(SkippedBlock {
                 level,
                 cell,
@@ -414,7 +426,11 @@ pub(crate) fn compile_candidates(
             Err(error) => skipped.push(SkippedBlock {
                 level: candidate.level,
                 cell: candidate.cell,
-                class: "block refused by the compiler",
+                class: if error.is::<MissingObjectUv>() {
+                    "block lacks required vertex data"
+                } else {
+                    "block refused by the compiler"
+                },
                 detail: format!("{error:#}"),
             }),
         }
@@ -638,6 +654,10 @@ mod tests {
 
     /// A `.bto` with one level-16 shape whose block origin is cell `(x, y)`.
     fn bto(x: i32, y: i32, segments: &[(u8, u32, u32)]) -> Vec<u8> {
+        bto_with_uvs(x, y, segments, true)
+    }
+
+    fn bto_with_uvs(x: i32, y: i32, segments: &[(u8, u32, u32)], with_uvs: bool) -> Vec<u8> {
         let vertices = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]];
         let block = shape_block(
             [x as f32 * 4096.0, y as f32 * 4096.0, 0.0],
@@ -646,6 +666,7 @@ mod tests {
             &[[0, 1, 2]],
             segments,
             true,
+            with_uvs,
         );
         nif_bytes(&[(SHAPE, block)])
     }
@@ -777,6 +798,35 @@ mod tests {
                 .iter()
                 .all(|line| line.contains("skipped block"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_and_missing_uv_blocks_are_counted_and_the_other_block_publishes() {
+        let data = data_with(&[
+            ((0, -16), bto(0, -16, &[(0, 0, 1)])),
+            ((16, -16), bto_with_uvs(16, -16, &[(0, 0, 1)], false)),
+        ]);
+        std::os::unix::fs::symlink(
+            data.path().join("missing"),
+            data.path()
+                .join("Meshes/Terrain/Tamriel/Objects/Tamriel.16.32.-16.bto"),
+        )
+        .unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert_eq!(stage.chunks.len(), 1);
+        assert_eq!(stage.warnings.len(), 2);
+        assert!(
+            stage
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("block cannot be read"))
+        );
+        assert!(stage.warnings.iter().any(|warning| {
+            warning.contains("block lacks required vertex data") && warning.contains("TEXCOORD_0")
+        }));
     }
 
     #[test]
