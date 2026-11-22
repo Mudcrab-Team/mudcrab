@@ -152,7 +152,7 @@ block into one object chunk GLB beside the terrain chunk of the same key
   per shape, large-reference markers, no geometry or a non-finite vertex is refused and reported,
   never guessed.
 - **Atlas.** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`) goes
-  through the existing texture stage as sRGB KTX2 and is embedded in every chunk.
+  through the existing texture stage as sRGB KTX2 and is embedded in every chunk (see Producers).
 - **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
   128/255 with no blending (high confidence). A shape is single-sided unless its node flags
   intersect mask `0x108`, and then it uses the double-sided material (medium confidence: the live
@@ -160,14 +160,27 @@ block into one object chunk GLB beside the terrain chunk of the same key
 - **Validation.** `validate_object_glb` checks container lengths, buffer view and accessor ranges,
   vertex formats, finite data, every triangle index, the two materials and the embedded KTX2.
   `validate_artifacts` also runs `validate_object_lod_package`.
-- **Producers.** `converter derive-object-lod <clone> --registry <packs.json> --clone-of <pack>
-  --data <Skyrim Data> [--worldspace <EditorID>] [--force]` adds object LOD to an APFS clone of a
-  registered pack without reconverting any NIF: it verifies that every archive it reads is the one
-  the pack was converted from (manifest hash), writes the chunks, the rows, the manifest fields and
-  `object-lod-overlay-receipt.json`, and reports every skipped block with its reason. It refuses a
-  registered pack, a clone that does not match the registry, a pack that already has object chunks
-  (unless `--force`) and a pack without terrain LOD. Wiring into a normal conversion and the
-  metadata rebuild is a later change.
+- **Producers.** Object LOD is built in three places, all through
+  `crates/converter/src/lod/object_stage.rs`, which reads the files and compiles the chunks:
+  - The LOD stage of a normal conversion and of a metadata rebuild (`--reuse-assets`) runs
+    `build_object_lod` after the terrain stage, for every worldspace that has terrain LOD. It reads the
+    `.bto` blocks and the atlas from the Skyrim `Data` folder (loose files, then archives) and does not
+    use the ingestion selection, so no NIF, texture or script output changes and an existing pack
+    gains object LOD from a rebuild without reconverting anything. A world with no level-16 block is a
+    notice; a skipped block is a line in the LOD warnings (they do not make the run incomplete);
+    a world with blocks but no usable atlas fails the stage. An MO2 selection builds none (a warning
+    says so), because the blocks are read from the Data folder. The chunks are recomputed on each run
+    (seconds); they are not reused by their input proofs yet.
+  - `converter derive-object-lod <clone> --registry <packs.json> --clone-of <pack> --data <Skyrim Data>
+    [--worldspace <EditorID>] [--force]` adds object LOD to an APFS clone of a registered pack without
+    a conversion: it verifies that every archive it reads is the one the pack was converted from
+    (manifest hash), writes the chunks, the rows, the manifest fields and
+    `object-lod-overlay-receipt.json`, and reports every skipped block with its reason. It refuses a
+    registered pack, a clone that does not match the registry, a pack that already has object chunks
+    (unless `--force`) and a pack without terrain LOD.
+- **Atlas.** Every chunk embeds the whole atlas (2.7 MB for Tamriel). Sharing one atlas file between
+  chunks is a follow-up: it changes the chunk format contract with the engine and needs an engine
+  integrity check for the shared file.
 
 ### Proposed object sidecars
 

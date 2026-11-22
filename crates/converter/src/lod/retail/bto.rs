@@ -210,7 +210,7 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn push_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -224,7 +224,7 @@ mod tests {
     /// A `BSSubIndexTriShape` block. `with_positions` stores full-precision positions (a 16-byte
     /// vertex: three floats and a spare float); otherwise the block declares `vertices.len()`
     /// vertices without geometry data, which the NIF reader reads as vertices without positions.
-    fn shape_block(
+    pub(crate) fn shape_block(
         translation: [f32; 3],
         scale: f32,
         vertices: &[[f32; 3]],
@@ -286,7 +286,7 @@ mod tests {
     }
 
     /// A NIF 20.2.0.7 (user version 12, Bethesda version 100) holding `blocks` in order.
-    fn nif_bytes(blocks: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    pub(crate) fn nif_bytes(blocks: &[(&str, Vec<u8>)]) -> Vec<u8> {
         let mut types: Vec<&str> = Vec::new();
         for (name, _) in blocks {
             if !types.contains(name) {
@@ -324,7 +324,7 @@ mod tests {
         bytes
     }
 
-    const SHAPE: &str = "BSSubIndexTriShape";
+    pub(crate) const SHAPE: &str = "BSSubIndexTriShape";
     const LARGE_REF: &str = LARGE_REF_BLOCK_TYPE;
 
     fn label() -> &'static Path {

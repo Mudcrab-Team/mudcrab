@@ -521,3 +521,157 @@ pub(crate) fn build_object_lod(
     }
     Ok(stage)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lod::retail::bto::tests::{SHAPE, nif_bytes, shape_block};
+
+    /// A Data folder with loose retail object LOD for `tamriel`: the given level-16 blocks (cell
+    /// plus raw bytes) and a small atlas.
+    fn data_with(blocks: &[((i32, i32), Vec<u8>)]) -> tempfile::TempDir {
+        let data = tempfile::tempdir().unwrap();
+        let meshes = data.path().join("Meshes/Terrain/Tamriel/Objects");
+        let textures = data.path().join("textures/terrain/tamriel/objects");
+        fs::create_dir_all(&meshes).unwrap();
+        fs::create_dir_all(&textures).unwrap();
+        for ((x, y), bytes) in blocks {
+            fs::write(meshes.join(format!("Tamriel.16.{x}.{y}.bto")), bytes).unwrap();
+        }
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        fs::write(textures.join("tamriel.objects.dds"), dds).unwrap();
+        data
+    }
+
+    /// A `.bto` with one level-16 shape whose block origin is cell `(x, y)`.
+    fn bto(x: i32, y: i32, segments: &[(u8, u32, u32)]) -> Vec<u8> {
+        let vertices = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]];
+        let block = shape_block(
+            [x as f32 * 4096.0, y as f32 * 4096.0, 0.0],
+            16.0,
+            &vertices,
+            &[[0, 1, 2]],
+            segments,
+            true,
+        );
+        nif_bytes(&[(SHAPE, block)])
+    }
+
+    /// A staged world database with Tamriel, its LOD origin and one terrain chunk.
+    fn staged(root: &Path) -> Connection {
+        let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO worldspaces(id, editor_id, flags, lod_origin_x, lod_origin_y) VALUES (60, 'Tamriel', 0, -96, -96)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO worldspaces(id, editor_id, flags, lod_origin_x, lod_origin_y) VALUES (61, 'NoLodWorld', 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO lod_chunks(worldspace_id, tier, anchor_x, anchor_y, payload_path, content_hash, bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z, source_cells) VALUES (60, 16, 6, 5, 'lod/0000003c/16/cell_6_5.glb', 'h', 0, 0, 0, 1, 1, 1, '0,-16')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO lod_chunks(worldspace_id, tier, anchor_x, anchor_y, payload_path, content_hash, bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z, source_cells) VALUES (61, 16, 0, 0, 'lod/0000003d/16/cell_0_0.glb', 'h', 0, 0, 0, 1, 1, 1, '0,0')",
+                [],
+            )
+            .unwrap();
+        connection
+    }
+
+    fn config(data: &Path) -> PipelineConfig {
+        PipelineConfig::new(data, data.join("out"))
+    }
+
+    #[test]
+    fn loose_blocks_become_published_chunks_with_one_input_proof_each() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert_eq!(stage.chunks.len(), 1);
+        assert_eq!(stage.triangles, 1);
+        assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
+        let rows: i64 = connection
+            .query_row("SELECT count(*) FROM lod_object_chunks", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert!(staging.path().join(&stage.chunks[0].0).is_file());
+        // The world without any block is a counted notice, not an error.
+        assert!(
+            stage
+                .notices
+                .iter()
+                .any(|notice| notice.contains("1 worldspace"))
+        );
+    }
+
+    #[test]
+    fn a_skipped_block_is_a_warning_with_its_reason_and_the_rest_still_publish() {
+        let data = data_with(&[
+            ((0, -16), bto(0, -16, &[(0, 0, 1)])),
+            // Two segments: the level-16 compiler refuses it.
+            ((16, -16), bto(16, -16, &[(0, 0, 1), (0, 1, 0)])),
+            ((3, -16), b"not a nif".to_vec()),
+        ]);
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert_eq!(stage.chunks.len(), 1);
+        assert_eq!(stage.warnings.len(), 2, "{:?}", stage.warnings);
+        assert!(
+            stage
+                .warnings
+                .iter()
+                .all(|line| line.contains("skipped block"))
+        );
+    }
+
+    #[test]
+    fn a_world_with_blocks_but_no_atlas_fails_the_stage() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        fs::remove_file(
+            data.path()
+                .join("textures/terrain/tamriel/objects/tamriel.objects.dds"),
+        )
+        .unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let error = build_object_lod(&config(data.path()), staging.path(), &connection)
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("atlas"), "{error:#}");
+    }
+
+    #[test]
+    fn a_data_folder_without_object_lod_adds_nothing() {
+        let data = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert!(stage.chunks.is_empty());
+        let tables: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'lod_object%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "no object table for a pack without object LOD");
+    }
+}
