@@ -160,8 +160,8 @@ block into one object chunk GLB beside the terrain chunk of the same key
   at level 16, or a non-finite vertex is refused and reported, never guessed.
 - **Atlas (format 3).** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`)
   goes through the existing texture stage once per worldspace as sRGB KTX2 and is written to
-  `lod/<world>/objects_atlas.ktx2`. Every chunk of the worldspace references it with the image URI
-  `../objects_atlas.ktx2` (relative to the chunk file, so it is the same file for every tier). The
+  `lod/<world>/objects_atlas.opensky-srgb.ktx2`. Every chunk of the worldspace references it with the image URI
+  `../objects_atlas.opensky-srgb.ktx2` (relative to the chunk file, so it is the same file for every tier). The
   file has a row in the additive table `lod_object_atlases` (path and SHA-256) and an entry in the
   `object_atlases` field of `lod-manifest.json`. `OBJECT_COMPILER_VERSION` is 3. A chunk that embeds
   the atlas (format 2, from an earlier derive) is still valid and still loads.

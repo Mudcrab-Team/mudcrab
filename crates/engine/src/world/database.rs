@@ -4301,12 +4301,15 @@ mod tests {
         let hash = "ab".repeat(32);
         connection
             .execute(
-                "INSERT INTO lod_object_atlases VALUES (60, 'lod/0000003c/objects_atlas.ktx2', ?1)",
+                "INSERT INTO lod_object_atlases VALUES (60, 'lod/0000003c/objects_atlas.opensky-srgb.ktx2', ?1)",
                 [&hash],
             )
             .unwrap();
         let atlas = load_lod_object_atlas(&connection, 60).unwrap().unwrap();
-        assert_eq!(atlas.payload_path, "lod/0000003c/objects_atlas.ktx2");
+        assert_eq!(
+            atlas.payload_path,
+            "lod/0000003c/objects_atlas.opensky-srgb.ktx2"
+        );
         // A missing file is an error that names the atlas, not a silent skip.
         let assets = tempfile::tempdir().unwrap();
         let message = format!(
@@ -4321,7 +4324,7 @@ mod tests {
         assert!(load_lod_object_atlas(&connection, 60).is_err());
         connection
             .execute(
-                "UPDATE lod_object_atlases SET payload_path='lod/0000003c/objects_atlas.ktx2', content_hash='nope'",
+                "UPDATE lod_object_atlases SET payload_path='lod/0000003c/objects_atlas.opensky-srgb.ktx2', content_hash='nope'",
                 [],
             )
             .unwrap();

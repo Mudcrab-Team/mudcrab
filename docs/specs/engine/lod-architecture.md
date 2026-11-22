@@ -128,7 +128,7 @@ object path (`streaming/lod_objects.rs`) works as follows.
   plus or minus the stream radius), where full-detail objects draw. Large-reference takeover of
   cells beyond the loaded grid is not implemented.
 - **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
-  KTX2 file (`lod/<world>/objects_atlas.ktx2`). The engine hash-checks it like a chunk, loads it
+  KTX2 file (`lod/<world>/objects_atlas.opensky-srgb.ktx2`). The engine hash-checks it like a chunk, loads it
   once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an
   earlier pack) loads as before.
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and

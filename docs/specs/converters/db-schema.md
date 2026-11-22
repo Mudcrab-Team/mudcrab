@@ -919,7 +919,7 @@ validation fails when a listed chunk is missing, has a different SHA-256, or is 
 chunk GLB (see [lod-compiler.md](lod-compiler.md#object-lod-chunks)).
 
 The additive table `lod_object_atlases(worldspace_id PRIMARY KEY, payload_path, content_hash)` lists
-the shared atlas of a worldspace (`lod/<world>/objects_atlas.ktx2`, KTX2, SHA-256 of the file) that
+the shared atlas of a worldspace (`lod/<world>/objects_atlas.opensky-srgb.ktx2`, KTX2, SHA-256 of the file) that
 its object chunks reference. A worldspace without a row has chunks that embed the atlas. The manifest
 field `object_atlases` maps each atlas path to its SHA-256.
 
