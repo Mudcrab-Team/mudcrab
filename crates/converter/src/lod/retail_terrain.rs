@@ -300,15 +300,27 @@ pub fn remap_normal_rgba(rgba: &mut [u8], axes: NormalAxes) {
     }
 }
 
-/// Decodes a retail normal map DDS (mip 0), moves its channels and encodes it as KTX2.
+/// Decodes a retail normal map DDS (first mip), moves its channels and encodes it as KTX2.
 pub fn convert_normal_map(dds_bytes: &[u8], axes: NormalAxes) -> Result<Vec<u8>> {
-    let dds =
-        ddsfile::Dds::read(std::io::Cursor::new(dds_bytes)).wrap_err("invalid normal map DDS")?;
-    let image = image_dds::image_from_dds(&dds, 0).wrap_err("the normal map cannot be decoded")?;
+    convert_first_mip(dds_bytes, TextureEncoding::NormalLinear, Some(axes))
+        .wrap_err("the normal map cannot be converted")
+}
+
+/// Decodes mip 0 of a DDS, optionally moves its normal channels, and encodes it as a KTX2 with
+/// that one level: the reviewed finding says both maps are sampled at the first mip only.
+fn convert_first_mip(
+    dds_bytes: &[u8],
+    encoding: TextureEncoding,
+    axes: Option<NormalAxes>,
+) -> Result<Vec<u8>> {
+    let dds = ddsfile::Dds::read(std::io::Cursor::new(dds_bytes)).wrap_err("invalid DDS")?;
+    let image = image_dds::image_from_dds(&dds, 0).wrap_err("the first mip cannot be decoded")?;
     let (width, height) = (image.width(), image.height());
     let mut rgba = image.into_raw();
-    remap_normal_rgba(&mut rgba, axes);
-    TextureConverter::encode_rgba8(width, height, &rgba, TextureEncoding::NormalLinear)
+    if let Some(axes) = axes {
+        remap_normal_rgba(&mut rgba, axes);
+    }
+    TextureConverter::encode_rgba8(width, height, &rgba, encoding, false)
 }
 
 /// What one block needs to become a chunk.
@@ -1003,7 +1015,10 @@ mod tests {
             normal_dds: &dds,
         })
         .unwrap();
-        assert_eq!((stats.cells, stats.empty_cells, stats.partial_cells), (12, 4, 0));
+        assert_eq!(
+            (stats.cells, stats.empty_cells, stats.partial_cells),
+            (12, 4, 0)
+        );
         assert!(chunk.cells.iter().all(|(_, y)| *y >= -95));
         crate::lod::terrain::validate_terrain_glb(&chunk.glb).unwrap();
         // A cell with some quadrants only is a partial cell.

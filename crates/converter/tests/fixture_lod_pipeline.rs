@@ -203,6 +203,40 @@ async fn v115_resumed_no_lod_discards_staged_lod_outputs() {
     assert!(!output.join("lod").exists());
 }
 
+/// The default terrain LOD source is the retail files. A world that has none gets no terrain LOD
+/// and a counted warning; the self-built stage never runs in its place.
+#[tokio::test]
+async fn the_default_source_imports_retail_files_and_never_generates_a_stand_in() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    generate_data(&data);
+    let output = directory.path().join("modern");
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.terrain_lod_source = converter::config::TerrainLodSource::default();
+    assert_eq!(
+        config.terrain_lod_source,
+        converter::config::TerrainLodSource::Retail
+    );
+    let report = convert_config(config).await;
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.lod_chunks, 0, "no chunk without retail files");
+    assert!(
+        report
+            .lod_warnings
+            .iter()
+            .any(|warning| warning.contains("no retail terrain LOD files")
+                && warning.contains("nothing is generated in its place")),
+        "{:?}",
+        report.lod_warnings
+    );
+    let connection = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let rows: u64 = connection
+        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert!(!output.join("lod").exists() || fs::read_dir(output.join("lod")).unwrap().count() == 0);
+}
+
 #[tokio::test]
 async fn packed_sidecars_compile_lod_and_loose_settings_override_them() {
     for loose_override in [false, true] {
