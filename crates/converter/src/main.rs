@@ -1018,17 +1018,18 @@ fn derive_terrain_lod(args: &[OsString], command_line: Vec<String>) -> Result<()
     );
     for world in &report.worlds {
         println!(
-            "{}: found {:?}, wrote {:?}, removed {} self-built, skipped {:?}",
+            "{}: found {:?}, wrote {:?}, removed {} self-built, skipped {:?}, kept {} retail chunks from previous generation",
             world.editor_id,
             world.found,
             world.compiled,
             world.old_chunks_removed,
-            world.skipped_by_class
+            world.skipped_by_class,
+            world.kept_from_previous_generation
         );
     }
     if !report.kept_self_built.is_empty() {
         println!(
-            "Kept self-built chunks (no retail files): {:?}",
+            "Kept self-built chunks (no retail blocks compiled): {:?}",
             report.kept_self_built
         );
     }

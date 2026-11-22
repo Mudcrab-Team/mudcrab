@@ -10,9 +10,8 @@
 //! Fails closed. It refuses a target that is not an exact clone of a registered pack, a pack
 //! without terrain LOD, a pack whose terrain LOD is already imported (unless `force`), and an
 //! archive that is not the one the pack was converted from. A block with a missing, unreadable or
-//! ambiguous file is skipped and counted with its reason; nothing is generated in its place. A
-//! worldspace with no retail terrain LOD files keeps the chunks it has and is listed in the
-//! receipt.
+//! ambiguous file is skipped and counted with its reason. A forced reimport keeps prior retail
+//! chunks that receive no replacement. A worldspace with no compiled blocks keeps all its chunks.
 
 use crate::{
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes, hash_file},
@@ -68,7 +67,7 @@ pub struct DeriveTerrainLodOptions {
 pub struct DeriveTerrainLodReport {
     pub receipt: PathBuf,
     pub worlds: Vec<WorldReport>,
-    /// Worldspaces of the pack with terrain LOD and no retail files; their chunks are untouched.
+    /// Worldspaces that kept self-built chunks because no retail blocks compiled.
     pub kept_self_built: Vec<String>,
     pub chunks: usize,
     pub elapsed_ms: u128,
@@ -154,10 +153,6 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             .filter(|(name, ..)| *name == world.file_name)
             .cloned()
             .collect();
-        if ids.is_empty() {
-            kept.push(world.editor_id.clone());
-            continue;
-        }
         let imported = stage_world(
             &transaction,
             &mut staged,
@@ -165,17 +160,23 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             &files,
             &ids,
             &pool,
+            &manifest.retail_terrain_inputs,
             || Ok(()),
         )
         .wrap_err_with(|| format!("failed to stage terrain LOD for {}", world.editor_id))?;
         retail_inputs.extend(imported.retail_inputs);
         payload_hashes.extend(imported.payload_hashes);
         let report = imported.report;
-        if report.compiled.is_empty() {
+        if report.kept_self_built {
             kept.push(world.editor_id.clone());
+        }
+        if ids.is_empty() && report.kept_from_previous_generation == 0 {
+            continue;
+        }
+        if !ids.is_empty() && report.compiled.is_empty() {
             eprintln!(
-                "worldspace {} kept its existing terrain LOD: no blocks compiled ({:?})",
-                world.editor_id, report.skipped_by_class
+                "worldspace {} kept its existing terrain LOD: no blocks compiled ({:?}), {} retail chunks kept from previous generation",
+                world.editor_id, report.skipped_by_class, report.kept_from_previous_generation
             );
         }
         reports.push(report);
@@ -255,7 +256,11 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         "game_data_read": true,
         "sources": sources,
         "archive_warnings": files.archive_warnings,
-        "totals": { "chunks": chunks, "skipped": reports.iter().map(|r| r.skipped.len()).sum::<usize>() },
+        "totals": {
+            "chunks": chunks,
+            "skipped": reports.iter().map(|r| r.skipped.len()).sum::<usize>(),
+            "kept_from_previous_generation": reports.iter().map(|r| r.kept_from_previous_generation).sum::<usize>(),
+        },
         "kept_self_built_worlds": kept,
         "worlds": reports.iter().map(|report| serde_json::json!({
             "editor_id": report.editor_id,
@@ -265,6 +270,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             "vertices": report.vertices,
             "chunk_bytes": report.bytes,
             "old_chunks_removed": report.old_chunks_removed,
+            "kept_from_previous_generation": report.kept_from_previous_generation,
             "skipped_by_class": report.skipped_by_class,
             "skipped": report.skipped.iter().map(|((world, level, x, y), skipped)| serde_json::json!({
                 "block": format!("{world}.{level}.{x}.{y}"),
@@ -337,15 +343,20 @@ fn lod_worlds(connection: &Connection) -> Result<Vec<LodWorld>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::lod::{ChunkAnchor, ChunkKey, LodTier, chunk_payload_path};
 
-    #[test]
-    fn a_second_world_failure_keeps_the_previous_terrain_generation() {
-        use shared::lod::{ChunkAnchor, ChunkKey, LodTier, chunk_payload_path};
+    fn payload_path(world: u32, x: i32) -> String {
+        chunk_payload_path(ChunkKey::new(
+            world,
+            LodTier::Tier16,
+            ChunkAnchor::new(x, 0),
+        ))
+    }
 
-        let directory = tempfile::tempdir().unwrap();
-        let registered = directory.path().join("registered");
-        let target = directory.path().join("clone");
-        let data = directory.path().join("Data");
+    fn derive_fixture(directory: &Path) -> DeriveTerrainLodOptions {
+        let registered = directory.join("registered");
+        let target = directory.join("clone");
+        let data = directory.join("Data");
         fs::create_dir(&registered).unwrap();
         fs::create_dir(&target).unwrap();
         let conversion = serde_json::to_vec(&ConversionManifest {
@@ -357,7 +368,7 @@ mod tests {
         for root in [&registered, &target] {
             fs::write(root.join("conversion-manifest.json"), &conversion).unwrap();
         }
-        let registry = directory.path().join("packs.json");
+        let registry = directory.join("packs.json");
         fs::write(
             &registry,
             serde_json::to_vec(&serde_json::json!({
@@ -376,20 +387,11 @@ mod tests {
         connection
             .execute_batch(
                 "INSERT INTO worldspaces(id, editor_id, flags, lod_origin_x, lod_origin_y)
-                    VALUES (60, 'First', 0, 0, 0), (61, 'Second', 0, 0, 0);
-                 CREATE TRIGGER fail_second_world BEFORE INSERT ON lod_chunks
-                    WHEN new.worldspace_id = 61 AND
-                         (SELECT count(*) FROM lod_chunks WHERE worldspace_id = 60) = 1
-                    BEGIN SELECT RAISE(ABORT, 'second world failed after the first replaced its chunks'); END;",
+                    VALUES (60, 'First', 0, 0, 0), (61, 'Second', 0, 0, 0);",
             )
             .unwrap();
-        let mut previous = Vec::new();
         for (world, x) in [(60, 0), (60, 1), (61, 0)] {
-            let relative = chunk_payload_path(ChunkKey::new(
-                world,
-                LodTier::Tier16,
-                ChunkAnchor::new(x, 0),
-            ));
+            let relative = payload_path(world, x);
             let path = target.join(&relative);
             let bytes = format!("old terrain for world {world}, anchor {x}");
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -407,7 +409,6 @@ mod tests {
                     rusqlite::params![world, x],
                 )
                 .unwrap();
-            previous.push((path, bytes.into_bytes()));
         }
         let identity = "a".repeat(64);
         connection
@@ -421,44 +422,75 @@ mod tests {
             "chunks": 3,
             "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
             "terrain_sources": {},
-            "terrain_lod_source": TERRAIN_SOURCE_RETAIL,
-            "retail_terrain_import_version": IMPORT_VERSION,
+            "terrain_lod_source": crate::lod::reuse::TERRAIN_SOURCE_SELF_BUILT,
         }))
         .unwrap();
-        let manifest_path = target.join("lod-manifest.json");
-        fs::write(&manifest_path, &manifest).unwrap();
-        let receipt_path = target.join(RECEIPT_FILE);
-        fs::write(&receipt_path, b"previous receipt").unwrap();
-        previous.push((manifest_path.clone(), manifest));
-        previous.push((receipt_path.clone(), b"previous receipt".to_vec()));
-        previous.push((db.clone(), fs::read(&db).unwrap()));
+        fs::write(target.join("lod-manifest.json"), &manifest).unwrap();
+        fs::write(target.join(RECEIPT_FILE), b"previous receipt").unwrap();
         shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION)
             .unwrap();
 
-        let mesh = crate::lod::retail::btr::tests::land_block();
-        let map = dummy_content::dds::generate(
-            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
-            &mut dummy_content::rng::Rng::new(5),
-        )
-        .unwrap();
         for world in ["first", "second"] {
-            let meshes = data.join("meshes/terrain").join(world);
-            let textures = data.join("textures/terrain").join(world);
-            fs::create_dir_all(&meshes).unwrap();
-            fs::create_dir_all(&textures).unwrap();
-            fs::write(meshes.join(format!("{world}.16.0.0.btr")), &mesh).unwrap();
-            fs::write(textures.join(format!("{world}.16.0.0.dds")), &map).unwrap();
-            fs::write(textures.join(format!("{world}.16.0.0_n.dds")), &map).unwrap();
+            write_block(&data, world, 0, 5);
         }
-        let options = DeriveTerrainLodOptions {
-            target: target.clone(),
+        DeriveTerrainLodOptions {
+            target,
             registry,
             clone_of: "pack".into(),
             data,
             force: true,
             converter_head: None,
             command: Vec::new(),
-        };
+        }
+    }
+
+    fn write_block(data: &Path, world: &str, x: i32, seed: u64) {
+        let mesh = crate::lod::retail::btr::tests::land_block();
+        let map = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(seed),
+        )
+        .unwrap();
+        let meshes = data.join("meshes/terrain").join(world);
+        let textures = data.join("textures/terrain").join(world);
+        fs::create_dir_all(&meshes).unwrap();
+        fs::create_dir_all(&textures).unwrap();
+        fs::write(meshes.join(format!("{world}.16.{x}.0.btr")), &mesh).unwrap();
+        fs::write(textures.join(format!("{world}.16.{x}.0.dds")), &map).unwrap();
+        fs::write(textures.join(format!("{world}.16.{x}.0_n.dds")), &map).unwrap();
+    }
+
+    #[test]
+    fn a_second_world_failure_keeps_the_previous_terrain_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = derive_fixture(directory.path());
+        let target = &options.target;
+        let db = target.join("skyrim_world.db");
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_second_world BEFORE INSERT ON lod_chunks
+                    WHEN new.worldspace_id = 61 AND
+                         (SELECT count(*) FROM lod_chunks WHERE worldspace_id = 60) = 1
+                    BEGIN SELECT RAISE(ABORT, 'second world failed after the first replaced its chunks'); END;",
+            )
+            .unwrap();
+        drop(connection);
+        let manifest_path = target.join("lod-manifest.json");
+        let receipt_path = target.join(RECEIPT_FILE);
+        let stale_path = target.join(payload_path(60, 1));
+        let previous = [
+            target.join(payload_path(60, 0)),
+            stale_path.clone(),
+            target.join(payload_path(61, 0)),
+            manifest_path.clone(),
+            receipt_path.clone(),
+            db.clone(),
+        ]
+        .map(|path| {
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        });
         let error = run(&options).unwrap_err();
         assert!(
             format!("{error:#}")
@@ -468,7 +500,7 @@ mod tests {
         for (path, bytes) in &previous {
             assert_eq!(&fs::read(path).unwrap(), bytes, "{}", path.display());
         }
-        shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION)
+        shared::world_assets::validate_lod_build_contract(target, CONVERTER_SCHEMA_VERSION)
             .unwrap();
 
         let connection = Connection::open(&db).unwrap();
@@ -480,7 +512,7 @@ mod tests {
         assert_eq!(report.chunks, 2);
         assert_eq!(report.worlds.len(), 2);
         assert!(
-            !previous[1].0.exists(),
+            !stale_path.exists(),
             "the stale chunk is retired on success"
         );
         assert_eq!(
@@ -488,7 +520,87 @@ mod tests {
                 ["lod_manifest_sha256"]["after"],
             hash_file(&manifest_path).unwrap()
         );
-        shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION)
+        shared::world_assets::validate_lod_build_contract(target, CONVERTER_SCHEMA_VERSION)
+            .unwrap();
+    }
+
+    #[test]
+    fn forced_reimport_keeps_a_failed_retail_chunk_when_its_sibling_compiles() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = derive_fixture(directory.path());
+        let target = &options.target;
+        write_block(&options.data, "first", 16, 5);
+        assert_eq!(run(&options).unwrap().chunks, 3);
+
+        let manifest_path = target.join("lod-manifest.json");
+        let failed_relative = payload_path(60, 1);
+        let sibling_relative = payload_path(60, 0);
+        let previous: LodManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let failed_bytes = fs::read(target.join(&failed_relative)).unwrap();
+        let sibling_bytes = fs::read(target.join(&sibling_relative)).unwrap();
+        let saved_row = || {
+            let connection = Connection::open(target.join("skyrim_world.db")).unwrap();
+            connection
+                .query_row(
+                    "SELECT c.rowid, content_hash, source_cells, s.id, s.minX, s.maxX, s.minY, s.maxY
+                     FROM lod_chunks c JOIN lod_chunks_spatial s
+                     USING (worldspace_id, tier, anchor_x, anchor_y)
+                     WHERE c.payload_path = ?1",
+                    [&failed_relative],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, f64>(4)?,
+                            row.get::<_, f64>(5)?,
+                            row.get::<_, f64>(6)?,
+                            row.get::<_, f64>(7)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let row_before = saved_row();
+        fs::write(
+            options.data.join("meshes/terrain/first/first.16.16.0.btr"),
+            b"damaged mesh",
+        )
+        .unwrap();
+        write_block(&options.data, "first", 0, 7);
+
+        let report = run(&options).unwrap();
+        assert_eq!(report.chunks, 2);
+        assert_eq!(report.worlds[0].skipped_by_class["unreadable_mesh"], 1);
+        assert_eq!(report.worlds[0].kept_from_previous_generation, 1);
+        assert_eq!(report.worlds[0].old_chunks_removed, 0);
+        assert_eq!(saved_row(), row_before);
+        assert_eq!(
+            fs::read(target.join(&failed_relative)).unwrap(),
+            failed_bytes
+        );
+        assert_ne!(
+            fs::read(target.join(&sibling_relative)).unwrap(),
+            sibling_bytes
+        );
+        let manifest: LodManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest.chunks, 3);
+        assert_eq!(
+            manifest.retail_terrain_inputs[&failed_relative],
+            previous.retail_terrain_inputs[&failed_relative]
+        );
+        assert_ne!(
+            manifest.retail_terrain_inputs[&sibling_relative],
+            previous.retail_terrain_inputs[&sibling_relative]
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(report.receipt).unwrap()).unwrap();
+        assert_eq!(receipt["totals"]["kept_from_previous_generation"], 1);
+        assert_eq!(receipt["worlds"][0]["kept_from_previous_generation"], 1);
+        shared::world_assets::validate_lod_build_contract(target, CONVERTER_SCHEMA_VERSION)
             .unwrap();
     }
 

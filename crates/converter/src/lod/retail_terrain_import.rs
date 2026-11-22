@@ -19,7 +19,7 @@ use color_eyre::{
 };
 use rayon::prelude::*;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
-use shared::lod::LodOrigin;
+use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -41,6 +41,9 @@ pub struct WorldReport {
     pub bytes: u64,
     /// Self-built chunks removed because a retail chunk replaced them or none exists.
     pub old_chunks_removed: usize,
+    /// Retail chunks kept from the previous generation because no replacement compiled.
+    pub kept_from_previous_generation: usize,
+    pub(crate) kept_self_built: bool,
     pub(crate) replaced_paths: BTreeSet<String>,
     /// Skipped blocks by class.
     pub skipped_by_class: BTreeMap<&'static str, usize>,
@@ -77,7 +80,16 @@ pub(crate) fn import_world(
 ) -> Result<WorldReport> {
     let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
     let mut staged = StagedGeneration::new(target)?;
-    let imported = stage_world(&tx, &mut staged, world, files, ids, pool, &check_stop)?;
+    let imported = stage_world(
+        &tx,
+        &mut staged,
+        world,
+        files,
+        ids,
+        pool,
+        &BTreeMap::new(),
+        &check_stop,
+    )?;
     if !imported.retail_inputs.is_empty() {
         check_stop()?;
         staged.publish(target, tx, check_stop)?;
@@ -88,6 +100,7 @@ pub(crate) fn import_world(
 }
 
 /// Compiles one world into the caller's generation. No live files are changed here.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_world(
     tx: &Transaction<'_>,
     staged: &mut StagedGeneration,
@@ -95,6 +108,7 @@ pub(crate) fn stage_world(
     files: &RetailTerrainFiles,
     ids: &[BlockId],
     pool: &rayon::ThreadPool,
+    previous_retail_inputs: &BTreeMap<String, String>,
     check_stop: impl Fn() -> Result<()>,
 ) -> Result<WorldImport> {
     let mut report = WorldReport {
@@ -123,6 +137,7 @@ pub(crate) fn stage_world(
     if !plan.is_empty() {
         check_stop()?;
     }
+    let previous_chunks = old_chunks(tx, world.id)?;
     let staging = staged.staging_root();
     let mut new_inputs = BTreeMap::new();
     let mut new_payload_hashes = Vec::new();
@@ -148,19 +163,7 @@ pub(crate) fn stage_world(
         for (id, result) in results {
             match result {
                 Ok((chunk, stats, input_hash)) => {
-                    // A world whose blocks all fail keeps its existing chunks.
-                    if new_inputs.is_empty() {
-                        report.replaced_paths = old_chunk_paths(tx, world.id)?;
-                        tx.execute(
-                            "DELETE FROM lod_chunks WHERE worldspace_id = ?1",
-                            [world.id],
-                        )?;
-                        tx.execute(
-                            "DELETE FROM lod_chunks_spatial WHERE worldspace_id = ?1",
-                            [world.id],
-                        )?;
-                    }
-                    let relative = shared::lod::chunk_payload_path(chunk.key);
+                    let relative = chunk_payload_path(chunk.key);
                     ensure!(
                         staged.paths.insert(PathBuf::from(&relative)),
                         "duplicate terrain LOD chunk {relative}"
@@ -180,10 +183,36 @@ pub(crate) fn stage_world(
     if !plan.is_empty() {
         files.check_archives(ids)?;
     }
-    report.old_chunks_removed = report.replaced_paths.len();
-    staged
-        .stale
-        .extend(report.replaced_paths.iter().map(PathBuf::from));
+    for (key, relative) in previous_chunks {
+        let was_retail = previous_retail_inputs.contains_key(&relative);
+        let replaced = new_inputs.contains_key(&relative);
+        if !replaced && was_retail {
+            report.kept_from_previous_generation += 1;
+            continue;
+        }
+        // A world whose blocks all fail keeps its existing self-built chunks too.
+        if new_inputs.is_empty() {
+            report.kept_self_built = true;
+            continue;
+        }
+        if !replaced {
+            let params =
+                rusqlite::params![world.id, key.tier.side_cells(), key.anchor.x, key.anchor.y];
+            tx.execute(
+                "DELETE FROM lod_chunks WHERE worldspace_id = ?1 AND tier = ?2 AND anchor_x = ?3 AND anchor_y = ?4",
+                params,
+            )?;
+            tx.execute(
+                "DELETE FROM lod_chunks_spatial WHERE worldspace_id = ?1 AND tier = ?2 AND anchor_x = ?3 AND anchor_y = ?4",
+                params,
+            )?;
+            staged.stale.insert(PathBuf::from(&relative));
+        }
+        if !was_retail {
+            report.old_chunks_removed += 1;
+        }
+        report.replaced_paths.insert(relative);
+    }
     Ok(WorldImport {
         report,
         retail_inputs: new_inputs,
@@ -259,8 +288,7 @@ fn compile_one(
 }
 
 /// Validate every old path before using it to move a payload.
-fn old_chunk_paths(connection: &Connection, world: u32) -> Result<BTreeSet<String>> {
-    use shared::lod::{ChunkAnchor, ChunkKey, LodTier, chunk_payload_path};
+fn old_chunks(connection: &Connection, world: u32) -> Result<Vec<(ChunkKey, String)>> {
     let mut statement = connection.prepare(
         "SELECT tier, anchor_x, anchor_y, payload_path FROM lod_chunks WHERE worldspace_id = ?1",
     )?;
@@ -275,11 +303,12 @@ fn old_chunk_paths(connection: &Connection, world: u32) -> Result<BTreeSet<Strin
     rows.map(|row| {
         let (side, x, y, relative) = row?;
         let tier = LodTier::from_side_cells(side).wrap_err("invalid old LOD tier")?;
+        let key = ChunkKey::new(world, tier, ChunkAnchor::new(x, y));
         ensure!(
-            relative == chunk_payload_path(ChunkKey::new(world, tier, ChunkAnchor::new(x, y))),
+            relative == chunk_payload_path(key),
             "refused: chunk payload path {relative} is not canonical for world {world:08x}"
         );
-        Ok(relative)
+        Ok((key, relative))
     })
     .collect()
 }
@@ -288,7 +317,6 @@ fn old_chunk_paths(connection: &Connection, world: u32) -> Result<BTreeSet<Strin
 mod tests {
     use super::super::retail_terrain_source;
     use super::*;
-    use shared::lod::{ChunkAnchor, ChunkKey, LodTier, chunk_payload_path};
     use std::fs;
 
     #[test]
