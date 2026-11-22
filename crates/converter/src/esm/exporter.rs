@@ -1124,15 +1124,16 @@ fn export_records(
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id;
                 let mut cell = cell_id.and_then(|id| cells.get(&id).copied());
-                if subset_placement && cell.is_none() {
-                    if let Some(cell_id) = cell_id {
-                        cell = tx
-                            .prepare_cached(
-                                "SELECT grid_x,grid_y,worldspace_id FROM cells WHERE id=?1",
-                            )?
-                            .query_row([cell_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                            .optional()?;
-                    }
+                if subset_placement
+                    && cell.is_none()
+                    && let Some(cell_id) = cell_id
+                {
+                    cell = tx
+                        .prepare_cached(
+                            "SELECT grid_x,grid_y,worldspace_id FROM cells WHERE id=?1",
+                        )?
+                        .query_row([cell_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                        .optional()?;
                 }
                 let omission = insert_reference_with_canonical_data(
                     &tx,
@@ -3552,13 +3553,14 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
         export_to_db_with_load_order(&conn, &master, &one_plugin_order()).unwrap();
-        let rows: Vec<(
+        type LandRow = (
             u32,
             Vec<u8>,
             Option<Vec<u8>>,
             Option<Vec<u8>>,
             Option<Vec<u8>>,
-        )> = conn
+        );
+        let rows: Vec<LandRow> = conn
             .prepare("SELECT cell_id, heightmap, vtex, vclr, normals FROM land ORDER BY cell_id")
             .unwrap()
             .query_map([], |row| {

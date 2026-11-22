@@ -1011,6 +1011,7 @@ pub(super) fn refresh_placement_cells(
     Ok(certified)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_room_graph(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
