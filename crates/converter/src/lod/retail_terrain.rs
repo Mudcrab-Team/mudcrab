@@ -359,6 +359,7 @@ pub struct BlockStats {
 
 /// The tier of a retail block level, or `None` when the runtime has no such tier (level 32).
 pub fn tier_for_level(level: u32) -> Option<LodTier> {
+    // silent-ok: a level that does not fit i32 has no tier, which callers count as no_runtime_tier
     i32::try_from(level).ok().and_then(LodTier::from_side_cells)
 }
 
@@ -641,6 +642,7 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
     let number = |value: &serde_json::Value, what: &str| {
         value
             .as_u64()
+            // silent-ok: the closure's caller turns None into an error on the next line
             .and_then(|n| usize::try_from(n).ok())
             .ok_or_else(|| eyre!("retail terrain GLB {what} is not a number"))
     };
@@ -838,6 +840,7 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
     let mut seen_cells = std::collections::BTreeSet::new();
     let mut used_meshes = vec![false; meshes.len()];
     for cell in child_list(node_list.first().ok_or_else(|| eyre!("no nodes"))?)? {
+        // silent-ok: a missing node name fails the next parse, which names the node
         let name = node_list[cell]["name"].as_str().unwrap_or_default();
         let grid = nodes::parse_source_cell(name)
             .ok_or_else(|| eyre!("node {cell} is not a source cell"))?;
@@ -858,6 +861,7 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
             let short = node["name"]
                 .as_str()
                 .and_then(|n| n.strip_prefix("terrain_quadrant_"))
+                // silent-ok: a missing quadrant name fails the next check, which names the cell
                 .unwrap_or_default();
             ensure!(
                 QUADRANTS.iter().any(|q| q.0 == short) && shorts.insert(short),

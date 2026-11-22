@@ -204,6 +204,7 @@ fn parent_names(nif: &NifFile) -> BTreeMap<usize, Option<String>> {
                 index => nif
                     .header
                     .get_string(index as usize)
+                    // silent-ok: an unreadable parent name leaves the shape unparented, so it is counted as unrecognised
                     .ok()
                     .map(str::to_owned),
             };
@@ -369,6 +370,7 @@ pub fn read_terrain_lod(bytes: &[u8], label: &Path) -> Result<TerrainLodFile> {
                             index => nif
                                 .header
                                 .get_string(index as usize)
+                                // silent-ok: an unreadable node name is reported as no name; the transform is still listed
                                 .ok()
                                 .map(str::to_owned),
                         },
