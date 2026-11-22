@@ -111,6 +111,12 @@ pub struct PipelineReport {
     /// Wall time spent compiling terrain LOD, excluding other conversion stages.
     #[serde(default)]
     pub lod_elapsed_ms: u128,
+    /// Retail object LOD chunks published this run (separate from the terrain `lod_chunks`).
+    #[serde(default)]
+    pub object_lod_chunks: u64,
+    /// Wall time of the object LOD stage, included in `lod_elapsed_ms`.
+    #[serde(default)]
+    pub object_lod_elapsed_ms: u128,
     /// Wall time of package publication, including seals/verification when replacing
     /// an output. Excludes subsequent ingestion-cache persistence and pruning.
     #[serde(default)]
@@ -5754,6 +5760,23 @@ async fn compile_lod_chunks_inline(
         "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
         rusqlite::params![identity],
     )?;
+    // Retail object LOD hangs off the terrain LOD just compiled (same worldspace origins), so it
+    // runs only when a world was compiled. It reads the Data folder directly and changes no
+    // ingestion input, so a pack's NIF, texture and script outputs are unaffected.
+    let object_lod = if compiled_worlds > 0 {
+        let started = Instant::now();
+        let stage = crate::lod::object_stage::build_object_lod(config, staging, &connection)?;
+        report.object_lod_chunks = stage.chunks.len() as u64;
+        report.object_lod_elapsed_ms = started.elapsed().as_millis();
+        report.notices.extend(stage.notices.iter().cloned());
+        report.lod_warnings.extend(stage.warnings.iter().cloned());
+        report
+            .artifacts
+            .extend(stage.chunks.iter().map(|(path, _)| PathBuf::from(path)));
+        stage
+    } else {
+        crate::lod::object_stage::ObjectLodStage::default()
+    };
     if compiled_worlds > 0 {
         report.artifacts.push(PathBuf::from("lod-manifest.json"));
         let manifest = LodManifest {
@@ -5765,9 +5788,13 @@ async fn compile_lod_chunks_inline(
             terrain_sources,
             compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
             chunk_inputs,
-            object_chunks: 0,
-            objects_compiler_version: 0,
-            object_chunk_inputs: BTreeMap::new(),
+            object_chunks: object_lod.chunks.len() as u64,
+            objects_compiler_version: if object_lod.chunks.is_empty() {
+                0
+            } else {
+                crate::lod::objects::OBJECT_COMPILER_VERSION
+            },
+            object_chunk_inputs: object_lod.chunks.iter().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;

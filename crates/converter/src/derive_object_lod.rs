@@ -15,19 +15,12 @@
 //! the compiler does not understand. Such a block is skipped and counted with its reason; nothing
 //! is guessed. If the finished pack does not validate, the run removes what it added.
 
+pub use crate::lod::object_stage::{BlockCandidate, SkippedBlock, WorldFacts};
 use crate::{
-    archive::ArchiveExtractor,
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes, hash_file},
     lod::{
-        objects::{
-            OBJECT_COMPILER_VERSION, ObjectChunk, chunk_key_for_block, compile_object_chunk,
-            object_chunk_input_hash, publish_object_chunk,
-        },
-        retail::{
-            atlas::read_dds_info,
-            bto::{ObjectLodFile, read_object_lod},
-            name::{RetailLodKind, parse_lod_file_name},
-        },
+        object_stage::{LEVEL, compile_candidates, read_retail},
+        objects::{OBJECT_COMPILER_VERSION, ObjectChunk, publish_object_chunk},
         reuse::LodManifest,
     },
     pack_clone::check_clone,
@@ -50,8 +43,6 @@ use std::{
 pub const RECEIPT_FILE: &str = "object-lod-overlay-receipt.json";
 /// Receipt format name, so a reader can recognise the file.
 pub const RECEIPT_FORMAT: &str = "object-lod-overlay-receipt/1";
-/// The only block level compiled in this slice.
-const LEVEL: u32 = 16;
 
 /// Inputs of `derive-object-lod`.
 #[derive(Debug, Clone)]
@@ -74,15 +65,6 @@ pub struct DeriveObjectLodOptions {
     pub command: Vec<String>,
 }
 
-/// A block the run did not compile, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkippedBlock {
-    pub cell: (i32, i32),
-    /// The class of the reason, the key of the counts.
-    pub class: &'static str,
-    pub detail: String,
-}
-
 /// What a successful run produced.
 #[derive(Debug)]
 pub struct DeriveObjectLodReport {
@@ -97,23 +79,6 @@ pub struct DeriveObjectLodReport {
     pub bytes_added: u64,
     pub atlas_ktx2_bytes: usize,
     pub elapsed_ms: u128,
-}
-
-/// One `.bto` block read from the game data, before compilation.
-pub struct BlockCandidate {
-    /// South-west cell, from the file name.
-    pub cell: (i32, i32),
-    /// SHA-256 of the `.bto` bytes.
-    pub sha256: String,
-    /// The parsed block, or why it could not be read.
-    pub parsed: std::result::Result<ObjectLodFile, String>,
-}
-
-/// The worldspace the chunks belong to.
-#[derive(Debug, Clone, Copy)]
-pub struct WorldFacts {
-    pub id: u32,
-    pub origin: LodOrigin,
 }
 
 /// What [`derive_into`] changed.
@@ -167,7 +132,26 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
     // Read the retail inputs. Every archive that provides a file must be the one the pack was
     // converted from.
     let scratch = tempfile::tempdir().wrap_err("failed to create a scratch folder")?;
-    let retail = read_retail(&options.data, &world_file, &conversion, scratch.path())?;
+    let mut verify = |name: &str, path: &Path| -> Result<serde_json::Value> {
+        let recorded = conversion.archives.get(name).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "refused: archive {name} provides retail LOD files but the pack's manifest does not list it, so it is not proven to be the archive the pack was converted from"
+            )
+        })?;
+        let actual = hash_file(path)?;
+        ensure!(
+            actual == recorded.source_hash,
+            "refused: archive {name} differs from the one the pack was converted from (hash {actual}, manifest {})",
+            recorded.source_hash
+        );
+        Ok(serde_json::json!({ "archive": name, "sha256": actual, "matches_pack_manifest": true }))
+    };
+    let retail =
+        read_retail(&options.data, &world_file, scratch.path(), &mut verify)?.ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "refused: the game data has no level-{LEVEL} object LOD blocks for `{world_file}`"
+            )
+        })?;
     let blocks_found = retail.blocks.len();
     let atlas_sha256 = hash_bytes(&retail.atlas_dds);
 
@@ -358,293 +342,6 @@ fn object_row_count(connection: &Connection) -> Result<i64> {
     )
 }
 
-/// The `.bto` blocks and the object atlas read from the game folder.
-struct Retail {
-    blocks: Vec<BlockCandidate>,
-    atlas_dds: Vec<u8>,
-    /// Where each input came from, for the receipt.
-    sources: Vec<serde_json::Value>,
-    /// Blocks that could not be read at all.
-    skipped: Vec<SkippedBlock>,
-}
-
-/// Where one game-data file can be read from.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Provider {
-    Loose(PathBuf),
-    Archive { name: String, path: PathBuf },
-}
-
-/// Normalises an archive entry path: lowercase, forward slashes.
-fn normal(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase()
-}
-
-/// Finds the files `wanted` accepts in loose files and archives of `data`. Loose files win over
-/// archives; otherwise every archive that has the file is listed.
-fn providers(
-    data: &Path,
-    wanted: &dyn Fn(&str) -> bool,
-) -> Result<BTreeMap<String, Vec<Provider>>> {
-    let mut found: BTreeMap<String, Vec<Provider>> = BTreeMap::new();
-    let mut archives: Vec<PathBuf> = fs::read_dir(data)
-        .wrap_err_with(|| format!("cannot read the game data folder {}", data.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("bsa"))
-        })
-        .collect();
-    archives.sort();
-    for archive in archives {
-        let name = archive
-            .file_name()
-            .map(|name| name.to_string_lossy().to_ascii_lowercase())
-            .ok_or_else(|| {
-                color_eyre::eyre::eyre!("archive path {} has no file name", archive.display())
-            })?;
-        let paths = ArchiveExtractor::list_paths(&archive)
-            .wrap_err_with(|| format!("cannot list archive {name}"))?;
-        for path in paths {
-            let key = normal(&path);
-            if wanted(&key) {
-                found.entry(key).or_default().push(Provider::Archive {
-                    name: name.clone(),
-                    path: archive.clone(),
-                });
-            }
-        }
-    }
-    // Loose files: walk the two terrain folders (found case-insensitively).
-    for root in ["meshes", "textures"] {
-        let mut stack = vec![(PathBuf::from(root), child_ci(data, root)?)];
-        while let Some((relative, Some(directory))) = stack.pop() {
-            for entry in fs::read_dir(&directory)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-                let relative = relative.join(&name);
-                let path = entry.path();
-                if path.is_dir() {
-                    // Only terrain trees can hold object LOD files.
-                    if relative.components().count() == 2 && name != "terrain" {
-                        continue;
-                    }
-                    stack.push((relative, Some(path)));
-                } else if wanted(&normal(&relative)) {
-                    let key = normal(&relative);
-                    // A loose file replaces whatever the archives hold.
-                    found.insert(key, vec![Provider::Loose(path)]);
-                }
-            }
-        }
-    }
-    Ok(found)
-}
-
-/// The child of `directory` named `name`, compared without case.
-fn child_ci(directory: &Path, name: &str) -> Result<Option<PathBuf>> {
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .eq_ignore_ascii_case(name)
-        {
-            return Ok(Some(entry.path()));
-        }
-    }
-    Ok(None)
-}
-
-/// The bytes of one file and every provider that holds them, or why the providers disagree.
-type CopyRead = std::result::Result<(Vec<u8>, Vec<Provider>), String>;
-
-/// Reads the bytes of `relative` from its providers. `Ok(Err(..))` is a conflict: several
-/// providers hold different bytes, which this command does not resolve by guessing.
-fn read_provider_bytes(
-    relative: &str,
-    options: &[Provider],
-    extracted: &BTreeMap<PathBuf, PathBuf>,
-) -> Result<CopyRead> {
-    let mut copies: Vec<(Vec<u8>, Provider)> = Vec::new();
-    for provider in options {
-        let bytes = match provider {
-            Provider::Loose(path) => fs::read(path)?,
-            Provider::Archive { path, .. } => {
-                let root = extracted.get(path).ok_or_else(|| {
-                    color_eyre::eyre::eyre!("archive {} was not extracted", path.display())
-                })?;
-                fs::read(root.join(relative))
-                    .wrap_err_with(|| format!("{relative} was not extracted from its archive"))?
-            }
-        };
-        copies.push((bytes, provider.clone()));
-    }
-    let Some((first, _)) = copies.first() else {
-        bail!("{relative} has no provider");
-    };
-    if copies.iter().any(|(bytes, _)| bytes != first) {
-        let names: Vec<String> = copies
-            .iter()
-            .map(|(_, provider)| describe(provider))
-            .collect();
-        return Ok(Err(format!(
-            "{relative} differs between {}",
-            names.join(", ")
-        )));
-    }
-    let bytes = copies[0].0.clone();
-    Ok(Ok((
-        bytes,
-        copies.into_iter().map(|(_, provider)| provider).collect(),
-    )))
-}
-
-fn describe(provider: &Provider) -> String {
-    match provider {
-        Provider::Loose(_) => "a loose file".to_owned(),
-        Provider::Archive { name, .. } => format!("archive {name}"),
-    }
-}
-
-/// Reads the level-16 blocks and the object atlas of `world_file` from the game data.
-fn read_retail(
-    data: &Path,
-    world_file: &str,
-    conversion: &ConversionManifest,
-    scratch: &Path,
-) -> Result<Retail> {
-    let atlas_path = format!("textures/terrain/{world_file}/objects/{world_file}.objects.dds");
-    let is_block = |path: &str| {
-        parse_lod_file_name(path).is_some_and(|name| {
-            name.kind == RetailLodKind::Object
-                && name.world == world_file
-                && name.level == Some(LEVEL)
-        }) && path.starts_with("meshes/")
-    };
-    let wanted = |path: &str| path == atlas_path || is_block(path);
-    let found = providers(data, &wanted)?;
-
-    // Every archive that provides a wanted file must be the one the pack was converted from.
-    let used: BTreeSet<(String, PathBuf)> = found
-        .values()
-        .flatten()
-        .filter_map(|provider| match provider {
-            Provider::Archive { name, path } => Some((name.clone(), path.clone())),
-            Provider::Loose(_) => None,
-        })
-        .collect();
-    let mut sources = Vec::new();
-    let mut extracted: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
-    for (name, path) in &used {
-        let recorded = conversion.archives.get(name).ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "refused: archive {name} provides retail LOD files but the pack's manifest does not list it, so it is not proven to be the archive the pack was converted from"
-            )
-        })?;
-        let actual = hash_file(path)?;
-        ensure!(
-            actual == recorded.source_hash,
-            "refused: archive {name} differs from the one the pack was converted from (hash {actual}, manifest {})",
-            recorded.source_hash
-        );
-        sources.push(
-            serde_json::json!({ "archive": name, "sha256": actual, "matches_pack_manifest": true }),
-        );
-        let root = scratch.join(format!("archive-{}", extracted.len()));
-        let wanted_here: BTreeSet<String> = found
-            .iter()
-            .filter(|(_, options)| {
-                options.iter().any(
-                    |provider| matches!(provider, Provider::Archive { path: p, .. } if p == path),
-                )
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
-        ArchiveExtractor::extract_matching(path, &root, |entry| {
-            wanted_here.contains(&normal(entry))
-        })
-        .wrap_err_with(|| format!("failed to read from archive {name}"))?;
-        extracted.insert(path.clone(), root);
-    }
-
-    // The atlas.
-    let atlas_options = found.get(&atlas_path).ok_or_else(|| {
-        color_eyre::eyre::eyre!("refused: the game data has no {atlas_path}, the object atlas")
-    })?;
-    let (atlas_dds, atlas_providers) =
-        match read_provider_bytes(&atlas_path, atlas_options, &extracted)? {
-            Ok(read) => read,
-            Err(conflict) => bail!("refused: the object atlas is ambiguous: {conflict}"),
-        };
-    let info = read_dds_info(&atlas_dds).map_err(|error| {
-        color_eyre::eyre::eyre!("refused: the object atlas is not a valid DDS: {error}")
-    })?;
-    let atlas_length = u64::try_from(atlas_dds.len()).wrap_err("the object atlas is too large")?;
-    let header_length =
-        u64::try_from(info.data_offset).wrap_err("the object atlas header is too large")?;
-    ensure!(
-        info.expected_payload_bytes()
-            .and_then(|payload| header_length.checked_add(payload))
-            == Some(atlas_length),
-        "refused: the object atlas DDS has the wrong length for its header"
-    );
-    sources.push(serde_json::json!({
-        "file": atlas_path,
-        "providers": atlas_providers.iter().map(describe).collect::<Vec<_>>(),
-        "sha256": hash_bytes(&atlas_dds),
-    }));
-
-    // The blocks.
-    let mut blocks = Vec::new();
-    let mut skipped = Vec::new();
-    let mut loose = 0usize;
-    for (relative, options) in found.iter().filter(|(path, _)| is_block(path)) {
-        let Some(name) = parse_lod_file_name(relative) else {
-            continue;
-        };
-        let Some(cell) = name.cell else { continue };
-        match read_provider_bytes(relative, options, &extracted)? {
-            Err(conflict) => skipped.push(SkippedBlock {
-                cell,
-                class: "several providers with different bytes",
-                detail: conflict,
-            }),
-            Ok((bytes, used_providers)) => {
-                loose += used_providers
-                    .iter()
-                    .filter(|provider| matches!(provider, Provider::Loose(_)))
-                    .count();
-                let parsed = read_object_lod(&bytes, Path::new(relative))
-                    .map_err(|error| format!("{error:#}"));
-                blocks.push(BlockCandidate {
-                    cell,
-                    sha256: hash_bytes(&bytes),
-                    parsed,
-                });
-            }
-        }
-    }
-    sources.push(serde_json::json!({
-        "blocks": blocks.len() + skipped.len(),
-        "loose_files_used": loose,
-    }));
-    ensure!(
-        !blocks.is_empty(),
-        "refused: the game data has no level-{LEVEL} object LOD blocks for `{world_file}`"
-    );
-    Ok(Retail {
-        blocks,
-        atlas_dds,
-        sources,
-        skipped,
-    })
-}
-
 /// Compiles the candidates and adds the chunks to the pack at `target`: the files, the database
 /// rows and the manifest fields. A finished pack must validate; otherwise what was added is
 /// removed again (when `force` replaced existing chunks the removal cannot restore them, and the
@@ -661,51 +358,7 @@ pub fn derive_into(
     let atlas = TextureConverter::convert(atlas_dds, TextureEncoding::ColorSrgb)
         .wrap_err("the object atlas could not be converted to KTX2")?;
     let metadata = inspect_ktx2(&atlas, TextureEncoding::ColorSrgb)?;
-
-    let mut skipped = Vec::new();
-    let mut chunks: Vec<(ObjectChunk, String)> = Vec::new();
-    for candidate in candidates {
-        let block = match &candidate.parsed {
-            Ok(block) => block,
-            Err(reason) => {
-                skipped.push(SkippedBlock {
-                    cell: candidate.cell,
-                    class: "block cannot be read",
-                    detail: reason.clone(),
-                });
-                continue;
-            }
-        };
-        let key = match chunk_key_for_block(
-            world.id,
-            world.origin,
-            LEVEL,
-            candidate.cell.0,
-            candidate.cell.1,
-        ) {
-            Ok(key) => key,
-            Err(error) => {
-                skipped.push(SkippedBlock {
-                    cell: candidate.cell,
-                    class: "block is not on the LOD grid",
-                    detail: format!("{error:#}"),
-                });
-                continue;
-            }
-        };
-        match compile_object_chunk(key, world.origin, block, &atlas) {
-            Ok(chunk) => {
-                let input =
-                    object_chunk_input_hash(key, world.origin, &candidate.sha256, atlas_sha256)?;
-                chunks.push((chunk, input));
-            }
-            Err(error) => skipped.push(SkippedBlock {
-                cell: candidate.cell,
-                class: "block refused by the compiler",
-                detail: format!("{error:#}"),
-            }),
-        }
-    }
+    let (chunks, skipped) = compile_candidates(world, candidates, &atlas, atlas_sha256)?;
     ensure!(
         !chunks.is_empty(),
         "refused: no block compiled ({} skipped); nothing was written. First reason: {}",
@@ -865,7 +518,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lod::retail::bto::{ObjectLodSegment, ObjectLodShape, ObjectLodVertex};
+    use crate::lod::{
+        objects::chunk_key_for_block,
+        retail::bto::{ObjectLodFile, ObjectLodSegment, ObjectLodShape, ObjectLodVertex},
+    };
 
     const WORLD: WorldFacts = WorldFacts {
         id: 60,
