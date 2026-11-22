@@ -163,21 +163,16 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
     let blocks_found = retail.blocks.len();
     let atlas_sha256 = hash_bytes(&retail.atlas_dds);
 
-    let segment_check = retail
-        .blocks
-        .iter()
-        .filter(|block| block.level == 4)
-        .filter_map(|block| {
-            block
-                .parsed
-                .as_ref()
-                .ok()
-                .map(|parsed| (block.cell, parsed))
-        })
-        .fold((0usize, 0usize), |(fitted, total), (cell, parsed)| {
-            let (block_fit, block_total) = segment_cell_fit(parsed, cell);
-            (fitted + block_fit, total + block_total)
-        });
+    let mut segment_check = (0usize, 0usize);
+    for block in retail.blocks.iter().filter(|block| block.level == 4) {
+        // A block that could not be read is reported as skipped by the compile; it has no segments
+        // to check here.
+        if let Ok(parsed) = &block.parsed {
+            let (fitted, total) = segment_cell_fit(parsed, block.cell);
+            segment_check.0 += fitted;
+            segment_check.1 += total;
+        }
+    }
     let manifest_before = fs::read(target.join("lod-manifest.json"))?;
     let core = derive_into(
         &target,
