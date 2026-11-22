@@ -121,6 +121,9 @@ const CHECK_PROBLEM_LINES: usize = 20;
 /// Usage line of `derive-outfits`, printed by its help and its errors.
 const DERIVE_OUTFITS_USAGE: &str = "usage: converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]";
 
+/// Usage line of `derive-object-lod`, printed by its help and its errors.
+const DERIVE_OBJECT_LOD_USAGE: &str = "usage: converter derive-object-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--worldspace <EditorID>] [--force] [--converter-head <sha>]";
+
 #[derive(Debug, Serialize)]
 struct FailureReport {
     complete: bool,
@@ -230,6 +233,10 @@ async fn main() -> Result<()> {
     if args.first().and_then(|argument| argument.to_str()) == Some("derive-outfits") {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_outfits(&args[1..], command_line);
+    }
+    if args.first().and_then(|argument| argument.to_str()) == Some("derive-object-lod") {
+        let command_line = std::env::args().collect::<Vec<String>>();
+        return derive_object_lod(&args[1..], command_line);
     }
     let command = parse_command(args)?;
     let mo2 = match &command {
@@ -944,6 +951,119 @@ fn derive_outfits(args: &[OsString], command_line: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// Parse `derive-object-lod` options, run it and report what it added and what it skipped.
+fn derive_object_lod(args: &[OsString], command_line: Vec<String>) -> Result<()> {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
+        println!("{DERIVE_OBJECT_LOD_USAGE}");
+        return Ok(());
+    }
+    let options = parse_derive_object_lod_options(args, command_line)?;
+    let report = converter::derive_object_lod::run(&options)?;
+    println!(
+        "Derived object LOD: {} chunks, {} triangles, {} vertices from {} retail blocks ({} bytes added, {} ms)",
+        report.chunks,
+        report.triangles,
+        report.vertices,
+        report.blocks_found,
+        report.bytes_added,
+        report.elapsed_ms
+    );
+    for (level, counts) in report.levels.iter().rev() {
+        println!(
+            "  level {level}: {} chunks, {} triangles, {} cell pieces, {} bytes",
+            counts.chunks, counts.triangles, counts.cell_pieces, counts.bytes
+        );
+    }
+    println!("Receipt: {}", report.receipt.display());
+    println!("Shared atlas KTX2: {} bytes", report.atlas_ktx2_bytes);
+    if report.skipped.is_empty() {
+        println!("Skipped blocks: 0");
+    } else {
+        eprintln!(
+            "Warning: {} blocks were skipped; by reason: {:?}",
+            report.skipped.len(),
+            report.skipped_by_class
+        );
+        for block in &report.skipped {
+            eprintln!(
+                "  skipped level-{} block ({}, {}): {}: {}",
+                block.level, block.cell.0, block.cell.1, block.class, block.detail
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Parse the target and the inputs of `derive-object-lod`.
+fn parse_derive_object_lod_options(
+    args: &[OsString],
+    command_line: Vec<String>,
+) -> Result<converter::derive_object_lod::DeriveObjectLodOptions> {
+    let mut positional = Vec::new();
+    let (mut registry, mut clone_of, mut data) = (None, None, None);
+    let mut worldspace = String::from("Tamriel");
+    let mut force = false;
+    let mut converter_head = None;
+    let mut args = args.iter().cloned();
+    let utf8 = |value: OsString, flag: &str| {
+        value
+            .into_string()
+            .map_err(|_| color_eyre::eyre::eyre!("{flag} value is not valid UTF-8"))
+    };
+    while let Some(argument) = args.next() {
+        match argument.to_str() {
+            Some("--registry") => {
+                registry = Some(PathBuf::from(next_value(&mut args, "--registry")?))
+            }
+            Some("--data") => data = Some(PathBuf::from(next_value(&mut args, "--data")?)),
+            Some("--clone-of") => {
+                clone_of = Some(utf8(next_value(&mut args, "--clone-of")?, "--clone-of")?);
+            }
+            Some("--worldspace") => {
+                worldspace = utf8(next_value(&mut args, "--worldspace")?, "--worldspace")?;
+            }
+            Some("--converter-head") => {
+                converter_head = Some(utf8(
+                    next_value(&mut args, "--converter-head")?,
+                    "--converter-head",
+                )?);
+            }
+            Some("--force") => force = true,
+            Some(flag) if flag.starts_with('-') => {
+                bail!("unknown derive-object-lod option {flag:?}")
+            }
+            _ => {
+                if !positional.is_empty() {
+                    bail!("{DERIVE_OBJECT_LOD_USAGE}");
+                }
+                positional.push(PathBuf::from(argument));
+            }
+        }
+    }
+    let Some(target) = positional.into_iter().next() else {
+        bail!("{DERIVE_OBJECT_LOD_USAGE}");
+    };
+    let Some(registry) = registry else {
+        bail!("derive-object-lod requires --registry");
+    };
+    let Some(clone_of) = clone_of else {
+        bail!("derive-object-lod requires --clone-of");
+    };
+    let Some(data) = data else {
+        bail!("derive-object-lod requires --data");
+    };
+    Ok(converter::derive_object_lod::DeriveObjectLodOptions {
+        target,
+        registry,
+        clone_of,
+        data,
+        worldspace,
+        force,
+        converter_head,
+        command: command_line,
+    })
+}
+
 /// Parse the target and the clone inputs of `derive-outfits`.
 fn parse_derive_outfits_options(
     args: &[OsString],
@@ -1352,6 +1472,8 @@ fn usage() -> &'static str {
        converter check <output directory> [--full]
        converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)
        converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
+       converter derive-object-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data>
+                 [--worldspace <EditorID>] [--force] [--converter-head <sha>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
@@ -1449,7 +1571,12 @@ changing those source assets. This route does not support MO2 selection; use a n
 conversion with --mo2-instance. It cannot resume or cooperatively cancel.
 
 derive-outfits writes only actor-outfits.json and a receipt into an APFS clone of a registered pack,
-from the records the pack already holds. It reads no game data and never writes into a registered pack."
+from the records the pack already holds. It reads no game data and never writes into a registered pack.
+
+derive-object-lod adds retail object LOD (level-16 .bto blocks and the object atlas, read from <Skyrim Data>)
+to an APFS clone of a registered pack: object chunk files, the lod_object_chunks table, additive lod-manifest.json
+fields and a receipt. It reconverts no NIF or texture, refuses a target that is not an exact clone, refuses a pack
+that already has object chunks unless --force, and reports every skipped block with its reason."
 }
 
 #[cfg(test)]
@@ -1993,6 +2120,38 @@ mod tests {
         assert!(options.replace);
         assert_eq!(options.converter_head.as_deref(), Some("abc123"));
         assert_eq!(options.command, command_line);
+    }
+
+    #[test]
+    fn parses_derive_object_lod_options() {
+        let options = parse_derive_object_lod_options(
+            &args(&[
+                "clone",
+                "--registry",
+                "packs.json",
+                "--clone-of",
+                "base",
+                "--data",
+                "Data",
+                "--force",
+            ]),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(options.target, PathBuf::from("clone"));
+        assert_eq!(options.data, PathBuf::from("Data"));
+        assert_eq!(options.worldspace, "Tamriel");
+        assert!(options.force);
+        let error = |list: &[&str]| {
+            parse_derive_object_lod_options(&args(list), Vec::new())
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(
+            error(&["clone", "--registry", "p", "--clone-of", "b"]).contains("requires --data")
+        );
+        assert!(error(&["--registry", "p"]).contains("usage:"));
+        assert!(error(&["clone", "--bogus"]).contains("unknown"));
     }
 
     #[test]

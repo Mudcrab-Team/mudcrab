@@ -111,6 +111,12 @@ pub struct PipelineReport {
     /// Wall time spent compiling terrain LOD, excluding other conversion stages.
     #[serde(default)]
     pub lod_elapsed_ms: u128,
+    /// Retail object LOD chunks published this run (separate from the terrain `lod_chunks`).
+    #[serde(default)]
+    pub object_lod_chunks: u64,
+    /// Wall time of the object LOD stage, included in `lod_elapsed_ms`.
+    #[serde(default)]
+    pub object_lod_elapsed_ms: u128,
     /// Wall time of package publication, including seals/verification when replacing
     /// an output. Excludes subsequent ingestion-cache persistence and pruning.
     #[serde(default)]
@@ -4080,10 +4086,13 @@ pub(crate) fn validate_artifacts(
             },
         );
     });
-    match first_failure.into_inner().unwrap() {
-        Some((_, error)) => Err(error),
-        None => Ok(()),
+    if let Some((_, error)) = first_failure.into_inner().unwrap() {
+        return Err(error);
     }
+    // A listed object LOD chunk that is missing or damaged fails the package, as a damaged
+    // terrain chunk does. A pack without object LOD reads nothing here beyond the database table
+    // list.
+    crate::lod::objects::validate_object_lod_package(staging)
 }
 
 /// Checks one generated artifact. `lua` is the compiler for Luau scripts, created on first use so
@@ -4134,6 +4143,11 @@ pub(crate) fn validate_artifact(
                 path.display()
             );
         }
+        // The shared object LOD atlas (an sRGB base-colour texture, not a converted source texture).
+        Some("ktx2") if relative.starts_with("lod") => {
+            crate::lod::objects::validate_atlas_ktx2(&fs::read(&path)?)
+                .wrap_err_with(|| format!("invalid object LOD atlas {}", path.display()))?;
+        }
         Some("ktx2") => {
             let bytes = fs::read(&path)?;
             let key = source_texture_key(&canonical_asset_path(
@@ -4152,6 +4166,17 @@ pub(crate) fn validate_artifact(
                 "KTX2 metadata validation failed for {}",
                 path.display()
             );
+        }
+        // An object LOD chunk is checked in full: its file is small and a damaged one must not pass.
+        Some("glb")
+            if relative.starts_with("lod")
+                && relative
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("objects_")) =>
+        {
+            crate::lod::objects::validate_object_glb(&fs::read(&path)?)
+                .wrap_err_with(|| format!("invalid object LOD chunk {}", path.display()))?;
         }
         Some("glb") => {
             // Only the 12-byte GLB header is checked, so only the header is read.
@@ -5740,6 +5765,26 @@ async fn compile_lod_chunks_inline(
         "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
         rusqlite::params![identity],
     )?;
+    // Retail object LOD hangs off the terrain LOD just compiled (same worldspace origins), so it
+    // runs only when a world was compiled. It reads the Data folder directly and changes no
+    // ingestion input, so a pack's NIF, texture and script outputs are unaffected.
+    let object_lod = if compiled_worlds > 0 {
+        let started = Instant::now();
+        let stage = crate::lod::object_stage::build_object_lod(config, staging, &connection)?;
+        report.object_lod_chunks = stage.chunks.len() as u64;
+        report.object_lod_elapsed_ms = started.elapsed().as_millis();
+        report.notices.extend(stage.notices.iter().cloned());
+        report.lod_warnings.extend(stage.warnings.iter().cloned());
+        report
+            .artifacts
+            .extend(stage.chunks.iter().map(|(path, _)| PathBuf::from(path)));
+        report
+            .artifacts
+            .extend(stage.atlases.iter().map(|(path, _)| PathBuf::from(path)));
+        stage
+    } else {
+        crate::lod::object_stage::ObjectLodStage::default()
+    };
     if compiled_worlds > 0 {
         report.artifacts.push(PathBuf::from("lod-manifest.json"));
         let manifest = LodManifest {
@@ -5751,6 +5796,14 @@ async fn compile_lod_chunks_inline(
             terrain_sources,
             compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
             chunk_inputs,
+            object_chunks: object_lod.chunks.len() as u64,
+            objects_compiler_version: if object_lod.chunks.is_empty() {
+                0
+            } else {
+                crate::lod::objects::OBJECT_COMPILER_VERSION
+            },
+            object_chunk_inputs: object_lod.chunks.iter().cloned().collect(),
+            object_atlases: object_lod.atlases.iter().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -7645,6 +7698,10 @@ mod tests {
                 terrain_sources,
                 compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
                 chunk_inputs,
+                object_chunks: 0,
+                objects_compiler_version: 0,
+                object_chunk_inputs: BTreeMap::new(),
+                object_atlases: BTreeMap::new(),
             };
             Proof {
                 identity,
@@ -8394,6 +8451,154 @@ mod tests {
                 "producer {producer} meshes must not be reused"
             );
         }
+    }
+
+    /// Object LOD is built by the LOD stage of a normal conversion and of a metadata rebuild, from
+    /// retail `.bto` blocks and the object atlas in the Data folder (loose files here). A pack
+    /// converted before the blocks existed gains the chunks from a rebuild without reconverting
+    /// any mesh or texture.
+    #[tokio::test]
+    async fn object_lod_is_built_by_a_normal_conversion_and_a_metadata_rebuild() {
+        use crate::lod::retail::bto::tests::{SHAPE, nif_bytes, shape_block};
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        let mut config = cpu_lod_config(&data, directory.path().join("before"));
+        config.cpu_jobs = 2;
+        let before = run_without_progress(config.clone()).await;
+        assert!(before.complete && before.lod_chunks > 0);
+        assert_eq!(before.object_lod_chunks, 0);
+        let (editor_id, x, y): (String, i32, i32) = Connection::open(
+            directory.path().join("before/skyrim_world.db"),
+        )
+        .unwrap()
+        .query_row(
+            "SELECT editor_id, lod_origin_x, lod_origin_y FROM worldspaces w WHERE EXISTS(SELECT 1 FROM lod_chunks c WHERE c.worldspace_id = w.id) LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+        // A pack without object LOD has no object table and no manifest field.
+        let plain = Connection::open(directory.path().join("before/skyrim_world.db")).unwrap();
+        assert_eq!(
+            plain
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name LIKE 'lod_object%'",
+                    [],
+                    |row| row.get::<_, u32>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let plain_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(directory.path().join("before/lod-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(plain_manifest.get("object_chunks").is_none());
+
+        // The retail files for that world: one level-16 block at its LOD origin, and an atlas.
+        let world = editor_id.to_ascii_lowercase();
+        let meshes = data.join(format!("meshes/terrain/{world}/objects"));
+        let textures = data.join(format!("textures/terrain/{world}/objects"));
+        fs::create_dir_all(&meshes).unwrap();
+        fs::create_dir_all(&textures).unwrap();
+        let block = shape_block(
+            [x as f32 * 4096.0, y as f32 * 4096.0, 0.0],
+            16.0,
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
+            &[[0, 1, 2]],
+            &[(0, 0, 1)],
+            true,
+            true,
+        );
+        fs::write(
+            meshes.join(format!("{world}.16.{x}.{y}.bto")),
+            nif_bytes(&[(SHAPE, block)]),
+        )
+        .unwrap();
+        fs::write(
+            textures.join(format!("{world}.objects.dds")),
+            dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+                &mut dummy_content::rng::Rng::new(5),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let check = |root: &Path, report: &PipelineReport| {
+            assert!(report.complete, "{:?}", report.warnings);
+            assert_eq!(report.object_lod_chunks, 1, "{:?}", report.lod_warnings);
+            let manifest: LodManifest =
+                serde_json::from_slice(&fs::read(root.join("lod-manifest.json")).unwrap()).unwrap();
+            assert_eq!(manifest.object_chunks, 1);
+            assert_eq!(manifest.object_chunk_inputs.len(), 1);
+            // One shared atlas file per world, listed with its hash and written once.
+            assert_eq!(manifest.object_atlases.len(), 1);
+            let (atlas_path, atlas_hash) = manifest.object_atlases.iter().next().unwrap();
+            assert_eq!(&hash_file(&root.join(atlas_path)).unwrap(), atlas_hash);
+            assert_eq!(
+                manifest.objects_compiler_version,
+                crate::lod::objects::OBJECT_COMPILER_VERSION
+            );
+            let database = Connection::open(root.join("skyrim_world.db")).unwrap();
+            let (path, hash): (String, String) = database
+                .query_row(
+                    "SELECT payload_path, content_hash FROM lod_object_chunks",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(hash_file(&root.join(&path)).unwrap(), hash);
+            // The package check the pipeline ran passes now and fails on a damaged chunk.
+            crate::lod::objects::validate_object_lod_package(root).unwrap();
+            let mut bytes = fs::read(root.join(&path)).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            let damaged = directory.path().join("damaged");
+            let _ = fs::remove_dir_all(&damaged);
+            fs::create_dir_all(damaged.join("lod").join("x")).unwrap();
+            fs::copy(
+                root.join("skyrim_world.db"),
+                damaged.join("skyrim_world.db"),
+            )
+            .unwrap();
+            fs::copy(
+                root.join("lod-manifest.json"),
+                damaged.join("lod-manifest.json"),
+            )
+            .unwrap();
+            let target = damaged.join(&path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, bytes).unwrap();
+            assert!(crate::lod::objects::validate_object_lod_package(&damaged).is_err());
+        };
+
+        // A normal conversion of the same Data builds the chunks.
+        let mut full = config.clone();
+        full.output_dir = directory.path().join("full");
+        let report = run_without_progress(full).await;
+        check(&directory.path().join("full"), &report);
+
+        // A metadata rebuild of the pack that predates them builds the same chunks and reconverts
+        // no mesh or texture.
+        let mut rebuild = config.clone();
+        rebuild.output_dir = directory.path().join("rebuilt");
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let rebuilt =
+            AssetPipeline::rebuild_metadata_async(rebuild, &directory.path().join("before"), tx)
+                .await
+                .unwrap();
+        drain.await.unwrap();
+        check(&directory.path().join("rebuilt"), &rebuilt);
+        assert_eq!(rebuilt.converted, 0, "a rebuild reconverts nothing");
     }
 
     #[tokio::test]

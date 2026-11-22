@@ -157,6 +157,17 @@ impl Plugin for StreamingPlugin {
             .init_resource::<crate::pacing::PacingTracker>()
             .add_observer(mark_world_instance_ready)
             .add_observer(lod::mark_lod_world_instance_ready)
+            .add_observer(lod_objects::mark_object_scene_ready)
+            .add_systems(
+                PostUpdate,
+                (
+                    lod_objects::tag_object_cells,
+                    lod_objects::hide_loaded_object_cells,
+                    lod_objects::update_object_visibility,
+                )
+                    .chain()
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            )
             .add_systems(
                 Update,
                 lod_objects::update_lod_objects

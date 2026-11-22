@@ -2033,6 +2033,11 @@ impl NiObjectNETTraits for NiAVObject {
 pub struct NiAVObjectFlags(u32);
 
 impl NiAVObjectFlags {
+    /// The flag word as stored.
+    pub fn bits(&self) -> u32 {
+        self.0
+    }
+
     pub fn hidden(&self) -> bool {
         self.0 & 0x0001 != 0
     }

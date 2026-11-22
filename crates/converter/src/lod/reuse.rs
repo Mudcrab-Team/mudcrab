@@ -30,6 +30,27 @@ pub(crate) struct LodManifest {
     pub compiler_version: u32,
     #[serde(default)]
     pub chunk_inputs: BTreeMap<String, String>,
+    /// Number of retail object LOD chunks in `lod_object_chunks`. Absent (0) for a pack without
+    /// object LOD. Additive: terrain reuse and the runtime contract ignore it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub object_chunks: u64,
+    /// Producer revision of the object chunk compiler. Absent (0) without object LOD.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub objects_compiler_version: u32,
+    /// Input proof of each object chunk, by payload path (see `object_chunk_input_hash`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub object_chunk_inputs: BTreeMap<String, String>,
+    /// SHA-256 of each shared object atlas file, by payload path (one per worldspace).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub object_atlases: BTreeMap<String, String>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Prior-package proof is optional. Legacy, incomplete or damaged proof is a
