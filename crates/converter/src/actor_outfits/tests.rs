@@ -160,14 +160,14 @@ fn the_default_outfit_becomes_race_and_sex_matched_parts() {
                 armo_id: 0x400,
                 armature_id: 0x500,
                 biped_mask: BIPED_BODY,
-                armature_race_id: DEFAULT_RACE_FORM_ID,
+                armature_race_id: Some(DEFAULT_RACE_FORM_ID),
                 scene: TORSO.into(),
             },
             OutfitPart {
                 armo_id: 0x401,
                 armature_id: 0x501,
                 biped_mask: BIPED_FEET,
-                armature_race_id: DEFAULT_RACE_FORM_ID,
+                armature_race_id: Some(DEFAULT_RACE_FORM_ID),
                 scene: SHOES.into(),
             },
         ]
@@ -248,7 +248,7 @@ fn a_race_specific_armature_wins_its_slots_over_default_race() {
     let parts = &result.find(0x100).unwrap().parts;
     let scenes: Vec<_> = parts.iter().map(|p| p.scene.as_str()).collect();
     assert_eq!(scenes, ["meshes/a/body.glb", "meshes/d/hands.glb"]);
-    assert_eq!(parts[0].armature_race_id, ARGONIAN);
+    assert_eq!(parts[0].armature_race_id, Some(ARGONIAN));
 }
 
 #[test]

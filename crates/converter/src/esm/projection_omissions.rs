@@ -35,6 +35,20 @@ pub enum OmissionCategory {
     GrassUnusableData,
     /// A placed record without a readable DATA transform keeps only its canonical row.
     ReferenceUnusableData,
+    /// A placed record without a four-byte `NAME` (base form) gets no placement row.
+    ReferenceMissingBase,
+    /// A placed record whose `XSCL` is present but shorter than four bytes gets no placement row.
+    ReferenceShortScale,
+    /// A placed record with no parent cell gets no placement row.
+    ReferenceMissingCell,
+    /// A `WRLD` without an `EDID` gets no worldspace row.
+    WorldspaceMissingEditorId,
+    /// An `ARMA` without a readable `RNAM` gets a NULL armature race in its part rows.
+    ArmatureMissingRace,
+    /// A room marker whose `XRMR` header is present but unreadable gets no `room_bounds` row.
+    RoomMarkerUnreadableFlags,
+    /// A LAND without a `VHGT` height field gets no `land` row.
+    LandMissingHeights,
     /// A PlaneMarker with unusable geometry gets no occluder row.
     OccluderUnusableGeometry,
     /// A PlaneMarker has malformed XORD or an unresolved target in an authored slot.
@@ -63,6 +77,13 @@ impl OmissionCategory {
             Self::LightShortData => "light_short_data",
             Self::GrassUnusableData => "grass_unusable_data",
             Self::ReferenceUnusableData => "reference_unusable_data",
+            Self::ReferenceMissingBase => "reference_missing_base",
+            Self::ReferenceShortScale => "reference_short_scale",
+            Self::ReferenceMissingCell => "reference_missing_cell",
+            Self::WorldspaceMissingEditorId => "worldspace_missing_editor_id",
+            Self::ArmatureMissingRace => "armature_missing_race",
+            Self::RoomMarkerUnreadableFlags => "room_marker_unreadable_flags",
+            Self::LandMissingHeights => "land_missing_heights",
             Self::OccluderUnusableGeometry => "occluder_unusable_geometry",
             Self::OccluderUnusableLinks => "occluder_unusable_links",
             Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
@@ -83,6 +104,13 @@ impl OmissionCategory {
             | Self::LightShortData
             | Self::GrassUnusableData
             | Self::ReferenceUnusableData
+            | Self::ReferenceMissingBase
+            | Self::ReferenceShortScale
+            | Self::ReferenceMissingCell
+            | Self::WorldspaceMissingEditorId
+            | Self::ArmatureMissingRace
+            | Self::RoomMarkerUnreadableFlags
+            | Self::LandMissingHeights
             | Self::OccluderUnusableGeometry
             | Self::OccluderUnusableLinks
             | Self::LightingTemplateUnusableData

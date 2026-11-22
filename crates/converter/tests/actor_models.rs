@@ -444,6 +444,60 @@ fn additional_race_armature_matches_in_authored_order_before_default() {
     );
 }
 
+/// #811 F4: an armature with no `RNAM` that matches through an additional race keeps its part
+/// but stores NULL, not race 0, and the export reports the armature.
+#[test]
+fn armature_without_rnam_stores_a_null_race_and_is_reported() {
+    let directory = tempfile::tempdir().unwrap();
+    let raceless = items::record(
+        b"ARMA",
+        0x400,
+        &[
+            (b"EDID", items::text("NoRace")),
+            (b"BOD2", items::body_template(items::BIPED_BODY)),
+            (b"MODL", 0x200u32.to_le_bytes().to_vec()),
+            (b"MOD2", items::text(OTHER_BODY)),
+        ],
+    );
+    let records = vec![
+        items::npc(0x100, 0x200, false),
+        items::race(0x200, "RaceA", Some(0x300), false),
+        items::skin_armor(0x300, &[0x400]),
+        raceless,
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let part = catalog
+        .parts
+        .iter()
+        .find(|part| part.npc_id == 0x100)
+        .unwrap();
+    assert_eq!(part.model_path, OTHER_BODY);
+    assert_eq!(part.armature_race_id, None);
+
+    let connection = export(directory.path(), &path);
+    let stored: Option<u32> = connection
+        .query_row(
+            "SELECT armature_race_id FROM actor_model_parts WHERE npc_id = 256",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, None, "no race 0 is stored");
+    let reported: Vec<(String, u32)> = connection
+        .prepare(
+            "SELECT category, form_id FROM projection_omission_samples \
+             WHERE category = 'armature_missing_race'",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(reported, [("armature_missing_race".to_owned(), 0x400)]);
+}
+
 #[test]
 fn female_acbs_bit_selects_mod3() {
     let directory = tempfile::tempdir().unwrap();
@@ -1483,16 +1537,21 @@ fn parts_carry_the_armature_race_and_the_sex_skin_texture_set() {
     assert_eq!(
         parts,
         [
-            (0x100, "body", 0x200, Some(0x500)),
-            (0x100, "hands", items::DEFAULT_RACE_FORM_ID, Some(0x502)),
-            (0x101, "body", 0x200, Some(0x501)),
+            (0x100, "body", Some(0x200), Some(0x500)),
+            (
+                0x100,
+                "hands",
+                Some(items::DEFAULT_RACE_FORM_ID),
+                Some(0x502)
+            ),
+            (0x101, "body", Some(0x200), Some(0x501)),
             // NAM1 is absent: the female hands keep the NIF's own textures.
-            (0x101, "hands", items::DEFAULT_RACE_FORM_ID, None),
+            (0x101, "hands", Some(items::DEFAULT_RACE_FORM_ID), None),
         ]
     );
 
     let connection = export(directory.path(), &path);
-    let stored: Vec<(u32, String, u32, Option<u32>)> = connection
+    let stored: Vec<(u32, String, Option<u32>, Option<u32>)> = connection
         .prepare(
             "SELECT npc_id, slot, armature_race_id, skin_texture_set_id FROM actor_model_parts \
              ORDER BY npc_id, slot",
@@ -1504,7 +1563,7 @@ fn parts_carry_the_armature_race_and_the_sex_skin_texture_set() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let expected: Vec<(u32, String, u32, Option<u32>)> = parts
+    let expected: Vec<(u32, String, Option<u32>, Option<u32>)> = parts
         .iter()
         .map(|(npc, slot, race, set)| (*npc, (*slot).to_owned(), *race, *set))
         .collect();
