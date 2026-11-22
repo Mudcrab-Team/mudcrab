@@ -975,7 +975,7 @@ fn derive_object_lod(args: &[OsString], command_line: Vec<String>) -> Result<()>
         );
     }
     println!("Receipt: {}", report.receipt.display());
-    println!("Atlas KTX2: {} bytes per chunk", report.atlas_ktx2_bytes);
+    println!("Shared atlas KTX2: {} bytes", report.atlas_ktx2_bytes);
     if report.skipped.is_empty() {
         println!("Skipped blocks: 0");
     } else {

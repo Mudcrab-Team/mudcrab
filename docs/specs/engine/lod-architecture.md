@@ -70,8 +70,8 @@ command-line options override every file wherever they appear
 | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2`; odd values only |
 | `[TerrainManager]` | `fSplitDistanceMult` | terrain split rule (below) |
 | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists |
-| `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
-| `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
+| `[TerrainManager]` | `fBlockLevel0Distance` | object LOD split from level 8 to level 4 |
+| `[TerrainManager]` | `fBlockLevel1Distance` | object LOD split from level 16 to level 8 |
 
 The same reader honours the `[Grass]` keys listed with their defaults and effects
 in [Runtime grass](grass.md#skyrim-ini-settings).
@@ -113,20 +113,16 @@ object path (`streaming/lod_objects.rs`) works as follows.
   block splits under `fBlockLevel1Distance` x sqrt(NAMA) and a level-8 block under
   `fBlockLevel0Distance` x sqrt(NAMA). NAMA is 1.0 for every worldspace until the pack carries
   the WRLD value (retail uses 0.25 for Whiterun, Markarth, Windhelm and Alftand).
-- **Tiers.** Chunks of every tier are selected by the rule: tier 4 draws out to
-  `fBlockLevel0Distance` (35,000), tier 8 from there to `fBlockLevel1Distance` (70,000) and tier 16
-  from there to `fBlockMaximumDistance` (250,000) at the defaults, by the distance from the camera
-  cell's centre to the block rectangle. **Known difference:** retail measures from the player's
-  position; the engine refreshes the selection when the camera crosses a cell and uses the cell
-  centre (an error of up to about 2,900 units in the plane). The terrain rule shares this function,
-  so changing it is not a small fix.
-- **Hand-over.** A chunk that is no longer wanted stays until every wanted chunk has attached (its
-  scene has spawned), so incoming geometry is there before outgoing geometry detaches (retail
-  fact, skyrim_decomp#675). Retail's fade and any hysteresis are unverified and not implemented.
-- **Loaded cells.** A tier-4 chunk carries one piece per cell (`object_cell_<x>_<y>_<n>` nodes,
-  tagged `LodObjectCell`). A piece is hidden while its cell is inside the loaded grid (camera cell
-  plus or minus the stream radius), where full-detail objects draw. Large-reference takeover of
-  cells beyond the loaded grid is not implemented.
+- **Tiers (RF-LOD-004).** The engine measures squared XY distance from the continuous camera
+  position to the block rectangle. It uses strict comparisons at the default distances of 35,000,
+  70,000 and 250,000 world units. Movement within a cell can change the selected tier.
+- **Hand-over.** An outgoing chunk stays visible while any selected replacement in its block is
+  waiting for budget or loading. The replacements stay hidden until the same pass that retires the
+  outgoing chunk. If a replacement stalls or fails, the outgoing chunk retires at the deadline
+  and any available replacements draw. Retail fade and hysteresis are unverified (skyrim_decomp#675).
+- **Loaded cells.** A tier-4 chunk carries cell-tagged pieces (`object_cell_<x>_<y>_<n>`, with
+  `LodObjectCell`). A piece stays visible until its cell's full-detail models are ready, then stays
+  hidden until the full-detail cell unloads. Large-reference takeover beyond those cells is unimplemented.
 - **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
   KTX2 file (`lod/<world>/objects_atlas.opensky-srgb.ktx2`). The engine hash-checks it like a chunk, loads it
   once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an

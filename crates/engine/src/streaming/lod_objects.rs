@@ -13,12 +13,11 @@
 //! [`TerrainLodDistances::object_tier`] picks `t` for its cells. With the High defaults tier 4
 //! draws out to `fBlockLevel0Distance` (35,000), tier 8 from there to `fBlockLevel1Distance`
 //! (70,000) and tier 16 from there to `fBlockMaximumDistance` (250,000), by the distance from the
-//! continuous camera position to the block rectangle (strict comparisons; retail measures from
-//! the player).
+//! continuous camera position to the block rectangle (strict comparisons).
 //!
 //! **Hand-over.** Incoming scenes stay hidden until all replacements in an outgoing block have
-//! attached. The visibility swap is atomic within the block (skyrim_decomp#675). At a terminal
-//! failure or a hand-over deadline, the runtime releases the old block and shows available chunks.
+//! attached. The visibility swap is atomic within the block. At the hand-over deadline, the
+//! runtime releases the old block and shows available chunks.
 //!
 //! **Loaded cells.** A tier-4 chunk splits its geometry into cell-local pieces. Each piece stays
 //! visible until the cell's full-detail models are ready, then stays hidden until the cell unloads.

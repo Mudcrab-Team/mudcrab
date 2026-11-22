@@ -102,7 +102,9 @@ pub(crate) fn require_private_file(path: &Path, metadata: &fs::Metadata) -> Resu
 
 /// Offline pack editors require a private database and private SQLite sidecar files.
 pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
-    let database = root.canonicalize()?.join(crate::check::WORLD_DATABASE_FILE_NAME);
+    let database = root
+        .canonicalize()?
+        .join(crate::check::WORLD_DATABASE_FILE_NAME);
     require_private_file(&database, &fs::symlink_metadata(&database)?)?;
     for extension in ["db-journal", "db-wal", "db-shm"] {
         let sidecar = database.with_extension(extension);

@@ -581,8 +581,6 @@ fn emit_object_glb(
             "count": piece.index_count,
             "type": "SCALAR",
         }));
-        // stand-in(#911): B3 in skyrim_decomp#675 uses runtime grouped-draw flags.
-        // A BTO gives us only serialized node flags, so use back-face culling.
         meshes_json.push(serde_json::json!({
             "name": format!("objects_{}_{}_piece_{index}", key.anchor.x, key.anchor.y),
             "primitives": [{
@@ -605,6 +603,8 @@ fn emit_object_glb(
         "images": [image_json],
         "samplers": [{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }],
         "textures": [{ "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } }],
+        // STAND-IN(#911): back-face culling for unavailable runtime grouped-draw flags.
+        // skyrim_decomp#675 B3 uses those flags. BTO stores node flags.
         "materials": [object_material("lod_objects", false)],
     });
     assemble_glb(&json, &binary)
@@ -1675,7 +1675,8 @@ mod tests {
         let primitive = &doc["meshes"][0]["primitives"][0];
         let accessor = &doc["accessors"][json_index(&primitive["indices"]).unwrap()];
         let view = &doc["bufferViews"][json_index(&accessor["bufferView"]).unwrap()];
-        let start = json_offset(&view["byteOffset"]).unwrap() + json_offset(&accessor["byteOffset"]).unwrap();
+        let start = json_offset(&view["byteOffset"]).unwrap()
+            + json_offset(&accessor["byteOffset"]).unwrap();
         assert_eq!(&binary(&chunk.glb)[start..start + 4], &2u32.to_le_bytes());
         for invalid in [1, 3, 6, u32::MAX] {
             shape.segments[1].start_index = invalid;
