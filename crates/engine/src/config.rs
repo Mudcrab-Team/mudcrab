@@ -6,7 +6,10 @@ use crate::{
     world::components::CELL_SIZE,
     world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
 };
-use bevy::prelude::{IVec2, Msaa, Resource};
+use bevy::{
+    math::DVec2,
+    prelude::{IVec2, Msaa, Resource},
+};
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf, sync::Arc};
 
@@ -25,22 +28,19 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 /// children when the block's box distance is under `fSplitDistanceMult` x level x 2,048 x sqrt(2)
 /// ([`Self::terrain_split_distance`]). Objects (`.bto`) use `fBlockLevel0Distance` and
 /// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
-/// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn.
+/// `fBlockMaximumDistance`.
 ///
 /// What each key does today: `fSplitDistanceMult` and `fBlockMaximumDistance` drive terrain (the
 /// split rule, and the outer reach of tier 16 as an engineering guard, see
 /// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` are parsed and kept
-/// for the object LOD rule but do not affect terrain, so changing them changes nothing on screen
-/// until the object LOD importer lands.
+/// for the object LOD rule.
 ///
 /// `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
-    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4. Unused until object LOD
-    /// lands (terrain does not read it).
+    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4.
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8. Unused until object LOD
-    /// lands (terrain does not read it).
+    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8.
     pub block_level1_distance: f32,
     /// `fBlockMaximumDistance`: object LOD drops beyond it (RF-LOD-004). Terrain has no such cut
     /// in retail. Mudcrab keeps it, times `fSplitDistanceMult`, as the outer reach of tier 16
@@ -153,38 +153,42 @@ impl TerrainLodDistances {
     /// the outer gate, which is why the gate must be checked for each visited block.
     ///
     /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
-    /// The same engineering guard applies: the camera position is the centre of its cell. Retail
-    /// flag 0x8000 (blocks touching the large-reference square always split, RF-LOD-006) is not
-    /// implemented.
+    /// `camera` is the continuous position in Creation world XY units. Retail flag 0x8000
+    /// (blocks touching the large-reference square always split, RF-LOD-006) is not implemented.
     pub fn object_tier(
         &self,
-        camera: IVec2,
-        cell: IVec2,
+        camera: DVec2,
+        cell: DVec2,
         origin: IVec2,
         nama: f32,
     ) -> Option<LodTier> {
-        let scale = f64::from(nama.max(0.0)).sqrt();
-        let split = |distance: f32| f64::from(distance) * scale;
-        let maximum = f64::from(self.block_maximum_distance);
-        let distance = |level| f64::from(Self::terrain_block_distance(camera, cell, origin, level));
-        if distance(16) >= maximum {
-            return None;
+        let scale = f64::from(nama.max(0.0));
+        let split_squared = |distance: f32| f64::from(distance).powi(2) * scale;
+        let maximum_squared = f64::from(self.block_maximum_distance).powi(2);
+        let grid_origin = origin.as_dvec2();
+        let cell_size = f64::from(CELL_SIZE);
+        let distance_squared = |level| {
+            let level = f64::from(level);
+            let min = (grid_origin + ((cell - grid_origin) / level).floor() * level) * cell_size;
+            let max = min + DVec2::splat(level * cell_size);
+            (min - camera)
+                .max(camera - max)
+                .max(DVec2::ZERO)
+                .length_squared()
+        };
+        for (level, tier, split) in [
+            (16, LodTier::Tier16, self.block_level1_distance),
+            (8, LodTier::Tier8, self.block_level0_distance),
+        ] {
+            let distance = distance_squared(level);
+            if distance >= maximum_squared {
+                return None;
+            }
+            if distance >= split_squared(split) {
+                return Some(tier);
+            }
         }
-        if distance(16) >= split(self.block_level1_distance) {
-            return Some(LodTier::Tier16);
-        }
-        // The level-16 block splits: its level-8 child is visited next.
-        if distance(8) >= maximum {
-            return None;
-        }
-        if distance(8) >= split(self.block_level0_distance) {
-            return Some(LodTier::Tier8);
-        }
-        // The level-8 block splits: the level-4 block is a leaf and still passes the gate.
-        if distance(4) >= maximum {
-            return None;
-        }
-        Some(LodTier::Tier4)
+        (distance_squared(4) < maximum_squared).then_some(LodTier::Tier4)
     }
 
     /// The Chebyshev cell radius around the camera's cell within which `tier` chunks can be
@@ -5517,8 +5521,14 @@ mod tests {
     #[test]
     fn object_tier_follows_the_retail_object_distances() {
         let high = TerrainLodDistances::default();
-        let tier =
-            |x: i32, nama: f32| high.object_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO, nama);
+        let tier = |x: i32, nama: f32| {
+            high.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(x, 0).as_dvec2(),
+                IVec2::ZERO,
+                nama,
+            )
+        };
         // Block [0, 8) holds the camera: level 4.
         assert_eq!(tier(7, 1.0), Some(LodTier::Tier4));
         // Block [8, 16) is 30,720 away, under 35,000: still level 4.
@@ -5539,6 +5549,33 @@ mod tests {
         assert_eq!(tier(70, 0.25), None);
     }
 
+    #[test]
+    fn object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
+        let high = TerrainLodDistances::default();
+        for (cell, threshold, near, at) in [
+            (16, 35_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
+            (32, 70_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
+            (64, 250_000.0, Some(LodTier::Tier16), None),
+        ] {
+            let x = f64::from(cell) * f64::from(CELL_SIZE) - threshold;
+            let tier = |x| {
+                high.object_tier(
+                    DVec2::new(x, 0.0),
+                    IVec2::new(cell, 0).as_dvec2(),
+                    IVec2::ZERO,
+                    1.0,
+                )
+            };
+            assert_eq!(
+                (x / f64::from(CELL_SIZE)).floor(),
+                ((x + 1.0) / f64::from(CELL_SIZE)).floor()
+            );
+            assert_eq!(tier(x + 1.0), near);
+            assert_eq!(tier(x), at);
+            assert_eq!(tier(x - 1.0), at);
+        }
+    }
+
     /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
     /// `nama` never scales it.
     #[test]
@@ -5548,12 +5585,22 @@ mod tests {
         // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
         // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
         // is dropped; before the per-block gate it drew as tier 8.
-        let far = high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 16.0);
+        let far = high.object_tier(
+            DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+            IVec2::new(63, 47).as_dvec2(),
+            IVec2::ZERO,
+            16.0,
+        );
         assert_eq!(far, None);
         // With NAMA 1.0 the level-16 block (233,453 away, inside 250,000) does not split, so it
         // draws as tier 16: only the larger NAMA reaches the level-8 child.
         assert_eq!(
-            high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 1.0),
+            high.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(63, 47).as_dvec2(),
+                IVec2::ZERO,
+                1.0
+            ),
             Some(LodTier::Tier16)
         );
 
@@ -5564,7 +5611,12 @@ mod tests {
         // 264,192 away (outside).
         let origin = IVec2::new(-3, 0);
         let tier = |x: i32, distances: &TerrainLodDistances| {
-            distances.object_tier(IVec2::ZERO, IVec2::new(x, 0), origin, 100.0)
+            distances.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(x, 0).as_dvec2(),
+                origin,
+                100.0,
+            )
         };
         assert_eq!(tier(62, &high), Some(LodTier::Tier4));
         assert_eq!(tier(66, &high), None);
