@@ -1934,6 +1934,12 @@ fn spawn_cell(
                 reference.base_record_type.as_deref(),
                 reference.has_multibound_override,
             );
+            if reference.named_room_target {
+                entity.insert(crate::room_culling::NamedRoomAssignment::Initial {
+                    root,
+                    placement: transform.compute_affine(),
+                });
+            }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
                 if !plan.parts.is_empty() {
@@ -9385,6 +9391,7 @@ mod tests {
                     form_id: 0x00F9907,
                     initially_enabled: true,
                     has_multibound_override: false,
+                    named_room_target: false,
                     starts_dead: false,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
@@ -10434,6 +10441,7 @@ mod tests {
             form_id,
             initially_enabled: true,
             has_multibound_override: false,
+            named_room_target: false,
             starts_dead: false,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
@@ -11468,6 +11476,38 @@ mod tests {
             &vec![meshes[0], meshes[2]],
             "NONE and unknown bounds stay visible while the bounded automatic static is culled"
         );
+    }
+
+    #[test]
+    fn only_named_room_targets_track_the_streamed_placement() {
+        use crate::room_culling::{NamedRoomAssignment, RoomCullExempt, RoomCullLegacyExempt};
+
+        let mut named = lit_reference(1, None, None);
+        named.base_record_type = Some("ACTI".to_owned());
+        named.named_room_target = true;
+        let mut unrestricted = lit_reference(2, None, None);
+        unrestricted.has_multibound_override = true;
+        let automatic = lit_reference(3, None, None);
+        let app = spawn_reference_cell_app(vec![named, unrestricted, automatic], false);
+        let world = app.world();
+        let reference = reference_entity(&app, 1);
+        assert!(world.get::<RoomCullLegacyExempt>(reference).is_some());
+        assert!(world.get::<RoomCullExempt>(reference).is_none());
+        let Some(NamedRoomAssignment::Initial { root, placement }) = world.get(reference) else {
+            panic!("streamed named target did not retain its original placement");
+        };
+        assert_eq!(*root, world.resource::<SpawnedCellRoot>().0.unwrap());
+        assert_eq!(
+            *placement,
+            world.get::<Transform>(reference).unwrap().compute_affine()
+        );
+        for id in [2, 3] {
+            assert!(
+                world
+                    .get::<NamedRoomAssignment>(reference_entity(&app, id))
+                    .is_none()
+            );
+        }
     }
 
     #[test]

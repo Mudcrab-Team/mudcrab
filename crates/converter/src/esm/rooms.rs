@@ -18,8 +18,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
 mod occluders;
-pub(super) use occluders::{ImportedOccluderSource, update_subset as update_subset_occluders};
 pub use occluders::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
+pub(super) use occluders::{update_authored_subset, update_subset as update_subset_occluders};
 
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;
@@ -95,6 +95,7 @@ pub const ROOM_TABLES_SQL: &str = r#"
          CREATE TABLE IF NOT EXISTS room_occluder_links (
              ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
              linked_ref INTEGER NOT NULL,
+             single_target_verified INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (ref_id, link_index)
          );
          CREATE TABLE IF NOT EXISTS room_links (
@@ -158,6 +159,7 @@ pub fn migrate_room_metadata(conn: &Connection) -> Result<()> {
                 "ALTER TABLE room_links ADD COLUMN link_index INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        migrate_occluder_links(conn)?;
         conn.execute_batch("RELEASE portal_endpoints")
     })();
     if result.is_err() {
@@ -168,6 +170,20 @@ pub fn migrate_room_metadata(conn: &Connection) -> Result<()> {
         });
     }
     result
+}
+
+fn migrate_occluder_links(conn: &Connection) -> Result<()> {
+    let verified_plane_links: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_occluder_links') WHERE name='single_target_verified')",
+            [],
+            |row| row.get(0),
+        )?;
+    if !verified_plane_links {
+        conn.execute_batch(
+                "ALTER TABLE room_occluder_links ADD COLUMN single_target_verified INTEGER NOT NULL DEFAULT 0",
+            )?;
+    }
+    Ok(())
 }
 
 /// The typed reader can clear broken links to zero. Restore outside provenance from source

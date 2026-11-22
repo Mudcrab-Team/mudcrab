@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 
 mod subset;
 
-pub(in crate::esm) use subset::{ImportedOccluderSource, update_subset};
 pub use subset::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
+pub(in crate::esm) use subset::{update_authored_subset, update_subset};
 
 #[derive(Default)]
 pub(super) struct Exported {
@@ -171,6 +171,7 @@ pub(super) fn export(
 #[derive(Clone, Copy)]
 enum MarkerSource<'a> {
     Canonical,
+    Authored,
     DamagedPlugin,
     Typed(&'a DecodedRecord, &'a LoadOrder),
 }
@@ -203,6 +204,7 @@ fn project(
     let view = SubrecordView::new(&record.subrecords);
     let cell = record.cell_form_id.unwrap_or(0);
     let source = provenance.typed();
+    let authored_ids = !matches!(provenance, MarkerSource::Canonical);
     let source_fields = source.map(|(record, _)| record.framed_source_prefix());
     let authored = |tag: [u8; 4]| {
         source_fields
@@ -228,7 +230,7 @@ fn project(
             || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
     };
     let complete = match provenance {
-        MarkerSource::Canonical => true,
+        MarkerSource::Canonical | MarkerSource::Authored => true,
         MarkerSource::DamagedPlugin => false,
         MarkerSource::Typed(record, _) => record.payload_complete,
     };
@@ -241,6 +243,11 @@ fn project(
     // Walk physical occurrences, including rejected ones. Outgoing links from an
     // unusable marker still suppress independently valid targets in any cell.
     let mut link_omission = None;
+    let single_target = authored_ids
+        && complete
+        && field(b"XORD")
+            .and_then(link_targets)
+            .is_some_and(|slots| slots.iter().filter(|&&target| target != 0).count() == 1);
     let xords = view
         .find_all(b"XORD")
         .filter(|_| source.is_none())
@@ -268,13 +275,14 @@ fn project(
                 link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
                 continue;
             };
-            if source.is_some() && !target_exists(linked)? {
+            let live = !authored_ids || target_exists(linked)?;
+            if !live {
                 link_omission.get_or_insert("PlaneMarker XORD target is absent or not a live REFR");
             }
             tx.prepare_cached(
-                "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref) VALUES(?1,?2,?3)",
+                "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref,single_target_verified) VALUES(?1,?2,?3,?4)",
             )?
-            .execute(params![id, occurrence * 4 + slot, linked])?;
+            .execute(params![id, occurrence * 4 + slot, linked, single_target && live])?;
         }
     }
     if let Some(reason) = link_omission {
@@ -330,6 +338,14 @@ fn project(
             target
         ],
     )?;
+    if authored_ids
+        && shape == 3
+        && let Some(target) = target.filter(|&id| id != 0)
+        && field(b"XMBR").is_some_and(|data| data.len() == 4 && data != [0; 4])
+    {
+        tx.prepare_cached("INSERT INTO room_reference_rules(reference_id,cell_id,assignment,target_ref) VALUES(?1,?2,'target',?3)")?
+            .execute(params![id, cell, target])?;
+    }
     result.count += 1;
     Ok(())
 }
