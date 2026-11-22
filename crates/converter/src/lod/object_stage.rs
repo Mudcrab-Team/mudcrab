@@ -91,6 +91,14 @@ fn normal(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+/// Whether an archive entry (by its original name) is under a terrain folder, the only place retail
+/// object LOD files live. Filtering by name first keeps an archive whose unrelated entries collide
+/// searchable.
+fn is_terrain_entry_name(name: &str) -> bool {
+    let name = name.replace('\\', "/").to_ascii_lowercase();
+    name.starts_with("meshes/terrain/") || name.starts_with("textures/terrain/")
+}
+
 /// Finds the files `wanted` accepts in loose files and archives of `data`. Loose files win over
 /// archives; otherwise every archive that has the file is listed.
 fn providers(
@@ -116,7 +124,7 @@ fn providers(
             .ok_or_else(|| {
                 color_eyre::eyre::eyre!("archive path {} has no file name", archive.display())
             })?;
-        let paths = ArchiveExtractor::list_paths(&archive)
+        let paths = ArchiveExtractor::list_paths_with_filter(&archive, is_terrain_entry_name)
             .wrap_err_with(|| format!("cannot list archive {name}"))?;
         for path in paths {
             let key = normal(&path);
@@ -269,9 +277,12 @@ pub(crate) fn read_retail(
             })
             .map(|(key, _)| key.clone())
             .collect();
-        ArchiveExtractor::extract_matching(path, &root, |entry| {
-            wanted_here.contains(&normal(entry))
-        })
+        ArchiveExtractor::extract_matching_with_name_filter(
+            path,
+            &root,
+            is_terrain_entry_name,
+            |entry| wanted_here.contains(&normal(entry)),
+        )
         .wrap_err_with(|| format!("failed to read from archive {name}"))?;
         extracted.insert(path.clone(), root);
     }
