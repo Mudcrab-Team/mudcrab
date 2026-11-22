@@ -49,6 +49,23 @@ print("stub retail: ok")
 sys.exit(0)
 """
 
+GIT_LOCATION_VARS = frozenset({
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+})
+
+
+def clean_git_env(extra=None):
+    """The process environment without Git repository-location overrides."""
+    env = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_VARS}
+    if extra:
+        env.update({key: value for key, value in extra.items() if key not in GIT_LOCATION_VARS})
+    return env
+
 
 class Repo:
     """A git repository with one bare origin."""
@@ -69,9 +86,11 @@ class Repo:
             ["git", *args],
             cwd=str(self.work),
             text=True,
+            encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=check,
+            env=clean_git_env(),
         )
 
     def git(self, *args, cwd=None, check=True):
@@ -79,9 +98,11 @@ class Repo:
             ["git", *args],
             cwd=str(cwd) if cwd else str(self.work),
             text=True,
+            encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=check,
+            env=clean_git_env(),
         )
 
     def write(self, path, text):
@@ -154,13 +175,12 @@ class Repo:
             shlex.join([sys.executable, "tools/world_data_inventory/inventory.py"]),
             *extra,
         ]
-        merged_env = dict(os.environ)
-        if env:
-            merged_env.update(env)
+        merged_env = clean_git_env(env)
         return subprocess.run(
             command,
             cwd=str(self.work),
             text=True,
+            encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=merged_env,
@@ -252,6 +272,87 @@ class SyncBranchTests(unittest.TestCase):
                 text,
             )
             self.assertNotIn("<<<<<<<", text)
+
+    def test_defers_surface_regeneration_when_source_conflicts_remain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            surface = "tools/world_data_inventory/reviewed-surface.json"
+            repo.write(
+                surface,
+                json.dumps({"format_version": 1, "readers": {"reader": "branch"}, "columns": []},
+                           indent=2) + "\n",
+            )
+            repo.write("crates/engine/src/lib.rs", "pub fn value() -> u32 { 2 }\n")
+            repo.commit("fixture: branch changes a reader and source")
+            repo.advance_main(
+                {
+                    surface: json.dumps(
+                        {"format_version": 1, "readers": {"reader": "main"}, "columns": []},
+                        indent=2,
+                    )
+                    + "\n",
+                    "crates/engine/src/lib.rs": "pub fn value() -> u32 { 3 }\n",
+                }
+            )
+
+            done = repo.sync()
+
+            self.assertEqual(done.returncode, 1, done.stdout)
+            self.assertIn("reviewed surface is still conflicted", done.stdout)
+            self.assertIn("inventory.py --review-sources", done.stdout)
+            self.assertIn("<<<<<<<", repo.read(surface))
+            self.assertFalse((repo.work / "sync-inventory-log.txt").exists())
+
+    def test_refuses_surface_columns_that_differ(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            surface = "tools/world_data_inventory/reviewed-surface.json"
+            repo.write(
+                surface,
+                json.dumps({"format_version": 1, "readers": {"reader": "branch"},
+                            "columns": ["branch"]}, indent=2) + "\n",
+            )
+            repo.commit("fixture: branch changes a reviewed column")
+            repo.advance_main(
+                {
+                    surface: json.dumps(
+                        {"format_version": 1, "readers": {"reader": "main"},
+                         "columns": ["main"]},
+                        indent=2,
+                    )
+                    + "\n"
+                }
+            )
+
+            done = repo.sync()
+
+            self.assertEqual(done.returncode, 2, done.stdout)
+            self.assertIn("reviewed columns differ on each side", done.stdout)
+            self.assertIn("<<<<<<<", repo.read(surface))
+            self.assertFalse((repo.work / "sync-inventory-log.txt").exists())
+
+    def test_does_not_readd_a_registry_member_removed_on_one_side(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            repo.write(
+                "Cargo.toml",
+                "[workspace]\nresolver = \"2\"\nmembers = [\n    \"crates/alpha\",\n]\n",
+            )
+            repo.commit("fixture: branch removes a workspace member")
+            repo.write("crates/delta/Cargo.toml", "[package]\nname = \"delta\"\nversion = \"0.1.0\"\n")
+            repo.advance_main(
+                {
+                    "Cargo.toml": "[workspace]\nresolver = \"2\"\nmembers = [\n"
+                    "    \"crates/alpha\",\n    \"crates/delta\",\n    \"crates/beta\",\n]\n",
+                    "crates/delta/Cargo.toml": "[package]\nname = \"delta\"\nversion = \"0.1.0\"\n",
+                }
+            )
+
+            done = repo.sync()
+
+            self.assertEqual(done.returncode, 2, done.stdout)
+            self.assertIn("registry member removed on one side (crates/beta)", done.stdout)
+            self.assertIn("<<<<<<<", repo.read("Cargo.toml"))
 
     def test_stops_on_real_code_conflict(self):
         with tempfile.TemporaryDirectory() as directory:
