@@ -82,6 +82,7 @@ mod vendored_morph_shader;
 pub mod visibility_optimization;
 pub mod visual_profile;
 mod water_depth;
+pub mod weather_sky;
 pub mod world;
 
 pub use app::run;

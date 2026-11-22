@@ -572,6 +572,14 @@ fn fog_falloff_snapshot(falloff: &FogFalloff) -> Value {
             );
             settings.numeric("density", f64::from(*density));
         }
+        FogFalloff::PowerRamp {
+            start, end, power, ..
+        } => {
+            settings.set("kind", "power_ramp");
+            settings.numeric("start", f64::from(*start));
+            settings.numeric("end", f64::from(*end));
+            settings.numeric("power", f64::from(*power));
+        }
         FogFalloff::Atmospheric {
             extinction,
             inscattering,

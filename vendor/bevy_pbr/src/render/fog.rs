@@ -39,6 +39,8 @@ const GPU_FOG_MODE_LINEAR: u32 = 1;
 const GPU_FOG_MODE_EXPONENTIAL: u32 = 2;
 const GPU_FOG_MODE_EXPONENTIAL_SQUARED: u32 = 3;
 const GPU_FOG_MODE_ATMOSPHERIC: u32 = 4;
+// mudcrab: the power ramp mode of the weather's exterior fog (#891).
+const GPU_FOG_MODE_POWER_RAMP: u32 = 5;
 
 /// Metadata for fog
 #[derive(Default, Resource)]
@@ -103,6 +105,21 @@ pub fn prepare_fog(
                     directional_light_exponent: fog.directional_light_exponent,
                     be: *extinction,
                     bi: *inscattering,
+                },
+                // mudcrab: `be` holds start, end and power. `bi` holds the near colour.
+                FogFalloff::PowerRamp {
+                    start,
+                    end,
+                    power,
+                    near_color,
+                } => GpuFog {
+                    mode: GPU_FOG_MODE_POWER_RAMP,
+                    base_color: LinearRgba::from(fog.color).to_vec4(),
+                    directional_light_color: LinearRgba::from(fog.directional_light_color)
+                        .to_vec4(),
+                    directional_light_exponent: fog.directional_light_exponent,
+                    be: Vec3::new(*start, *end, *power),
+                    bi: LinearRgba::from(*near_color).to_vec4().truncate(),
                 },
             }
         };
