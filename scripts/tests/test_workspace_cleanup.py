@@ -452,35 +452,24 @@ class CrashDuringDelete(CleanupCase):
         self.assertIn("open", statuses[opened.name])
         self.assertEqual(statuses[nested.name], "held: scan errors or symlinks")
 
-    def test_recovery_needs_a_build_marker_or_a_receipt_for_a_leftover(self):
-        lookalike = self.builds / f".retiring-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-1"
-        lookalike.mkdir()
-        (lookalike / "data").write_text("a person made this")
-        with patch.object(workspace.shutil, "which", return_value="lsof"), \
-                patch.object(workspace.subprocess, "run", return_value=IDLE):
-            rows = self.ws.recover_interrupted()
-            self.assertEqual([row["status"] for row in rows],
-                             ["held: no build.json or receipt shows that the tool made it"])
-            self.assertTrue((lookalike / "data").exists())
-            # A receipt for the same build name proves a partly deleted leftover is the tool's.
-            workspace.write_json(self.store / "evidence" / f"retired-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-99.json", {})
-            rows = self.ws.recover_interrupted()
-        self.assertEqual([row["status"] for row in rows], ["removed"])
-        self.assertFalse(lookalike.exists())
-
-    def test_recovery_leaves_a_trim_leftover_without_a_receipt(self):
-        slot = self.make_build("slot-0")
-        leftover = slot / "target" / "debug" / ".trim-incremental-5"
-        leftover.mkdir(parents=True)
-        (leftover / "data").write_text("x")
-        with patch.object(workspace.shutil, "which", return_value="lsof"), \
-                patch.object(workspace.subprocess, "run", return_value=IDLE):
-            rows = self.ws.recover_interrupted()
-            self.assertEqual([row["status"] for row in rows],
-                             ["held: no build.json or receipt shows that the tool made it"])
-            workspace.write_json(self.store / "evidence" / "trimmed-slot-0-7.json", {})
-            rows = self.ws.recover_interrupted()
-        self.assertEqual([row["status"] for row in rows], ["removed"])
+    def test_old_unreadable_or_symlinked_receipt_cannot_authorize_recovery(self):
+        leftover = self.builds / ".retiring-slot-0-1"
+        leftover.mkdir()
+        personal = leftover / "data"
+        personal.write_bytes(b"keep")
+        receipt = self.store / "evidence" / "retired-slot-0-1.json"
+        external = self.base / "external.json"
+        workspace.write_json(external, {"leftovers": [leftover.name]})
+        with patch.object(self.ws, "consumer_hold", return_value=None):
+            for contents in ('{"inventory": {}}', 'invalid JSON', None):
+                with self.subTest(contents=contents):
+                    if contents is None:
+                        receipt.symlink_to(external)
+                    else:
+                        receipt.write_text(contents)
+                    self.assertTrue(self.ws.recover_interrupted()[0]["status"].startswith("held:"))
+                    self.assertEqual(personal.read_bytes(), b"keep")
+                    receipt.unlink()
 
     def test_recovery_runs_before_a_prune_and_before_a_build(self):
         leftover = self.builds / f".retiring-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-1"

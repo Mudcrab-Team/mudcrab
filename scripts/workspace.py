@@ -648,10 +648,12 @@ class Workspace:
         if hold:
             row["status"] = hold
             return row
-        retiring = path.with_name(f".retiring-{path.name}-{time.time_ns()}")
+        stamp = time.time_ns()
+        retiring = path.with_name(f".retiring-{path.name}-{stamp}")
         receipt = {"build": metadata, "inventory": scan, "retired_at": time.time(), "reason": reason,
+                   "leftovers": [retiring.name],
                    "checks": checks, "free_before": shutil.disk_usage(self.root).free}
-        receipt_path = self.root / "evidence" / f"retired-{path.name}-{time.time_ns()}.json"
+        receipt_path = self.root / "evidence" / f"retired-{path.name}-{stamp}.json"
         try:
             # Save the receipt before the first change. A failed write keeps the build.
             write_json(receipt_path, receipt)
@@ -725,9 +727,12 @@ class Workspace:
                 row["status"] = hold
                 return row
         checks = ["slot-name", "lease", "no-symlinks", "no-open-files", "over-cap"]
-        receipt = self.root / "evidence" / f"trimmed-{slot.name}-{time.time_ns()}.json"
+        stamp = time.time_ns()
+        planned = [p.with_name(f".trim-incremental-{stamp}") for p in found]
+        receipt = self.root / "evidence" / f"trimmed-{slot.name}-{stamp}.json"
         try:  # Save the receipt before the first change. A failed write keeps the state.
             write_json(receipt, {"slot": slot.name, "directories": [str(p) for p in found], "bytes": total,
+                                 "leftovers": [p.relative_to(self.root / "builds").as_posix() for p in planned],
                                  "checks": checks, "cap_bytes": cap, "trimmed_at": time.time()})
         except OSError as exc:
             row["status"] = f"held: could not write receipt: {exc}"
@@ -735,8 +740,7 @@ class Workspace:
         leftovers = []
         failed = False
         try:
-            for incremental in found:
-                leftover = incremental.with_name(f".trim-incremental-{time.time_ns()}")
+            for incremental, leftover in zip(found, planned):
                 incremental.rename(leftover)  # Cargo recreates `incremental` on the next build.
                 leftovers.append(leftover)
         except OSError as exc:
@@ -757,19 +761,22 @@ class Workspace:
         return row
 
     def leftover_proven(self, leftover: Path) -> bool:
-        """A leftover is the tool's own if it holds its build.json or a receipt names it.
-
-        The tool writes the receipt before it renames a build or an incremental directory."""
+        """Resume a marked build or an exact rename recorded before removal started."""
+        evidence = self.root / "evidence"
         if leftover.name.startswith(".retiring-"):
             marker = leftover / "build.json"
             if marker.is_file() and not marker.is_symlink():
                 return True
-            prefix = f"retired-{leftover.name[len('.retiring-'):leftover.name.rfind('-')]}-"
+            receipt = evidence / f"retired-{leftover.name[len('.retiring-'):]}.json"
         else:
-            prefix = f"trimmed-{leftover.parent.parent.parent.name}-"
+            stamp = leftover.name[len(".trim-incremental-"):]
+            receipt = evidence / f"trimmed-{leftover.parent.parent.parent.name}-{stamp}.json"
         try:
-            return any(p.is_file() and not p.is_symlink() for p in (self.root / "evidence").glob(prefix + "*.json"))
-        except OSError:
+            if receipt.is_symlink() or not receipt.is_file():
+                return False
+            recorded = read_json(receipt).get("leftovers")
+            return isinstance(recorded, list) and leftover.relative_to(self.root / "builds").as_posix() in recorded
+        except (OSError, ValueError):
             return False
 
     def recover_interrupted(self) -> list[dict]:
