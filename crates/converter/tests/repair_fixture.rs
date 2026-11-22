@@ -263,6 +263,8 @@ async fn repair_rejects_a_flattened_authoring_path_in_an_all_files_inventory() {
     .unwrap();
     let mut config = common::cpu_lod_config(&data, &output);
     config.no_lod = true;
+    // The fixture supplies no landscape images: select the labelled white default (#811).
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::White;
     config.extract_all_archive_files = true;
     assert!(run_fixture(&config).await.complete);
     let manifest_path = output.join("conversion-manifest.json");
@@ -347,6 +349,8 @@ async fn repair_fails_closed_on_stale_bsa_reader_entry() {
     let output = root.path().join("pack");
     let mut config = PipelineConfig::new(&data, &output);
     config.no_lod = true;
+    // The fixture supplies no landscape images: select the labelled white default (#811).
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::White;
     config.extract_all_archive_files = true;
     config.texture_encoder = converter::config::TextureEncoder::Cpu;
     config.lod_texture_encoder = converter::config::TextureEncoder::Cpu;

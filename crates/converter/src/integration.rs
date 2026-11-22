@@ -4,7 +4,7 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, canonical_literal_asset_path},
     esm::projection_omissions::ProjectionOmissions,
     mesh::{
-        glb_bounds_from_document,
+        drawable_scene_bounds,
         room_bounds::{encloses_native_scene, native_sphere_eligible},
     },
 };
@@ -64,24 +64,22 @@ pub struct NativeModelBoundsRefresh {
     pub unbounded_models: BTreeMap<String, String>,
 }
 
-/// Both offline pack editors require a private world database before starting a write transaction.
-pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
-    let database = root.join(crate::check::WORLD_DATABASE_FILE_NAME);
-    let metadata = fs::symlink_metadata(&database)?;
+/// Refuse symlinks and files whose inode is shared with another path.
+pub(crate) fn require_private_file(path: &Path, metadata: &fs::Metadata) -> Result<()> {
     ensure!(
         metadata.is_file(),
         "{} is not a regular file",
-        database.display()
+        path.display()
     );
     #[cfg(unix)]
-    let links = std::os::unix::fs::MetadataExt::nlink(&metadata);
+    let links = std::os::unix::fs::MetadataExt::nlink(metadata);
     #[cfg(windows)]
     let links = {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
         };
-        let file = fs::File::open(&database)?;
+        let file = fs::File::open(path)?;
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: the file owns a live handle and info is writable for the duration of the call.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
@@ -93,10 +91,37 @@ pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
     #[cfg(any(unix, windows))]
     ensure!(
         links == 1,
-        "the pack needs a private copy of skyrim_world.db"
+        "{} needs a private copy (found {links} links)",
+        path.display()
     );
-    Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .wrap_err_with(|| format!("failed to open {}", database.display()))
+    #[cfg(not(any(unix, windows)))]
+    color_eyre::eyre::bail!("cannot verify the link count of {}", path.display());
+    #[cfg(any(unix, windows))]
+    Ok(())
+}
+
+/// Offline pack editors require a private database and private SQLite sidecar files.
+pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
+    let database = root
+        .canonicalize()?
+        .join(crate::check::WORLD_DATABASE_FILE_NAME);
+    require_private_file(&database, &fs::symlink_metadata(&database)?)?;
+    for extension in ["db-journal", "db-wal", "db-shm"] {
+        let sidecar = database.with_extension(extension);
+        match fs::symlink_metadata(&sidecar) {
+            Ok(metadata) => require_private_file(&sidecar, &metadata)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("cannot inspect {}", sidecar.display()));
+            }
+        }
+    }
+    Connection::open_with_flags(
+        &database,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .wrap_err_with(|| format!("failed to open {}", database.display()))
 }
 
 /// Refreshes model projections in a private, offline runtime pack after installing or
@@ -147,7 +172,7 @@ fn refresh_model_bounds(
         };
         ensure!(resolved.is_file(), "not a GLB file: {key}");
         match read_glb_bounds(resolved, source) {
-            Ok(projected) => *bounds = Some(projected),
+            Ok(projected) => *bounds = projected,
             Err(error) if error.downcast_ref::<std::io::Error>().is_some() => return Err(error),
             Err(error) => {
                 report
@@ -332,7 +357,8 @@ pub fn finalize_world_database_with_sources(
                 .map_err(|error| format!("{error:#}"))
         });
         match bounds {
-            Ok(bounds) => {
+            Ok(None) => {}
+            Ok(Some(bounds)) => {
                 write_model_bounds(&transaction, form_id, *bounds)?;
                 report.bounds_updated += 1;
             }
@@ -558,7 +584,7 @@ enum ModelBoundsSource {
     NativeReplacement,
 }
 
-fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds> {
+fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<Option<ModelBounds>> {
     let mut file =
         fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
     let file_length = file.metadata()?.len();
@@ -570,7 +596,7 @@ fn read_glb_bounds_from_reader(
     file: &mut impl Read,
     file_length: u64,
     source: ModelBoundsSource,
-) -> Result<ModelBounds> {
+) -> Result<Option<ModelBounds>> {
     let mut prefix = read_glb_prefix(file, file_length)?;
     let document: serde_json::Value = serde_json::from_slice(&prefix[20..])?;
     let metadata = &document["extras"]["mudcrabRoomSphere"];
@@ -582,19 +608,21 @@ fn read_glb_bounds_from_reader(
     if let (ModelBoundsSource::NativeReplacement, Some(candidate)) = (source, sphere) {
         sphere = if native_sphere_eligible(&document) {
             file.read_to_end(&mut prefix)?;
-            encloses_native_scene(&prefix, candidate).then_some(candidate)
+            encloses_native_scene(&prefix, &document, candidate).then_some(candidate)
         } else {
             None
         };
     }
-    let render = match source {
-        ModelBoundsSource::Converter => glb_bounds_from_document(&document)?,
-        ModelBoundsSource::NativeReplacement => crate::mesh::glb_scene_bounds(&document, Some(0))?,
+    let scene_index = match source {
+        ModelBoundsSource::Converter => None,
+        ModelBoundsSource::NativeReplacement => Some(0),
     };
-    Ok(ModelBounds {
-        render,
-        room: sphere,
-    })
+    Ok(
+        drawable_scene_bounds(&document, scene_index)?.map(|render| ModelBounds {
+            render,
+            room: sphere,
+        }),
+    )
 }
 
 fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {
@@ -826,6 +854,7 @@ mod tests {
             ModelBoundsSource::Converter,
         )
         .unwrap()
+        .unwrap()
         .render;
         assert_eq!(bounds.min, [1.0, 1.0, 1.0]);
         assert_eq!(bounds.max, [8.0, 10.0, 12.0]);
@@ -851,7 +880,7 @@ mod tests {
             ModelBoundsSource::NativeReplacement,
         )
         .unwrap();
-        assert!(bounds.room.is_none());
+        assert!(bounds.unwrap().room.is_none());
         assert_eq!(
             reader.position(),
             20 + u64::from(u32::from_le_bytes(glb[12..16].try_into().unwrap()))
@@ -1024,6 +1053,56 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(spheres, [(1, 9.0, 6.0), (2, 9.0, 6.0)]);
+    }
+
+    #[test]
+    fn inactive_switch_clears_previous_bounds_and_preserves_invalid_asset_diagnostics() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO statics(id,model_path,flags,bounds_valid) VALUES
+             (1,'switch.nif',0,1), (2,'unmarked.nif',0,0), (3,'broken.nif',0,0);",
+            )
+            .unwrap();
+        let mut document = serde_json::json!({
+            "asset":{"version":"2.0"}, "scenes":[{"nodes":[1]}], "nodes":[{"mesh":0},{}],
+            "meshes":[{"primitives":[{"attributes":{}}]}],
+            "extras":{"mudcrabInactiveSwitch":true}
+        });
+        let write = |name, document: &serde_json::Value| {
+            write_file(
+                directory.path(),
+                name,
+                &glb_with_json(serde_json::to_vec(document).unwrap(), &[]),
+            );
+        };
+        write("meshes/switch.glb", &document);
+        document["extras"] = serde_json::json!({});
+        write("meshes/unmarked.glb", &document);
+        document["extras"]["mudcrabInactiveSwitch"] = true.into();
+        document["scenes"][0]["nodes"] = serde_json::json!([0]);
+        write("meshes/broken.glb", &document);
+        empty_cache(directory.path());
+        let report = finalize_world_database(directory.path()).unwrap().unwrap();
+        assert_eq!(report.unbounded_model_count, 2);
+        assert_eq!(report.bounds_updated, 0);
+        assert_eq!(
+            connection
+                .query_row("SELECT bounds_valid FROM statics WHERE id=1", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM room_model_bounds", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "A runtime placement requires a DATA prefix with all six transform floats. Missing or short DATA omits the runtime row while retaining the canonical record in a full export. Field-level semantics remain deferred.",
+  "table": "references"
+}

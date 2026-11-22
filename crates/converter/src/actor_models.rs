@@ -153,10 +153,14 @@ pub struct ActorModelPartRow {
     pub npc_id: u32,
     /// The biped slot.
     pub slot: ActorModelSlot,
+    /// The `ARMA` FormID the part came from. Omission reports name it.
+    pub armature_id: u32,
     /// The `MOD2`/`MOD3` path, as the record wrote it.
     pub model_path: String,
     /// The armature's own `RNAM`: the NPC's race for an exact match, else `DefaultRace`.
-    pub armature_race_id: u32,
+    /// `None` when the armature has no readable `RNAM` (it matched through an additional race).
+    /// The column stays NULL; the converter never stores race 0 for it.
+    pub armature_race_id: Option<u32>,
     /// The armature's skin texture set for the NPC's sex (`NAM0` male, `NAM1` female), which the
     /// game applies over the part NIF's own textures.
     pub skin_texture_set_id: Option<u32>,
@@ -494,7 +498,7 @@ fn npc_weight(view: &SubrecordView<'_>) -> Option<f32> {
 }
 
 /// `(armature, armature race)` pairs: race-compatible first, `DefaultRace` second.
-pub(crate) type ArmatureTiers = (Vec<(u32, u32)>, Vec<(u32, u32)>);
+pub(crate) type ArmatureTiers = (Vec<(u32, Option<u32>)>, Vec<(u32, Option<u32>)>);
 
 /// Splits an `ARMO`'s armatures by race compatibility, keeping authored order in each tier.
 ///
@@ -506,8 +510,8 @@ pub(crate) fn partition_armatures(
     armatures: &[u32],
     race_id: u32,
 ) -> ArmatureTiers {
-    let mut compatible: Vec<(u32, u32)> = Vec::new();
-    let mut default: Vec<(u32, u32)> = Vec::new();
+    let mut compatible: Vec<(u32, Option<u32>)> = Vec::new();
+    let mut default: Vec<(u32, Option<u32>)> = Vec::new();
     for &armature_id in armatures {
         let Some(armature) = records
             .get(&armature_id)
@@ -516,8 +520,9 @@ pub(crate) fn partition_armatures(
             continue;
         };
         let armature_view = SubrecordView::new(&armature.subrecords);
-        let armature_race_id = armature_view.get_form_id(b"RNAM").unwrap_or(0);
-        let exact_race = armature_race_id == race_id;
+        // A missing or short RNAM is no race at all. Never store race 0 as if it was authored.
+        let armature_race_id = armature_view.get_form_id(b"RNAM");
+        let exact_race = armature_race_id == Some(race_id);
         let additional_race = armature_view.get_form_ids(b"MODL").into_iter().any(|id| {
             id != 0
                 && id == race_id
@@ -527,8 +532,8 @@ pub(crate) fn partition_armatures(
         });
         if exact_race || additional_race {
             compatible.push((armature_id, armature_race_id));
-        } else if armature_race_id == DEFAULT_RACE_FORM_ID {
-            default.push((armature_id, DEFAULT_RACE_FORM_ID));
+        } else if armature_race_id == Some(DEFAULT_RACE_FORM_ID) {
+            default.push((armature_id, Some(DEFAULT_RACE_FORM_ID)));
         }
     }
     (compatible, default)
@@ -611,6 +616,7 @@ fn resolve_body(
             let candidate = ActorModelPartRow {
                 npc_id,
                 slot: ActorModelSlot::Body,
+                armature_id,
                 model_path: path,
                 armature_race_id,
                 skin_texture_set_id: view.get_form_id(skin_tag).filter(|id| *id != 0),
@@ -630,6 +636,7 @@ fn resolve_body(
         parts.push(ActorModelPartRow {
             npc_id,
             slot,
+            armature_id,
             model_path: path,
             armature_race_id,
             skin_texture_set_id: view.get_form_id(skin_tag).filter(|id| *id != 0),

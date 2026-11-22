@@ -17,9 +17,8 @@ use super::{
     },
     reference_links, remap_record_form_ids,
     rooms::{
-        ImportedOccluderSource, NativeOccluderShape, OCCLUSION_MARKER_BASE, PORTAL_MARKER_BASE,
-        ROOM_MARKER_BASE, RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL, refresh_placement_cells,
-        update_subset_occluders,
+        NativeOccluderShape, OCCLUSION_MARKER_BASE, PORTAL_MARKER_BASE, ROOM_MARKER_BASE,
+        RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL, refresh_placement_cells, update_authored_subset,
     },
     types::ArchivedRecordData,
 };
@@ -259,13 +258,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         records.insert(id, edit.record);
     }
     let mut omissions = ProjectionOmissions::default();
-    let occluder_update = update_subset_occluders(
-        &tx,
-        &records,
-        None,
-        &import.occluder_sources,
-        &mut omissions,
-    )?;
+    let occluder_update =
+        update_authored_subset(&tx, &records, &import.damaged_occluders, &mut omissions)?;
     for (category, details) in &omissions.categories {
         for sample in &details.samples {
             let message = format!(
@@ -322,7 +316,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
 struct Import {
     cells: Vec<CellCreation>,
     edits: Vec<Edit>,
-    occluder_sources: HashMap<u32, ImportedOccluderSource>,
+    damaged_occluders: HashSet<u32>,
     /// Index of the first edit following the latest unreadable REFR for each identity.
     unreadable_refs: HashMap<Option<u32>, usize>,
     unknown_discarded_scope: bool,
@@ -554,9 +548,6 @@ fn plugin_edits(
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
-        let authored_null_links = occluder
-            && view.find(b"XORD").is_some()
-            && !view.find_all(b"XORD").any(super::rooms::xord_may_link);
         let unresolved_link = occluder
             && view.find_all(b"XORD").any(|data| {
                 data.as_chunks::<4>().0.iter().any(|word| {
@@ -580,15 +571,8 @@ fn plugin_edits(
         )?;
         if occluder {
             let (warnings, notices) = marker_warnings.report();
-            let source = if unresolved_link || !warnings.is_empty() || !notices.is_empty() {
-                Some(ImportedOccluderSource::Damaged)
-            } else if authored_null_links {
-                Some(ImportedOccluderSource::AuthoredNullLinks)
-            } else {
-                None
-            };
-            if let Some(source) = source {
-                import.occluder_sources.insert(remapped, source);
+            if unresolved_link || !warnings.is_empty() || !notices.is_empty() {
+                import.damaged_occluders.insert(remapped);
             }
         }
         import.edits.push(Edit {

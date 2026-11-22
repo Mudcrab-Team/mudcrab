@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Unusable placement DATA omits activate-parent rows owned by that reference. Field-level semantics remain deferred.",
+  "table": "reference_activate_parents"
+}

@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement.",
+  "table": "inhouse_plugin_masters"
+}

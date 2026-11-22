@@ -1119,6 +1119,8 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
         With<StreamingCamera>,
     >,
     reflections: Query<'w, 's, (Entity, Ref<'static, crate::render::WaterReflectionCamera>)>,
+    /// The game clock, for the hour of the weather-driven sky palette.
+    clock: Option<Res<'w, crate::sun::GameClock>>,
     /// The sun and the "a sun light appeared since the last apply" check need conflicting
     /// access (`&mut DirectionalLight` against that component's change tick), so they share a
     /// `ParamSet`. Every other target's marker is not mutated by this system, so those live in
@@ -1366,7 +1368,13 @@ pub(crate) fn apply_render_settings(
             {
                 settings.set_changed();
             }
-            let next_palette = source.sky_palette(preset);
+            let next_palette = source.sky_palette(
+                preset,
+                targets
+                    .clock
+                    .as_deref()
+                    .map_or(crate::sun::RETAIL_GAME_HOUR, |clock| clock.hour),
+            );
             let palette_changed = sky_palette.as_deref() != Some(&next_palette);
             if palette_changed && let Some(palette) = sky_palette.as_deref_mut() {
                 *palette = next_palette;

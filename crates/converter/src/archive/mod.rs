@@ -546,6 +546,16 @@ impl ArchiveExtractor {
         Self::list_paths_with_name_filter(archive_path, |_| true)
     }
 
+    /// Inventories the canonical paths of the entries whose original name `include_name` accepts.
+    /// The filter runs before canonicalization and collision checks, so an archive whose
+    /// unrelated entries collide can still be searched for the entries that were asked for.
+    pub fn list_paths_with_filter(
+        archive_path: &Path,
+        include_name: impl Fn(&str) -> bool,
+    ) -> Result<Vec<PathBuf>> {
+        Self::list_paths_with_name_filter(archive_path, include_name)
+    }
+
     pub(crate) fn list_runtime_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
         Self::list_paths_with_name_filter(archive_path, |name| !is_authoring_source_name(name))
     }

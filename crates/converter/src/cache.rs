@@ -482,10 +482,17 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "snapshot-and-keyframed-skin-room-spheres",
     "animated-skin-bone-room-spheres",
     "animated-skin-ancestor-and-character-room-spheres",
+    "switch-value-and-multibound-room-spheres",
+    "skin-ancestor-room-spheres",
+    "initial-switch-scene",
+    "inactive-switch-scene-bounds",
+    "signed-switch-selectors",
     "renderer-verified-room-spheres",
     "scene-ancestor-skin-motion",
     "verified-fixed-ordered-descendants",
     "non-finite-uv-repair-v1",
+    "verified-static-drawable-spheres",
+    "collision-body-node-rebind",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

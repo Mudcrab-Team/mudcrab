@@ -66,7 +66,7 @@ use basis_universal::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, ensure, eyre},
+    eyre::{WrapErr, bail, ensure, eyre},
 };
 use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
 use image_dds::image::{
@@ -388,11 +388,30 @@ pub fn build_land_texture_arrays(
         }
     }
 
-    // Entry 0 is the default texture: the caller's, or a white one in the smallest diffuse
-    // class the sources define (the smallest class, BC1, when they define none).
+    // Entry 0 is the default texture: the caller's, or (only when the caller asks for none, the
+    // labelled `--terrain-default white` option) a white one in the smallest diffuse class the
+    // sources define (the smallest class, BC1, when they define none). A requested default that
+    // cannot be used fails the build: a generated white texture is never painted in its place
+    // (#811, SI-23).
     let provided = match &default {
-        Some(source) => plan_entry(source, DEFAULT_LAND_TEXTURE_FORM_ID, options, &mut skipped)?
-            .map(|entry| (source.ltex_form_id, entry)),
+        Some(source) => {
+            let planned = plan_entry(source, DEFAULT_LAND_TEXTURE_FORM_ID, options, &mut skipped)?;
+            match planned {
+                Some(entry) => Some((source.ltex_form_id, entry)),
+                None => {
+                    let reason = skipped
+                        .iter()
+                        .rev()
+                        .find(|texture| texture.usage == LandTextureUsage::DiffuseSrgb)
+                        .map_or("it was skipped", |texture| texture.reason.as_str());
+                    bail!(
+                        "the requested default land texture {} cannot be used: {reason}; \
+                         no white texture is generated in its place",
+                        source.diffuse.display()
+                    );
+                }
+            }
+        }
         None => None,
     };
     let (default_texture, default_entry) = match provided {
@@ -2186,6 +2205,31 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// #811, SI-23: a requested default that cannot be used fails the build. The generated
+    /// white texture appears only when the caller asks for no default (`--terrain-default white`).
+    #[test]
+    fn an_unusable_requested_default_fails_instead_of_painting_white() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = LandTextureSource {
+            ltex_form_id: 0,
+            diffuse: dir.path().join("textures/landscape/dirt02.ktx2"),
+            normal: None,
+        };
+        let error =
+            build_land_texture_arrays(&[], Some(missing), dir.path(), &ArrayOptions::default())
+                .expect_err("a missing requested default is an error");
+        let message = format!("{error:#}");
+        assert!(message.contains("dirt02.ktx2"), "{message}");
+        assert!(
+            message.contains("no white texture is generated"),
+            "{message}"
+        );
+
+        let (_, report) =
+            build_land_texture_arrays(&[], None, dir.path(), &ArrayOptions::default()).unwrap();
+        assert_eq!(report.default_texture, DefaultTexture::White);
     }
 
     #[test]

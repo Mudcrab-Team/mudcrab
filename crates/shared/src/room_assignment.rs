@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-/// A NIF bound in model coordinates; converted metadata uses runtime axes and Creation units.
+/// A verified source shape sphere in the glTF mesh's vertex coordinates.
+pub const DRAWABLE_SPHERE_EXTRA: &str = "mudcrabDrawableSphere";
+
+/// A NIF bound in Creation units. Placement metadata uses runtime axes.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ModelSphere {
     pub center: [f32; 3],

@@ -1,6 +1,6 @@
 # Room-boundary review validation, 2026-11-17
 
-A camera outside every authored room keeps full rendering. Room boxes do not prove that their
+The 2026-11-17 build kept full rendering for a camera outside every authored room. The subsequent [retail Gallows Rock capture](skyrim-culling-rea-parity.md#gallows-rock-west-doorway) supersedes that choice for complete authored graphs. Room boxes do not prove that their
 complement is legitimate outside space. This avoids interpreting a seam between boxes as an
 unbounded-space start. Traversal from rooms through authored outside portals remains supported.
 This choice deliberately draws more than native null-room traversal.

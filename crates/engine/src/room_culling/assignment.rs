@@ -39,9 +39,9 @@ pub(super) enum Owner {
 }
 
 pub(super) struct CachedAssignment {
+    pub root: Entity,
     pub transform: Affine3A,
-    pub moved: bool,
-    pub owners: Option<Vec<Owner>>,
+    pub owners: Vec<Owner>,
 }
 
 impl Assignments {
@@ -71,12 +71,6 @@ impl Assignments {
         self.joined[room]
             .iter()
             .any(|&index| rooms[index].contains(point))
-    }
-
-    pub(super) fn has_named_target(&self, id: u32) -> bool {
-        self.rules
-            .get(&id)
-            .is_some_and(|rule| matches!(rule.rule, Rule::Target(PortalSide::Room(_))))
     }
 
     /// An unbounded skin can deform away from its named room even while its reference is stationary.
@@ -246,10 +240,23 @@ pub(super) fn draws(
     })
 }
 
+pub(super) fn master_side(
+    id: u32,
+    indices: &HashMap<u32, usize>,
+    masters: &[Option<usize>],
+) -> PortalSide {
+    indices
+        .get(&id)
+        .and_then(|&i| masters[i])
+        .map(PortalSide::Room)
+        .unwrap_or(PortalSide::Unknown)
+}
+
 pub(super) fn load(
     conn: &Connection,
     cell: u32,
     rooms: &[Room],
+    indices: &HashMap<u32, usize>,
     portals: &mut [Portal],
 ) -> rusqlite::Result<Option<Assignments>> {
     let supported: bool = conn.query_row(
@@ -282,24 +289,12 @@ pub(super) fn load(
         })
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let masters = joined_masters(&authored);
-    let indices: HashMap<_, _> = rooms
-        .iter()
-        .enumerate()
-        .map(|(i, room)| (room.ref_id, i))
-        .collect();
     let mut joined = vec![Vec::new(); rooms.len()];
     for (index, master) in masters.iter().enumerate() {
         if let Some(master) = master {
             joined[*master].push(index);
         }
     }
-    let side_for_id = |id| {
-        indices
-            .get(&id)
-            .and_then(|&i| masters[i])
-            .map(PortalSide::Room)
-            .unwrap_or(PortalSide::Unknown)
-    };
     for portal in portals.iter_mut() {
         for side in &mut portal.rooms {
             if let PortalSide::Room(index) = *side {
@@ -322,7 +317,7 @@ pub(super) fn load(
                 "none" => Rule::None,
                 "target" => Rule::Target(
                     row.get::<_, Option<u32>>(2)?
-                        .map(side_for_id)
+                        .map(|id| master_side(id, indices, &masters))
                         .unwrap_or(PortalSide::Unknown),
                 ),
                 _ => Rule::Unknown,
@@ -365,6 +360,37 @@ pub(super) fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a reconverted Gallows Rock database in MUDCRAB_SEAM_DATABASE"]
+    fn gallows_rock_seam_model_owners() {
+        let database = std::env::var_os("MUDCRAB_SEAM_DATABASE").unwrap();
+        let db = Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+        let graph = super::super::load_room_graph(&db, 86643).unwrap();
+        let authored = graph.authored.as_ref().unwrap();
+        let owner = graph
+            .rooms
+            .iter()
+            .position(|room| room.ref_id == 0x000A_A079)
+            .unwrap();
+        for id in [0x0004_2177, 0x0004_2178, 0x0005_A22A] {
+            assert!(
+                authored.rules[&id].sphere.is_some(),
+                "missing model sphere for {id:08X}"
+            );
+            assert_eq!(
+                authored.initial_owners(
+                    id,
+                    authored.rules[&id].placed,
+                    &graph.rooms,
+                    &graph.portals
+                ),
+                [Owner::Room(owner)],
+                "retail room ancestor of {id:08X}"
+            );
+        }
+    }
 
     fn room(id: u32, x: f32) -> Room {
         Room {

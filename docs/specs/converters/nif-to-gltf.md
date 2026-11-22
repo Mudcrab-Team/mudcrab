@@ -51,6 +51,13 @@ export wrapper. This is an engineering policy: deeper modded assets are recorded
 models while the normal pipeline continues publishing usable neighbors. Block order and the
 collision block-to-glTF-node mapping are preserved throughout the accepted scene.
 
+**Drawable bounds.** A static `BSTriShape` can supply `meshes[i].extras.mudcrabDrawableSphere`.
+Its `center` is an array of three numbers in the same local coordinates as the exported vertex
+positions. Its `radius` is a positive number in the same units. The converter writes the
+source sphere when it is finite and encloses every position of the corresponding nonempty mesh.
+The engine transforms this bound for authored portal culling and uses the mesh box when the
+extra is absent. The model-level `mudcrabRoomSphere` separately determines room ownership.
+
 **Root transform.** A placed reference replaces its model root's local transform with its own, so
 the root block's authored translation, rotation and scale never apply in game. The static scene
 writes the root node (block 0) with an identity transform, and collision shapes start from an
@@ -249,12 +256,21 @@ moving, critical, bullet: 3, 4, 5, 6) and the mass is finite and above zero; `ke
 body is a box, capsule or hull (a compressed or strip mesh makes it false).
 
 The `node` index and `target` name are checked against the GLB that is actually written, not the
-source NIF's static node list (skeletal and effect NIFs lay their nodes out differently): a body
-is kept only when `target` is non-empty and the GLB's node at `node` has that name. A name
-used by more than one node is trusted at its index only when the GLB's nodes start in the
-same order as the NIF's static scene, which the index was predicted from; otherwise, and
-always when the collision is added to a GLB built elsewhere (`annotate`), the name must be
-unique.
+source NIF's static node list (skeletal and effect NIFs lay their nodes out differently). A body
+is kept only when `target` is non-empty and the written GLB can place it at a node. When the
+GLB's nodes start in the same order as the NIF's static scene, which the index was predicted
+from, the body keeps the predicted `node` when that node has the target name. A mixed skinned
+and static export can still shift the index, so when it does not name the target, a target name
+that appears exactly once is rebound to its real index. When the order is not kept (a reordered
+export, or `annotate` on a GLB built elsewhere), the predicted index is not trusted at all and
+the name must appear exactly once; the body's `node` is then rebound to that node's real index.
+An absent name and a repeated name are both skipped, because neither can say which node the body
+was authored against. The shapes already carry the baked node and body transforms, so the index
+only binds the body to its glTF node name; the engine reads it only for the fixed-container
+check (`node != 0`).
+
+The rebound `node` value changes the glTF extras. Mesh contract `collision-body-node-rebind`
+(#879) records this change; it changes the `nif` proof only.
 
 A body on an unsupported layer, a trigger, a non-colliding body (a `HavokFilter` with the
 "No Collision" flag, or a collision response of 2 RESPONSE_REPORTING or 3 RESPONSE_NONE, in
@@ -377,8 +393,8 @@ Strict animated actor composition continues to require bindable skin data and us
 substitute; its shared weight normalizer uses the same rounding tolerance. Every actual skin-bound GLB primitive still requires valid skin indices, `JOINTS_0`
 and `WEIGHTS_0`.
 
-The mesh settings contract appends `skin-static-fallback` after the existing contracts in
-`MESH_OUTPUT_CONTRACTS` (last: `nif-root-transform-ignored`). Normal caches
+The mesh settings contract appends `skin-static-fallback` after the contracts that existed then in
+`MESH_OUTPUT_CONTRACTS` (the list ended with `nif-root-transform-ignored`). Normal caches
 rebuild older same-producer meshes, and metadata retention rejects an older or missing mesh proof
 until normal conversion regenerates it. Texture/script producer identities are unchanged.
 

@@ -340,17 +340,21 @@ fn undeclared_auto_state_uses_empty_fallback() {
         .unwrap()
         .call(runtime.clone())
         .unwrap();
-    let error = dispatch
+    // A missing method logs an error and gives None; it no longer raises (#630).
+    dispatch
         .call::<()>((
             runtime.clone(),
             failing.clone(),
             "Absent",
             lua.create_table().unwrap(),
         ))
-        .unwrap_err();
+        .unwrap();
+    let messages: Table = runtime.get("messages").unwrap();
+    let last: Table = messages.get(messages.raw_len()).unwrap();
+    assert_eq!(last.get::<String>("level").unwrap(), "error");
     assert!(
-        error
-            .to_string()
+        last.get::<String>("message")
+            .unwrap()
             .contains("unknown Papyrus method: StateFixture::Absent")
     );
     let value: i32 = dispatch
@@ -358,7 +362,7 @@ fn undeclared_auto_state_uses_empty_fallback() {
         .unwrap();
     assert_eq!(
         value, 93,
-        "another script still runs after Rust receives an invocation error"
+        "another script still runs after a logged script fault"
     );
 }
 
@@ -721,8 +725,10 @@ fn pex_state_dispatch_and_transitions() {
         assert(log[before_unknown+1] == 'empty-end:Quiet' and log[before_unknown+2] == 'empty-begin:Not Declared!')
         call(a, 'GotoState', 'Ready')
         assert(log[before_unknown+3] == 'empty-end:Not Declared!' and log[before_unknown+4] == 'empty-begin:Ready')
-        local ok, err = pcall(call, a, 'Absent')
-        assert(not ok and string.find(err, 'unknown Papyrus method'))
+        -- A missing method is a script fault: it logs an error and gives None (#630).
+        assert(call(a, 'Absent') == nil)
+        local last = rt.messages[#rt.messages]
+        assert(last.level == 'error' and string.find(last.message, 'unknown Papyrus method'))
         assert(call(b, 'Value') == 31, 'another script still runs after errors')
     "#).exec().unwrap();
 }

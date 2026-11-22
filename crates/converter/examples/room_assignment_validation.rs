@@ -34,8 +34,6 @@ fn run(args: &[String]) -> Result<()> {
     let assets = Path::new(&args[1]);
     validate_private_assets(assets)?;
     let asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
-    // Any failure below leaves a visible incomplete marker instead of a previous success receipt.
-    write_receipt(assets, &serde_json::json!({"complete": false}))?;
     let cells: BTreeSet<u32> = args[2]
         .split(',')
         .map(str::parse)
@@ -44,6 +42,19 @@ fn run(args: &[String]) -> Result<()> {
         assets.join("skyrim_world.db"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
+    for cell in &cells {
+        ensure!(
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cells WHERE id=?1 AND worldspace_id IS NULL
+                 AND grid_x IS NULL AND grid_y IS NULL)",
+                [cell],
+                |row| row.get::<_, bool>(0)
+            )?,
+            "requested cell {cell} is absent or exterior"
+        );
+    }
+    // From the first mutation onward, an interrupted run has an incomplete receipt.
+    publish_receipt(assets, &serde_json::json!({"complete": false}))?;
     let verified = conn.query_row(
         "SELECT count(*)=2 FROM room_graph_stats WHERE (name='visibility_version' AND value=2)
          OR (name='assignment_version' AND value=1)",
@@ -56,14 +67,6 @@ fn run(args: &[String]) -> Result<()> {
     );
     let mut models = BTreeSet::new();
     for &cell in &cells {
-        ensure!(
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM cells WHERE id=?1)",
-                [cell],
-                |row| row.get::<_, bool>(0)
-            )?,
-            "requested cell {cell:#010x} is absent from the fixture database"
-        );
         let paths=conn.prepare("SELECT DISTINCT s.model_path FROM statics s JOIN \"references\" r ON r.base_form_id=s.id WHERE r.cell_id=?1 AND s.model_path IS NOT NULL AND s.model_path<>''")?
             .query_map([cell],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         for path in paths {
@@ -123,7 +126,7 @@ fn run(args: &[String]) -> Result<()> {
         "base_records_with_source_bounds": bounds,
         "results": results,
     });
-    write_receipt(assets, &report)?;
+    publish_receipt(assets, &report)?;
     println!(
         "Prepared {} models, {bounds} base records with source bounds",
         models.len()
@@ -131,10 +134,12 @@ fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn write_receipt(assets: &Path, report: &serde_json::Value) -> Result<()> {
-    let mut file = tempfile::NamedTempFile::new_in(assets)?;
-    serde_json::to_writer_pretty(file.as_file_mut(), report)?;
-    file.persist(assets.join("room-assignment-preparation.json"))?;
+const RECEIPT: &str = "room-assignment-preparation.json";
+
+fn publish_receipt(assets: &Path, report: &serde_json::Value) -> Result<()> {
+    let file = tempfile::NamedTempFile::new_in(assets)?;
+    serde_json::to_writer_pretty(file.as_file(), report)?;
+    file.persist(assets.join(RECEIPT))?;
     Ok(())
 }
 
@@ -403,15 +408,32 @@ mod tests {
                 .contains("authored room assignments")
         );
         conn.execute_batch(
-            "INSERT INTO room_graph_stats VALUES('assignment_version',1);
+            "INSERT INTO room_graph_stats VALUES('assignment_version',1),('occlusion_version',1);
+             INSERT INTO room_occluders VALUES(83,8,3,0,0,0,0,0,0,1,1,0,1,0,0,0,NULL);
+             INSERT INTO room_occluder_links VALUES(99,0,83,1);
              INSERT INTO statics(id,flags,model_path,bounds_valid,bounds_min_x) VALUES(91,0,'unselected.glb',1,-17);
              INSERT INTO room_reference_rules VALUES(81,8,'unknown',NULL);
              INSERT INTO room_portals VALUES(82,0,8,0,0,0,0,0,0,1,1,NULL,NULL,1,0);",
         )
         .unwrap();
-        for selection in ["7", "7,8"] {
+        let fresh = root.join("fresh");
+        fs::create_dir(&fresh).unwrap();
+        drop(conn);
+        fs::copy(
+            assets.join("skyrim_world.db"),
+            fresh.join("skyrim_world.db"),
+        )
+        .unwrap();
+        for (copy, selection) in [(&assets, "7"), (&assets, "7,8"), (&fresh, "7,8")] {
+            args[1] = copy.display().to_string();
             args[2] = selection.into();
             run(&args).unwrap();
+            let conn = Connection::open(copy.join("skyrim_world.db")).unwrap();
+            let planes: u32 = conn.query_row(
+                "SELECT count(*) FROM room_occluders o JOIN room_occluder_links l ON l.linked_ref=o.ref_id
+                 WHERE o.cell_id=8 AND o.ref_id=83 AND l.ref_id=99", [], |row| row.get(0)
+            ).unwrap();
+            assert_eq!(planes, 1);
             let state: (bool, String, bool, bool) = conn
                 .query_row(
                     "SELECT g.complete,r.assignment,p.unbounded_a,p.unbounded_b
@@ -432,6 +454,75 @@ mod tests {
                 .unwrap(),
                 -17.0
             );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_requests_preserve_the_existing_graph_and_empty_interiors_can_pass() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let assets = root.join("assets");
+        let data = root.join("Data");
+        fs::create_dir(&assets).unwrap();
+        fs::create_dir(&data).unwrap();
+        let db = assets.join("skyrim_world.db");
+        let conn = Connection::open(&db).unwrap();
+        create_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO cells(id,flags,worldspace_id) VALUES(7,1,NULL),(8,0,1);
+            INSERT INTO room_graph_cells VALUES(9,0);
+            INSERT INTO room_graph_stats VALUES('visibility_version',2),('assignment_version',1);",
+        )
+        .unwrap();
+        drop(conn);
+        let prepare = |cells: &str| {
+            run(&[
+                data.display().to_string(),
+                assets.display().to_string(),
+                cells.to_owned(),
+            ])
+        };
+        fs::write(assets.join(RECEIPT), b"previous receipt").unwrap();
+        for cells in ["7,999", "7,8"] {
+            assert!(
+                prepare(cells)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("absent or exterior")
+            );
+            assert_eq!(fs::read(assets.join(RECEIPT)).unwrap(), b"previous receipt");
+            assert_eq!(
+                Connection::open(&db)
+                    .unwrap()
+                    .query_row("SELECT cell_id FROM room_graph_cells", [], |r| r
+                        .get::<_, u32>(0))
+                    .unwrap(),
+                9
+            );
+        }
+        prepare("7").unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_reader(fs::File::open(assets.join(RECEIPT)).unwrap()).unwrap();
+        assert_eq!(receipt["complete"], true);
+        assert_eq!(receipt["requested_models"], 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sibling_receipts_are_independent_even_if_originally_hard_linked() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a");
+        let b = root.path().join("b");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        publish_receipt(&a, &serde_json::json!({"complete":true})).unwrap();
+        fs::hard_link(a.join(RECEIPT), b.join(RECEIPT)).unwrap();
+        publish_receipt(&b, &serde_json::json!({"complete":false})).unwrap();
+        for (copy, complete) in [(a, true), (b, false)] {
+            let receipt: serde_json::Value =
+                serde_json::from_reader(fs::File::open(copy.join(RECEIPT)).unwrap()).unwrap();
+            assert_eq!(receipt["complete"], complete);
         }
     }
 
@@ -535,7 +626,7 @@ mod tests {
         fs::create_dir(&assets).unwrap();
         let database = assets.join("skyrim_world.db");
         fs::write(&database, b"independent database").unwrap();
-        let report = assets.join("room-assignment-preparation.json");
+        let report = assets.join(RECEIPT);
         fs::write(&report, b"previous receipt").unwrap();
         let reader = shared::asset_lock::AssetLock::acquire_shared(&assets).unwrap();
         let args = vec![
@@ -560,52 +651,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn missing_cell_preserves_graph_and_sibling_receipt() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let first = root.join("first");
-        let second = root.join("second");
-        fs::create_dir(&first).unwrap();
-        fs::create_dir(&second).unwrap();
-        let successful = serde_json::json!({"complete": true});
-        write_receipt(&first, &successful).unwrap();
-        let db = second.join("skyrim_world.db");
-        let conn = Connection::open(&db).unwrap();
-        create_tables(&conn).unwrap();
-        conn.execute_batch(
-            "INSERT INTO cells(id,flags) VALUES(7,0);
-          INSERT INTO room_graph_stats(name,value) VALUES('visibility_version',2),('assignment_version',1);
-          INSERT INTO room_graph_cells(cell_id,complete) VALUES(7,1);",
-        )
-        .unwrap();
-        let args = [
-            root.display().to_string(),
-            second.display().to_string(),
-            "7,8".into(),
-        ];
-        assert!(run(&args).unwrap_err().to_string().contains("0x00000008"));
-        assert!(
-            conn.query_row(
-                "SELECT complete FROM room_graph_cells WHERE cell_id=7",
-                [],
-                |r| r.get::<_, bool>(0)
-            )
-            .unwrap()
-        );
-        for (copy, expected) in [
-            (first, successful),
-            (second, serde_json::json!({"complete":false})),
-        ] {
-            let saved = fs::read(copy.join("room-assignment-preparation.json")).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&saved).unwrap(),
-                expected
-            );
-        }
-    }
-
     #[cfg(not(unix))]
     #[test]
     fn capture_preparation_refuses_unverified_database_independence() {
@@ -626,7 +671,7 @@ mod tests {
                 .contains("requires Unix hard-link validation")
         );
         assert_eq!(fs::read(&database).unwrap(), b"independent database");
-        assert!(!assets.join("room-assignment-preparation.json").exists());
+        assert!(!assets.join(RECEIPT).exists());
     }
 
     #[cfg(unix)]
@@ -723,6 +768,70 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn staged_skinned_mesh_matches_the_normal_tree_with_an_unplaced_skeleton() {
+        use dummy_content::nif::{LegacySkin, SkinInstanceKind, legacy_skinned_shape};
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        fs::create_dir(&data).unwrap();
+        let model = Path::new("meshes/actors/moth/body.nif");
+        let skeleton = Path::new("meshes/actors/other/skeleton.nif");
+        let skin = LegacySkin {
+            name: "CaptureSkin",
+            instance_kind: SkinInstanceKind::Plain,
+            bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+            palette: &[0, 1],
+            weights: &[[1.0, 0.0, 0.0, 0.0]; 4],
+            with_geometry: true,
+            joint_override: None,
+        };
+        let mesh = legacy_skinned_shape(&skin).unwrap();
+        use nom_derive::Parse;
+        use project_wormhole_nif::nif_header::NifHeader;
+        let mut rig = legacy_skinned_shape(&LegacySkin {
+            with_geometry: false,
+            ..skin
+        })
+        .unwrap();
+        let (blocks, _) = NifHeader::parse(&rig).unwrap();
+        let root_node = rig.len() - blocks.len();
+        // Name the skeleton root with the first entry in the fixture’s string table.
+        rig[root_node..root_node + 4].copy_from_slice(&0u32.to_le_bytes());
+        let (_, parsed) = project_wormhole_nif::nif_file::NifFile::parse(&rig).unwrap();
+        assert_eq!(parsed.blocks[0].as_node().unwrap().children, [1, 2]);
+        let archive = data.join("Skyrim - Meshes.bsa");
+        fs::write(
+            &archive,
+            dummy_content::bsa::v105(
+                &[
+                    dummy_content::Entry::new(model.to_str().unwrap(), &mesh),
+                    dummy_content::Entry::new(skeleton.to_str().unwrap(), &rig),
+                ],
+                dummy_content::bsa::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let normal = root.path().join("normal");
+        ArchiveExtractor::extract(&archive, &normal).unwrap();
+        let (staged, count, _) = prepare_model_sources(
+            &data,
+            root.path(),
+            &BTreeSet::from([model.to_owned()]),
+            &["Skyrim.esm".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(count, 2);
+        let convert = |tree: &Path| {
+            let nif = tree.join(model);
+            assert_eq!(MeshConverter::dependency_paths(&nif), [tree.join(skeleton)]);
+            let glb = tree.join("output.glb");
+            MeshConverter::convert_nif_to_glb(&nif, &glb).unwrap();
+            fs::read(glb).unwrap()
+        };
+        assert_eq!(convert(&normal), convert(staged.path()));
     }
 
     #[test]

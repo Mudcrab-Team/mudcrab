@@ -18,7 +18,47 @@ A line that says `non-retail`, `not vanilla` or `Mudcrab-only` still needs a rea
 
 The accepted reason words are `because`, `since`, `so that`, `to avoid`, `to keep`, `to prevent`, `to match` and `due to`. Naming what Mudcrab does instead also counts (`Mudcrab uses ...`).
 
+The check also reads added rows of the retail-facts registry. A row may carry `kind: rule`, `kind: quirk` or `kind: defect`, and a row without the field is a rule. A row with another kind value fails. A row that says quirk or defect in its text without a `kind:` field also fails. See [ADR-0015](../adr/0015-retail-rule-quirk-defect.md).
+
 Run it locally with `python3 scripts/check_retail_claims.py --base origin/main`. CI runs it in the `scripts` job and prints the file and line for each finding. The gate is required: a finding fails the `scripts` job.
+
+## Stand-ins for retail data
+
+A stand-in is a value or an asset that Mudcrab makes where retail ships one. A baked LOD mesh where retail ships `.btr` files is an example. So is a fixed light unit where retail reads a record. A stand-in must be labelled and linked to an issue. An owner can be added, so a reader can find who owns the replacement.
+
+Put this marker in the same `//` comment block as the code, or in the same Markdown section:
+
+```text
+STAND-IN(#900): terrain LOD mesh built from LAND heights; retail ships .btr
+STAND-IN(#900, @owner-handle): terrain LOD mesh built from LAND heights; retail ships .btr
+```
+
+The marker word is upper case. The issue is `#NNN` or a full `https://github.com/<org>/<repo>/issues/NNN` URL. An owner is optional: add `, @handle` after the issue to name the person who owns the replacement. After the colon, give at least four words: what is replaced and which retail data replaces it. Write `no retail data` when retail ships no equivalent.
+
+A comment that admits a stand-in needs the marker. The check fails an added comment line that contains one of these narrow words without a marker in its block:
+
+```text
+placeholder, provisional, interim, for now, made up, not consumed,
+legacy fallback, legacy normalization, engineering approximation,
+eyeball, fitted, generated white, invented value/colour/constant/normal,
+"a stand-in for a retail ..." and "the stand-in of an authored ..."
+```
+
+It also fails an added `const`, `static`, `fn`, enum variant or struct field whose name matches one of these patterns without a marker:
+
+```text
+PLACEHOLDER, GENERATED_*, SYNTHETIC, DUMMY, FAKE, LEGACY_
+```
+
+A malformed marker fails. A line with a negation such as "no" before the word is not a finding. Test code is out of scope: `tests.rs`, `*_tests.rs`, paths under `tests/` or `recovery_tests/`, and every line after the first `#[cfg(test)]`.
+
+The check reads only lines a pull request adds. Existing stand-ins are recorded in `scripts/stand_in_baseline.json`, one count per file. CI fails when a file's count rises. Run this to see the list:
+
+```bash
+python3 scripts/check_retail_claims.py --audit
+```
+
+Lower the counts with `--audit --write-baseline` after a removal. Do not raise a count to hide a new stand-in: add the marker, or remove the stand-in. `--check-issues` reports markers whose issue is closed. A nightly workflow runs it, not pull-request CI. See [ADR-0015](../adr/0015-retail-rule-quirk-defect.md).
 
 ## Voice
 
@@ -66,6 +106,28 @@ Fill in [the PR template](../../.github/PULL_REQUEST_TEMPLATE.md): a one-sentenc
 - **Length:** aim for about 200 words of prose outside `<details>`, or about 450 for code PRs. Checklists, code blocks and command output don't count. These are targets: go over rather than drop a needed reason, and move mechanism into `<details>` first.
 - **Evidence:** for a visual change, before/after pictures from the same command on both builds, cropped to the game window. For a speed change, numbers from a quiet machine, repeated, with the setup stated. For a command-line change, the real output (`$ command`, then what it printed).
 - **Pictures:** host them where they won't change (a commit-pinned link, for example `raw.githubusercontent.com/<fork>/<commit>/<file>`), not a link that can move or expire.
+
+### Converter database snapshot
+
+[`world_database_tables_match_snapshot`](../../crates/converter/tests/snapshots.rs) writes every table of a world database built from the synthetic `dummy-content` fixture to a committed snapshot, one sorted line per row. A converter change that alters a published row fails the test and prints a row diff. [`legacy_world_database_tables_match_snapshot`](../../crates/converter/tests/snapshots.rs) keeps the 11 tables the older JSON snapshot covered on the legacy reader path.
+
+A PR that changes either world database snapshot must list each changed row, each added or removed table, and each header change, and say why. To write a reviewed snapshot, run one of these:
+
+```bash
+# POSIX shell
+INSTA_UPDATE=always python3 scripts/workspace.py cargo test --locked -p converter --test snapshots world_database_tables_match_snapshot
+```
+
+```powershell
+# PowerShell
+$env:INSTA_UPDATE="always"; python3 scripts/workspace.py cargo test --locked -p converter --test snapshots world_database_tables_match_snapshot; Remove-Item Env:INSTA_UPDATE
+```
+
+That command updates an existing snapshot. A missing snapshot fails the test, so the update command cannot recreate a deleted file and pass with no review: restore it from Git, or, to create it on purpose, also set `MUDCRAB_SNAPSHOT_CREATE=1` (`$env:MUDCRAB_SNAPSHOT_CREATE="1"` in PowerShell).
+
+Read the diff before you commit it. The snapshot header names every normalized column and every omitted table, and the test fails if that set changes, so no exclusion is silent.
+
+The fixture fills 27 of the 66 tables. These important paths are empty, so the snapshot proves only that the fixture publishes no rows for them: scripts (`scripts`, `script_properties`, `script_property_values`), omissions (`projection_omission_samples`, `projection_omission_stats`, `record_diagnostics`), weather (every `weathers`, `weather_*`, `climates`, `climate_weathers` and `region_weathers` table), water (`waters`), light (`lights`, `cell_lighting`, `lighting_templates`, `emittance`), LOD (`lod`, `lod_build`, `lod_chunks`, `lod_chunks_spatial`) and grass (`grass_types`, `landscape_texture_grasses`). `room_graph_stats` has 12 rows of zeros, and every other room table is empty. A snapshot change on those paths proves reporting only, not world content.
 
 ## Draft PRs
 

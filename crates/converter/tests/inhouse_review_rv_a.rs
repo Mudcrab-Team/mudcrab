@@ -545,7 +545,8 @@ fn terrain_case(bad: BadLayer) -> TerrainCase {
         0x0100_0B20,
         &record(b"LAND", 0x0100_0B21, 0, &candidate),
     ));
-    let heightless = terrain(None, 0.25);
+    // A flat authored height field: a LAND without VHGT is omitted, never zero-filled (#811).
+    let heightless = terrain(Some(0.0), 0.25);
     patch.extend(terrain_cell(
         0x0100_0B30,
         &record(b"LAND", 0x0100_0B31, 0, &heightless),
@@ -673,7 +674,7 @@ fn assert_terrain(case: &TerrainCase, output: &Path) {
         assert_eq!(
             heightmap,
             if cell == 0x0100_0B30 {
-                Vec::new()
+                heights(0.0)
             } else {
                 heights(99.0)
             }

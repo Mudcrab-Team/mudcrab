@@ -290,6 +290,7 @@ fn remaps_reordered_masters_light_plugins_terrain_and_alternate_textures() {
                         0x02000830,
                         0,
                         [
+                            sub(b"VHGT", &[0; 4 + 33 * 33 + 3]),
                             sub(b"BTXT", &texture_layer(0x02000820, 2, 0)),
                             sub(b"ATXT", &texture_layer(0x01000802, 2, 3)),
                             sub(
@@ -411,16 +412,20 @@ fn remaps_every_vtex_entry_without_layer_metadata() {
         b"LAND",
         0x01000900,
         0,
-        sub(
-            b"VTEX",
-            &[
-                0x800u32.to_le_bytes(),
-                0x801u32.to_le_bytes(),
-                0u32.to_le_bytes(),
-                0x01000802u32.to_le_bytes(),
-            ]
-            .concat(),
-        ),
+        [
+            sub(b"VHGT", &[0; 4 + 33 * 33 + 3]),
+            sub(
+                b"VTEX",
+                &[
+                    0x800u32.to_le_bytes(),
+                    0x801u32.to_le_bytes(),
+                    0u32.to_le_bytes(),
+                    0x01000802u32.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
     );
     let patch = plugin(dir.path(), "Patch.esp", &["Base.esm"], 0, land);
     let merged = EsmParser::merge_plugins(&[filler, base, patch]).unwrap();
@@ -1485,7 +1490,16 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
         drain.await.unwrap();
         assert!(!report.complete, "malformed fields must remain visible");
         assert_eq!(report.skipped, 0, "usable assets and records still publish");
-        assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+        // Two reader warnings, plus the omission of the placement that has no parent cell (#811).
+        assert_eq!(report.warnings.len(), 3, "{:?}", report.warnings);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("reference_missing_cell")),
+            "{:?}",
+            report.warnings
+        );
         for plugin in ["links.esp", "override.esp"] {
             let warnings: Vec<_> = report
                 .warnings
@@ -2106,6 +2120,12 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             payload.extend(sub(b"XLRM", &0x811u32.to_le_bytes()));
             payload.extend(sub(b"XLRM", &0x810u32.to_le_bytes()));
         }
+        if id == 0x830 || id == 0x833 {
+            payload.extend(sub(b"XMBR", &0x810u32.to_le_bytes()));
+        }
+        if id == 0x833 {
+            payload.extend(sub(b"XMBR", &0x811u32.to_le_bytes()));
+        }
         if id == 0x803 {
             payload.extend(sub(b"XPOD", &[0; 9]));
             payload.extend(sub(
@@ -2156,6 +2176,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
                         marker(0x810, 0x1F, 1, None),
                         marker(0x811, 0x1F, 1, None),
                         marker(0x830, 0x17, 3, None),
+                        marker(0x833, 0x17, 3, None),
                         record(
                             b"REFR",
                             0x831,
@@ -2267,7 +2288,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        2
+        3, // Includes the plane with two XMBR fields. Only its ownership is ambiguous.
     );
     let reason: String = conn.query_row(
         "SELECT reason FROM projection_omission_samples WHERE category='occluder_unusable_geometry' AND form_id=0x832",
@@ -2275,37 +2296,45 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
         |row| row.get(0),
     ).unwrap();
     assert!(reason.contains("XSCL"), "{reason}");
-    for (id, outside) in [(0x801, true), (0x802, false), (0x803, false)] {
-        let actual: (Option<u32>, bool) = conn
-            .query_row(
-                "SELECT room_b,unbounded_b FROM room_portals WHERE ref_id=?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(actual, (None, outside));
-    }
-    let pairs = conn
+    let explicit_planes = conn
         .prepare(
-            "SELECT pair_index,room_a,unbounded_a,room_b,unbounded_b
-             FROM room_portals WHERE ref_id=0x804 ORDER BY pair_index",
+            "SELECT reference_id,target_ref FROM room_reference_rules
+         WHERE reference_id BETWEEN 0x830 AND 0x833 AND assignment='target' ORDER BY reference_id",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(explicit_planes, [(0x830, 0x810)]);
+    let portal_pairs = conn
+        .prepare(
+            "SELECT ref_id, pair_index, room_a, room_b, unbounded_a, unbounded_b FROM room_portals
+             WHERE ref_id BETWEEN 0x801 AND 0x804 ORDER BY ref_id, pair_index",
         )
         .unwrap()
         .query_map([], |row| {
             Ok((
-                row.get::<_, usize>(0)?,
-                row.get::<_, Option<u32>>(1)?,
-                row.get::<_, bool>(2)?,
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, Option<u32>>(2)?,
                 row.get::<_, Option<u32>>(3)?,
                 row.get::<_, bool>(4)?,
+                row.get::<_, bool>(5)?,
             ))
         })
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(
-        pairs,
-        [(0, None, true, None, true), (1, None, false, None, true)]
+        portal_pairs,
+        [
+            (0x801, 0, Some(0x800), None, false, true),
+            (0x802, 0, Some(0x800), None, false, false),
+            (0x803, 0, None, None, false, false),
+            (0x804, 0, None, None, true, true),
+            (0x804, 1, None, None, false, true),
+        ]
     );
     assert_eq!(
         conn.query_row(
@@ -3000,9 +3029,12 @@ fn ambiguous_room_headers_keep_both_readers_conservative() {
             let rooms: i64 = conn
                 .query_row("SELECT COUNT(*) FROM room_bounds", [], |row| row.get(0))
                 .unwrap();
+            // Unreadable flags (a short or repeated XRMR) get no row instead of flags 0 (#811);
+            // readable headers keep their geometry.
             assert_eq!(
-                rooms, 3,
-                "ambiguous metadata must not discard valid room geometry"
+                rooms,
+                if expected { 3 } else { 2 },
+                "{headers:?}: an unreadable XRMR header publishes no room row"
             );
         }
     }
@@ -3474,7 +3506,8 @@ fn room_link_anomalies_reach_both_readers_integration_reports() {
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(output.join("integration-report.json")).unwrap())
                 .unwrap();
-        assert_eq!(report["room_graph"]["rooms"], 5);
+        // Two markers with unreadable XRMR flags get no room row (#811), so 3 of 5 remain.
+        assert_eq!(report["room_graph"]["rooms"], 3);
         assert_eq!(
             report["room_graph"]["room_link_anomalies"],
             serde_json::json!({
@@ -4347,6 +4380,78 @@ fn malformed_portal_primitives_only_disable_their_own_cells() {
             "typed={typed}"
         );
     }
+}
+
+#[test]
+fn typed_plane_links_require_one_source_field_with_one_nonzero_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let mut shape = vec![0; 32];
+    for offset in [0, 8] {
+        shape[offset..offset + 4].copy_from_slice(&20f32.to_le_bytes());
+    }
+    shape[28..].copy_from_slice(&3u32.to_le_bytes());
+    let plane = |id, links: &[[u32; 4]]| {
+        let mut payload = [
+            sub(b"NAME", &0x17u32.to_le_bytes()),
+            sub(b"DATA", &[0; 24]),
+            sub(b"XPRM", &shape),
+        ]
+        .concat();
+        for words in links {
+            payload.extend(sub(
+                b"XORD",
+                &words
+                    .iter()
+                    .flat_map(|word| word.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            ));
+        }
+        record(b"REFR", id, 0x400, payload)
+    };
+    plugin(
+        &data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            group(
+                6,
+                0x900,
+                group(
+                    8,
+                    0x900,
+                    [
+                        plane(0x810, &[[0, 0x811, 0, 0]]),
+                        plane(0x811, &[[0, 0, 0, 0x810]]),
+                        plane(0x812, &[[0x811, 0, 0, 0], [0; 4]]),
+                        plane(0x813, &[[0x810, 0, 0, 0x811]]),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ]
+        .concat(),
+    );
+    let order = dir.path().join("plugins.txt");
+    fs::write(&order, "*Skyrim.esm\n").unwrap();
+    let output = dir.path().join("bundle");
+    converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
+    let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let mut edges = db
+        .prepare(
+            "SELECT ref_id, link_index, linked_ref FROM room_occluder_links
+         WHERE single_target_verified=1 ORDER BY ref_id",
+        )
+        .unwrap();
+    let verified: Vec<(u32, u32, u32)> = edges
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(verified, [(0x810, 1, 0x811), (0x811, 3, 0x810)]);
 }
 
 #[test]
@@ -6364,7 +6469,8 @@ fn room_placement_command_updates_skyrim_and_native_occluders() {
         &native,
         serde_json::json!({"edits":[{"op":"put","id":0xff00_0800u32,
         "cell":PLACEMENT_CELL_A,"base":23,"position":[0,0,0],
-        "shape":{"kind":"plane","half_width":8,"half_height":8}}]})
+        "shape":{"kind":"plane","half_width":8,"half_height":8},
+        "links":[0,0,0x0100_0800u32,0],"ownership":{"kind":"target","room":0x800}}]})
         .to_string(),
     )
     .unwrap();
@@ -6380,6 +6486,23 @@ fn room_placement_command_updates_skyrim_and_native_occluders() {
         )
         .unwrap()
     };
+    let proof = db
+        .query_row(
+            "SELECT l.link_index,l.linked_ref,l.single_target_verified,r.target_ref
+         FROM room_occluder_links l JOIN room_reference_rules r ON r.reference_id=l.ref_id
+         WHERE l.ref_id=0xff000800 AND r.assignment='target'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, u32>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(proof, (2, 0x0100_0800, true, 0x800));
     assert_eq!(count(), 2);
     fs::write(
         &native,
@@ -6393,6 +6516,59 @@ fn room_placement_command_updates_skyrim_and_native_occluders() {
         "Applied 2 room placements in 1 cells (1 certified)",
     );
     assert_eq!(count(), 0);
+}
+
+#[test]
+fn occluder_link_to_a_deleted_archived_placement_is_an_omission() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let remove = dir.path().join("remove.json");
+    fs::write(&remove, r#"{"edits":[{"op":"delete","id":2050}]}"#).unwrap();
+    assert!(
+        run_placement_import(&assets, "--native", &remove)
+            .status
+            .success()
+    );
+    let plane = plugin(
+        dir.path(),
+        "LinkToDeleted.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            placement_marker(
+                0x0100_0910,
+                23,
+                sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat()),
+            ),
+        ),
+    );
+    let result = run_placement_import(&assets, "--plugin", &plane);
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        result.status.success() && error.contains("occluder_unusable_links"),
+        "{error}"
+    );
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
+    assert_eq!(
+        db.query_row(
+            "SELECT link_index,linked_ref,single_target_verified FROM room_occluder_links WHERE ref_id=0x01000910",
+            [],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?, row.get::<_, bool>(2)?))
+        )
+        .unwrap(),
+        (0, 0x802, false)
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT record_type FROM records WHERE form_id=0x802",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "REFR"
+    );
 }
 
 fn authored_cell(id: u32, extra: Vec<u8>) -> Vec<u8> {
@@ -8961,7 +9137,7 @@ fn plugin_occluder_import_reports_linked_cells_and_keeps_authored_null_links_loc
             "linked",
             [0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
             vec![0x900, 0x901],
-            [false, false],
+            [true, false],
             true,
         ),
         ("malformed", vec![0; 12], vec![0x900], [false, true], false),
@@ -8992,6 +9168,19 @@ fn plugin_occluder_import_reports_linked_cells_and_keeps_authored_null_links_loc
         );
         let report = apply(&assets, PlacementSource::SkyrimPlugin(&source)).unwrap();
         let db = rusqlite::Connection::open(path).unwrap();
+        if name == "linked" {
+            // A verified single edge preserves the source certificate. The target cell
+            // loses its certificate, and the receipt includes both cells.
+            let edge: (u32, u32, bool) = db
+                .query_row(
+                    "SELECT link_index, linked_ref, single_target_verified
+                     FROM room_occluder_links WHERE ref_id=0x801",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(edge, (0, 0x802, true));
+        }
         let certificates = [0x900, 0x901].map(|cell| placement_certificate(&db, cell));
         let links_verified = db
             .query_row(
@@ -9498,11 +9687,8 @@ fn typed_placement_winner_checks_grouped_duplicates_before_ungrouped_override() 
         (0x853, None, 0x831),
         (0x854, None, 0x831),
     ] {
-        assert_eq!(
-            placement_winner_cell(&db, id),
-            Some(cell.unwrap_or(0)),
-            "{id:08X}"
-        );
+        // A placement with no parent cell gets no row: no cell 0 is invented for it (#811).
+        assert_eq!(placement_winner_cell(&db, id), cell, "{id:08X}");
         assert_eq!(
             SubrecordView::new(&records[&id].subrecords).get_form_id(b"NAME"),
             Some(base),

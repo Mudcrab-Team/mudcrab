@@ -6,6 +6,7 @@
 
 use converter::{
     archive::ArchiveExtractor,
+    lod::objects::{chunk_key_for_block, compile_object_chunk, validate_object_glb},
     lod::retail::{
         atlas::{DdsFormat, read_dds_info},
         bto::read_object_lod,
@@ -14,6 +15,7 @@ use converter::{
         name::{RetailLodKind, parse_lod_file_name},
     },
 };
+use shared::lod::LodOrigin;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -229,4 +231,145 @@ fn tamriel_level_4_large_references_are_kept_as_opaque_blocks() {
         "level 4: {shapes} shapes, {large_refs} large-ref blocks, {segments} segment entries, {multi_segment_shapes} shapes with several segments"
     );
     assert!(large_refs > 0, "level 4 carries large references");
+}
+
+#[test]
+#[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
+fn tamriel_level_16_blocks_compile_to_valid_chunk_local_object_chunks() {
+    let data = data_dir();
+    let temp = tempfile::tempdir().unwrap();
+    let files = extract(&archives(&data, "Skyrim - Meshes"), temp.path(), |path| {
+        let text = path.to_string_lossy();
+        parse_lod_file_name(&text).is_some_and(|name| {
+            name.kind == RetailLodKind::Object && name.world == "tamriel" && name.level == Some(16)
+        })
+    });
+    assert_eq!(files.len(), 48);
+    // The pack's LOD origin for Tamriel (worldspace 0x3c).
+    let origin = LodOrigin::new(-96, -96);
+    let atlas = {
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        converter::texture::TextureConverter::convert(
+            &dds,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    };
+    let mut triangles = 0;
+    let mut flag_counts = std::collections::BTreeMap::<u32, usize>::new();
+    for file in &files {
+        let name = parse_lod_file_name(&file.to_string_lossy()).unwrap();
+        let (x, y) = name.cell.unwrap();
+        let key = chunk_key_for_block(0x3c, origin, 16, x, y).unwrap();
+        let bytes = std::fs::read(file).unwrap();
+        let block = read_object_lod(&bytes, file).unwrap();
+        let chunk = compile_object_chunk(key, origin, &block, &atlas).unwrap();
+        for shape in &block.shapes {
+            *flag_counts.entry(shape.flags).or_default() += 1;
+        }
+        validate_object_glb(&chunk.glb).unwrap();
+        triangles += chunk.triangles;
+        // The shipped files store a level-16 shape at scale 16 (the block level), translated to the block
+        // origin; the compiler applies the stored transform.
+        assert_eq!(block.shapes[0].scale, 16.0);
+        assert_eq!(
+            block.shapes[0].translation,
+            [x as f32 * 4096.0, y as f32 * 4096.0, 0.0]
+        );
+        // The merged meshes cover about the block's own 16 x 16 cells and overshoot its edges by
+        // a cell or two (largest seen: 1.5 cells); a wrong transform would be far off or span a
+        // fraction of the block.
+        let (cell_x, cell_y) = (f64::from(x) * 4096.0, f64::from(y) * 4096.0);
+        let side = 16.0 * 4096.0;
+        let margin = 3.0 * 4096.0;
+        assert!(f64::from(chunk.bounds_min[0]) >= cell_x - margin, "{x},{y}");
+        assert!(f64::from(chunk.bounds_min[1]) >= cell_y - margin, "{x},{y}");
+        assert!(
+            f64::from(chunk.bounds_max[0]) <= cell_x + side + margin,
+            "{x},{y}"
+        );
+        assert!(
+            f64::from(chunk.bounds_max[1]) <= cell_y + side + margin,
+            "{x},{y}"
+        );
+    }
+    println!("level 16 shape node flags: {flag_counts:?}");
+    assert_eq!(triangles, 311_641);
+}
+
+#[test]
+#[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
+fn tamriel_level_8_and_4_blocks_compile_and_level_4_segments_are_cells() {
+    let data = data_dir();
+    let temp = tempfile::tempdir().unwrap();
+    let origin = LodOrigin::new(-96, -96);
+    let atlas = {
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        converter::texture::TextureConverter::convert(
+            &dds,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    };
+    // (blocks, triangles) measured on the shipped files.
+    for (level, expected_blocks, expected_triangles) in
+        [(8u32, 152usize, 1_016_520usize), (4, 517, 2_350_870)]
+    {
+        let files = extract(&archives(&data, "Skyrim - Meshes"), temp.path(), |path| {
+            let text = path.to_string_lossy();
+            parse_lod_file_name(&text).is_some_and(|name| {
+                name.kind == RetailLodKind::Object
+                    && name.world == "tamriel"
+                    && name.level == Some(level)
+            })
+        });
+        assert_eq!(
+            files.len(),
+            expected_blocks,
+            "Tamriel level {level} block count"
+        );
+        let (mut triangles, mut pieces, mut with_large_refs) = (0usize, 0usize, 0usize);
+        // Segment i of a level-4 shape covers cell (x + i / 4, y + i % 4) (verified in the loader,
+        // skyrim_decomp#816): the geometry check counts segments whose mean vertex is within 0.75
+        // cell of that cell.
+        let (mut fitted, mut total) = (0usize, 0usize);
+        for file in &files {
+            let name = parse_lod_file_name(&file.to_string_lossy()).unwrap();
+            let (x, y) = name.cell.unwrap();
+            let key = chunk_key_for_block(0x3c, origin, level, x, y).unwrap();
+            let block = read_object_lod(&std::fs::read(file).unwrap(), file).unwrap();
+            let chunk = compile_object_chunk(key, origin, &block, &atlas).unwrap();
+            validate_object_glb(&chunk.glb).unwrap();
+            triangles += chunk.triangles;
+            pieces += chunk.cell_pieces;
+            with_large_refs += usize::from(chunk.large_ref_blocks > 0);
+            if level != 4 {
+                continue;
+            }
+            let (cell_fit, cell_total) = converter::lod::objects::segment_cell_fit(&block, (x, y));
+            fitted += cell_fit;
+            total += cell_total;
+        }
+        println!(
+            "level {level}: {triangles} triangles, {pieces} cell pieces, {with_large_refs} blocks with large-reference data, segment fit {fitted}/{total}"
+        );
+        assert_eq!(triangles, expected_triangles);
+        if level == 4 {
+            assert!(
+                total > 6_000 && fitted * 1000 >= total * 999,
+                "segment fit {fitted}/{total}"
+            );
+            assert!(pieces > 0 && with_large_refs == 496);
+        } else {
+            assert_eq!(pieces, 0);
+        }
+    }
 }

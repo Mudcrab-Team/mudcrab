@@ -1687,7 +1687,8 @@ fn populate_static_scene_excluding(
             NifBlock::BSMultiBoundNode(_)
             | NifBlock::BSOrderedNode(_)
             | NifBlock::NiBillboardNode(_)
-            | NifBlock::BSValueNode(_) => {
+            | NifBlock::BSValueNode(_)
+            | NifBlock::NiSwitchNode(_) => {
                 let node = block.as_node()?;
                 model.static_nodes.push(static_node_from_av(
                     nif,

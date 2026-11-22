@@ -8,8 +8,11 @@
 //! Design and byte layouts: `docs/research/interior-room-graph-converter.md`.
 
 use crate::esm::{
-    extractors::SubrecordView, load_order::LoadOrder, projection_omissions::ProjectionOmissions,
-    records::RawRecord, types::ArchivedRecordData,
+    extractors::SubrecordView,
+    load_order::LoadOrder,
+    projection_omissions::{OmissionCategory, ProjectionOmissions},
+    records::RawRecord,
+    types::ArchivedRecordData,
 };
 use crate::records::{DecodedRecord, ReadResult};
 use rusqlite::{Connection, OptionalExtension, Result, Transaction, params};
@@ -18,8 +21,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
 mod occluders;
-pub(super) use occluders::{ImportedOccluderSource, update_subset as update_subset_occluders};
 pub use occluders::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
+pub(super) use occluders::{update_authored_subset, update_subset as update_subset_occluders};
 
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;
@@ -95,6 +98,7 @@ pub const ROOM_TABLES_SQL: &str = r#"
          CREATE TABLE IF NOT EXISTS room_occluder_links (
              ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
              linked_ref INTEGER NOT NULL,
+             single_target_verified INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (ref_id, link_index)
          );
          CREATE TABLE IF NOT EXISTS room_links (
@@ -158,6 +162,7 @@ pub fn migrate_room_metadata(conn: &Connection) -> Result<()> {
                 "ALTER TABLE room_links ADD COLUMN link_index INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        migrate_occluder_links(conn)?;
         conn.execute_batch("RELEASE portal_endpoints")
     })();
     if result.is_err() {
@@ -168,6 +173,20 @@ pub fn migrate_room_metadata(conn: &Connection) -> Result<()> {
         });
     }
     result
+}
+
+fn migrate_occluder_links(conn: &Connection) -> Result<()> {
+    let verified_plane_links: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_occluder_links') WHERE name='single_target_verified')",
+            [],
+            |row| row.get(0),
+        )?;
+    if !verified_plane_links {
+        conn.execute_batch(
+                "ALTER TABLE room_occluder_links ADD COLUMN single_target_verified INTEGER NOT NULL DEFAULT 0",
+            )?;
+    }
+    Ok(())
 }
 
 /// The typed reader can clear broken links to zero. Restore outside provenance from source
@@ -678,6 +697,9 @@ pub(super) struct RoomLinkLayout {
     links: Range<usize>,
     four_byte_links: usize,
     anomaly: Option<String>,
+    /// The `XRMR` header is present but cannot be read (short, repeated or unframed), so the
+    /// flags are unknown. An absent header is different: no flag bits were authored.
+    flags_unreadable: bool,
 }
 
 fn is_room_link_field(tag: &[u8]) -> bool {
@@ -699,6 +721,7 @@ impl RoomLinkLayout {
             Some(fields) => Self::read(fields.iter().map(|(tag, data)| (tag.as_slice(), *data))),
             None => Self {
                 anomaly: Some("has incomplete source subrecord framing".into()),
+                flags_unreadable: true,
                 ..Self::default()
             },
         }
@@ -718,10 +741,12 @@ impl RoomLinkLayout {
         };
         if headers.next().is_some() {
             layout.anomaly = Some("has repeated XRMR headers".into());
+            layout.flags_unreadable = true;
             return layout;
         }
         let &[low, high, master, padding] = header else {
             layout.anomaly = Some("has a malformed XRMR header".into());
+            layout.flags_unreadable = true;
             return layout;
         };
         layout.flags = i64::from(high) | (i64::from(u16::from_le_bytes([master, padding])) << 8);
@@ -824,6 +849,7 @@ pub(super) fn export_room_graph_with_sources(
         order.map_or(&[][..], |order| &order.names),
         occluders,
         None,
+        omissions,
     )?;
     if let Some(RoomLinkSources::Typed(decoded)) = sources {
         restore_rejected_room_fields(
@@ -961,6 +987,8 @@ pub(super) fn refresh_placement_cells(
             changed,
             previous_outside,
         }),
+        // A placement refresh has no integration report; the marker's cell stays incomplete.
+        &mut ProjectionOmissions::default(),
     )?;
     let mut certified = Vec::new();
     for &cell in cells {
@@ -983,6 +1011,7 @@ pub(super) fn refresh_placement_cells(
     Ok(certified)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_room_graph(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
@@ -991,6 +1020,7 @@ fn project_room_graph(
     plugin_names: &[String],
     occluders: occluders::Exported,
     refresh: Option<&PlacementRefresh<'_>>,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<RoomGraphReport> {
     let mut report = RoomGraphReport::default();
     let mut link_anomalies: BTreeMap<&str, (RoomLinkAnomalies, String)> = BTreeMap::new();
@@ -1097,6 +1127,24 @@ fn project_room_graph(
                 )
             });
             summary.count += 1;
+        }
+        if layout.flags_unreadable {
+            // The room flags (master bit and link header) are unknown. Storing flags 0 would
+            // pass an unreadable field off as authored data, so the box gets no row. The cell
+            // is already incomplete and falls back to whole-cell visibility.
+            omissions.record(
+                OmissionCategory::RoomMarkerUnreadableFlags,
+                form_id,
+                format!(
+                    "room marker {}; no room_bounds row",
+                    layout
+                        .anomaly
+                        .as_deref()
+                        .unwrap_or("has an unreadable XRMR header")
+                ),
+            );
+            report.invalid_markers_skipped += 1;
+            continue;
         }
         let Some(xprm) = unique_marker_geometry(&sources, form_id, &view, b"XPRM")
             .filter(|data| data.len() == 32)

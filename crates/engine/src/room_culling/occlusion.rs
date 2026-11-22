@@ -33,12 +33,18 @@ enum Shape {
 /// A convex shadow, with normalized inward-facing half-spaces.
 #[derive(Clone, Debug)]
 pub(super) struct OcclusionVolume {
-    planes: Vec<Vec4>,
+    planes: Vec<DVec4>,
 }
 
 impl OcclusionVolume {
+    pub(super) fn intersects_aperture(&self, polygon: &[DVec3]) -> bool {
+        super::volume::clip_aperture(polygon, self.planes.iter().copied()).is_some()
+    }
+
     /// Crossing any shadow boundary keeps the sphere visible.
     pub(super) fn contains_sphere(&self, center: Vec3, radius: f32) -> bool {
+        let center = center.as_dvec3();
+        let radius = f64::from(radius);
         center.is_finite()
             && radius.is_finite()
             && radius > 0.0
@@ -47,15 +53,16 @@ impl OcclusionVolume {
                 let distance = plane.truncate().dot(center) + plane.w;
                 // Dot products in large cell coordinates can lose more than a fixed epsilon.
                 let rounding = 8.0
-                    * f32::EPSILON
+                    * f64::from(f32::EPSILON)
                     * (plane.truncate().abs().dot(center.abs()) + plane.w.abs() + radius);
-                distance.is_finite() && distance - radius > SHADOW_DISTANCE_MARGIN + rounding
+                distance.is_finite()
+                    && distance - radius > f64::from(SHADOW_DISTANCE_MARGIN) + rounding
             })
     }
 }
 
-fn through_point(unit_normal: DVec3, point: DVec3) -> Option<Vec4> {
-    let plane = unit_normal.extend(-unit_normal.dot(point)).as_vec4();
+fn through_point(unit_normal: DVec3, point: DVec3) -> Option<DVec4> {
+    let plane = unit_normal.extend(-unit_normal.dot(point));
     plane.is_finite().then_some(plane)
 }
 
@@ -95,7 +102,7 @@ impl View {
         })
     }
 
-    fn edge_plane(&self, a: DVec3, b: DVec3, inside: DVec3) -> Option<Vec4> {
+    fn edge_plane(&self, a: DVec3, b: DVec3, inside: DVec3) -> Option<DVec4> {
         let edge = b - a;
         let ray = self.parallel.unwrap_or_else(|| a - self.camera);
         // Crossing two nearly parallel corner rays can lose the short edge to cancellation.
@@ -114,6 +121,13 @@ impl View {
 }
 
 impl Occluder {
+    pub(super) fn program_size(&self) -> (u8, u8) {
+        match self.shape {
+            Shape::Plane => (2, 1),
+            Shape::Box => (6, 2), // OR of two exclusion predicates
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn from_creation(
         ref_id: u32,
@@ -342,6 +356,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn translated_orthographic_shadow_keeps_the_authored_aperture_edge() {
+        let eye = Vec3::X * 65536.0;
+        let clip = Mat4::orthographic_rh(-100.0, 100.0, -100.0, 100.0, 100.0, 0.1)
+            * Mat4::from_translation(-eye);
+        let shadow = occluder(3, eye - Vec3::Z * 20.0, Vec3::new(1.004, 2.0, 0.0))
+            .shadow(eye, clip)
+            .unwrap();
+        for (start, overlaps) in [(eye.x + 1.0078125, false), (eye.x + 1.0, true)] {
+            let corners = [(0., -1.), (1., -1.), (1., 1.), (0., 1.)]
+                .map(|(x, y)| Vec3::new(start + x, y, -40.0));
+            assert_eq!(
+                shadow.intersects_aperture(&corners.map(|p| p.as_dvec3())),
+                overlaps
+            );
+        }
+    }
     fn check_translated_shadow_edge(shape: Occluder) {
         let camera = Vec3::new(65536.0, 0.0, 0.0);
         let shadow = shape

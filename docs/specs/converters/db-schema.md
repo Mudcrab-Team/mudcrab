@@ -367,6 +367,9 @@ CREATE TABLE IF NOT EXISTS worldspaces (
 );
 ```
 
+A `WRLD` without `EDID` gets no `worldspaces` row and no worldspace environment row. The converter
+does not invent an editor id for it. The export reports it as `worldspace_missing_editor_id`.
+
 ---
 
 ### 4. Cell Registry (`cells`)
@@ -653,7 +656,7 @@ CREATE TABLE IF NOT EXISTS "references" (
     rot_y REAL NOT NULL,                -- Rotation Y (Radians)
     rot_z REAL NOT NULL,                -- Rotation Z (Radians)
     scale REAL NOT NULL DEFAULT 1.0,    -- Scale multiplier
-    radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
+    radius_override REAL,               -- signed XRDS radius offset in Creation units (NULL when absent/invalid)
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
@@ -675,6 +678,13 @@ unusable `DATA` also removes any prior placement and spatial row, owned link/det
 door transitions involving it, and related room rows. Room graph publication excludes those
 unusable placements before projecting markers or memberships; it cannot recreate an origin
 from their canonical bytes. Incoming authored links may still name the retained canonical record.
+
+The same omission applies to the other required placement fields (#811, section 19). A
+placed record with no four-byte `NAME`, with an `XSCL` that is present but shorter than four
+bytes, or with no parent cell gets no placement row and no spatial row. The converter stores
+no base form 0, no scale 1.0 and no cell 0 for it. An absent `XSCL` is different: it is an
+authored scale of 1.0 and stays so. Each omission is reported as `reference_missing_base`,
+`reference_short_scale` or `reference_missing_cell`, with the form ID and the field.
 
 The typed record reader can retain a first definition without `NAME` as a target for
 package and faction links. Runtime plugin export requires exactly one nonzero base `NAME`.
@@ -871,6 +881,15 @@ CREATE TABLE IF NOT EXISTS land (
 );
 ```
 
+A `LAND` without a `VHGT` field (or with an empty one) gets no `land` row, and the terrain cell
+cache and merged terrain mesh publish no cell for it. The converter stores no empty blob and no
+zero heights (#811). The export reports it as `land_missing_heights`; the cell cache and the mesh
+builder print a counted warning and skip the cell. Retail's behaviour for a height-less `LAND` is
+unverified. `vtex`, `vclr` and `normals` are `NULL` when the record has no `VTEX`, `VCLR` or `VNML`
+(earlier output stored an empty blob). Missing or zero `VNML` vectors are still rebuilt from the
+authored heights in the cell cache: that derivation is not default fill, and the retail rule for a
+zero vector is unverified (open item on #811).
+
 ---
 
 ### 8. Level of Detail (`lod_chunks`, `lod_chunks_spatial`, `lod_build`)
@@ -902,6 +921,26 @@ CREATE TABLE IF NOT EXISTS lod_build (
 The unused pre-schema-6 `lod` blob placeholder is retained. Terrain LOD
 uses `lod_chunks` for indexing and external GLB files for payloads. See
 [ADR-0010](../../adr/0010-lod-chunk-payload-format.md).
+
+#### Object LOD chunks (`lod_object_chunks`, `lod_object_chunks_spatial`)
+
+Additive tables for retail object LOD, one row per retail `.bto` block of level 16, 8 or 4 (tier 16, 8 or 4). They have the columns,
+primary key and R-tree of `lod_chunks` and `lod_chunks_spatial`, and are created only when the
+first object chunk is published, so a pack without object LOD has no extra table and its database
+is unchanged. `payload_path` is `lod/<world>/<tier>/objects_<x>_<y>.glb`, a file beside the terrain
+chunk of the same key. The rows are checked against the same `lod_build` identity as terrain rows
+and do not change it. `WORLD_DATABASE_SCHEMA_VERSION` is unchanged.
+
+`lod-manifest.json` gains three optional fields, absent for a pack without object LOD:
+`object_chunks` (row count), `objects_compiler_version` and `object_chunk_inputs` (payload path to
+the SHA-256 of the compiler revision, key, LOD origin, `.bto` bytes and atlas bytes). Package
+validation fails when a listed chunk is missing, has a different SHA-256, or is not a valid object
+chunk GLB (see [lod-compiler.md](lod-compiler.md#object-lod-chunks)).
+
+The additive table `lod_object_atlases(worldspace_id PRIMARY KEY, payload_path, content_hash)` lists
+the shared atlas of a worldspace (`lod/<world>/objects_atlas.opensky-srgb.ktx2`, KTX2, SHA-256 of the file) that
+its object chunks reference. A worldspace without a row has chunks that embed the atlas. The manifest
+field `object_atlases` maps each atlas path to its SHA-256.
 
 ---
 
@@ -1080,9 +1119,9 @@ the space, and most `LIGH` records in `Skyrim.esm` are invisible. A record whose
 row rather than invented values, and a `LIGH` without a `MODL` gets no `statics`
 row either - there would be no mesh to draw.
 
-A reference that places a light usually carries its own `XRDS` radius, stored in
+A reference that places a light usually carries a signed `XRDS` radius offset, stored in
 `references.radius_override` (10,810 of the 12,148 `LIGH` references in
-`Skyrim.esm`), which overrides the base record's radius for that placement.
+`Skyrim.esm`). Add this signed offset to the base radius for that placement.
 
 ```sql
 CREATE TABLE IF NOT EXISTS lights (
@@ -1113,7 +1152,7 @@ a shorter `DATA` leaves them NULL for both readers, and floats that are not fini
 in-house reader clears links that do not resolve and the legacy reader keeps them), and the legacy
 reader now remaps `LIGH` `SNAM`/`LNAM` as the in-house schema already did. The columns are
 additive and optional, with no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: `create_tables` adds
-them to an older reused `lights` table. The engine reads radius, colour and flags only.
+them to an older reused `lights` table. The engine reads radius, colour, flags, `fade`, `falloff` and `fade_status`.
 
 ---
 
@@ -1391,6 +1430,7 @@ CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
 CREATE TABLE IF NOT EXISTS room_occluder_links (
     ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
     linked_ref INTEGER NOT NULL,
+    single_target_verified INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (ref_id, link_index)
 );
 
@@ -1453,6 +1493,9 @@ Columns and rules:
   runtime policy. `target_ref` is NULL only when `XMBR` is absent. Zero preserves an unresolved
   or malformed explicit override. `has_links` remains true for malformed `XORD`, including after
   remapping.
+  For a plane with one valid nonzero source target, the full converter also writes the
+  corroborating `target` assignment in `room_reference_rules`. The runtime requires both
+  facts to agree with the unique containing room before using a named plane.
 - **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
   occurrences. Each occurrence holds four 32-bit FormIDs that can name a `REFR` or be null.
   [xEdit 4.1.5f's TES5 `REFR.XORD` definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278)
@@ -1472,14 +1515,23 @@ Columns and rules:
   the placement is new. A later usable replacement or deletion of the same FormID
   supersedes that evidence within the conversion or import.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
-  all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
+  all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
+  links. A verified same-cell edge can be replaced or removed while the engine reloads its
+  endpoints and checks their shared owner.
   A plugin placement import also clears pack-wide link verification when remapping reports
   damage on an occlusion marker. It retains each outgoing link it can resolve.
   Occluder shadows require both markers because an unverified source in another cell can have a
   missing incoming link to a local occluder. Legacy exports omit both markers.
+  A single complete source `XORD` with exactly one nonzero slot sets `single_target_verified`
+  on its resolved edge. The pack editor checks the original Skyrim fields before remapping, or
+  reads all four runtime FormID slots directly from native JSON. Existing rows default to zero. Isolated one-way and reciprocal pairs of
+  eligible planes with a common owner may each cast independent shadows.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). Exactly one 24-byte `DATA`
   supplies the transform. An invalid transform omits the room and marks its cell incomplete.
+  A marker with no `XRMR` authors no flags, so `flags` is `0`. A marker whose `XRMR` header is
+  present but unreadable (short, repeated or unframed) has unknown flags: it gets no row, its
+  cell is incomplete and the export reports `room_marker_unreadable_flags` (#811).
   Exactly one 32-byte box `XPRM` supplies the `half_*` extents in the room’s own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
   (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
 - A **`room_portals`** row describes a doorway in the marker's local X-Z plane, with its normal along +Y.
@@ -1508,6 +1560,11 @@ Columns and rules:
   so malformed siblings cannot disappear and establish false uniqueness or authored nulls.
   The typed reader restores flags only from a unique source field containing whole eight-byte
   pairs; its canonical cleared links cannot establish outside connectivity.
+  Private comparison databases may add a nullable integer `retail_visit_index` to this table.
+  It records the portal registration order from one retail load. For a complete visibility-v2
+  cell the engine accepts the order only when there is one row per marker and the indices form
+  a permutation from zero through the portal count minus one. Otherwise it uses FormID order.
+  The ordinary converter has no load-specific order to export.
 - **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
   zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. A missing target or a target in another cell marks
@@ -1656,6 +1713,8 @@ a valid named target stays drawn if the model lacks a source sphere. A mesh also
 or one of its ancestors below the reference root carries `AnimatedBy`. Automatic attachment and
 reassignment after movement keep meshes with unknown source bounds visible. Named-target
 neighboring-room priority and specialized/forced native assignment paths are not fully reproduced.
+
+The `switch-value-and-multibound-room-spheres` mesh contract includes the initially selected child of a switch with the active-child bound flag, empty value-node attachment points, and oriented boxes referenced by multibound nodes. The `initial-switch-scene` contract preserves the switch transform and links only the initially selected branch’s geometry into the exported scene. When the switch hides every mesh, the converter marks the GLB with `extras.mudcrabInactiveSwitch`. Pack repair and reuse accept the meshless scene. The static keeps `bounds_valid=0` and has no `room_model_bounds` row. The `skin-ancestor-room-spheres` contract withholds the bind-pose sphere when a transform controller moves a joint through a non-root ancestor. A missing or unsupported bound remains unknown. The [Gallows Rock comparison](../../research/skyrim-culling-rea-parity.md#gallows-rock-west-doorway) checks the resulting room assignments against retail.
 
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
 from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
@@ -1812,7 +1871,7 @@ take precedence over the per-object rules. Other renderer visibility checks stil
 | Object in no room, legacy graph | no `contained = 1` row | always retained |
 | Object without geometric membership in a roomed cell | no `reference_rooms` rows | retain for ordinary view culling |
 | Known object overlapping rooms in a complete versioned graph | overlap rows only | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
-| Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
+| Lookup point outside every room, geometric membership only | n/a | retain the cell |
 | Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
 | Exterior markers | not written | out of scope (#106) |
 
@@ -1832,7 +1891,7 @@ The authored-assignment path uses these rules:
 | Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
 | Unknown portal endpoint | whole-cell fallback |
 | Incomplete authored cell or unresolved master | whole-cell fallback |
-| Camera outside every authored room union | whole-cell fallback, including possible gaps between bounds |
+| Lookup point outside every authored room union, complete graph with source-verified endpoints | start in unbounded space and traverse its portals |
 | Reference with no recoverable assignment | keep visible |
 | Exterior markers | outside this feature's scope |
 
@@ -1976,7 +2035,7 @@ CREATE TABLE IF NOT EXISTS actor_model_parts (
     npc_id INTEGER NOT NULL,
     slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
     model_path TEXT NOT NULL,
-    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25)
+    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25); NULL when RNAM is absent
     skin_texture_set_id INTEGER,     -- ARMA/NAM0 (male) or NAM1 (female), a TXST
     PRIMARY KEY (npc_id, slot)
 );
@@ -1996,7 +2055,8 @@ targets. The detailed source and evidence boundaries are in
 retail `femalehands_1.nif` has no `_s`, while `NakedHands` (`00000D6C`) gives female hands
 `SkinHandFemale_1` (`0003EDE9`), whose `TX07` is `FemaleHands_1_S.dds`. `skin_texture_set_id`
 stores that FormID (`NULL` when the armature has none for the sex; the other sex's set is not
-used), and `armature_race_id` the armature's own `RNAM`, so `25` marks a part that came from the
+used), and `armature_race_id` the armature's own `RNAM` (`NULL`, never `0`, for an armature with no
+readable `RNAM` that matched through an additional race; `armature_missing_race` reports it), so `25` marks a part that came from the
 shared `DefaultRace` armature. The converter composes the default humanoid body from the
 `DefaultRace` sets: per sex and slot, the set most parts with `armature_race_id = 25` use, applied
 in NIF slot order (`TX00`→0, `TX01`→1, `TX03`→2, `TX04`→3, `TX05`→4, `TX02`→5, `TX06`→6,
@@ -2191,6 +2251,13 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
+| `reference_missing_base` | Placed record without a four-byte `NAME`: no placement or spatial row | data loss |
+| `reference_short_scale` | Placed record whose `XSCL` is present but shorter than four bytes: no placement or spatial row | data loss |
+| `reference_missing_cell` | Placed record with no parent cell: no placement or spatial row | data loss |
+| `worldspace_missing_editor_id` | `WRLD` without `EDID`: no `worldspaces` row | data loss |
+| `land_missing_heights` | `LAND` without `VHGT`: no `land` row | data loss |
+| `armature_missing_race` | `ARMA` without a readable `RNAM`: `actor_model_parts.armature_race_id` is NULL | data loss |
+| `room_marker_unreadable_flags` | Room marker whose `XRMR` header is present but short, repeated or unframed: no `room_bounds` row; its cell is incomplete | data loss |
 | `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row and leaves its cell incomplete | data loss |
 | `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
@@ -2259,9 +2326,30 @@ alongside the bases whose appearance they update. All eight existing `texture_se
 columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
 for selection, instance isolation, retail coverage, diagnostics and the unimplemented MATO limits.
 
+### 21. Authored local-light projections (#264/#364)
+
+Optional additions preserve compatibility with schema 3–9 packages. `lights.fade_status` and
+`references.radius_status` are nullable INTEGER columns: NULL means an older projection, 0 absent,
+1 valid (including zero; signed XRDS is legal), 2 malformed/non-finite (negative FNAM unsupported).
+For a valid LIGH reference the effective radius is base DATA radius plus raw XRDS, not replacement.
+Invalid inputs retain their original bytes in the existing canonical record archive.
+Repeated subrecords read the same way in the legacy and the in-house reader. A repeated `LIGH`
+`FNAM`: the first occurrence decides, so a short one followed by a valid one gives status 2. A repeated
+`REFR` `XRDS`: the first four-byte one wins, and a malformed one counts only when none is well-formed.
+
+`reference_light_data(reference_id INTEGER PRIMARY KEY, data_size INTEGER NOT NULL, fov_offset REAL,
+fade_offset REAL, end_distance_cap REAL, shadow_depth_bias REAL)` projects REFR XLIG without
+evaluating it. Missing XLIG has no row. Only 16/20-byte layouts yield floats; non-finite values are
+NULL. A complete export recreates the table; subset export removes/replaces rows for each exported
+reference. No FormIDs occur within XLIG, so remapping is unnecessary.
+
+See [point-lights.md](../engine/point-lights.md) for pinned layout sources, the bounded backend
+transform, fallback dispositions and unresolved native equations. Reconversion into a new pack is
+required for new columns; registered packs remain immutable.
+
 ---
 
-### 21. Perks, Entry Points, and Decoded Conditions (`perks`, `perk_effects`, `perk_entry_points`, `record_conditions`)
+### 22. Perks, Entry Points, and Decoded Conditions (`perks`, `perk_effects`, `perk_entry_points`, `record_conditions`)
 
 Optional perk and condition projections (`#599`), projected from canonical winning `PERK`
 records without changing `records/schema.json` or `shared::WORLD_DATABASE_SCHEMA_VERSION` (`9`).
@@ -2362,8 +2450,10 @@ continues to retain raw `u32` bits.
 `terrain_default_texture` is generated after texture conversion for every pack. Its singleton
 row has `id = 0`, nullable `diffuse_path` and `normal_path` (canonical relative KTX2 paths),
 and nullable `source_diffuse` (the canonical DDS path used by the LOD bake). A null diffuse
-means white and has no normal or source. The engine probes for the table so old databases
-keep their white default. Invalid diffuse metadata warns and falls back to white without a
-normal. Invalid normal metadata warns and disables only the normal, keeping a valid diffuse.
+means white and has no normal or source. A null diffuse is written only for `--terrain-default
+white` (a labelled test option) or when no cell needs the default. The engine probes for the table
+so old databases keep their white default. A `skyrim-ini` default diffuse that cannot be used
+fails the conversion; no generated white texture replaces it (#811). Invalid normal metadata
+warns and disables only the normal, keeping a valid diffuse.
 This additive metadata does not change LAND geometry, the cell-cache format, or texture
 producer versions.

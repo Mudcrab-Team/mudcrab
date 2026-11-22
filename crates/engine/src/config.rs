@@ -6,7 +6,10 @@ use crate::{
     world::components::CELL_SIZE,
     world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
 };
-use bevy::prelude::{IVec2, Msaa, Resource};
+use bevy::{
+    math::DVec2,
+    prelude::{IVec2, Msaa, Resource},
+};
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf, sync::Arc};
 
@@ -25,22 +28,19 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 /// children when the block's box distance is under `fSplitDistanceMult` x level x 2,048 x sqrt(2)
 /// ([`Self::terrain_split_distance`]). Objects (`.bto`) use `fBlockLevel0Distance` and
 /// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
-/// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn.
+/// `fBlockMaximumDistance`.
 ///
 /// What each key does today: `fSplitDistanceMult` and `fBlockMaximumDistance` drive terrain (the
 /// split rule, and the outer reach of tier 16 as an engineering guard, see
 /// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` are parsed and kept
-/// for the object LOD rule but do not affect terrain, so changing them changes nothing on screen
-/// until the object LOD importer lands.
+/// for the object LOD rule.
 ///
 /// `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
-    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4. Unused until object LOD
-    /// lands (terrain does not read it).
+    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4.
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8. Unused until object LOD
-    /// lands (terrain does not read it).
+    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8.
     pub block_level1_distance: f32,
     /// `fBlockMaximumDistance`: object LOD drops beyond it (RF-LOD-004). Terrain has no such cut
     /// in retail. Mudcrab keeps it, times `fSplitDistanceMult`, as the outer reach of tier 16
@@ -153,38 +153,42 @@ impl TerrainLodDistances {
     /// the outer gate, which is why the gate must be checked for each visited block.
     ///
     /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
-    /// The same engineering guard applies: the camera position is the centre of its cell. Retail
-    /// flag 0x8000 (blocks touching the large-reference square always split, RF-LOD-006) is not
-    /// implemented.
+    /// `camera` is the continuous position in Creation world XY units. Retail flag 0x8000
+    /// (blocks touching the large-reference square always split, RF-LOD-006) is not implemented.
     pub fn object_tier(
         &self,
-        camera: IVec2,
-        cell: IVec2,
+        camera: DVec2,
+        cell: DVec2,
         origin: IVec2,
         nama: f32,
     ) -> Option<LodTier> {
-        let scale = f64::from(nama.max(0.0)).sqrt();
-        let split = |distance: f32| f64::from(distance) * scale;
-        let maximum = f64::from(self.block_maximum_distance);
-        let distance = |level| f64::from(Self::terrain_block_distance(camera, cell, origin, level));
-        if distance(16) >= maximum {
-            return None;
+        let scale = f64::from(nama.max(0.0));
+        let split_squared = |distance: f32| f64::from(distance).powi(2) * scale;
+        let maximum_squared = f64::from(self.block_maximum_distance).powi(2);
+        let grid_origin = origin.as_dvec2();
+        let cell_size = f64::from(CELL_SIZE);
+        let distance_squared = |level| {
+            let level = f64::from(level);
+            let min = (grid_origin + ((cell - grid_origin) / level).floor() * level) * cell_size;
+            let max = min + DVec2::splat(level * cell_size);
+            (min - camera)
+                .max(camera - max)
+                .max(DVec2::ZERO)
+                .length_squared()
+        };
+        for (level, tier, split) in [
+            (16, LodTier::Tier16, self.block_level1_distance),
+            (8, LodTier::Tier8, self.block_level0_distance),
+        ] {
+            let distance = distance_squared(level);
+            if distance >= maximum_squared {
+                return None;
+            }
+            if distance >= split_squared(split) {
+                return Some(tier);
+            }
         }
-        if distance(16) >= split(self.block_level1_distance) {
-            return Some(LodTier::Tier16);
-        }
-        // The level-16 block splits: its level-8 child is visited next.
-        if distance(8) >= maximum {
-            return None;
-        }
-        if distance(8) >= split(self.block_level0_distance) {
-            return Some(LodTier::Tier8);
-        }
-        // The level-8 block splits: the level-4 block is a leaf and still passes the gate.
-        if distance(4) >= maximum {
-            return None;
-        }
-        Some(LodTier::Tier4)
+        (distance_squared(4) < maximum_squared).then_some(LodTier::Tier4)
     }
 
     /// The Chebyshev cell radius around the camera's cell within which `tier` chunks can be
@@ -354,6 +358,9 @@ pub struct EngineConfig {
     pub always_active: bool,
     /// Disable Bevy's GPU timing and pipeline-statistics query collection.
     pub no_render_diagnostics: bool,
+    /// Draw no object LOD, although the pack has it (`--no-object-lod`): nothing is read, hashed
+    /// or drawn for it, so a run with and a run without it use the same pack.
+    pub no_object_lod: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
@@ -430,6 +437,8 @@ pub struct EngineConfig {
     pub shots_out: Option<PathBuf>,
     /// Maximum settling time per shot, in seconds.
     pub shots_settle_timeout: f32,
+    /// Capture the ordinary main-camera mesh list as the control for room-culling comparisons.
+    pub shots_no_room_culling: bool,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -442,6 +451,9 @@ pub struct EngineConfig {
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
     /// every run that does not ask for lights renders exactly as it did before.
     pub lights: bool,
+    /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
+    /// small vetted set to the references that carry them. Off by default.
+    pub papyrus_scripts: bool,
     pub physics_fixture: bool,
 }
 
@@ -524,6 +536,7 @@ impl Default for EngineConfig {
             stdin_console: false,
             always_active: false,
             no_render_diagnostics: false,
+            no_object_lod: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
@@ -566,6 +579,7 @@ impl Default for EngineConfig {
             matched_route: None,
             shots_out: None,
             shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
+            shots_no_room_culling: false,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -574,6 +588,7 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            papyrus_scripts: false,
             physics_fixture: false,
         }
     }
@@ -601,11 +616,13 @@ Assets and start position:
   --always-active                     keep simulating when the primary window loses focus
   --stdin-console                     accept developer console commands on stdin
   --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
+  --no-object-lod                     draw no object LOD although the pack has it (terrain LOD is unchanged)
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
   --background-window                   open the window behind other windows without taking focus
   --lights                              place a point light for each streamed LIGH reference
+  --papyrus-scripts                     run the first slice of converted Papyrus scripts
 
 Streaming:
   --ini <file>                        layer Skyrim INI settings; CLI options override files
@@ -682,6 +699,7 @@ Benchmark and profiling:
   --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-no-room-culling              capture with room filtering disabled (requires --shots)
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --water-time <seconds>                pin the water's wave phase so captures match
@@ -1686,6 +1704,8 @@ impl EngineConfig {
                 "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--no-object-lod" => config.no_object_lod = true,
+                "--shots-no-room-culling" => config.shots_no_room_culling = true,
                 "--shots-settle-timeout" => {
                     const EXPECTED: &str = "a positive number of seconds up to 600";
                     let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
@@ -1742,6 +1762,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--papyrus-scripts" => config.papyrus_scripts = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
@@ -1799,6 +1820,12 @@ impl EngineConfig {
             return Err(ConfigError::MissingRequirement {
                 option: "--profile-gpu-inventory",
                 requires: "--profile-output",
+            });
+        }
+        if config.shots_no_room_culling && config.shots.is_none() {
+            return Err(ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots",
             });
         }
         config.check_visual_profile()?;
@@ -2214,10 +2241,39 @@ mod tests {
         ("workspace.py", "--no-run"),
         ("workspace.py", "--open"),
         ("workspace.py", "--timings"),
-        // The retail-claim checker owns its diff range and repository path.
+        // The retail-claim checker owns its diff range, repository path and the
+        // stand-in audit modes. It never launches the engine.
         ("check_retail_claims.py", "--base"),
         ("check_retail_claims.py", "--head"),
         ("check_retail_claims.py", "--repo"),
+        ("check_retail_claims.py", "--audit"),
+        ("check_retail_claims.py", "--baseline"),
+        ("check_retail_claims.py", "--write-baseline"),
+        ("check_retail_claims.py", "--check-issues"),
+        // sync_branch.py merges origin/main and drives git and the inventory tool. It never
+        // launches the engine, so these options belong to its own CLI and its Git commands.
+        ("sync_branch.py", "--base"),
+        ("sync_branch.py", "--base-root"),
+        ("sync_branch.py", "--detach"),
+        ("sync_branch.py", "--diff-filter"),
+        ("sync_branch.py", "--dry-run"),
+        ("sync_branch.py", "--extraction"),
+        ("sync_branch.py", "--force"),
+        ("sync_branch.py", "--head"),
+        ("sync_branch.py", "--ignore-unmatch"),
+        ("sync_branch.py", "--inventory-command"),
+        ("sync_branch.py", "--is-ancestor"),
+        ("sync_branch.py", "--name-only"),
+        ("sync_branch.py", "--no-edit"),
+        ("sync_branch.py", "--no-fetch"),
+        ("sync_branch.py", "--no-ff"),
+        ("sync_branch.py", "--no-messages"),
+        ("sync_branch.py", "--repo"),
+        ("sync_branch.py", "--review-sources"),
+        ("sync_branch.py", "--show-toplevel"),
+        ("sync_branch.py", "--theirs"),
+        ("sync_branch.py", "--verify"),
+        ("sync_branch.py", "--write-tree"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -2988,6 +3044,14 @@ mod tests {
     }
 
     #[test]
+    fn no_object_lod_is_an_opt_out_flag() {
+        assert!(!EngineConfig::default().no_object_lod);
+        assert!(!run_config(&["--headless"]).no_object_lod);
+        assert!(run_config(&["--no-object-lod", "--headless"]).no_object_lod);
+        assert!(HELP_TEXT.contains("--no-object-lod"));
+    }
+
+    #[test]
     fn parses_live_start_camera_and_opt_in_stdin_console() {
         let config = run_config(&[
             "--start-shot",
@@ -3738,6 +3802,21 @@ mod tests {
     }
 
     #[test]
+    fn shots_control_requires_a_capture() {
+        assert!(!run_config(&["--shots", "poses.json"]).shots_no_room_culling);
+        assert!(
+            run_config(&["--shots-no-room-culling", "--shots", "poses.json"]).shots_no_room_culling
+        );
+        assert!(matches!(
+            parse_error(&["--shots-no-room-culling"]),
+            ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots"
+            }
+        ));
+    }
+
+    #[test]
     fn shots_settle_timeout_is_finite_positive_and_bounded() {
         assert_eq!(run_config(&[]).shots_settle_timeout, 30.0);
         assert_eq!(
@@ -3944,6 +4023,14 @@ mod tests {
         ]);
         assert!(missing.headless, "a missing file is reported and skipped");
         assert_eq!(missing.terrain_lod, TerrainLodDistances::default());
+    }
+
+    /// Converted Papyrus scripts are opt-in: the flag is off unless it is given.
+    #[test]
+    fn papyrus_scripts_are_off_until_the_flag_is_given() {
+        assert!(!EngineConfig::default().papyrus_scripts);
+        assert!(!run_config(&["--lights"]).papyrus_scripts);
+        assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
     }
 
     /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
@@ -4345,6 +4432,7 @@ mod tests {
             "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
+            "--papyrus-scripts",
             "--physics-fixture",
         ] {
             assert!(options.contains(&option), "the scan missed {option}");
@@ -4621,6 +4709,15 @@ mod tests {
                     "--video-format",
                 ]
                 .contains(&flag);
+            let portal_comparison_declaration = path
+                .ends_with("scripts/research/prepare_portal_comparison.py")
+                && matches!(flag, "--native" | "--model")
+                && {
+                    let offset = flag.as_ptr() as usize - scanned.as_ptr() as usize;
+                    scanned[..offset]
+                        .strip_suffix(['\'', '"'])
+                        .is_some_and(|prefix| prefix.trim_end().ends_with(".add_argument("))
+                };
             let release_option = path.file_name().is_some_and(|name| {
                 SCRIPT_SCOPED_FLAGS
                     .iter()
@@ -4710,6 +4807,7 @@ mod tests {
                     });
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
+                || portal_comparison_declaration
                 || material_oracle_option
                 || harness_option
                 || inspector_option
@@ -4865,6 +4963,19 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn portal_comparison_parser_options_are_rejected_in_engine_commands() {
+        let path = std::path::Path::new("scripts/research/prepare_portal_comparison.py");
+        for flag in ["--native", "--model"] {
+            let declaration = format!("parser.add_argument(\"{flag}\", type=Path)");
+            assert_eq!(checked_script_engine_flags(&declaration, path), 0);
+            let command = format!("{declaration}\ncmd = [\"engine\", \"{flag}\", path]");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&command, path)).is_err()
+            );
+        }
     }
 
     #[test]
@@ -5415,8 +5526,14 @@ mod tests {
     #[test]
     fn object_tier_follows_the_retail_object_distances() {
         let high = TerrainLodDistances::default();
-        let tier =
-            |x: i32, nama: f32| high.object_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO, nama);
+        let tier = |x: i32, nama: f32| {
+            high.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(x, 0).as_dvec2(),
+                IVec2::ZERO,
+                nama,
+            )
+        };
         // Block [0, 8) holds the camera: level 4.
         assert_eq!(tier(7, 1.0), Some(LodTier::Tier4));
         // Block [8, 16) is 30,720 away, under 35,000: still level 4.
@@ -5437,6 +5554,33 @@ mod tests {
         assert_eq!(tier(70, 0.25), None);
     }
 
+    #[test]
+    fn object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
+        let high = TerrainLodDistances::default();
+        for (cell, threshold, near, at) in [
+            (16, 35_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
+            (32, 70_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
+            (64, 250_000.0, Some(LodTier::Tier16), None),
+        ] {
+            let x = f64::from(cell) * f64::from(CELL_SIZE) - threshold;
+            let tier = |x| {
+                high.object_tier(
+                    DVec2::new(x, 0.0),
+                    IVec2::new(cell, 0).as_dvec2(),
+                    IVec2::ZERO,
+                    1.0,
+                )
+            };
+            assert_eq!(
+                (x / f64::from(CELL_SIZE)).floor(),
+                ((x + 1.0) / f64::from(CELL_SIZE)).floor()
+            );
+            assert_eq!(tier(x + 1.0), near);
+            assert_eq!(tier(x), at);
+            assert_eq!(tier(x - 1.0), at);
+        }
+    }
+
     /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
     /// `nama` never scales it.
     #[test]
@@ -5446,12 +5590,22 @@ mod tests {
         // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
         // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
         // is dropped; before the per-block gate it drew as tier 8.
-        let far = high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 16.0);
+        let far = high.object_tier(
+            DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+            IVec2::new(63, 47).as_dvec2(),
+            IVec2::ZERO,
+            16.0,
+        );
         assert_eq!(far, None);
         // With NAMA 1.0 the level-16 block (233,453 away, inside 250,000) does not split, so it
         // draws as tier 16: only the larger NAMA reaches the level-8 child.
         assert_eq!(
-            high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 1.0),
+            high.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(63, 47).as_dvec2(),
+                IVec2::ZERO,
+                1.0
+            ),
             Some(LodTier::Tier16)
         );
 
@@ -5462,7 +5616,12 @@ mod tests {
         // 264,192 away (outside).
         let origin = IVec2::new(-3, 0);
         let tier = |x: i32, distances: &TerrainLodDistances| {
-            distances.object_tier(IVec2::ZERO, IVec2::new(x, 0), origin, 100.0)
+            distances.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(x, 0).as_dvec2(),
+                origin,
+                100.0,
+            )
         };
         assert_eq!(tier(62, &high), Some(LodTier::Tier4));
         assert_eq!(tier(66, &high), None);

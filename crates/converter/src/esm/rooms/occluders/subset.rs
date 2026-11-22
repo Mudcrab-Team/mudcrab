@@ -19,8 +19,21 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeOccluderShape {
-    Plane { half_width: f32, half_height: f32 },
-    Box { half_extents: [f32; 3] },
+    Plane {
+        half_width: f32,
+        half_height: f32,
+    },
+    /// Physical XORD slots and optional XMBR in the pack's runtime FormID space.
+    #[serde(skip)]
+    PlaneWithReferences {
+        half_width: f32,
+        half_height: f32,
+        links: Option<[u32; 4]>,
+        room: Option<u32>,
+    },
+    Box {
+        half_extents: [f32; 3],
+    },
 }
 
 impl NativeOccluderShape {
@@ -29,6 +42,11 @@ impl NativeOccluderShape {
             NativeOccluderShape::Plane {
                 half_width,
                 half_height,
+            }
+            | NativeOccluderShape::PlaneWithReferences {
+                half_width,
+                half_height,
+                ..
             } => (3u32, [half_width, 0.0, half_height]),
             NativeOccluderShape::Box { half_extents } => (1, half_extents),
         };
@@ -122,6 +140,18 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
                     (b"XPRM".to_vec(), xprm),
                     (b"DATA".to_vec(), data),
                 ];
+                if let NativeOccluderShape::PlaneWithReferences { links, room, .. } = shape {
+                    if let Some(slots) = links {
+                        record
+                            .subrecords
+                            .push((b"XORD".to_vec(), slots.map(u32::to_le_bytes).concat()));
+                    }
+                    if let Some(room) = room {
+                        record
+                            .subrecords
+                            .push((b"XMBR".to_vec(), room.to_le_bytes().to_vec()));
+                    }
+                }
                 id
             }
             NativeOccluderChange::Remove { id } => {
@@ -151,13 +181,16 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
             )));
         }
     }
-    update_subset(
-        &tx,
-        &master,
-        None,
-        &HashMap::new(),
-        &mut ProjectionOmissions::default(),
-    )?;
+    let mut omissions = ProjectionOmissions::default();
+    update_authored_subset(&tx, &master, &HashSet::new(), &mut omissions)?;
+    for (category, details) in omissions.categories {
+        if let Some(sample) = details.samples.first() {
+            return Err(invalid_input(format!(
+                "occluder {:08X}: {category}: {}",
+                sample.form_id, sample.reason
+            )));
+        }
+    }
     tx.commit()
 }
 
@@ -224,12 +257,6 @@ fn seed_roomless_cell(tx: &Transaction<'_>, cell: u32) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::esm) enum ImportedOccluderSource {
-    Damaged,
-    AuthoredNullLinks,
-}
-
 #[derive(Default)]
 pub(in crate::esm) struct SubsetUpdate {
     /// Edits for which the existing room, portal and object assignments still hold.
@@ -242,24 +269,68 @@ pub(in crate::esm) fn update_subset(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     sources: Option<(&HashMap<u32, DecodedRecord>, &LoadOrder)>,
-    imported_sources: &HashMap<u32, ImportedOccluderSource>,
+    omissions: &mut ProjectionOmissions,
+) -> Result<SubsetUpdate> {
+    project_subset(
+        tx,
+        master,
+        |id| {
+            MarkerSource::from_typed(
+                sources.and_then(|(records, order)| records.get(&id).map(|record| (record, order))),
+            )
+        },
+        omissions,
+    )
+}
+
+/// Placement imports validate linked FormIDs against the source before remapping.
+pub(in crate::esm) fn update_authored_subset(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+    damaged_occluders: &HashSet<u32>,
+    omissions: &mut ProjectionOmissions,
+) -> Result<SubsetUpdate> {
+    project_subset(
+        tx,
+        master,
+        |id| {
+            if damaged_occluders.contains(&id) {
+                MarkerSource::DamagedPlugin
+            } else {
+                MarkerSource::Authored
+            }
+        },
+        omissions,
+    )
+}
+
+fn project_subset<'a>(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+    provenance: impl Fn(u32) -> MarkerSource<'a>,
     omissions: &mut ProjectionOmissions,
 ) -> Result<SubsetUpdate> {
     let mut update = SubsetUpdate::default();
     if !master.values().any(|record| record.record_type == *b"REFR") || !tables_present(tx)? {
         return Ok(update);
     }
+    super::super::migrate_occluder_links(tx)?;
+    let has_placement_edits = super::super::table_exists(tx, "room_placement_edits")?;
     let mut affected = HashSet::new();
     let mut markers = Vec::new();
     let mut collect_targets = tx.prepare_cached(
         "SELECT target.cell_id FROM room_occluder_links link
-         JOIN room_occluders target ON target.ref_id=link.linked_ref WHERE link.ref_id=?1",
+         JOIN room_occluders target ON target.ref_id=link.linked_ref
+         LEFT JOIN room_occluders source ON source.ref_id=link.ref_id WHERE link.ref_id=?1
+         AND (link.single_target_verified<>1 OR source.cell_id IS NOT target.cell_id)",
     )?;
     let mut collect_sources = tx.prepare_cached(
         "SELECT coalesce(marker.cell_id, canonical.cell_id) FROM room_occluder_links link
          LEFT JOIN room_occluders marker ON marker.ref_id=link.ref_id
          LEFT JOIN records canonical ON canonical.form_id=link.ref_id
-         WHERE link.linked_ref=?1",
+         LEFT JOIN room_occluders target ON target.ref_id=link.linked_ref
+         WHERE link.linked_ref=?1 AND (link.single_target_verified<>1
+           OR (target.cell_id IS NOT NULL AND marker.cell_id IS NOT target.cell_id))",
     )?;
     for record in master
         .values()
@@ -277,11 +348,10 @@ pub(in crate::esm) fn update_subset(
                    OR EXISTS(SELECT 1 FROM room_occluder_links WHERE ref_id=?1)",
                 )?
                 .query_row([id], |row| row.get(0))?;
-        let source =
-            sources.and_then(|(records, order)| records.get(&id).map(|record| (record, order)));
+        let source = provenance(id);
         let marker = is_marker(record, &SubrecordView::new(&record.subrecords))
             || !record.is_deleted()
-                && source.is_some_and(|(record, order)| {
+                && source.typed().is_some_and(|(record, order)| {
                     record.framed_source_prefix().iter().any(|(tag, data)| {
                         tag == b"NAME"
                             && data.len() == 4
@@ -335,22 +405,28 @@ pub(in crate::esm) fn update_subset(
             .execute([id])?;
         if *marker {
             let mut result = Exported::default();
-            let imported = imported_sources.get(&id).copied();
             project(
                 tx,
                 record,
                 *interior,
-                if imported == Some(ImportedOccluderSource::Damaged) {
-                    MarkerSource::DamagedPlugin
-                } else {
-                    MarkerSource::from_typed(*source)
-                },
+                *source,
                 |target| {
                     if let Some(record) = master.get(&target) {
                         return Ok(record.record_type == *b"REFR" && !record.is_deleted());
                     }
+                    if has_placement_edits
+                        && let Some(live) = tx
+                            .prepare_cached(
+                                "SELECT EXISTS(SELECT 1 FROM [references] WHERE id=?1)
+                         FROM room_placement_edits WHERE form_id=?1 LIMIT 1",
+                            )?
+                            .query_row([target], |row| row.get(0))
+                            .optional()?
+                    {
+                        return Ok(live);
+                    }
                     tx.prepare_cached(
-                    "SELECT coalesce((SELECT record_type='REFR' FROM records WHERE form_id=?1), ?1 < 2048)",
+                    "SELECT coalesce((SELECT record_type='REFR' FROM records WHERE form_id=?1), ?1 < 2048 OR EXISTS(SELECT 1 FROM room_occluders WHERE ref_id=?1))",
                 )?.query_row([target], |row| row.get(0))
                 },
                 &mut result,
@@ -362,9 +438,8 @@ pub(in crate::esm) fn update_subset(
                 )?
                 .execute([])?;
             }
-            // A remapped null needs source evidence to rule out a failed link.
-            let unverified_links = source.is_none()
-                && imported != Some(ImportedOccluderSource::AuthoredNullLinks)
+            // Remapped legacy XORD bytes cannot distinguish authored nulls from failed links.
+            let unverified_links = matches!(source, MarkerSource::Canonical)
                 && SubrecordView::new(&record.subrecords)
                     .find(b"XORD")
                     .is_some();
