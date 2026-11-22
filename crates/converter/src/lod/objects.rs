@@ -1675,7 +1675,7 @@ mod tests {
         let primitive = &doc["meshes"][0]["primitives"][0];
         let accessor = &doc["accessors"][json_index(&primitive["indices"]).unwrap()];
         let view = &doc["bufferViews"][json_index(&accessor["bufferView"]).unwrap()];
-        let start = json_offset(view).unwrap() + json_offset(accessor).unwrap();
+        let start = json_offset(&view["byteOffset"]).unwrap() + json_offset(&accessor["byteOffset"]).unwrap();
         assert_eq!(&binary(&chunk.glb)[start..start + 4], &2u32.to_le_bytes());
         for invalid in [1, 3, 6, u32::MAX] {
             shape.segments[1].start_index = invalid;

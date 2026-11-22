@@ -209,7 +209,6 @@ impl LodObjects {
                 overlaps(outgoing, incoming)
                     && !ready.contains(&incoming)
                     && !self.roots.get(&incoming).is_some_and(|root| root.visible)
-                    && !self.failed_scenes.contains(&incoming)
             });
             if waiting && now.duration_since(retiring.since) < HANDOVER_TIMEOUT {
                 return true;
@@ -1501,13 +1500,18 @@ mod tests {
             world.flush();
             assert!(world.get_entity(old.entity).is_ok());
 
-            let later = if failed {
+            if failed {
                 objects.failed_scenes.insert(replacement);
-                now
-            } else {
-                now + HANDOVER_TIMEOUT
-            };
-            objects.switch_ready_blocks(&mut world.commands(), &HashSet::new(), later);
+            }
+            objects.switch_ready_blocks(&mut world.commands(), &HashSet::new(), now);
+            world.flush();
+            assert!(world.get_entity(old.entity).is_ok());
+
+            objects.switch_ready_blocks(
+                &mut world.commands(),
+                &HashSet::new(),
+                now + HANDOVER_TIMEOUT,
+            );
             world.flush();
             assert!(world.get_entity(old.entity).is_err());
         }
