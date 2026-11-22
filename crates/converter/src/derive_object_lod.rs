@@ -280,6 +280,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         },
         "verified": [
             "Level-4 segment i covers cell (x + i / 4, y + i % 4): verified in the retail loader (skyrim_decomp#816, static reading). Level-8 and level-16 shapes are whole shapes, not split per cell.",
+            "A true per-shape large-reference marker tags its level-4 segment pieces (skyrim_decomp#821 G04, static reading).",
         ],
         "level_4_segment_geometry_check": {
             "segments": segment_check.1,
@@ -290,7 +291,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         "unverified": [
             "Material: alpha mask 128/255 with back-face culling. The runtime grouped-draw flags in skyrim_decomp#675 B3 are unavailable to the BTO reader.",
             "Vertex alpha is written as stored; whether retail multiplies it into the cutout is not verified.",
-            "Large-reference data (levels 8 and 4) is kept undecoded and not applied.",
+            "The exact retail refresh timing and visible full-model handover remain unverified (skyrim_decomp#821 G04).",
         ],
         "elapsed_ms": elapsed_ms,
     });
