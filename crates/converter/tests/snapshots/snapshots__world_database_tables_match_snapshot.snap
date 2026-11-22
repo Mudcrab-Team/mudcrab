@@ -113,6 +113,9 @@ movement_game_settings|id=11|editor_id="fJumpHeightMin"|value=76.000000000|load_
 movement_types|id=219149|editor_id="NPC_Default_MT"|left_walk=80.08999633789063|left_run=370.000000000|right_walk=79.750000000|right_run=370.000000000|forward_walk=80.0999984741211|forward_run=370.000000000|back_walk=71.93000030517578|back_run=205.250000000|load_order=0
 ## npcs (1 rows)
 npcs|id=7|editor_id="Player"|full_name=NULL|race_id=10|class_id=NULL|flags=0
+## perk_effects (0 rows)
+## perk_entry_points (0 rows)
+## perks (0 rows)
 ## plugins (1 rows)
 plugins|id=0|name="Skyrim.esm"|priority=0|checksum=blob:05a3c21c914d71a1:32
 ## projection_omission_samples (0 rows)
@@ -122,6 +125,7 @@ race_animation_sources|race_id=10|sex="female"|skeleton_nif=NULL|project_hkx=NUL
 race_animation_sources|race_id=10|sex="male"|skeleton_nif=NULL|project_hkx=NULL
 ## race_movement_links (1 rows)
 race_movement_links|id=10|walk_movt_id=NULL|run_movt_id=NULL|load_order=0
+## record_conditions (0 rows)
 ## record_diagnostics (0 rows)
 ## record_overrides (18 rows)
 record_overrides|form_id=NULL|chain_position=0|plugin_id=0|source_form_id=0|deleted=0|record_type="TES4"|flags=0|source_record_offset=0|source_record_size=46|status="header"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path="<fixture>/Skyrim.esm"|schema_sha256="4470386f5ff1f63da87872d9a63fdbecaa6e57ccc08bfdd71ea819ee559f4d52"|original_owner=NULL|full_local=NULL|source_identity_state="null_raw_word"|source_group_end=2721|frame_complete=1|record_signature=blob:3f7367ae804a6acc:4

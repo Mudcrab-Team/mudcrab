@@ -7,7 +7,7 @@ use crate::{
         RecordConversion,
         cell_cache::validate_inhouse_land,
         exporter::{
-            RejectedLightFields, RejectedLightInputs, create_tables,
+            InhouseExportContext, RejectedLightFields, RejectedLightInputs,
             export_inhouse_record_archive_to_db, export_inhouse_to_db, validate_inhouse_record,
         },
         load_order::LoadOrder,
@@ -142,6 +142,10 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "reference_authored_changes",
     "door_links",
     "emittance",
+    "perks",
+    "perk_effects",
+    "perk_entry_points",
+    "record_conditions",
 ];
 
 /// Diagnostic timings do not participate in producer identity or asset reuse.
@@ -1009,6 +1013,7 @@ fn convert_plugins_with_text_sources_report_impl(
         .map(|record| record.form_id)
         .collect::<BTreeSet<_>>();
     let mut opaque_fields = HashMap::new();
+    let mut perk_rejections = HashMap::new();
     // Malformed FNAM/XRDS are rejected before export; remember them so the light status columns
     // match the legacy reader's "malformed" instead of reading "absent".
     let mut rejected_light_fields = RejectedLightFields::new();
@@ -1029,9 +1034,22 @@ fn convert_plugins_with_text_sources_report_impl(
         let plugin = &order.names[priority];
         let mut runtime_text_updates = decoded_text_updates(record);
         let mut unresolved = BTreeSet::new();
+        let mut malformed_perk_effects = BTreeSet::new();
+        let mut current_perk_effect: Option<usize> = None;
+        let mut next_perk_effect = 0usize;
         let mut localized = Vec::new();
         let mut localization = BTreeMap::new();
         for (index, field) in record.fields.iter().enumerate() {
+            if record.record_type == *b"PERK" {
+                match &field.signature {
+                    b"PRKE" => {
+                        current_perk_effect = Some(next_perk_effect);
+                        next_perk_effect += 1;
+                    }
+                    b"PRKF" => current_perk_effect = None,
+                    _ => {}
+                }
+            }
             // Unsupported records retain their pre-existing runtime compatibility path.
             if record.supported && field.opaque {
                 opaque_fields
@@ -1118,6 +1136,13 @@ fn convert_plugins_with_text_sources_report_impl(
                         let malformed = table
                             .as_ref()
                             .is_some_and(|table| table.malformed_ids.contains(id));
+                        if malformed
+                            && record.record_type == *b"PERK"
+                            && matches!(&field.signature, b"EPFD" | b"EPF2")
+                            && let Some(effect_index) = current_perk_effect
+                        {
+                            malformed_perk_effects.insert(effect_index);
+                        }
                         let readable = table
                             .as_ref()
                             .is_some_and(|table| table.error.is_none() && !malformed);
@@ -1171,6 +1196,25 @@ fn convert_plugins_with_text_sources_report_impl(
         for (index, text) in runtime_text_updates {
             raw.subrecords[index].1 = text;
         }
+        let perk_rejected = (raw.record_type == *b"PERK"
+            && (!record.rejected_fields.is_empty()
+                || !record.payload_complete
+                || !malformed_perk_effects.is_empty()
+                || super::perks::has_zero_link_epfd(&raw)))
+        .then(|| {
+            let mut sections = super::perks::inhouse_rejected_sections(
+                &record.raw_payload,
+                &raw,
+                &record.rejected_fields,
+                record.payload_complete,
+            );
+            for canonical_index in malformed_perk_effects {
+                let effect_index = sections.effect_index_for_canonical(canonical_index);
+                sections.effect_indices.insert(effect_index);
+            }
+            sections
+        })
+        .filter(|rejected| !rejected.is_empty());
         if let Some(mut source) = land_sources.remove(&raw.form_id) {
             source
                 .subrecords
@@ -1251,6 +1295,11 @@ fn convert_plugins_with_text_sources_report_impl(
         if !unresolved.is_empty() {
             unresolved_fields.insert(raw.form_id, unresolved);
         }
+        if let Some(rejected) = perk_rejected
+            && !raw.is_deleted()
+        {
+            perk_rejections.insert(raw.form_id, rejected);
+        }
         localized_fields.extend(localized);
         master.insert(raw.form_id, raw);
     }
@@ -1268,7 +1317,6 @@ fn convert_plugins_with_text_sources_report_impl(
     // Negative cache_size is in KiB; journal, sync and spill policies stay intact.
     conn.pragma_update(Some("main"), "cache_size", -65_536)?;
     conn.set_prepared_statement_cache_capacity(64);
-    create_tables(&conn)?;
     let terrain_offsets = decoded
         .records
         .values()
@@ -1288,10 +1336,13 @@ fn convert_plugins_with_text_sources_report_impl(
             &master,
             &order,
             plugin_paths,
-            &unresolved_fields,
-            &terrain_offsets,
-            Some(&rejected_light_fields),
-            &decoded,
+            InhouseExportContext {
+                unresolved_fields: &unresolved_fields,
+                terrain_offsets: &terrain_offsets,
+                perk_rejections: &perk_rejections,
+                rejected_light_fields: Some(&rejected_light_fields),
+                decoded: &decoded,
+            },
         )?;
     } else {
         export_inhouse_record_archive_to_db(

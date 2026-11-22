@@ -914,6 +914,7 @@ fn read_plugins_with_prepared(
                 &context,
                 diagnostics,
                 &mut identity,
+                &|id| result.records.contains_key(&id),
             ) {
                 Ok(record) => record,
                 Err(error) => {

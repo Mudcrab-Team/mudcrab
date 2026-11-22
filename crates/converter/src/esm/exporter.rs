@@ -336,6 +336,9 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // Optional reference link and detail tables (db-schema.md, #269 gap 3).
     conn.execute_batch(crate::esm::reference_links::REFERENCE_LINK_TABLES_SQL)?;
     super::object_materials::create_tables(conn)?;
+    // Optional perk and condition tables (db-schema.md section 21, #599).
+    conn.execute_batch(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES_SQL)?;
+    conn.execute_batch(crate::esm::perks::PERK_TABLES_SQL)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a subset export can still insert into it.
     add_missing_columns(conn, "lights", LIGHT_DETAIL_COLUMNS)?;
@@ -442,6 +445,8 @@ struct ExportOptions<'a> {
     runtime_views: bool,
     /// Replace in-house script snapshots using their normalized scalar layout.
     scalar_scripts: bool,
+    /// Reader-rejected sections on winning `PERK` records so omitted conditions/subrecords record `perk_effect_undecoded`.
+    perk_rejections: Option<&'a HashMap<u32, crate::esm::perks::PerkRejectedSections>>,
     /// Malformed light fields the decoder rejected; `None` for the legacy reader.
     rejected_light_fields: Option<&'a RejectedLightFields>,
     /// Source remapping preserves authored nulls; typed canonical nulls need source verification.
@@ -467,6 +472,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            perk_rejections: None,
             rejected_light_fields: None,
             trusted_portal_nulls: true,
             deleted_ids: None,
@@ -540,6 +546,7 @@ pub fn export_placed_subset_with_sources(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            perk_rejections: None,
             rejected_light_fields: None,
             trusted_portal_nulls: false,
             deleted_ids: None,
@@ -554,6 +561,9 @@ pub fn export_placed_subset_with_sources(
 /// Plugin metadata remains caller-managed; subset exports retain unrelated rows.
 /// Record stable owning-plugin/local-ID pairs separately from the winning
 /// override priority in records.load_order.
+///
+/// Standalone callers supply raw `RawRecord`s without reader-level `PerkRejectedSections`; use
+/// `EsmParser::convert_plugins*` to retain reader-rejected `PERK` omission diagnostics.
 pub fn export_to_db_with_load_order(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
@@ -569,6 +579,7 @@ pub fn export_to_db_with_load_order(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            perk_rejections: None,
             rejected_light_fields: None,
             trusted_portal_nulls: true,
             deleted_ids: None,
@@ -599,6 +610,7 @@ pub(super) fn export_plugins_to_db(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            perk_rejections: Some(&merged.perk_rejections),
             rejected_light_fields: None,
             trusted_portal_nulls: true,
             deleted_ids: Some(&merged.deleted_ids),
@@ -609,33 +621,39 @@ pub(super) fn export_plugins_to_db(
     )
 }
 
+/// Auxiliary in-house projection tables and diagnostics passed to `export_inhouse_to_db`.
+pub(crate) struct InhouseExportContext<'a> {
+    pub(crate) unresolved_fields: &'a HashMap<u32, BTreeSet<usize>>,
+    pub(crate) terrain_offsets: &'a HashMap<u32, u64>,
+    pub(crate) perk_rejections: &'a HashMap<u32, crate::esm::perks::PerkRejectedSections>,
+    pub(crate) rejected_light_fields: Option<&'a RejectedLightFields>,
+    pub(crate) decoded: &'a ReadResult,
+}
+
 /// Export canonical decoded fields with Skyrim's texture slots and byte-wide XESP flags.
-/// `rejected_light_fields` records light fields the decoder rejected as malformed.
-#[allow(clippy::too_many_arguments)]
+/// `context.rejected_light_fields` records light fields the decoder rejected as malformed.
 pub(crate) fn export_inhouse_to_db(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
-    unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
-    terrain_offsets: &HashMap<u32, u64>,
-    rejected_light_fields: Option<&RejectedLightFields>,
-    decoded: &ReadResult,
+    context: InhouseExportContext<'_>,
 ) -> Result<()> {
     export_records(
         conn,
         master,
         Some(order),
         Some(plugin_paths),
-        Some(unresolved_fields),
-        Some(terrain_offsets),
+        Some(context.unresolved_fields),
+        Some(context.terrain_offsets),
         ExportOptions {
             runtime_views: true,
             scalar_scripts: true,
-            rejected_light_fields,
+            perk_rejections: Some(context.perk_rejections),
+            rejected_light_fields: context.rejected_light_fields,
             trusted_portal_nulls: false,
-            deleted_ids: Some(&decoded.deleted_ids),
-            room_link_sources: Some(RoomLinkSources::Typed(decoded)),
+            deleted_ids: Some(&context.decoded.deleted_ids),
+            room_link_sources: Some(RoomLinkSources::Typed(context.decoded)),
             subset_sources: None,
             damaged_placement_cells: None,
         },
@@ -661,6 +679,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
         ExportOptions {
             runtime_views: false,
             scalar_scripts: true,
+            perk_rejections: None,
             rejected_light_fields: None,
             trusted_portal_nulls: false,
             deleted_ids: Some(deleted_ids),
@@ -727,6 +746,8 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     for table in crate::esm::environment::ENVIRONMENT_TABLES
         .iter()
         .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+        .chain(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES.iter())
+        .chain(crate::esm::perks::PERK_TABLES.iter())
         .chain(std::iter::once(&super::object_materials::TABLE))
     {
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
@@ -809,6 +830,7 @@ fn export_records(
     let ExportOptions {
         runtime_views,
         scalar_scripts,
+        perk_rejections,
         rejected_light_fields,
         trusted_portal_nulls,
         deleted_ids,
@@ -817,6 +839,9 @@ fn export_records(
         damaged_placement_cells,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
+    if conn.is_autocommit() {
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+    }
     let tx = conn.unchecked_transaction()?;
     // Only a full load-order export writes these; a subset export keeps the stored ones.
     let mut omissions = ProjectionOmissions::default();
@@ -854,6 +879,23 @@ fn export_records(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='script_properties')",
         [], |row| row.get::<_, bool>(0),
     )?;
+    let has_perk_tables = if order.is_some() {
+        true
+    } else {
+        crate::esm::perks::PERK_TABLES
+            .iter()
+            .chain(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES.iter())
+            .try_fold(true, |all_present, name| -> Result<bool> {
+                if !all_present {
+                    return Ok(false);
+                }
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [name],
+                    |row| row.get::<_, bool>(0),
+                )
+            })?
+    };
     if runtime_views && (order.is_some() || subset_sources.is_none()) {
         tx.prepare_cached("DELETE FROM movement_types")?
             .execute([])?;
@@ -1089,6 +1131,17 @@ fn export_records(
         }
 
         match type_str {
+            "PERK" if has_perk_tables => {
+                crate::esm::perks::insert_record(
+                    &tx,
+                    &crate::esm::gameplay_common::Links { master },
+                    record,
+                    canonical_record,
+                    perk_rejections.and_then(|map| map.get(&form_id)),
+                    order.is_none(),
+                    &mut omissions,
+                )?;
+            }
             "LGTM" | "WTHR" | "CLMT" | "REGN" | "IMGS" => {
                 crate::esm::environment::insert_record(
                     &tx,
@@ -2288,6 +2341,10 @@ mod tests {
             "INSERT INTO cell_environment(cell_id) VALUES (1);
             INSERT INTO reference_details(reference_id) VALUES (2);
             INSERT INTO door_links(ref_id,destination_ref_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,destination_cell_id) VALUES (2,3,1,2,3,0,0,0,4);
+            INSERT INTO perks(id) VALUES (5);
+            INSERT INTO perk_effects(perk_id,effect_index,effect_type,rank,priority) VALUES (5,0,2,0,0);
+            INSERT INTO perk_entry_points(perk_id,effect_index,entry_point,function,condition_tab_count) VALUES (5,0,0,3,0);
+            INSERT INTO record_conditions(owner_id,owner_kind,parent_index,position,operator,flags,function_index,param1_raw,param2_raw,run_on,param3) VALUES (5,'PERK',0,0,0,0,0,0,0,0,0);
             CREATE TABLE caller_owned(value INTEGER);
             INSERT INTO caller_owned VALUES (3);",
         )
@@ -2297,6 +2354,8 @@ mod tests {
         for table in crate::esm::environment::ENVIRONMENT_TABLES
             .iter()
             .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+            .chain(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES.iter())
+            .chain(crate::esm::perks::PERK_TABLES.iter())
             .chain(["door_links"].iter())
         {
             let count: i64 = tx
@@ -2309,6 +2368,10 @@ mod tests {
             "cell_environment",
             "reference_details",
             "door_links",
+            "perks",
+            "perk_effects",
+            "perk_entry_points",
+            "record_conditions",
             "caller_owned",
         ] {
             let count: i64 = conn
@@ -3327,6 +3390,7 @@ mod tests {
             ExportOptions {
                 runtime_views: true,
                 scalar_scripts: false,
+                perk_rejections: None,
                 rejected_light_fields: Some(&rejected),
                 trusted_portal_nulls: true,
                 deleted_ids: None,
@@ -4357,10 +4421,13 @@ mod tests {
             &master,
             &order,
             &paths,
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &ReadResult::default(),
+            InhouseExportContext {
+                unresolved_fields: &HashMap::new(),
+                terrain_offsets: &HashMap::new(),
+                perk_rejections: &HashMap::new(),
+                rejected_light_fields: None,
+                decoded: &ReadResult::default(),
+            },
         )
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
@@ -4447,10 +4514,13 @@ mod tests {
             &master,
             &order,
             &paths,
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &ReadResult::default(),
+            InhouseExportContext {
+                unresolved_fields: &HashMap::new(),
+                terrain_offsets: &HashMap::new(),
+                perk_rejections: &HashMap::new(),
+                rejected_light_fields: None,
+                decoded: &ReadResult::default(),
+            },
         )
         .unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
@@ -5483,10 +5553,13 @@ mod tests {
                 &master,
                 &order,
                 &paths,
-                &HashMap::new(),
-                &HashMap::new(),
-                None,
-                &ReadResult::default(),
+                InhouseExportContext {
+                    unresolved_fields: &HashMap::new(),
+                    terrain_offsets: &HashMap::new(),
+                    perk_rejections: &HashMap::new(),
+                    rejected_light_fields: None,
+                    decoded: &ReadResult::default(),
+                },
             )
             .unwrap()
         };

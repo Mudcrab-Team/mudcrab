@@ -950,6 +950,29 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
     body.extend(before);
     body.extend(broken);
     body.extend(after);
+    // Include a PERK with a condition and entry point so all four #599 tables populate in full
+    // mode and stay deferred in archive-only mode.
+    let mut ctda = [0u8; 32];
+    ctda[4..8].copy_from_slice(&1.0f32.to_le_bytes());
+    ctda[8..10].copy_from_slice(&77u16.to_le_bytes()); // GetRandomPercent
+    ctda[28..32].copy_from_slice(&(-1i32).to_le_bytes());
+    body.extend(native::record(
+        b"PERK",
+        0x0100_5603,
+        0,
+        &[
+            native::subrecord(b"EDID", b"ArchivePerk\0"),
+            native::subrecord(b"FULL", &100u32.to_le_bytes()),
+            native::subrecord(b"DATA", &[0, 5, 1, 1, 0]),
+            native::subrecord(b"CTDA", &ctda),
+            native::subrecord(b"PRKE", &[2, 1, 1]),
+            native::subrecord(b"DATA", &[0, 3, 0]),
+            native::subrecord(b"EPFT", &[1]),
+            native::subrecord(b"EPFD", &2.0f32.to_le_bytes()),
+            native::subrecord(b"PRKF", &[]),
+        ]
+        .concat(),
+    ));
     // Remove the otherwise available terrain texture. Preserved ID4 versus runtime placeholder0
     // forces the test to exercise the canonical LTEX lookup and both distinct cache policies.
     body.extend(native::record(b"LTEX", 4, 0x20, &[]));
@@ -1029,6 +1052,17 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             ]],
             "the full export must preserve the exact material row before testing deferral"
         );
+        for table in [
+            "perks",
+            "perk_effects",
+            "perk_entry_points",
+            "record_conditions",
+        ] {
+            assert!(
+                !full_tables[table].is_empty(),
+                "full export must populate {table} before testing deferral"
+            );
+        }
         let deferred = [
             "worldspaces",
             "cells",
@@ -1087,6 +1121,10 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "reference_authored_changes",
             "door_links",
             "emittance",
+            "perks",
+            "perk_effects",
+            "perk_entry_points",
+            "record_conditions",
         ];
         for (name, rows) in &full_tables {
             if deferred.contains(&name.as_str()) {

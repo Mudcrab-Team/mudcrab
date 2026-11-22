@@ -656,8 +656,26 @@ async fn damaged_perks_publish_neighbors_and_prior_winners_with_bounded_diagnost
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    common::assert_reader_warning_publication(&report, &output);
+    let (omission_warnings, reader_warnings): (Vec<_>, Vec<_>) = report
+        .warnings
+        .iter()
+        .cloned()
+        .partition(|warning| warning.contains("perk_effect_undecoded: 1 record (data_loss)"));
+    assert_eq!(omission_warnings.len(), 1, "{:?}", report.warnings);
+    let mut reader_report = report.clone();
+    reader_report.warnings = reader_warnings;
+    common::assert_reader_warning_publication(&reader_report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let surviving_entry: (i64, i64, f64) = database
+        .query_row(
+            "SELECT effect_index, entry_point, value_float_1
+             FROM perk_entry_points
+             WHERE perk_id = 0x01002702",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(surviving_entry, (1, 36, -8.375));
     for id in [perks::FIRST_ID, perks::FIRST_ID + 1] {
         let (load_order,payload):(i64,Vec<u8>) = database.query_row(
             "SELECT source.load_order,source.payload FROM inhouse_source_records source JOIN records ON records.form_id=source.form_id WHERE source.form_id=?",

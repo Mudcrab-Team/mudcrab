@@ -465,6 +465,26 @@ fn vats_parameter(selector: u32) -> &'static str {
     }
 }
 
+/// Resolve the effective `(param1, param2)` kinds for a 32-byte `CTDA` subrecord.
+pub(crate) fn parameter_kinds(parent: &[u8]) -> (&'static str, &'static str) {
+    let index = u16::from_le_bytes([parent[8], parent[9]]);
+    let (first, second) = function_parameters(index).unwrap_or(("unknown", "unknown"));
+    let adjust = |mut kind: &'static str| -> &'static str {
+        if matches!(kind, "object_reference" | "actor" | "package") {
+            if parent[0] & 2 != 0 {
+                kind = "alias";
+            } else if parent[0] & 8 != 0 {
+                kind = "package_data";
+            }
+        }
+        if kind == "vats_parameter" {
+            kind = vats_parameter(word(parent, 12));
+        }
+        kind
+    };
+    (adjust(first), adjust(second))
+}
+
 /// Resolve one condition member using its complete own native payload.
 /// Unknown functions and unused parameters preserve bytes; only verified links remap.
 pub fn select(
@@ -495,24 +515,12 @@ pub fn select(
             _ => "unused",
         },
         "condition_parameter_1" | "condition_parameter_2" => {
-            let index = u16::from_le_bytes([parent[8], parent[9]]);
-            let (first, second) = function_parameters(index).unwrap_or(("unknown", "unknown"));
-            let mut kind = if name == "condition_parameter_1" {
+            let (first, second) = parameter_kinds(parent);
+            if name == "condition_parameter_1" {
                 first
             } else {
                 second
-            };
-            if matches!(kind, "object_reference" | "actor" | "package") {
-                if parent[0] & 2 != 0 {
-                    kind = "alias";
-                } else if parent[0] & 8 != 0 {
-                    kind = "package_data";
-                }
             }
-            if kind == "vats_parameter" {
-                kind = vats_parameter(word(parent, 12));
-            }
-            kind
         }
         _ => unreachable!("explicit registry checked"),
     };

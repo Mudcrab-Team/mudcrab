@@ -1,6 +1,6 @@
 use crate::esm::{
     binary::{ParsedRecord, parse_plugin_file_with_warnings},
-    exporter::{create_tables, validate_inhouse_record},
+    exporter::validate_inhouse_record,
     records::RawRecord,
 };
 use crate::records::DiscardedFrameScope;
@@ -21,6 +21,7 @@ pub mod emittance;
 mod environment;
 pub mod exporter;
 pub mod extractors;
+mod gameplay_common;
 pub mod grass_cache;
 pub mod inhouse;
 mod inhouse_script_properties;
@@ -30,6 +31,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 mod object_materials;
+mod perks;
 pub mod placement_edits;
 pub mod plugins_txt;
 pub mod projection_omissions;
@@ -56,6 +58,8 @@ mod form_key_contract_tests;
 #[cfg(test)]
 mod light_details_parity_tests;
 #[cfg(test)]
+mod perks_parity_tests;
+#[cfg(test)]
 mod plugin_table_tests;
 #[cfg(test)]
 mod reference_links_parity_tests;
@@ -79,6 +83,7 @@ struct LegacyPluginMerge {
     conversion: RecordConversion,
     damaged_cells: HashSet<u32>,
     room_link_layouts: HashMap<u32, rooms::RoomLinkLayout>,
+    perk_rejections: HashMap<u32, perks::PerkRejectedSections>,
 }
 
 struct LegacyPlacementCandidate {
@@ -325,9 +330,9 @@ impl EsmParser {
                 plugin_paths,
                 &order,
                 string_sources,
+                &mut merged.perk_rejections,
             );
         let conn = Connection::open(db_path)?;
-        create_tables(&conn)?;
         exporter::export_plugins_to_db(&conn, &merged, &order, plugin_paths, &unresolved)?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
@@ -352,6 +357,7 @@ impl EsmParser {
         order: &load_order::LoadOrder,
     ) -> Result<LegacyPluginMerge> {
         let mut merged = HashMap::new();
+        let mut perk_rejections = HashMap::new();
         let mut damaged_placements = PlacementDamage::default();
         let mut damaged_cells = HashSet::new();
         let mut unknown_discarded_scope = false;
@@ -410,6 +416,7 @@ impl EsmParser {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
                 let out_of_range = (source_id >> 24) as usize > masters.len();
+                let mut rejected = None;
                 // Optional-field remapping can remove a field between XLRMs. Capture the
                 // source positions before that can make a noncontiguous run look contiguous.
                 let room_link_layout = (!damaged
@@ -430,7 +437,8 @@ impl EsmParser {
                     &order.light,
                     &warnings,
                 )
-                .and_then(|()| {
+                .and_then(|perk_rejected| {
+                    rejected = perk_rejected;
                     if !damaged && !record.is_deleted() {
                         if is_placed_record_type(&record_type) {
                             validate_placement_parent(&record_type, record.cell_form_id, || None)
@@ -543,10 +551,16 @@ impl EsmParser {
                         &mut deleted_ids,
                     );
                     deleted_ids.record(id, record.load_order, record.record_type, prior_kind);
+                    perk_rejections.remove(&id);
                     merged.remove(&id);
                     placement_candidates.remove(&id);
                     damaged_placements.accepted(id);
                 } else {
+                    if let Some(rejected) = rejected {
+                        perk_rejections.insert(id, rejected);
+                    } else {
+                        perk_rejections.remove(&id);
+                    }
                     if record.record_type == *b"DOBJ"
                         && let Some(previous) = merged.get(&id)
                     {
@@ -605,6 +619,7 @@ impl EsmParser {
             order,
             &warnings,
         );
+        sanitize_legacy_perk_condition_links(&mut merged, order, &warnings);
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         damaged_placements.unknown_scope |= unknown_discarded_scope;
@@ -619,7 +634,63 @@ impl EsmParser {
             },
             damaged_cells,
             room_link_layouts,
+            perk_rejections,
         })
+    }
+}
+
+fn sanitize_legacy_perk_condition_links(
+    merged: &mut HashMap<u32, RawRecord>,
+    order: &load_order::LoadOrder,
+    warnings: &RemapWarnings,
+) {
+    let mut perk_ids: Vec<u32> = merged
+        .iter()
+        .filter(|(_, record)| record.record_type == *b"PERK" && !record.is_deleted())
+        .map(|(&id, _)| id)
+        .collect();
+    perk_ids.sort_unstable();
+    let mut invalid_offsets: Vec<(u32, usize, usize)> = Vec::new();
+    {
+        let links = gameplay_common::Links { master: merged };
+        for &perk_id in &perk_ids {
+            let Some(record) = merged.get(&perk_id) else {
+                continue;
+            };
+            let plugin = order
+                .names
+                .get(record.load_order as usize)
+                .map(String::as_str)
+                .unwrap_or("<unknown>");
+            for (sub_index, (tag, data)) in record.subrecords.iter().enumerate() {
+                if tag.as_slice() != b"CTDA" || data.len() != 32 {
+                    continue;
+                }
+                for (offset, slot, targets) in gameplay_common::condition_link_slots(data) {
+                    let raw = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]);
+                    if let Some(reason) = links.mismatch_reason(raw, targets) {
+                        warnings.skipped_optional(
+                            plugin,
+                            format!("PERK {perk_id:08X} CTDA {slot} target {raw:08X} {reason}"),
+                        );
+                        invalid_offsets.push((perk_id, sub_index, offset));
+                    }
+                }
+            }
+        }
+    }
+    for (perk_id, sub_index, offset) in invalid_offsets {
+        if let Some(record) = merged.get_mut(&perk_id)
+            && let Some((_, data)) = record.subrecords.get_mut(sub_index)
+            && data.len() >= offset + 4
+        {
+            data[offset..offset + 4].fill(0);
+        }
     }
 }
 
@@ -1349,6 +1420,8 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"IMSP" | b"HNAM" if record_type == b"WTHR" => Fixed(&[(16, &[0, 4, 8, 12])]),
         // Each sound is its own subrecord: descriptor, then a u32 kind.
         b"SNAM" if record_type == b"WTHR" => Fixed(&[(8, &[0])]),
+        // A perk's next-rank link.
+        b"NNAM" if record_type == b"PERK" => Fixed(SINGLE),
         _ => return None,
     })
 }
@@ -1362,7 +1435,7 @@ fn remap_record_form_ids(
     normal_indices: &HashMap<String, u32>,
     light_indices: &HashMap<String, u32>,
     warnings: &RemapWarnings,
-) -> Result<()> {
+) -> Result<Option<perks::PerkRejectedSections>> {
     // Native record identities retain the documented legacy compatibility outside
     // these kinds, including shipped GMST IDs beyond the master table. All known
     // fixed optional links use strict ownership/width checks, while VMAD follows
@@ -1418,7 +1491,7 @@ fn remap_record_form_ids(
         // for deletion. Unused parent/body links cannot invalidate a tombstone.
         record.cell_form_id = None;
         record.worldspace_form_id = None;
-        return Ok(());
+        return Ok(None);
     }
     let occluder = record_type == *b"REFR"
         && extractors::SubrecordView::new(&record.subrecords)
@@ -1438,7 +1511,98 @@ fn remap_record_form_ids(
         }
     }
     let mut malformed_subrecords = Vec::new();
+    let mut rejected_perk_effects = std::collections::BTreeSet::new();
+    let mut perk_effect_index: Option<usize> = None;
+    let mut next_perk_effect = 0usize;
+    let mut perk_effect_type: Option<u8> = None;
+    let mut perk_epft: Option<u8> = None;
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
+        if record_type == *b"PERK" {
+            match tag.as_slice() {
+                b"PRKE" => {
+                    perk_effect_index = Some(next_perk_effect);
+                    next_perk_effect += 1;
+                    perk_effect_type = (data.len() == 3).then(|| data[0]);
+                    perk_epft = None;
+                    continue;
+                }
+                b"PRKF" => {
+                    perk_effect_index = None;
+                    perk_effect_type = None;
+                    perk_epft = None;
+                    continue;
+                }
+                b"EPFT" => {
+                    perk_epft = (data.len() == 1).then(|| data[0]);
+                    continue;
+                }
+                b"DATA" if perk_effect_type.is_some() => {
+                    let has_link =
+                        matches!((perk_effect_type, data.len()), (Some(0), 8) | (Some(1), 4));
+                    if has_link {
+                        let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                        let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
+                            warnings.skipped_optional(
+                                plugin_name,
+                                format!("PERK source {source_id:08X} (load-order {:08X}) effect DATA reference {value:08X}: {error}", record.form_id),
+                            );
+                            0
+                        });
+                        data[..4].copy_from_slice(&resolved.to_le_bytes());
+                    }
+                    continue;
+                }
+                b"EPFD" if perk_effect_type == Some(2) && matches!(perk_epft, Some(3..=5)) => {
+                    if data.len() == 4 {
+                        let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                        let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
+                            warnings.skipped_optional(
+                                plugin_name,
+                                format!("PERK source {source_id:08X} (load-order {:08X}) EPFD reference {value:08X}: {error}", record.form_id),
+                            );
+                            if value != 0
+                                && let Some(effect_index) = perk_effect_index
+                            {
+                                rejected_perk_effects.insert(effect_index);
+                            }
+                            0
+                        });
+                        data[..4].copy_from_slice(&resolved.to_le_bytes());
+                    } else {
+                        warnings.skipped_optional(
+                            plugin_name,
+                            format!("PERK source {source_id:08X} (load-order {:08X}) EPFD must be 4 bytes, found {}", record.form_id, data.len()),
+                        );
+                        malformed_subrecords.push(index);
+                    }
+                    continue;
+                }
+                b"CTDA" if data.len() == 32 => {
+                    for offset in gameplay_common::condition_link_offsets(data) {
+                        let value = u32::from_le_bytes([
+                            data[offset],
+                            data[offset + 1],
+                            data[offset + 2],
+                            data[offset + 3],
+                        ]);
+                        let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
+                            warnings.skipped_optional(
+                                plugin_name,
+                                format!(
+                                    "{} record source {source_id:08X} (load-order {:08X}) CTDA reference {value:08X}: {error}",
+                                    String::from_utf8_lossy(&record_type),
+                                    record.form_id
+                                ),
+                            );
+                            0
+                        });
+                        data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
         if record.record_type == *b"STAT" && tag.as_slice() == b"MODS" {
             let Some(offsets) = object_materials::form_offsets(data) else {
                 warnings
@@ -1624,6 +1788,18 @@ fn remap_record_form_ids(
             );
         }
     }
+    let rejected = if (!malformed_subrecords.is_empty() || !rejected_perk_effects.is_empty())
+        && record.record_type == *b"PERK"
+    {
+        let sections = perks::remap_rejected_sections(
+            &record.subrecords,
+            &malformed_subrecords,
+            &rejected_perk_effects,
+        );
+        (!sections.is_empty()).then_some(sections)
+    } else {
+        None
+    };
     if !malformed_subrecords.is_empty() {
         // Keep empty authored room fields: absence would turn unusable assignments into
         // automatic/NONE ownership or hide broken room links and conflicting portals.
@@ -1643,7 +1819,7 @@ fn remap_record_form_ids(
             }
         });
     }
-    Ok(())
+    Ok(rejected)
 }
 
 #[cfg(test)]

@@ -2262,6 +2262,7 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `race_unreadable_authoring` | `RACE` with unreadable animation model slots: no `race_animation_sources` row | data loss |
+| `perk_effect_undecoded` | `PERK` top-level `CTDA` or `PRKE`..`PRKF` effect with unreadable/missing required fields: section omitted | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
@@ -2345,6 +2346,104 @@ reference. No FormIDs occur within XLIG, so remapping is unnecessary.
 See [point-lights.md](../engine/point-lights.md) for pinned layout sources, the bounded backend
 transform, fallback dispositions and unresolved native equations. Reconversion into a new pack is
 required for new columns; registered packs remain immutable.
+
+---
+
+### 22. Perks, Entry Points, and Decoded Conditions (`perks`, `perk_effects`, `perk_entry_points`, `record_conditions`)
+
+Optional perk and condition projections (`#599`), projected from canonical winning `PERK`
+records without changing `records/schema.json` or `shared::WORLD_DATABASE_SCHEMA_VERSION` (`9`).
+
+```sql
+CREATE TABLE IF NOT EXISTS perks (
+    id INTEGER PRIMARY KEY,
+    editor_id TEXT,
+    full_name TEXT,
+    description TEXT,
+    large_icon TEXT,
+    small_icon TEXT,
+    is_trait INTEGER,
+    level INTEGER,
+    rank_count INTEGER,
+    playable INTEGER,
+    hidden INTEGER,
+    next_perk_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_perks_editor_id ON perks(editor_id);
+
+CREATE TABLE IF NOT EXISTS perk_effects (
+    perk_id INTEGER NOT NULL,
+    effect_index INTEGER NOT NULL,
+    effect_type INTEGER NOT NULL,  -- 0=quest_stage, 1=ability, 2=entry_point
+    rank INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    quest_id INTEGER,
+    quest_stage INTEGER,
+    ability_spell_id INTEGER,
+    PRIMARY KEY (perk_id, effect_index)
+);
+
+CREATE TABLE IF NOT EXISTS perk_entry_points (
+    perk_id INTEGER NOT NULL,
+    effect_index INTEGER NOT NULL,
+    entry_point INTEGER NOT NULL,
+    function INTEGER NOT NULL,
+    condition_tab_count INTEGER NOT NULL,
+    parameter_type INTEGER,        -- EPFT (0..7)
+    button_label TEXT,             -- EPF2 (localized)
+    script_flags INTEGER,          -- EPF3[0..2]
+    fragment_index INTEGER,        -- EPF3[2..4]
+    value_float_1 REAL,
+    value_float_2 REAL,
+    actor_value INTEGER,
+    target_form_id INTEGER,
+    value_text TEXT,
+    PRIMARY KEY (perk_id, effect_index)
+);
+CREATE INDEX IF NOT EXISTS idx_perk_entry_points_entry_point ON perk_entry_points(entry_point);
+
+CREATE TABLE IF NOT EXISTS record_conditions (
+    owner_id INTEGER NOT NULL,
+    owner_kind TEXT NOT NULL,      -- 'PERK' | 'PERK_EFFECT'
+    parent_index INTEGER NOT NULL, -- 0 for 'PERK', effect_index for 'PERK_EFFECT'
+    condition_tab INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL,
+    operator INTEGER NOT NULL,
+    flags INTEGER NOT NULL,
+    comparison_value REAL,
+    comparison_global_id INTEGER,
+    function_index INTEGER NOT NULL,
+    param1_raw INTEGER NOT NULL,
+    param1_form_id INTEGER,
+    param2_raw INTEGER NOT NULL,
+    param2_form_id INTEGER,
+    run_on INTEGER NOT NULL,
+    reference_id INTEGER,
+    param3 INTEGER NOT NULL,
+    param1_string TEXT,
+    param2_string TEXT,
+    PRIMARY KEY (owner_id, owner_kind, parent_index, position)
+);
+CREATE INDEX IF NOT EXISTS idx_record_conditions_owner ON record_conditions(owner_id, owner_kind);
+```
+
+Top-level `PERK` `CTDA` conditions (even on perks with zero effects) and effects (`PRKE`..`PRKF`)
+whose `PRKE`, effect `DATA`, `EPFT`, `EPF2`, `EPF3`, `EPFD`, `PRKF`, or `CTDA` payload cannot be
+decoded (including missing or non-empty `PRKF`, or missing/rejected required numeric/link/text
+`EPFD` parameters) are counted in `projection_omission_stats` under `perk_effect_undecoded`
+(`severity = 'data_loss'`) with bounded FormID samples in `projection_omission_samples`. Genuine
+absent `EPFD` on `EPFT = 5` (`select_spell`) and label/flag-backed `EPFT = 4`
+(`add_activate_choice`) stay nullable (`target_form_id = NULL`) without an omission. On
+`record_conditions`, unresolved or wrong-type `form_id`-typed `param1`/`param2` words are warned
+and cleared to `0` (`param*_form_id = NULL`).
+
+For `parameter_type = 2` (`actor_value_multiplier` on entry-point functions `5`, `12`, `13`, `14`),
+retail Skyrim SE stores an IEEE-754 `f32` in the first four bytes of `EPFD` (e.g., `145.0f32` for
+actor value `145`; see xEdit's `wbEPFDActorValueToStr` in
+<https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas>);
+`perk_entry_points.actor_value` decodes that `f32` and rounds it to the semantic integer
+actor-value ID, while typed record output in `crates/converter/src/records/families/perks.json`
+continues to retain raw `u32` bits.
 
 ## Optional terrain default metadata
 

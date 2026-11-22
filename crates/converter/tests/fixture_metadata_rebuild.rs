@@ -3531,3 +3531,78 @@ async fn metadata_script_recovery_odd_names_respect_fail_fast() {
     metadata_odd_archive_names_publication(false, true).await;
     metadata_odd_archive_names_publication(true, true).await;
 }
+
+#[tokio::test]
+async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
+    use dummy_content::{inhouse_conditions as cond, inhouse_perks as perks};
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+
+    let skyrim_path = data.join("Skyrim.esm");
+    let mut skyrim = fs::read(&skyrim_path).unwrap();
+    skyrim.extend(perks::targets());
+    skyrim.extend(perks::record(
+        b"KYWD",
+        0x901,
+        0,
+        &perks::subrecord(b"EDID", &perks::text("RebuildWeaponSword")),
+    ));
+    let mut perk = perks::prefix(10);
+    perk.extend(perks::subrecord(b"PRKE", &[2, 0, 0]));
+    perk.extend(perks::subrecord(b"DATA", &[0, 3, 1]));
+    perk.extend(perks::subrecord(b"PRKC", &[0]));
+    perk.extend(perks::subrecord(
+        b"CTDA",
+        &cond::condition(0, 1.0f32.to_bits(), 560, 0x901, 0, 0, 0),
+    ));
+    perk.extend(perks::subrecord(b"EPFT", &[1]));
+    perk.extend(perks::subrecord(b"EPFD", &2.0f32.to_le_bytes()));
+    perk.extend(perks::subrecord(b"PRKF", &[]));
+    skyrim.extend(perks::record(b"PERK", perks::FIRST_ID, 0, &perk));
+    fs::write(&skyrim_path, skyrim).unwrap();
+
+    convert(&data, &source).await;
+    // Drop the optional #599 tables from `source` to simulate a pre-#599 pack so only a fresh
+    // rebuild projection can populate them in `output/skyrim_world.db`.
+    let source_db = Connection::open(source.join("skyrim_world.db")).unwrap();
+    source_db
+        .execute_batch(
+            "DROP TABLE perks;
+             DROP TABLE perk_effects;
+             DROP TABLE perk_entry_points;
+             DROP TABLE record_conditions;",
+        )
+        .unwrap();
+    let dropped_tables: i64 = source_db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='perk_entry_points'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dropped_tables, 0);
+    drop(source_db);
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let rebuilt: (i64, i64, f64, Option<u32>) = conn
+        .query_row(
+            "SELECT p.level, ep.effect_index, ep.value_float_1, rc.param1_form_id
+             FROM perks p
+             JOIN perk_entry_points ep ON ep.perk_id = p.id
+             JOIN record_conditions rc
+               ON rc.owner_id = ep.perk_id
+              AND rc.owner_kind = 'PERK_EFFECT'
+              AND rc.parent_index = ep.effect_index
+             WHERE p.id = ?1 AND ep.entry_point = 0 AND ep.function = 3",
+            [perks::FIRST_ID],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(rebuilt, (10, 0, 2.0, Some(0x901)));
+}
