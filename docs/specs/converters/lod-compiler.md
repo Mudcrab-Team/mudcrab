@@ -199,7 +199,20 @@ terrain chunk of the same key (`lod/<world>/<tier>/objects_<x>_<y>.glb`).
   several segments outside level 4, a level-4 shape with more than 16 segments, large-reference data
   at level 16, unreadable input, missing UVs, or a non-finite vertex causes the block to be omitted
   and counted. Normal and color streams are included when the shape stores them.
-- **Atlas (format 3).** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`)
+- **Atlas name.** The retail object atlas has one of two names under `textures/terrain/<world>/objects/`:
+  `<world>.objects.dds` or `<world>objectslod.dds`. Evidence: in the installed game data (the base game,
+  Dawnguard, Dragonborn and two Creation Club archives), every one of the 14 worlds with object blocks
+  has exactly one of the two. The texture set inside the `.bto` blocks that name an objects atlas names
+  that same file. The 12 base-game, Dawnguard and Dragonborn worlds use the first name. The Creation
+  Club worlds `ccbgssse067deadlandsworld` and `cckrtsse001qnworld` use the second. The `.lod` settings
+  files hold cell and level numbers only, and no name. The converter accepts both names and refuses a
+  world that has both. A world with blocks and neither file is skipped with the reason class
+  `missing_atlas` in the full conversion, and refused by `derive-object-lod`. The skip is in the
+  report and the log, with the absent paths and the near matches the game data does hold. No stand-in
+  atlas is made, so the world has no object LOD rows. An atlas that exists but is damaged still fails.
+  Every report of an absent retail file lists near matches (same folder, same world name, or the same
+  file name in another case), or says "no near matches in N archives".
+- **Atlas (format 3).** The retail object atlas (see Atlas name)
   goes through the existing texture stage once per worldspace as sRGB KTX2 and is written to
   `lod/<world>/objects_atlas.opensky-srgb.ktx2`. Every chunk of the worldspace references it with the image URI
   `../objects_atlas.opensky-srgb.ktx2` (relative to the chunk file, so it is the same file for every tier). The

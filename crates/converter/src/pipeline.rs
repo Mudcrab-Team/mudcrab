@@ -8913,6 +8913,127 @@ mod tests {
         assert!(!output.join(CHECKPOINT_DIR).exists());
     }
 
+    /// A staged run that stopped in the LodChunks stage resumes and finishes when a world has
+    /// object blocks but no object atlas. The Creation Club atlas name is read in the same run.
+    #[tokio::test]
+    async fn a_resumed_conversion_skips_a_world_without_an_object_atlas_and_reads_the_lod_name() {
+        use crate::lod::retail::bto::tests::{SHAPE, nif_bytes, shape_block};
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("output");
+        let staging = staging_path(&output);
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(staging.join("vfs")).unwrap();
+        overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
+        let plugins = vec![data.join("Skyrim.esm")];
+        let database = staging.join("skyrim_world.db");
+        let records = EsmParser::convert_plugins_with_records(&plugins, &database).unwrap();
+        write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
+        let editor_id: String = Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT w.editor_id FROM worldspaces w JOIN cells c ON c.worldspace_id = w.id JOIN land l ON c.id = l.cell_id ORDER BY w.id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let origin = resolve_lod_settings(
+            &cpu_lod_config(&data, &output),
+            &staging.join("vfs"),
+            &editor_id,
+        )
+        .unwrap()
+        .unwrap()
+        .origin;
+        let world = editor_id.to_ascii_lowercase();
+        let mesh_dir = data.join("meshes/terrain").join(&world);
+        let texture_dir = data.join("textures/terrain").join(&world);
+        let object_meshes = mesh_dir.join("objects");
+        let object_textures = texture_dir.join("objects");
+        for folder in [&mesh_dir, &texture_dir, &object_meshes, &object_textures] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        let dds = |seed| {
+            dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+                &mut dummy_content::rng::Rng::new(seed),
+            )
+            .unwrap()
+        };
+        let (x, y) = (origin.grid_x, origin.grid_y);
+        let stem = format!("{world}.16.{x}.{y}");
+        fs::write(
+            mesh_dir.join(format!("{stem}.btr")),
+            crate::lod::retail::btr::tests::land_block(),
+        )
+        .unwrap();
+        fs::write(texture_dir.join(format!("{stem}.dds")), dds(5)).unwrap();
+        fs::write(texture_dir.join(format!("{stem}_n.dds")), dds(7)).unwrap();
+        let block = shape_block(
+            [x as f32 * 4096.0, y as f32 * 4096.0, 0.0],
+            16.0,
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
+            &[[0, 1, 2]],
+            &[(0, 0, 1)],
+            true,
+            true,
+        );
+        fs::write(
+            object_meshes.join(format!("{world}.16.{x}.{y}.bto")),
+            nif_bytes(&[(SHAPE, block)]),
+        )
+        .unwrap();
+        // The Creation Club name: no `<world>.objects.dds`.
+        let atlas = object_textures.join(format!("{world}objectslod.dds"));
+        fs::write(&atlas, dds(9)).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.cpu_jobs = 2;
+        config.terrain_lod_source = crate::config::TerrainLodSource::Retail;
+
+        let (tx, _rx) = mpsc::channel(64);
+        let mut first = PipelineReport::default();
+        let hashes = vec![hash_file(&plugins[0]).unwrap()];
+        compile_lod_chunks(
+            &config, &staging, &output, &plugins, &hashes, &tx, &mut first, None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.object_lod_chunks, 1, "{:?}", first.lod_warnings);
+        assert!(first.lod_warnings.is_empty(), "{:?}", first.lod_warnings);
+
+        // The atlas is gone and the run stopped before the manifest was written. The resume
+        // rebuilds the LOD stages from the current inputs and skips the world.
+        fs::remove_file(&atlas).unwrap();
+        fs::remove_file(staging.join("lod-manifest.json")).unwrap();
+        config.resume_staging = Some(staging);
+        let report = run_without_progress(config).await;
+        assert!(report.complete, "{:?}", report.warnings);
+        assert_eq!(report.lod_chunks, 1, "{:?}", report.lod_warnings);
+        assert_eq!(report.object_lod_chunks, 0);
+        assert!(
+            report.lod_warnings.iter().any(|line| {
+                line.contains(&editor_id)
+                    && line.contains("world skipped: missing_atlas")
+                    && line.contains(&format!("{world}.objects.dds"))
+                    && line.contains(&format!("{world}objectslod.dds"))
+            }),
+            "{:?}",
+            report.lod_warnings
+        );
+        let manifest: LodManifest =
+            serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.object_chunks, 0);
+        assert!(manifest.object_atlases.is_empty());
+        shared::world_assets::validate_lod_build_contract(&output, CONVERTER_SCHEMA_VERSION)
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn invalid_world_compiler_content_is_omitted_without_partial_publication() {
         let directory = tempfile::tempdir().unwrap();

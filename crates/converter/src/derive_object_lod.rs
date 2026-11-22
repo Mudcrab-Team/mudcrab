@@ -21,7 +21,7 @@ use crate::{
     integration::open_private_world_database,
     lod::{
         generation::StagedGeneration,
-        object_stage::{LevelCounts, compile_candidates, level_counts, read_retail},
+        object_stage::{LevelCounts, RetailRead, compile_candidates, level_counts, read_retail},
         objects::{
             OBJECT_COMPILER_VERSION, ObjectChunk, publish_object_atlas, publish_object_chunk,
             segment_cell_fit, validate_object_generation,
@@ -161,12 +161,12 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         );
         Ok(serde_json::json!({ "archive": name, "sha256": actual, "matches_pack_manifest": true }))
     };
-    let retail =
-        read_retail(&options.data, &world_file, scratch.path(), &mut verify)?.ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "refused: the game data has no level 16, 8 or 4 object LOD blocks for `{world_file}`"
-            )
-        })?;
+    let retail = match read_retail(&options.data, &world_file, scratch.path(), &mut verify)? {
+        RetailRead::Found(retail) => retail,
+        RetailRead::NoBlocks(detail) => bail!(
+            "refused: the game data has no level 16, 8 or 4 object LOD blocks for `{world_file}`: {detail}"
+        ),
+    };
     let blocks_found = retail.blocks.len() + retail.skipped.len();
     let atlas_sha256 = hash_bytes(&retail.atlas_dds);
 
