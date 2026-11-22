@@ -43,6 +43,7 @@ MOD_DECLARATION = re.compile(
     r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
 ATTRIBUTE = re.compile(r"#\[([^\]]*)\]")
+RAW_STRING = re.compile(r'(?:b|c)?r(#*)"')
 TEST_DIRECTORIES = {"tests", "benches"}
 DEFAULT_BASELINE = Path("tools/unwrap_ratchet/baseline.json")
 
@@ -102,10 +103,10 @@ def mask_with_comments(text):
             blank(i, j)
             i = j
             continue
-        raw = re.match(r'(?:b|c)?r(#*)"', text[i : i + 80])
+        raw = RAW_STRING.match(text, i) if c in "bcr" else None
         if raw and not identifier_char(text, i - 1):
             closer = '"' + raw.group(1)
-            end = text.find(closer, i + raw.end())
+            end = text.find(closer, raw.end())
             end = n if end < 0 else end + len(closer)
             blank(i, end)
             i = end

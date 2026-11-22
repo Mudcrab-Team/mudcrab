@@ -58,6 +58,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "unwrap_ratchet"))
+from unwrap_ratchet import mask_with_comments
+
 
 CLAIM_RE = re.compile(
     # "In retail, X defaults to 3.0" locates the claim in the retail game.
@@ -171,7 +174,6 @@ HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 BLOCKQUOTE_RE = re.compile(r"^\s*(?:>\s*)+")
-RAW_STRING_RE = re.compile(r'r(#*)"')
 
 
 @dataclass(frozen=True)
@@ -259,196 +261,33 @@ def read_file(repo, head, path):
     return git(repo, "show", f"{head}:{path}").split("\n")
 
 
-def skip_char_or_lifetime(line, start):
-    """Skip a Rust character literal; leave a lifetime alone."""
-    if start + 2 < len(line) and line[start + 1] == "\\":
-        end = line.find("'", start + 2)
-        return end + 1 if end >= 0 else start + 1
-    if start + 2 < len(line) and line[start + 2] == "'":
-        return start + 3
-    return start + 1
+def source_lines(lines, language):
+    if language == "markdown":
+        return None, None
+    source = "\n".join(lines)
+    code, spans = mask_with_comments(source)
+    comments = [None] * len(lines)
+    line = 0
+    previous = 0
+    for start, end in spans:
+        if source.startswith("//", start):
+            line += source.count("\n", previous, start)
+            comments[line] = source[start + 2:end]
+            previous = end
+    return code.split("\n") if language == "rust" else None, comments
 
 
-def scan_comment_texts(lines):
-    """Return the ``//`` text of each line, or None when the line has none.
-
-    State carries across lines.  A ``//`` inside a ``/* ... */`` block comment
-    or a multi-line string is not a line comment.
-    """
-    texts = [None] * len(lines)
-    block_depth = 0
-    string = None
-    for number, line in enumerate(lines):
-        index = 0
-        while index < len(line):
-            if block_depth:
-                if line.startswith("/*", index):
-                    block_depth += 1
-                    index += 2
-                elif line.startswith("*/", index):
-                    block_depth -= 1
-                    index += 2
-                else:
-                    index += 1
-                continue
-            if string is not None:
-                if string[0] == "raw":
-                    terminator = '"' + string[1]
-                    end = line.find(terminator, index)
-                    if end < 0:
-                        index = len(line)
-                    else:
-                        index = end + len(terminator)
-                        string = None
-                else:
-                    while index < len(line):
-                        if line[index] == "\\":
-                            index += 2
-                        elif line[index] == '"':
-                            index += 1
-                            string = None
-                            break
-                        else:
-                            index += 1
-                    if string is not None and not line.endswith("\\"):
-                        string = None
-                continue
-            if line.startswith("//", index):
-                texts[number] = line[index + 2:]
-                break
-            if line.startswith("/*", index):
-                block_depth = 1
-                index += 2
-                continue
-            char = line[index]
-            if char == '"':
-                string = ("normal",)
-                index += 1
-            elif char == "'":
-                index = skip_char_or_lifetime(line, index)
-            elif char == "r":
-                match = RAW_STRING_RE.match(line, index)
-                if match is None:
-                    index += 1
-                else:
-                    string = ("raw", match.group(1))
-                    index = match.end()
-            else:
-                index += 1
-    return texts
-
-
-def scan_code_texts(lines):
-    """Return each line with comment and string contents blanked.
-
-    State carries across lines, so a declaration inside a multiline raw string
-    or a block comment cannot look like code.  Everything that is not code
-    becomes a space, which keeps the text before an identifier aligned.
-    """
-    texts = []
-    block_depth = 0
-    string = None
-    for line in lines:
-        chars = list(line)
-        index = 0
-        while index < len(line):
-            if block_depth:
-                chars[index] = " "
-                if line.startswith("/*", index):
-                    block_depth += 1
-                    index += 1
-                    if index < len(line):
-                        chars[index] = " "
-                    index += 1
-                elif line.startswith("*/", index):
-                    block_depth -= 1
-                    index += 1
-                    if index < len(line):
-                        chars[index] = " "
-                    index += 1
-                else:
-                    index += 1
-                continue
-            if string is not None:
-                if string[0] == "raw":
-                    terminator = '"' + string[1]
-                    end = line.find(terminator, index)
-                    if end < 0:
-                        for position in range(index, len(line)):
-                            chars[position] = " "
-                        index = len(line)
-                    else:
-                        for position in range(index, end + len(terminator)):
-                            chars[position] = " "
-                        index = end + len(terminator)
-                        string = None
-                else:
-                    while index < len(line):
-                        chars[index] = " "
-                        if line[index] == "\\":
-                            if index + 1 < len(line):
-                                chars[index + 1] = " "
-                            index += 2
-                        elif line[index] == '"':
-                            index += 1
-                            string = None
-                            break
-                        else:
-                            index += 1
-                    if string is not None and not line.endswith("\\"):
-                        string = None
-                continue
-            if line.startswith("//", index):
-                for position in range(index, len(line)):
-                    chars[position] = " "
-                break
-            if line.startswith("/*", index):
-                chars[index] = " "
-                if index + 1 < len(line):
-                    chars[index + 1] = " "
-                block_depth = 1
-                index += 2
-                continue
-            char = line[index]
-            if char == '"':
-                chars[index] = " "
-                string = ("normal",)
-                index += 1
-            elif char == "'":
-                end = skip_char_or_lifetime(line, index)
-                if end > index + 1 and line[end - 1:end] == "'":
-                    for position in range(index, min(end, len(line))):
-                        chars[position] = " "
-                index = end
-            elif char == "r":
-                match = RAW_STRING_RE.match(line, index)
-                if match is None:
-                    index += 1
-                else:
-                    for position in range(index, match.end()):
-                        chars[position] = " "
-                    string = ("raw", match.group(1))
-                    index = match.end()
-            else:
-                index += 1
-        texts.append("".join(chars))
-    return texts
-
-
-def build_comment_blocks(lines, texts=None):
-    """Return block text and a line-to-block map for // comments."""
-    if texts is None:
-        texts = scan_comment_texts(lines)
+def build_comment_blocks(texts):
     blocks = []
     line_block = {}
     index = 0
-    while index < len(lines):
+    while index < len(texts):
         if texts[index] is None:
             index += 1
             continue
         start = index
         parts = []
-        while index < len(lines):
+        while index < len(texts):
             text = texts[index]
             if text is None:
                 break
@@ -664,10 +503,7 @@ def cfg_test_start(lines):
     return None
 
 
-def module_doc_cites_registry(lines, texts=None):
-    """Return True when a ``//!`` module doc in the file cites an RF ID."""
-    if texts is None:
-        texts = scan_comment_texts(lines)
+def module_doc_cites_registry(texts):
     return any(
         text is not None and text.startswith("!") and RF_RE.search(text)
         for text in texts
@@ -708,17 +544,13 @@ def check(repo, base, head):
         if language is None or not added:
             continue
         lines = read_file(repo, head, path)
-        file_labelled = False
-        if language == "markdown":
+        code_lines, texts = source_lines(lines, language)
+        if texts is None:
             blocks, line_block = build_markdown_blocks(lines)
-            texts = None
         else:
-            texts = scan_comment_texts(lines)
-            blocks, line_block = build_comment_blocks(lines, texts)
-            file_labelled = (language == "rust"
-                             and module_doc_cites_registry(lines, texts))
-        test_from = cfg_test_start(lines) if language == "rust" else None
-        code_lines = scan_code_texts(lines) if language == "rust" else None
+            blocks, line_block = build_comment_blocks(texts)
+        file_labelled = language == "rust" and module_doc_cites_registry(texts)
+        test_from = cfg_test_start(code_lines) if code_lines is not None else None
         type_members = (direct_type_member_lines(code_lines)
                         if code_lines is not None else set())
         for number in sorted(added):
@@ -817,15 +649,12 @@ def stand_ins_in_lines(path, lines):
     hits = []
     if language is None or is_test_path(path):
         return hits
-    if language == "markdown":
+    code_lines, texts = source_lines(lines, language)
+    if texts is None:
         blocks, line_block = build_markdown_blocks(lines)
-        texts = None
-        code_lines = None
     else:
-        texts = scan_comment_texts(lines)
-        blocks, line_block = build_comment_blocks(lines, texts)
-        code_lines = scan_code_texts(lines) if language == "rust" else None
-    test_from = cfg_test_start(lines) if language == "rust" else None
+        blocks, line_block = build_comment_blocks(texts)
+    test_from = cfg_test_start(code_lines) if code_lines is not None else None
     type_members = (direct_type_member_lines(code_lines)
                     if code_lines is not None else set())
     for number, raw in enumerate(lines, 1):
@@ -987,13 +816,12 @@ def collect_markers(repo):
         if language is None or is_test_path(path):
             continue
         lines = read_worktree_file(repo, path)
-        if language == "markdown":
+        code_lines, texts = source_lines(lines, language)
+        if texts is None:
             _, line_block = build_markdown_blocks(lines)
-            texts = None
         else:
-            texts = scan_comment_texts(lines)
-            _, line_block = build_comment_blocks(lines, texts)
-        test_from = cfg_test_start(lines) if language == "rust" else None
+            _, line_block = build_comment_blocks(texts)
+        test_from = cfg_test_start(code_lines) if code_lines is not None else None
         for number, raw in enumerate(lines, 1):
             if test_from is not None and number >= test_from:
                 break
