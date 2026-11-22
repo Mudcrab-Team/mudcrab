@@ -341,6 +341,9 @@ pub(crate) fn read_retail(
     }))
 }
 
+/// Chunks (each with its input proof) and skipped blocks of one world.
+pub(crate) type Compiled = (Vec<(ObjectChunk, String)>, Vec<SkippedBlock>);
+
 /// Compiles the candidates of one world into object chunks with the shared atlas. A block that
 /// cannot be read, is off the LOD grid, or that the compiler refuses is skipped with its class and
 /// reason. The caller decides whether skipped blocks or an empty result are errors.
@@ -349,7 +352,7 @@ pub(crate) fn compile_candidates(
     candidates: Vec<BlockCandidate>,
     atlas_ktx2: &[u8],
     atlas_sha256: &str,
-) -> Result<(Vec<(ObjectChunk, String)>, Vec<SkippedBlock>)> {
+) -> Result<Compiled> {
     let atlas = atlas_ktx2;
     let mut skipped = Vec::new();
     let mut chunks: Vec<(ObjectChunk, String)> = Vec::new();
