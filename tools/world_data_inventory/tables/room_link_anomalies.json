@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#745)",
+  "reason": "Records each supplying plugin's room-link anomaly count and identifies its lowest affected room marker and that marker's cell for conversion diagnostics.",
+  "table": "room_link_anomalies"
+}

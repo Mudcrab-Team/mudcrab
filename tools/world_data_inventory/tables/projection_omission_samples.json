@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Bounded FormID and reason samples include unusable GRAS DATA, placed-reference transforms and LGTM DATA, and unreadable RACE animation authoring.",
+  "table": "projection_omission_samples"
+}
