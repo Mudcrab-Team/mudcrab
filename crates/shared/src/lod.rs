@@ -203,6 +203,9 @@ pub mod nodes {
     }
 }
 
+/// Material name that identifies a chunk using game-supplied sRGB terrain colour.
+pub const RETAIL_TERRAIN_MATERIAL_NAME: &str = "lod_terrain_retail";
+
 /// Canonical chunk payload path inside the published asset set, relative to
 /// the assets root: `lod/<worldspace-id>/<tier>/cell_<ax>_<ay>.glb`. Lowercase hex
 /// worldspace id, decimal anchors (which may be negative). Both the compiler

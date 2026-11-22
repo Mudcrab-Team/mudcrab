@@ -103,9 +103,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         "refused: the target already has retail terrain LOD; pass --force to import again"
     );
 
-    let database_path = target.join("skyrim_world.db");
-    let connection = Connection::open(&database_path)
-        .wrap_err("cannot open the target world database for writing")?;
+    let connection = crate::integration::open_private_world_database(&target)?;
     let worlds = lod_worlds(&connection)?;
     ensure!(
         !worlds.is_empty(),
@@ -114,27 +112,22 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
 
     // List what the game data offers; verify every archive that provides a file.
     let files = source::list(&options.data)?;
+    for warning in &files.archive_warnings {
+        eprintln!("{warning}");
+    }
     let mut sources = Vec::new();
-    for (name, path) in files.archives_used() {
-        // Only archives that provide a file of a world in the pack matter.
-        let relevant = files.blocks.iter().any(|((world, ..), block)| {
-            worlds.iter().any(|w| w.file_name == *world)
-                && block
-                    .mesh
-                    .iter()
-                    .chain(&block.colour)
-                    .chain(&block.normal)
-                    .any(|provider| matches!(provider, source::Provider::Archive { name: n, .. } if *n == name))
-        });
-        if !relevant {
-            continue;
-        }
-        let recorded = conversion.archives.get(&name).ok_or_else(|| {
+    let relevant_ids = files
+        .blocks
+        .keys()
+        .filter(|(world, ..)| worlds.iter().any(|candidate| candidate.file_name == *world));
+    let verified_archives = files.archives_used(relevant_ids);
+    for (&name, &path) in &verified_archives {
+        let recorded = conversion.archives.get(name).ok_or_else(|| {
             color_eyre::eyre::eyre!(
                 "refused: archive {name} provides retail terrain LOD files but the pack's manifest does not list it, so it is not proven to be the archive the pack was converted from"
             )
         })?;
-        let actual = hash_file(&path)?;
+        let actual = files.archive_hash(path)?;
         ensure!(
             actual == recorded.source_hash,
             "refused: archive {name} differs from the one the pack was converted from (hash {actual}, manifest {})",
@@ -172,13 +165,27 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             &pool,
             &mut retail_inputs,
             &mut payload_hashes,
+            || Ok(()),
         )?;
+        if report.compiled.is_empty() {
+            kept.push(world.editor_id.clone());
+            eprintln!(
+                "worldspace {} kept its existing terrain LOD: no blocks compiled ({:?})",
+                world.editor_id, report.skipped_by_class
+            );
+        }
         reports.push(report);
     }
     ensure!(
         !reports.is_empty() && reports.iter().any(|report| !report.compiled.is_empty()),
-        "refused: no retail terrain LOD block compiled; the target is unchanged except for removed chunks, discard this clone"
+        "refused: no retail terrain LOD block compiled; existing terrain LOD is intact"
     );
+    for (name, path) in verified_archives {
+        ensure!(
+            files.archive_hash(path)? == conversion.archives[name].source_hash,
+            "archive {name} changed during terrain LOD import; discard this clone"
+        );
+    }
 
     // Manifest and database identity: one new identity shared by both.
     let chunk_count: i64 =
@@ -196,10 +203,10 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     )?;
     manifest.build_identity = identity;
     manifest.chunks = u64::try_from(chunk_count)?;
-    // Imported chunks have no cell-height inputs; their own proof is `retail_terrain_inputs`.
-    manifest
-        .chunk_inputs
-        .retain(|path, _| !retail_inputs.contains_key(path));
+    for path in reports.iter().flat_map(|report| &report.replaced_paths) {
+        manifest.chunk_inputs.remove(path);
+        manifest.retail_terrain_inputs.remove(path);
+    }
     manifest.terrain_lod_source = Some(if kept.is_empty() {
         TERRAIN_SOURCE_RETAIL.to_owned()
     } else {
@@ -212,7 +219,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         manifest.terrain_sources.clear();
         manifest.chunk_inputs.clear();
     }
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    crate::mesh::write_glb_atomic(&manifest_path, &serde_json::to_vec_pretty(&manifest)?)?;
     drop(connection);
     shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION).wrap_err(
         "the derived pack no longer satisfies the engine's LOD contract; discard this clone",
@@ -236,6 +243,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         "clone_of": { "name": options.clone_of, "manifests": clone.manifests },
         "game_data_read": true,
         "sources": sources,
+        "archive_warnings": files.archive_warnings,
         "totals": { "chunks": chunks, "skipped": reports.iter().map(|r| r.skipped.len()).sum::<usize>() },
         "kept_self_built_worlds": kept,
         "worlds": reports.iter().map(|report| serde_json::json!({
@@ -265,9 +273,9 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         ],
         "elapsed_ms": elapsed_ms,
     });
-    fs::write(
-        target.join(RECEIPT_FILE),
-        serde_json::to_string_pretty(&receipt)? + "\n",
+    crate::mesh::write_glb_atomic(
+        &target.join(RECEIPT_FILE),
+        (serde_json::to_string_pretty(&receipt)? + "\n").as_bytes(),
     )
     .wrap_err("failed to write the terrain LOD receipt")?;
     // The registered manifests are untouched by this command; prove it.
@@ -350,6 +358,23 @@ fn check_clone(options: &DeriveTerrainLodOptions) -> Result<CloneFacts> {
             path.display()
         );
     }
+    let database = target.join("skyrim_world.db");
+    crate::integration::check_private_world_database(&database)?;
+    ensure!(
+        !same_file::is_same_file(&database, source.path.join("skyrim_world.db"))?,
+        "refused: target world database is shared with the registered pack"
+    );
+    for sidecar in [
+        "skyrim_world.db-wal",
+        "skyrim_world.db-shm",
+        "skyrim_world.db-journal",
+    ] {
+        match fs::symlink_metadata(target.join(sidecar)) {
+            Ok(_) => crate::integration::check_private_world_database(&target.join(sidecar))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     ensure!(
         !source.manifests.is_empty(),
         "refused: the registry records no manifest hashes for `{}`, so the clone cannot be proven",
@@ -371,7 +396,7 @@ fn check_clone(options: &DeriveTerrainLodOptions) -> Result<CloneFacts> {
         let original = source.path.join(file);
         if original.is_file() {
             ensure!(
-                !same_file::is_same_file(&candidate, &original).unwrap_or(false),
+                !same_file::is_same_file(&candidate, &original)?,
                 "refused: target {file} is the same file as the registered pack's; use `cp -c -R` (an APFS clone) to make the target"
             );
         }
@@ -379,4 +404,56 @@ fn check_clone(options: &DeriveTerrainLodOptions) -> Result<CloneFacts> {
     Ok(CloneFacts {
         manifests: source.manifests.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_clone_rejects_a_hard_link_to_the_registered_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let registered = directory.path().join("registered");
+        let target = directory.path().join("clone");
+        fs::create_dir(&registered).unwrap();
+        fs::create_dir(&target).unwrap();
+        let manifest = b"{ synthetic manifest }";
+        let registry = directory.path().join("packs.json");
+        for root in [&registered, &target] {
+            fs::write(root.join("conversion-manifest.json"), manifest).unwrap();
+        }
+        fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!({
+                "pack": {
+                    "path": registered,
+                    "manifests": { "conversion-manifest.json": hash_bytes(manifest) }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let database = registered.join("skyrim_world.db");
+        fs::write(&database, b"database").unwrap();
+        fs::hard_link(&database, target.join("skyrim_world.db")).unwrap();
+        let options = DeriveTerrainLodOptions {
+            target: target.clone(),
+            registry,
+            clone_of: "pack".into(),
+            data: directory.path().into(),
+            force: false,
+            converter_head: None,
+            command: Vec::new(),
+        };
+
+        let error = check_clone(&options).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("private copy of skyrim_world.db")
+        );
+        fs::remove_file(target.join("skyrim_world.db")).unwrap();
+        fs::copy(database, target.join("skyrim_world.db")).unwrap();
+        assert!(check_clone(&options).is_ok());
+    }
 }

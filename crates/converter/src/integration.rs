@@ -65,9 +65,8 @@ pub struct NativeModelBoundsRefresh {
 }
 
 /// Both offline pack editors require a private world database before starting a write transaction.
-pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
-    let database = root.join(crate::check::WORLD_DATABASE_FILE_NAME);
-    let metadata = fs::symlink_metadata(&database)?;
+pub(crate) fn check_private_world_database(database: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(database)?;
     ensure!(
         metadata.is_file(),
         "{} is not a regular file",
@@ -81,7 +80,7 @@ pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
         };
-        let file = fs::File::open(&database)?;
+        let file = fs::File::open(database)?;
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: the file owns a live handle and info is writable for the duration of the call.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
@@ -95,6 +94,12 @@ pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
         links == 1,
         "the pack needs a private copy of skyrim_world.db"
     );
+    Ok(())
+}
+
+pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
+    let database = root.join(crate::check::WORLD_DATABASE_FILE_NAME);
+    check_private_world_database(&database)?;
     Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)
         .wrap_err_with(|| format!("failed to open {}", database.display()))
 }

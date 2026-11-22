@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
         return derive_outfits(&args[1..], command_line);
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("derive-terrain-lod") {
-        let command_line = std::env::args().collect::<Vec<String>>();
+        let command_line = receipt_command(std::env::args_os());
         return derive_terrain_lod(&args[1..], command_line);
     }
     let command = parse_command(args)?;
@@ -934,6 +934,16 @@ fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
 /// Usage line of `derive-terrain-lod`, printed by its help and its errors.
 const DERIVE_TERRAIN_LOD_USAGE: &str = "usage: converter derive-terrain-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--force] [--converter-head <sha>]";
 
+/// Keep Unicode arguments verbatim and escape otherwise unrepresentable bytes in the receipt.
+fn receipt_command(args: impl IntoIterator<Item = OsString>) -> Vec<String> {
+    args.into_iter()
+        .map(|arg| match arg.into_string() {
+            Ok(arg) => arg,
+            Err(arg) => format!("{arg:?}"),
+        })
+        .collect()
+}
+
 /// Parse `derive-terrain-lod` options, import the retail terrain LOD and report the counts.
 fn derive_terrain_lod(args: &[OsString], command_line: Vec<String>) -> Result<()> {
     if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
@@ -1568,6 +1578,20 @@ skips and counts any block it cannot read, and never writes into a registered pa
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn terrain_derive_receipt_accepts_non_unicode_arguments() {
+        use std::os::unix::ffi::OsStringExt;
+        let path = OsString::from_vec(b"pack-\xff".to_vec());
+        assert_eq!(super::receipt_command([path.clone()]), [r#""pack-\xFF""#]);
+        assert_eq!(
+            std::path::PathBuf::from(path)
+                .as_os_str()
+                .as_encoded_bytes(),
+            b"pack-\xff"
+        );
+    }
+
     /// Default conversion routes use in-house and explicit legacy survives configuration and resume.
     #[test]
     fn cli_defaults_to_inhouse_and_preserves_explicit_legacy() {

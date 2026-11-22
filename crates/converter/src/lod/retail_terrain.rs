@@ -37,7 +37,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure, eyre},
 };
-use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, nodes};
+use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, RETAIL_TERRAIN_MATERIAL_NAME, nodes};
 use std::collections::{BTreeMap, HashMap};
 
 /// `asset.generator` of a chunk written by this module. The terrain GLB validator dispatches on it.
@@ -162,6 +162,13 @@ fn clip_half(polygon: &[Point], axis: usize, bound: f64, upper: bool) -> Vec<Poi
     reason = "geometry is cut in f64 and stored as f32 on purpose; quadrant indices are bounded by the block level; the stored scale is compared exactly"
 )]
 pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
+    if let Some(ancestor) = land.transformed_ancestor {
+        bail!("land shape ancestor block {ancestor} has a non-identity transform");
+    }
+    ensure!(
+        land.transformed_ancestor.is_none(),
+        "land shape has a non-identity ancestor transform"
+    );
     ensure!(
         land.scale == level as f32,
         "land shape scale {} is not the block level {level}",
@@ -383,17 +390,31 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
         .ok_or_else(|| eyre!("level {} has no runtime tier", block.level))?;
     let side = tier.side_cells();
     let (rel_x, rel_y) = (
-        block.cell.0 - block.origin.grid_x,
-        block.cell.1 - block.origin.grid_y,
+        i64::from(block.cell.0) - i64::from(block.origin.grid_x),
+        i64::from(block.cell.1) - i64::from(block.origin.grid_y),
     );
+    let grid = i64::from(side);
     ensure!(
-        rel_x.rem_euclid(side) == 0 && rel_y.rem_euclid(side) == 0,
+        rel_x.rem_euclid(grid) == 0 && rel_y.rem_euclid(grid) == 0,
         "block cell {:?} is not on the {side}-cell grid of LOD origin ({}, {})",
         block.cell,
         block.origin.grid_x,
         block.origin.grid_y
     );
-    let anchor = ChunkAnchor::new(rel_x.div_euclid(side), rel_y.div_euclid(side));
+    ensure!(
+        block.cell.0.checked_add(side - 1).is_some()
+            && block.cell.1.checked_add(side - 1).is_some(),
+        "block cell {:?} extends past the coordinate range",
+        block.cell
+    );
+    // The runtime computes relative cell bounds in i32, including the far edge.
+    let anchor_axis = |axis: i64| -> Result<i32> {
+        i32::try_from(axis).wrap_err("block start is outside the relative LOD cell range")?;
+        i32::try_from(axis + grid - 1)
+            .wrap_err("block end is outside the relative LOD cell range")?;
+        Ok(i32::try_from(axis.div_euclid(grid))?)
+    };
+    let anchor = ChunkAnchor::new(anchor_axis(rel_x)?, anchor_axis(rel_y)?);
     let key = ChunkKey::new(block.world, tier, anchor);
     let patches = cut_land(block.land, block.level)?;
     let colour = convert_first_mip(block.colour_dds, TextureEncoding::ColorSrgb, None)
@@ -628,7 +649,7 @@ fn emit_glb(
             { "source": 1, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 1 } } },
         ],
         "materials": [{
-            "name": "lod_terrain_retail",
+            "name": RETAIL_TERRAIN_MATERIAL_NAME,
             "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0], "baseColorTexture": { "index": 0 }, "metallicFactor": 0.0, "roughnessFactor": 0.92 },
             "normalTexture": { "index": 1 },
             "doubleSided": true,
@@ -683,26 +704,29 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
         views.len() == 7,
         "retail terrain GLB must have 7 buffer views"
     );
-    let mut ranges = Vec::new();
+    let mut view_data = Vec::new();
     for view in views {
-        let (offset, length) = (
-            number(&view["byteOffset"], "view offset")?,
-            number(&view["byteLength"], "view length")?,
-        );
-        ensure!(
+        let offset = number(&view["byteOffset"], "view offset")?;
+        let length = number(&view["byteLength"], "view length")?;
+        view_data.push(
             offset
                 .checked_add(length)
-                .is_some_and(|end| end <= binary.len()),
-            "a buffer view lies outside the BIN chunk"
+                .and_then(|end| binary.get(offset..end))
+                .ok_or_else(|| eyre!("a buffer view lies outside the BIN chunk"))?,
         );
-        ranges.push((offset, length));
     }
+    let accessor_data = |view: usize, offset: usize, count: usize, stride: usize| {
+        count
+            .checked_mul(stride)
+            .and_then(|length| offset.checked_add(length))
+            .and_then(|end| view_data[view].get(offset..end))
+            .ok_or_else(|| eyre!("accessor lies outside its view"))
+    };
     for (view, encoding) in [
         (5usize, TextureEncoding::ColorSrgb),
         (6, TextureEncoding::NormalLinear),
     ] {
-        let (offset, length) = ranges[view];
-        let image = &binary[offset..offset + length];
+        let image = view_data[view];
         ensure!(
             image.starts_with(&[
                 0xAB, b'K', b'T', b'X', b' ', b'2', b'0', 0xBB, b'\r', b'\n', 0x1A, b'\n'
@@ -732,7 +756,6 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
     }
     let accessors = array("accessors")?;
     let meshes = array("meshes")?;
-    let (index_offset, index_length) = ranges[4];
     ensure!(
         accessors.len() == meshes.len() * 5,
         "retail terrain GLB must have five accessors per mesh"
@@ -742,6 +765,10 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
         let primitive = primitives
             .ok_or_else(|| eyre!("mesh {mesh_index} must have one primitive"))?[0]
             .clone();
+        ensure!(
+            primitive["material"] == 0,
+            "mesh {mesh_index} must use the terrain material"
+        );
         let attributes = primitive["attributes"]
             .as_object()
             .ok_or_else(|| eyre!("mesh {mesh_index} has no attributes"))?;
@@ -780,12 +807,8 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
                 *vertex_count.get_or_insert(count) == count,
                 "mesh {mesh_index} attribute counts differ"
             );
-            ensure!(
-                offset + count * components * bytes <= ranges[view].1,
-                "mesh {mesh_index} {semantic} accessor lies outside its view"
-            );
-            let data = &binary
-                [ranges[view].0 + offset..ranges[view].0 + offset + count * components * bytes];
+            let data = accessor_data(view, offset, count, components * bytes)
+                .wrap_err_with(|| format!("mesh {mesh_index} {semantic}"))?;
             let values = data
                 .as_chunks::<4>()
                 .0
@@ -830,15 +853,10 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
             count >= 3 && count % 3 == 0,
             "mesh {mesh_index} indices do not form triangles"
         );
-        ensure!(
-            offset + count * 4 <= index_length,
-            "mesh {mesh_index} indices lie outside their view"
-        );
         let vertices = vertex_count.unwrap_or(0);
-        for chunk in binary[index_offset + offset..index_offset + offset + count * 4]
-            .as_chunks::<4>()
-            .0
-        {
+        let data = accessor_data(4, offset, count, 4)
+            .wrap_err_with(|| format!("mesh {mesh_index} indices"))?;
+        for chunk in data.as_chunks::<4>().0 {
             let index = u32::from_le_bytes(*chunk) as usize;
             ensure!(
                 index < vertices,
@@ -848,6 +866,14 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
     }
     // Node layout: the root lists cell nodes; a cell node has one `terrain` group; the group
     // lists one to four quadrant nodes, each with a mesh. Every mesh is used exactly once.
+    let scenes = array("scenes")?;
+    ensure!(
+        json["scene"] == 0
+            && scenes
+                .first()
+                .is_some_and(|scene| scene["nodes"] == serde_json::json!([0])),
+        "the default scene must reference only the chunk root"
+    );
     let node_list = array("nodes")?;
     let child_list = |node: &serde_json::Value| -> Result<Vec<usize>> {
         node["children"]
@@ -906,11 +932,35 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
         !seen_cells.is_empty() && used_meshes.iter().all(|used| *used),
         "a mesh is not reachable from a cell"
     );
-    ensure!(
-        json["materials"][0]["normalTexture"]["index"] == 1
-            && json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"] == 0,
-        "the material must use the colour map and the normal map"
-    );
+    let materials = array("materials")?;
+    let material = materials
+        .first()
+        .ok_or_else(|| eyre!("retail terrain GLB has no material"))?;
+    let textures = array("textures")?;
+    let images = array("images")?;
+    for (slot, view) in [
+        (&material["pbrMetallicRoughness"]["baseColorTexture"], 5),
+        (&material["normalTexture"], 6),
+    ] {
+        let texture = textures
+            .get(number(&slot["index"], "material texture index")?)
+            .ok_or_else(|| eyre!("material references a missing texture"))?;
+        let image_index = number(
+            &texture["extensions"]["KHR_texture_basisu"]["source"],
+            "texture image index",
+        )?;
+        ensure!(
+            texture["source"].as_u64() == Some(u64::try_from(image_index)?),
+            "core texture source and KHR_texture_basisu must reference the same image"
+        );
+        let image = images
+            .get(image_index)
+            .ok_or_else(|| eyre!("texture references a missing image"))?;
+        ensure!(
+            image["bufferView"] == view && image["mimeType"] == "image/ktx2",
+            "material texture must reference KTX2 image view {view}"
+        );
+    }
     Ok(())
 }
 
@@ -965,6 +1015,7 @@ mod tests {
             name: Some("land".into()),
             kind: TerrainLodShapeKind::Terrain,
             parent_name: Some("chunk".into()),
+            transformed_ancestor: None,
             block_type: "BSTriShape",
             translation: [0.0; 3],
             rotation_columns: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -1209,6 +1260,76 @@ mod tests {
     }
 
     #[test]
+    fn grid_offsets_and_block_extents_must_fit_runtime_coordinates() {
+        let shape = land(4, 4, |_, _| 0.0, 0.0);
+        for (x, origin_x, expected) in [
+            (0, i32::MIN, "outside the relative LOD cell range"),
+            (i32::MAX, 3, "extends past the coordinate range"),
+        ] {
+            let block = RetailBlock {
+                world: 60,
+                origin: LodOrigin::new(origin_x, 0),
+                level: 4,
+                cell: (x, 0),
+                land: &shape,
+                colour_dds: &[],
+                normal_dds: &[],
+            };
+            assert!(
+                compile_block(&block)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn a_retail_chunk_rejects_invalid_glb_references_and_accessor_ranges() {
+        let shape = land(4, 4, |_, _| 0.0, 0.0);
+        let dds = bgra_dds([128, 250, 120, 255]);
+        let (chunk, _) = compile_block(&RetailBlock {
+            world: 60,
+            origin: LodOrigin::new(0, 0),
+            level: 4,
+            cell: (0, 0),
+            land: &shape,
+            colour_dds: &dds,
+            normal_dds: &dds,
+        })
+        .unwrap();
+        let glb = gltf::binary::Glb::from_slice(&chunk.glb).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
+        for (pointer, value, expected) in [
+            ("/asset/version", serde_json::json!("1.0"), "asset version"),
+            ("/bufferViews/0/buffer", serde_json::json!(1), "buffer"),
+            (
+                "/accessors/0/count",
+                serde_json::json!(usize::MAX),
+                "accessor lies outside",
+            ),
+            ("/scenes/0/nodes", serde_json::json!([1]), "default scene"),
+            ("/images/1/bufferView", serde_json::json!(5), "image"),
+        ] {
+            let mut invalid = json.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            let damaged = gltf::binary::Glb {
+                json: serde_json::to_vec(&invalid).unwrap().into(),
+                bin: glb.bin.clone(),
+                header: glb.header,
+            }
+            .to_vec()
+            .unwrap();
+            let error = crate::lod::terrain::validate_terrain_glb(&damaged).unwrap_err();
+            assert!(
+                format!("{error:#}").contains(expected),
+                "{pointer}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
     fn a_damaged_chunk_is_refused() {
         let shape = land(4, 4, |_, _| 0.0, 0.0);
         let dds = bgra_dds([128, 250, 120, 255]);
@@ -1441,6 +1562,88 @@ mod real_data {
         // A clear winner, not a tie.
         assert!(ranked[0].1 - ranked[1].1 > 0.01, "{ranked:?}");
         let _ = parse_lod_file_name;
+    }
+
+    #[test]
+    #[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
+    fn retail_terrain_colour_and_normal_transfer_are_measured_on_real_maps() {
+        use crate::texture::tests::decode_uastc_level;
+        let temp = tempfile::tempdir().unwrap();
+        let blocks = [(4, 0, 0), (8, -32, -32), (16, 32, 32)];
+        let srgb_to_linear = |value: f64| {
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let means = |rgba: &[u8]| {
+            let texels = rgba.as_chunks::<4>().0;
+            std::array::from_fn::<_, 3, _>(|channel| {
+                texels.iter().map(|p| f64::from(p[channel])).sum::<f64>() / texels.len() as f64
+            })
+        };
+        let up_cosine = |rgba: &[u8], transfer: fn(f64) -> f64| {
+            let texels = rgba.as_chunks::<4>().0;
+            texels
+                .iter()
+                .map(|p| {
+                    let [x, y, z] =
+                        std::array::from_fn(|c| 2.0 * transfer(f64::from(p[c]) / 255.0) - 1.0);
+                    z / (x * x + y * y + z * z).sqrt()
+                })
+                .sum::<f64>()
+                / texels.len() as f64
+        };
+        for (level, cell, _, colour, normal) in block_files(temp.path(), &blocks) {
+            let colour_dds = ddsfile::Dds::read(std::io::Cursor::new(&colour)).unwrap();
+            let (_, _, source_colour) = crate::texture::decode_packed_rgba8_mips(&colour_dds)
+                .unwrap()
+                .swap_remove(0);
+            let colour_ktx2 = convert_first_mip(&colour, TextureEncoding::ColorSrgb, None).unwrap();
+            assert_eq!(
+                ktx2::Reader::new(&colour_ktx2).unwrap().transfer_function(),
+                Some(ktx2::TransferFunction::SRGB)
+            );
+            let converted_colour = decode_uastc_level(&colour_ktx2, 0);
+            assert_eq!(source_colour.len(), converted_colour.len());
+            let first = means(&source_colour);
+            let last = means(&converted_colour);
+            let channels = converted_colour
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| &p[..3]);
+            let linear = channels
+                .clone()
+                .map(|&c| srgb_to_linear(f64::from(c) / 255.0))
+                .sum::<f64>()
+                / channels.count() as f64;
+            println!(
+                "level {level} block {cell:?}: {} texels, DDS RGB {first:.3?}, KTX2 RGB {last:.3?}, sampler mean raw {:.5} / sRGB {:.5}",
+                source_colour.len() / 4,
+                last.iter().sum::<f64>() / (3.0 * 255.0),
+                linear
+            );
+
+            let normal_dds = ddsfile::Dds::read(std::io::Cursor::new(&normal)).unwrap();
+            let mut source_normal = image_dds::image_from_dds(&normal_dds, 0)
+                .unwrap()
+                .into_raw();
+            remap_normal_rgba(&mut source_normal, RETAIL_NORMAL_AXES);
+            let normal_ktx2 = convert_normal_map(&normal, RETAIL_NORMAL_AXES).unwrap();
+            assert_eq!(
+                ktx2::Reader::new(&normal_ktx2).unwrap().transfer_function(),
+                Some(ktx2::TransferFunction::Linear)
+            );
+            let converted_normal = decode_uastc_level(&normal_ktx2, 0);
+            println!(
+                "level {level} block {cell:?}: mean normal up cosine DDS {:.5}, KTX2 {:.5}, incorrect sRGB KTX2 {:.5}",
+                up_cosine(&source_normal, |x| x),
+                up_cosine(&converted_normal, |x| x),
+                up_cosine(&converted_normal, srgb_to_linear)
+            );
+        }
     }
 
     /// Real blocks of levels 4, 8 and 16 compile, validate and cover their block.

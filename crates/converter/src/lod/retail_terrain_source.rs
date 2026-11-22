@@ -1,18 +1,17 @@
 //! Finds and reads the retail terrain LOD files of a Skyrim `Data` folder.
 //!
 //! Files come from the loose `meshes/terrain` and `textures/terrain` folders and from every `.bsa`
-//! in `Data`. A loose file replaces what the archives hold. Archive bytes are extracted into a
-//! scratch folder the caller owns; nothing is written into `Data`.
+//! in `Data`. A loose file replaces what the archives hold. Archive entries are decoded individually from their open source.
 //!
 //! Nothing here fills a gap. A block whose colour map, normal map or mesh is missing, unreadable
 //! or provided with different bytes by several archives is returned as a [`Skipped`] entry with its
 //! reason, for the caller to count and report.
 
 use super::retail::name::{RetailLodKind, parse_lod_file_name};
-use crate::archive::ArchiveExtractor;
+use crate::archive::OpenArchive;
 use color_eyre::{
     Result,
-    eyre::{WrapErr, eyre},
+    eyre::{ContextCompat, WrapErr, ensure, eyre},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -52,23 +51,45 @@ pub struct BlockProviders {
 }
 
 /// Everything the game data offers for retail terrain LOD.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct RetailTerrainFiles {
     pub blocks: BTreeMap<BlockId, BlockProviders>,
+    pub archive_warnings: Vec<String>,
+    archives: BTreeMap<PathBuf, OpenArchive>,
 }
 
 impl RetailTerrainFiles {
-    /// Every archive that provides at least one file, by lowercase name.
-    pub fn archives_used(&self) -> BTreeMap<String, PathBuf> {
+    pub(crate) fn archives_used<'a>(
+        &'a self,
+        ids: impl Iterator<Item = &'a BlockId>,
+    ) -> BTreeMap<&'a str, &'a Path> {
         let mut used = BTreeMap::new();
-        for block in self.blocks.values() {
+        for id in ids {
+            let block = &self.blocks[id];
             for provider in block.mesh.iter().chain(&block.colour).chain(&block.normal) {
                 if let Provider::Archive { name, path } = provider {
-                    used.insert(name.clone(), path.clone());
+                    used.insert(name.as_str(), path.as_path());
                 }
             }
         }
         used
+    }
+
+    pub(crate) fn archive_hash(&self, path: &Path) -> Result<String> {
+        self.archives
+            .get(path)
+            .wrap_err("archive was not listed")?
+            .sha256()
+            .wrap_err_with(|| format!("cannot verify archive {}", path.display()))
+    }
+
+    pub(crate) fn check_archives(&self, ids: &[BlockId]) -> Result<()> {
+        for (name, path) in self.archives_used(ids.iter()) {
+            self.archives[path]
+                .check_unchanged()
+                .wrap_err_with(|| format!("archive {name} changed during terrain LOD import"))?;
+        }
+        Ok(())
     }
 
     /// The worlds that have at least one block, by file name.
@@ -89,30 +110,23 @@ fn normal(path: &Path) -> String {
 
 /// What one canonical path is, if it is a terrain LOD mesh or map of a block.
 fn classify(path: &str) -> Option<(BlockId, Kind)> {
-    let (kind, stem_path) = if path.starts_with("meshes/terrain/") && path.ends_with(".btr") {
-        let name = parse_lod_file_name(path)?;
-        if name.kind != RetailLodKind::Terrain {
-            return None;
-        }
-        // Only the world's own folder: `meshes/terrain/<world>/<file>`.
-        if path.matches('/').count() != 3 {
-            return None;
-        }
-        let (level, (x, y)) = (name.level?, name.cell?);
-        return Some(((name.world, level, x, y), Kind::Mesh));
-    } else if path.starts_with("textures/terrain/") && path.ends_with("_n.dds") {
-        (Kind::Normal, path.strip_suffix("_n.dds")?)
-    } else if path.starts_with("textures/terrain/") && path.ends_with(".dds") {
-        (Kind::Colour, path.strip_suffix(".dds")?)
-    } else {
-        return None;
-    };
-    if path.matches('/').count() != 3 {
+    if !path.starts_with("meshes/terrain/") && !path.starts_with("textures/terrain/") {
         return None;
     }
-    // `<world>.<level>.<x>.<y>`; the mesh parser already knows this grid encoding.
-    let name = parse_lod_file_name(&format!("{stem_path}.btr"))?;
-    Some(((name.world, name.level?, name.cell?.0, name.cell?.1), kind))
+    let (kind, stem) = if let Some(stem) = path.strip_suffix(".btr") {
+        (Kind::Mesh, stem)
+    } else if let Some(stem) = path.strip_suffix("_n.dds") {
+        (Kind::Normal, stem)
+    } else {
+        (Kind::Colour, path.strip_suffix(".dds")?)
+    };
+    let name = parse_lod_file_name(&format!("{stem}.btr"))?;
+    if name.kind != RetailLodKind::Terrain {
+        return None;
+    }
+    let (x, y) = name.cell?;
+    let id = (name.world, name.level?, x, y);
+    (path == canonical_path(&id, kind)).then_some((id, kind))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,17 +139,6 @@ enum Kind {
 /// Lists the retail terrain LOD files in `data`: every `.bsa` there, then the loose folders.
 pub fn list(data: &Path) -> Result<RetailTerrainFiles> {
     let mut files = RetailTerrainFiles::default();
-    let mut add = |path: &str, provider: Provider| {
-        if let Some((id, kind)) = classify(path) {
-            let block = files.blocks.entry(id).or_default();
-            let slot = match kind {
-                Kind::Mesh => &mut block.mesh,
-                Kind::Colour => &mut block.colour,
-                Kind::Normal => &mut block.normal,
-            };
-            slot.push(provider);
-        }
-    };
     let mut archives: Vec<PathBuf> = fs::read_dir(data)
         .wrap_err_with(|| format!("cannot read the game data folder {}", data.display()))?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -147,111 +150,103 @@ pub fn list(data: &Path) -> Result<RetailTerrainFiles> {
         })
         .collect();
     archives.sort();
-    for archive in archives {
-        let name = archive
-            .file_name()
-            .map(|name| name.to_string_lossy().to_ascii_lowercase())
-            .ok_or_else(|| eyre!("archive path {} has no file name", archive.display()))?;
-        for path in ArchiveExtractor::list_paths(&archive)
-            .wrap_err_with(|| format!("cannot list archive {name}"))?
-        {
-            add(
-                &normal(&path),
-                Provider::Archive {
+    for (name, archive) in archive_names(archives)? {
+        let opened = match OpenArchive::open(&archive, |path| classify(&normal(path)).is_some()) {
+            Ok(opened) => opened,
+            Err(error) => {
+                files
+                    .archive_warnings
+                    .push(format!("cannot list archive {name}: {error:#}"));
+                continue;
+            }
+        };
+        for path in opened.paths() {
+            if let Some((id, kind)) = classify(&normal(path)) {
+                providers(&mut files.blocks, id, kind).push(Provider::Archive {
                     name: name.clone(),
                     path: archive.clone(),
-                },
-            );
+                });
+            }
+        }
+        if opened.paths().next().is_some() {
+            files.archives.insert(archive, opened);
         }
     }
     // Loose files replace what the archives hold, so they become the only provider of a path.
     let mut loose: Vec<(String, PathBuf)> = Vec::new();
     for root in ["meshes", "textures"] {
-        let Some(top) = child_ci(data, root)? else {
-            continue;
-        };
-        let Some(terrain) = child_ci(&top, "terrain")? else {
-            continue;
-        };
-        for world in fs::read_dir(&terrain)? {
-            let world = world?;
-            if !world.path().is_dir() {
-                continue;
-            }
-            let world_name = world.file_name().to_string_lossy().to_ascii_lowercase();
-            for entry in fs::read_dir(world.path())? {
-                let entry = entry?;
-                if entry.path().is_file() {
-                    let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-                    loose.push((format!("{root}/terrain/{world_name}/{name}"), entry.path()));
+        for top in children_ci(data, root)? {
+            for terrain in children_ci(&top, "terrain")? {
+                for world in fs::read_dir(&terrain)? {
+                    let world = world?;
+                    if !world.path().is_dir() {
+                        continue;
+                    }
+                    let world_name = world.file_name().to_string_lossy().to_ascii_lowercase();
+                    for entry in fs::read_dir(world.path())? {
+                        let entry = entry?;
+                        if entry.path().is_file() {
+                            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                            loose.push((
+                                format!("{root}/terrain/{world_name}/{name}"),
+                                entry.path(),
+                            ));
+                        }
+                    }
                 }
             }
         }
     }
+    loose.sort();
     for (path, location) in loose {
         if let Some((id, kind)) = classify(&path) {
-            let block = files.blocks.entry(id).or_default();
-            let slot = match kind {
-                Kind::Mesh => &mut block.mesh,
-                Kind::Colour => &mut block.colour,
-                Kind::Normal => &mut block.normal,
-            };
-            *slot = vec![Provider::Loose(location)];
+            let slot = providers(&mut files.blocks, id, kind);
+            slot.retain(|provider| matches!(provider, Provider::Loose(_)));
+            slot.push(Provider::Loose(location));
         }
     }
     Ok(files)
 }
 
-/// The child of `directory` named `name`, compared without case.
-fn child_ci(directory: &Path, name: &str) -> Result<Option<PathBuf>> {
+fn archive_names(archives: Vec<PathBuf>) -> Result<BTreeMap<String, PathBuf>> {
+    let mut named = BTreeMap::new();
+    for path in archives {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .ok_or_else(|| eyre!("archive path {} has no file name", path.display()))?;
+        ensure!(
+            !named.contains_key(&name),
+            "refused: more than one archive has the lowercase name {name}"
+        );
+        named.insert(name, path);
+    }
+    Ok(named)
+}
+
+fn providers(
+    blocks: &mut BTreeMap<BlockId, BlockProviders>,
+    id: BlockId,
+    kind: Kind,
+) -> &mut Vec<Provider> {
+    let block = blocks.entry(id).or_default();
+    match kind {
+        Kind::Mesh => &mut block.mesh,
+        Kind::Colour => &mut block.colour,
+        Kind::Normal => &mut block.normal,
+    }
+}
+
+fn children_ci(directory: &Path, name: &str) -> Result<Vec<PathBuf>> {
+    let mut children = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .eq_ignore_ascii_case(name)
-        {
-            return Ok(Some(entry.path()));
+        if entry.file_name().eq_ignore_ascii_case(name) && entry.path().is_dir() {
+            children.push(entry.path());
         }
     }
-    Ok(None)
-}
-
-/// Extracted bytes by canonical path, for the blocks of one world.
-pub struct Extracted {
-    roots: BTreeMap<PathBuf, PathBuf>,
-}
-
-/// Extracts every archive-provided file of `ids` into `scratch` (one folder per archive).
-pub fn extract(files: &RetailTerrainFiles, ids: &[BlockId], scratch: &Path) -> Result<Extracted> {
-    let mut per_archive: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
-    for id in ids {
-        let Some(block) = files.blocks.get(id) else {
-            continue;
-        };
-        for (kind, providers) in [
-            (Kind::Mesh, &block.mesh),
-            (Kind::Colour, &block.colour),
-            (Kind::Normal, &block.normal),
-        ] {
-            for provider in providers {
-                if let Provider::Archive { path, .. } = provider {
-                    per_archive
-                        .entry(path.clone())
-                        .or_default()
-                        .insert(PathBuf::from(canonical_path(id, kind)));
-                }
-            }
-        }
-    }
-    let mut roots = BTreeMap::new();
-    for (index, (archive, wanted)) in per_archive.into_iter().enumerate() {
-        let root = scratch.join(format!("archive-{index}"));
-        ArchiveExtractor::extract_paths(&archive, &root, &wanted)
-            .wrap_err_with(|| format!("failed to read from {}", archive.display()))?;
-        roots.insert(archive, root);
-    }
-    Ok(Extracted { roots })
+    children.sort();
+    Ok(children)
 }
 
 fn canonical_path(id: &BlockId, kind: Kind) -> String {
@@ -278,14 +273,10 @@ pub struct BlockBytes {
     pub normal: Vec<u8>,
 }
 
-impl Extracted {
+impl RetailTerrainFiles {
     /// Reads the three files of `id`, or says why it cannot.
-    pub fn read(
-        &self,
-        files: &RetailTerrainFiles,
-        id: &BlockId,
-    ) -> std::result::Result<BlockBytes, Skipped> {
-        let block = files.blocks.get(id).ok_or(Skipped {
+    pub fn read(&self, id: &BlockId) -> std::result::Result<BlockBytes, Skipped> {
+        let block = self.blocks.get(id).ok_or(Skipped {
             class: "unlisted",
             detail: "the block is not in the game data".to_owned(),
         })?;
@@ -298,20 +289,16 @@ impl Extracted {
             }
             let mut copies: Vec<(Vec<u8>, &Provider)> = Vec::new();
             for provider in providers {
-                let location = match provider {
-                    Provider::Loose(path) => path.clone(),
-                    Provider::Archive { path, .. } => self
-                        .roots
-                        .get(path)
-                        .map(|root| root.join(canonical_path(id, kind)))
-                        .ok_or(Skipped {
-                            class: "unreadable",
-                            detail: format!("{} was not extracted", path.display()),
-                        })?,
+                let relative = canonical_path(id, kind);
+                let read = match provider {
+                    Provider::Loose(path) => fs::read(path).wrap_err("cannot read loose file"),
+                    Provider::Archive { path, .. } => {
+                        self.archives[path].read(Path::new(&relative))
+                    }
                 };
-                let bytes = fs::read(&location).map_err(|error| Skipped {
+                let bytes = read.map_err(|error| Skipped {
                     class: "unreadable",
-                    detail: format!("{}: {error}", canonical_path(id, kind)),
+                    detail: format!("{relative} from {}: {error:#}", provider.describe()),
                 })?;
                 copies.push((bytes, provider));
             }
@@ -368,6 +355,78 @@ mod tests {
     }
 
     #[test]
+    fn case_colliding_archive_names_are_refused() {
+        // Pass both names directly so this also runs on case-insensitive filesystems.
+        let error = archive_names(vec![
+            PathBuf::from("Terrain.bsa"),
+            PathBuf::from("TERRAIN.BSA"),
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("lowercase name terrain.bsa"));
+    }
+
+    #[test]
+    fn only_recoverable_archive_paths_supply_a_block() {
+        use dummy_content::{Entry, bsa};
+        let data = tempfile::tempdir().unwrap();
+        let bytes = bsa::v105(
+            &[
+                Entry::new("Meshes/Terrain/W/W.4.0.0.btr", b"mesh"),
+                Entry::new("Textures/Terrain/W/W.4.0.0.dds", b"colour"),
+                Entry::new("Textures/Terrain/W/W.4.0.0_n.dds", b"normal"),
+                Entry::new("Meshes/Terrain/Other/W.4.4.0.btr", b"wrong world folder"),
+                Entry::new("Meshes/Terrain/W/W.04.4.0.btr", b"noncanonical level"),
+            ],
+            bsa::Compression::None,
+        )
+        .unwrap();
+        fs::write(data.path().join("Terrain.bsa"), bytes).unwrap();
+        fs::write(data.path().join("Unreadable.bsa"), b"invalid").unwrap();
+
+        let files = list(data.path()).unwrap();
+        let id = ("w".to_owned(), 4, 0, 0);
+        assert_eq!(files.blocks.keys().collect::<Vec<_>>(), vec![&id]);
+        let block = files.read(&id).ok().unwrap();
+        assert_eq!(block.mesh, b"mesh");
+        assert_eq!(block.colour, b"colour");
+        assert_eq!(block.normal, b"normal");
+        assert_eq!(files.archive_warnings.len(), 1);
+        assert!(files.archive_warnings[0].contains("unreadable.bsa"));
+    }
+
+    #[test]
+    fn a_damaged_archive_entry_does_not_hide_its_readable_neighbour() {
+        use dummy_content::{Entry, bsa};
+        let data = tempfile::tempdir().unwrap();
+        let mut bytes = bsa::v105(
+            &[
+                Entry::new("meshes/terrain/w/w.4.0.0.btr", b"damaged"),
+                Entry::new("meshes/terrain/w/w.4.4.0.btr", b"readable"),
+            ],
+            bsa::Compression::Lz4,
+        )
+        .unwrap();
+        let compressed_entry = lz4_flex::block::compress(b"damaged");
+        let payload = bytes
+            .windows(compressed_entry.len())
+            .position(|bytes| bytes == compressed_entry)
+            .unwrap();
+        bytes[payload - 4..payload].copy_from_slice(&u32::MAX.to_le_bytes());
+        fs::write(data.path().join("Terrain.bsa"), bytes).unwrap();
+        let textures = data.path().join("textures/terrain/w");
+        fs::create_dir_all(&textures).unwrap();
+        for x in [0, 4] {
+            fs::write(textures.join(format!("w.4.{x}.0.dds")), b"colour").unwrap();
+            fs::write(textures.join(format!("w.4.{x}.0_n.dds")), b"normal").unwrap();
+        }
+        let files = list(data.path()).unwrap();
+        let damaged = files.read(&("w".to_owned(), 4, 0, 0)).err().unwrap();
+        assert_eq!(damaged.class, "unreadable");
+        let neighbour = files.read(&("w".to_owned(), 4, 4, 0)).ok().unwrap();
+        assert_eq!(neighbour.mesh, b"readable");
+    }
+
+    #[test]
     fn a_loose_file_replaces_the_archive_providers() {
         let data = tempfile::tempdir().unwrap();
         let folder = data.path().join("Meshes/Terrain/Tamriel");
@@ -379,11 +438,7 @@ mod tests {
         assert!(matches!(block.mesh[0], Provider::Loose(_)));
         assert!(block.colour.is_empty() && block.normal.is_empty());
         // Reading it: the colour map is missing and the block is reported, not filled.
-        let extracted = extract(&files, &[("tamriel".to_owned(), 4, 0, 0)], data.path()).unwrap();
-        let skipped = extracted
-            .read(&files, &("tamriel".to_owned(), 4, 0, 0))
-            .err()
-            .unwrap();
+        let skipped = files.read(&("tamriel".to_owned(), 4, 0, 0)).err().unwrap();
         assert_eq!(skipped.class, "missing_colour_map");
     }
 
@@ -401,24 +456,14 @@ mod tests {
         fs::write(textures.join("w.4.4.0.dds"), b"c").unwrap();
         let files = list(data.path()).unwrap();
         assert_eq!(files.worlds(), BTreeSet::from(["w".to_owned()]));
-        let extracted = extract(&files, &[], data.path()).unwrap();
-        let ok = extracted
-            .read(&files, &("w".to_owned(), 4, 0, 0))
-            .ok()
-            .unwrap();
+        let ok = files.read(&("w".to_owned(), 4, 0, 0)).ok().unwrap();
         assert_eq!(
             (ok.mesh, ok.colour, ok.normal),
             (b"m".to_vec(), b"c".to_vec(), b"n".to_vec())
         );
-        let gap = extracted
-            .read(&files, &("w".to_owned(), 4, 4, 0))
-            .err()
-            .unwrap();
+        let gap = files.read(&("w".to_owned(), 4, 4, 0)).err().unwrap();
         assert_eq!(gap.class, "missing_normal_map");
-        let unlisted = extracted
-            .read(&files, &("w".to_owned(), 8, 0, 0))
-            .err()
-            .unwrap();
+        let unlisted = files.read(&("w".to_owned(), 8, 0, 0)).err().unwrap();
         assert_eq!(unlisted.class, "unlisted");
     }
 }

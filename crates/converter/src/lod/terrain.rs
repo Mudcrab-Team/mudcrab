@@ -698,12 +698,6 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
     let asset = json["asset"]
         .as_object()
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB asset header is missing"))?;
-    // A chunk from the .btr importer has its own contract.
-    if asset.get("generator").and_then(|value| value.as_str())
-        == Some(super::retail_terrain::GENERATOR)
-    {
-        return super::retail_terrain::validate_glb(&json, &bytes[binary_start..binary_end]);
-    }
     color_eyre::eyre::ensure!(
         asset.get("version").and_then(|v| v.as_str()) == Some("2.0"),
         "GLB asset version is not 2.0"
@@ -745,6 +739,12 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
         view_ranges.push((offset, length));
     }
 
+    // A chunk from the .btr importer has its own contract.
+    if asset.get("generator").and_then(|value| value.as_str())
+        == Some(super::retail_terrain::GENERATOR)
+    {
+        return super::retail_terrain::validate_glb(&json, &bytes[binary_start..binary_end]);
+    }
     let accessors = json["accessors"]
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB accessors are missing"))?;

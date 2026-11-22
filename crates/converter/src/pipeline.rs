@@ -5310,7 +5310,12 @@ async fn compile_lod_chunks_inline(
     // without terrain LOD; nothing is generated in its place.
     let retail_files = if retail_terrain {
         match crate::lod::retail_terrain_source::list(&config.data_dir) {
-            Ok(files) => Some(files),
+            Ok(files) => {
+                report
+                    .lod_warnings
+                    .extend(files.archive_warnings.iter().cloned());
+                Some(files)
+            }
             Err(error) => {
                 report.lod_warnings.push(format!(
                     "the retail terrain LOD files cannot be listed: {error:#}; no terrain LOD is imported"
@@ -5458,6 +5463,7 @@ async fn compile_lod_chunks_inline(
                     &compiler_pool,
                     &mut retail_inputs,
                     &mut chunk_hashes,
+                    || interrupt(cancellation),
                 )?;
                 let compiled: usize = imported.compiled.values().sum();
                 for (class, count) in &imported.skipped_by_class {
@@ -5476,7 +5482,11 @@ async fn compile_lod_chunks_inline(
                     imported.skipped.len()
                 ));
                 if let Some(settings) = world_settings.last_mut() {
-                    settings["status"] = serde_json::json!("retail_imported");
+                    settings["status"] = serde_json::json!(if compiled == 0 {
+                        "no_retail_chunks"
+                    } else {
+                        "retail_imported"
+                    });
                     settings["retail_chunks"] = serde_json::json!(compiled);
                     settings["retail_skipped"] = serde_json::json!(imported.skipped.len());
                 }

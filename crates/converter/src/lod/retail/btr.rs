@@ -25,7 +25,10 @@ use color_eyre::{
     eyre::{bail, ensure, eyre},
 };
 use project_wormhole_nif::{nif_block::NifBlock, nif_file::NifFile};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 /// The shape name the base-game files use for the terrain surface of a block (`Land` at level 32;
 /// the match ignores case). Source: measured on all 9,584 base-game blocks by
@@ -85,6 +88,8 @@ pub struct TerrainLodShape {
     pub kind: TerrainLodShapeKind,
     /// Name of the parent node, `None` when no node lists the shape or the node has no name.
     pub parent_name: Option<String>,
+    /// Index of the first non-identity node in the parent chain, nearest first.
+    pub transformed_ancestor: Option<usize>,
     /// `BSTriShape` or `BSSubIndexTriShape`.
     pub block_type: &'static str,
     /// Shape translation as stored (not applied to the vertices).
@@ -194,26 +199,45 @@ fn classify(name: Option<&str>, parent: Option<&str>) -> TerrainLodShapeKind {
     }
 }
 
-/// The name of the node that lists each block as a child, by block index.
-fn parent_names(nif: &NifFile) -> BTreeMap<usize, Option<String>> {
+struct Parent {
+    index: usize,
+    name: Option<String>,
+}
+
+/// The node that lists each block as a child, by block index.
+fn parents(nif: &NifFile) -> Result<BTreeMap<usize, Parent>> {
     let mut parents = BTreeMap::new();
-    for block in &nif.blocks {
+    for (index, block) in nif.blocks.iter().enumerate() {
         if let Ok(node) = block.as_node() {
             let name = match node.av.object.name {
                 u32::MAX => None,
-                index => nif
-                    .header
-                    .get_string(index as usize)
-                    // silent-ok: an unreadable parent name leaves the shape unparented, so it is counted as unrecognised
-                    .ok()
-                    .map(str::to_owned),
+                name => Some(
+                    nif.header
+                        .get_string(name as usize)
+                        .map_err(|error| eyre!("{error}"))?
+                        .to_owned(),
+                ),
             };
-            for child in &node.children {
-                parents.insert(*child as usize, name.clone());
+            for &child in &node.children {
+                if child == u32::MAX {
+                    continue;
+                }
+                ensure!(
+                    parents
+                        .insert(
+                            child as usize,
+                            Parent {
+                                index,
+                                name: name.clone()
+                            }
+                        )
+                        .is_none(),
+                    "block {child} has more than one parent reference"
+                );
             }
         }
     }
-    parents
+    Ok(parents)
 }
 
 /// Builds a [`TerrainLodShape`] from a `BSTriShape` payload. A macro because the NIF crate does
@@ -222,7 +246,7 @@ macro_rules! read_shape {
     ($nif:expr, $parents:expr, $block_index:expr, $block_type:expr, $base:expr, $segments:expr, $label:expr) => {{
         let (nif, parents, block_index, block_type, base, segments, label): (
             &NifFile,
-            &BTreeMap<usize, Option<String>>,
+            &BTreeMap<usize, Parent>,
             usize,
             &'static str,
             _,
@@ -294,12 +318,15 @@ macro_rules! read_shape {
             u32::MAX => None,
             reference => Some(read_shader(nif, reference, label)?),
         };
-        let parent_name = parents.get(&block_index).cloned().flatten();
+        let parent_name = parents
+            .get(&block_index)
+            .and_then(|parent| parent.name.clone());
         TerrainLodShape {
             block_index,
             kind: classify(name.as_deref(), parent_name.as_deref()),
             name,
             parent_name,
+            transformed_ancestor: None,
             block_type,
             translation: base.av.translation.0.0.to_array(),
             rotation_columns: base.av.rotation.0.0.to_cols_array_2d(),
@@ -322,7 +349,7 @@ macro_rules! read_shape {
 )]
 pub fn read_terrain_lod(bytes: &[u8], label: &Path) -> Result<TerrainLodFile> {
     let (nif, diagnostics) = MeshConverter::parse_nif_bytes(bytes, label)?;
-    let parents = parent_names(&nif);
+    let parents = parents(&nif)?;
     let mut shapes = Vec::new();
     let mut non_identity_nodes = Vec::new();
     for (block_index, block) in nif.blocks.iter().enumerate() {
@@ -358,8 +385,8 @@ pub fn read_terrain_lod(bytes: &[u8], label: &Path) -> Result<TerrainLodFile> {
                     label
                 ));
             }
-            NifBlock::NiNode(_) | NifBlock::BSMultiBoundNode(_) => {
-                let node = block.as_node().map_err(|error| eyre!("{error}"))?;
+            _ => {
+                let Ok(node) = block.as_node() else { continue };
                 let av = &node.av;
                 let identity_rotation = av.rotation.0.0.to_cols_array_2d()
                     == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -384,7 +411,25 @@ pub fn read_terrain_lod(bytes: &[u8], label: &Path) -> Result<TerrainLodFile> {
                     });
                 }
             }
-            _ => {}
+        }
+    }
+    let transformed: BTreeSet<_> = non_identity_nodes
+        .iter()
+        .map(|node| node.block_index)
+        .collect();
+    for shape in &mut shapes {
+        let mut ancestors = BTreeSet::new();
+        let mut index = shape.block_index;
+        while let Some(parent) = parents.get(&index) {
+            ensure!(
+                ancestors.insert(parent.index),
+                "cycle in parent chain of block {}",
+                shape.block_index
+            );
+            if transformed.contains(&parent.index) {
+                shape.transformed_ancestor.get_or_insert(parent.index);
+            }
+            index = parent.index;
         }
     }
     Ok(TerrainLodFile {
@@ -652,6 +697,28 @@ mod tests {
             read_terrain_lod(&bytes, label()).unwrap().shapes[0].kind,
             TerrainLodShapeKind::Other
         );
+    }
+
+    #[test]
+    fn a_land_shape_with_a_transformed_grandparent_is_rejected_by_the_compiler() {
+        let root = node_block(0, [10.0, 0.0, 0.0], &[1]);
+        let parent = node_block(1, [0.0; 3], &[2]);
+        let land = shape_block(2, 4.0, &TRIANGLE, Some(&UVS), &[[0, 1, 2]], None, true);
+        let bytes = nif_bytes(
+            &["root", "chunk", "Land"],
+            &[
+                ("BSMultiBoundNode", root),
+                ("BSMultiBoundNode", parent),
+                ("BSTriShape", land),
+            ],
+        );
+        let parsed = read_terrain_lod(&bytes, label()).unwrap();
+        let land = &parsed.shapes[0];
+        assert_eq!(land.kind, TerrainLodShapeKind::Terrain);
+        assert_eq!(land.parent_name.as_deref(), Some("chunk"));
+        assert_eq!(land.transformed_ancestor, Some(0));
+        let error = crate::lod::retail_terrain::cut_land(land, 4).unwrap_err();
+        assert!(error.to_string().contains("ancestor block 0"));
     }
 
     #[test]

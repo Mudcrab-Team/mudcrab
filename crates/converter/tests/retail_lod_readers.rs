@@ -254,6 +254,7 @@ fn every_base_game_terrain_lod_block_parses_and_matches_the_format_study() {
     // (blocks, land vertices, land triangles, water shapes, water triangles) per world and level.
     let mut totals: BTreeMap<(String, u32), [usize; 5]> = BTreeMap::new();
     let mut max_uv_error_below_32 = 0.0f64;
+    let mut blocks_with_transformed_ancestors = 0;
     for file in &files {
         let bytes = std::fs::read(file).unwrap();
         let name = parse_lod_file_name(&file.to_string_lossy()).unwrap();
@@ -266,8 +267,13 @@ fn every_base_game_terrain_lod_block_parses_and_matches_the_format_study() {
             (100, 12),
             "{context}"
         );
-        // Every node transform is the identity; every block of the file is decoded.
-        assert!(parsed.non_identity_nodes.is_empty(), "{context}");
+        blocks_with_transformed_ancestors += usize::from(
+            parsed
+                .shapes
+                .iter()
+                .any(|shape| shape.transformed_ancestor.is_some()),
+        );
+        // Every block of the file is decoded.
         assert!(parsed.unhandled_blocks.is_empty(), "{context}");
         // One land shape; everything else is a water plane under the WATER node.
         assert_eq!(parsed.unrecognised_shapes(), 0, "{context}");
@@ -317,6 +323,10 @@ fn every_base_game_terrain_lod_block_parses_and_matches_the_format_study() {
                 let [x, y, _] = vertex.position;
                 let eu = (f64::from(uv[0]) - f64::from(x) * f64::from(level) / side).abs();
                 let ev = (f64::from(uv[1]) - (1.0 - f64::from(y) * f64::from(level) / side)).abs();
+                assert!(
+                    eu.is_finite() && ev.is_finite(),
+                    "{context}: non-finite UV error"
+                );
                 max_uv_error_below_32 = max_uv_error_below_32.max(eu).max(ev);
             }
         }
@@ -341,6 +351,11 @@ fn every_base_game_terrain_lod_block_parses_and_matches_the_format_study() {
         entry[3] += parsed.shapes_of(TerrainLodShapeKind::Water).count();
         entry[4] += parsed.triangle_count(TerrainLodShapeKind::Water);
     }
+    println!(
+        "{blocks_with_transformed_ancestors} of {} base-game .btr blocks have non-identity ancestors",
+        files.len()
+    );
+    assert_eq!(blocks_with_transformed_ancestors, 0);
     for ((world, level), [blocks, vertices, triangles, water, water_triangles]) in &totals {
         println!(
             "{world} level {level}: {blocks} blocks, land {vertices} vertices {triangles} triangles, water {water} shapes {water_triangles} triangles"

@@ -6,7 +6,7 @@
 //! twin. [`RawTexelImageLoader`] claims only the alias extensions and forces `is_srgb = false`;
 //! every other image keeps Bevy's own loader.
 //!
-//! A terrain LOD chunk embeds its albedo in the GLB, where `bevy_gltf` decodes it without any
+//! A self-built terrain LOD chunk embeds its albedo in the GLB, where `bevy_gltf` decodes it without any
 //! asset loader. [`LodAlbedoRawTexelHandler`] gives that one image its UNORM twin inside the glTF
 //! load, so it enters `Assets<Image>` already raw.
 
@@ -169,7 +169,7 @@ fn is_lod_chunk_payload(path: &std::path::Path) -> bool {
     path.starts_with("lod")
 }
 
-/// Gives a terrain LOD chunk's embedded albedo its UNORM twin while the GLB is still loading.
+/// Gives a self-built terrain LOD chunk's embedded albedo its UNORM twin while the GLB loads.
 ///
 /// `bevy_gltf` decodes a bufferView image itself and tags it sRGB, and offers no setting to
 /// change that. Its extension hooks run inside the load, though, and a sub-asset added again
@@ -196,7 +196,9 @@ impl GltfExtensionHandler for LodAlbedoRawTexelHandler {
         _loaded: &GltfMaterial,
         _label: &str,
     ) {
-        if !is_lod_chunk_payload(context.path().path()) {
+        if !is_lod_chunk_payload(context.path().path())
+            || source.name() == Some(shared::lod::RETAIL_TERRAIN_MATERIAL_NAME)
+        {
             return;
         }
         let Some(base_color) = source.pbr_metallic_roughness().base_color_texture() else {
@@ -593,7 +595,7 @@ mod tests {
 
     /// A binary glTF whose single material samples an albedo embedded as a bufferView KTX2, the
     /// way the terrain LOD compiler writes a chunk.
-    fn embedded_albedo_glb() -> Vec<u8> {
+    fn embedded_albedo_glb(material_name: &str) -> Vec<u8> {
         let mut albedo = crate::test_support::colour_ktx2(DxgiFormat::BC1_UNorm, 2);
         let albedo_len = albedo.len();
         albedo.resize(albedo_len.next_multiple_of(4), 0);
@@ -610,7 +612,7 @@ mod tests {
                 "extensions": {"KHR_texture_basisu": {"source": 0}}
             }],
             "materials": [{
-                "name": "lod_terrain",
+                "name": material_name,
                 "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}
             }]
         }))
@@ -708,7 +710,11 @@ mod tests {
             shared::lod::ChunkAnchor::new(2, -1),
         ));
         assert!(is_lod_chunk_payload(Path::new(&chunk)));
-        write_asset(directory.path(), &chunk, &embedded_albedo_glb());
+        write_asset(
+            directory.path(),
+            &chunk,
+            &embedded_albedo_glb("lod_terrain"),
+        );
 
         let mut app = app(directory.path(), VisualProfile::Skyrim);
         let (albedo, changes) = load_embedded_albedo(&mut app, &chunk);
@@ -722,13 +728,36 @@ mod tests {
     }
 
     #[test]
+    fn imported_terrain_albedo_loads_as_srgb_in_both_profiles() {
+        let directory = tempfile::tempdir().unwrap();
+        let chunk = "lod/0000003c/4/cell_2_-1.glb";
+        write_asset(
+            directory.path(),
+            chunk,
+            &embedded_albedo_glb(shared::lod::RETAIL_TERRAIN_MATERIAL_NAME),
+        );
+        for profile in [VisualProfile::Skyrim, VisualProfile::Mudcrab] {
+            let mut app = app(directory.path(), profile);
+            let (albedo, changes) = load_embedded_albedo(&mut app, chunk);
+            assert_eq!(
+                loaded_format(&app, &albedo),
+                TextureFormat::Bc1RgbaUnormSrgb
+            );
+            assert_eq!(
+                changes,
+                [ImageChange::Added(Some(TextureFormat::Bc1RgbaUnormSrgb))]
+            );
+        }
+    }
+
+    #[test]
     fn only_skyrim_lod_chunks_have_their_embedded_albedo_replaced() {
         let directory = tempfile::tempdir().unwrap();
         let chunk = "lod/0000003c/4/cell_2_-1.glb";
         let prop = "meshes/prop.glb";
         assert!(!is_lod_chunk_payload(Path::new(prop)));
         for path in [chunk, prop] {
-            write_asset(directory.path(), path, &embedded_albedo_glb());
+            write_asset(directory.path(), path, &embedded_albedo_glb("lod_terrain"));
         }
         for (profile, path) in [
             (VisualProfile::Skyrim, prop),
