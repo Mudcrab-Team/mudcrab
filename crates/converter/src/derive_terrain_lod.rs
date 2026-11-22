@@ -196,7 +196,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     )?;
     manifest.build_identity = identity;
     manifest.chunks = u64::try_from(chunk_count)?;
-    // Retail chunks have no cell-height inputs; their own proof is `retail_terrain_inputs`.
+    // Imported chunks have no cell-height inputs; their own proof is `retail_terrain_inputs`.
     manifest
         .chunk_inputs
         .retain(|path, _| !retail_inputs.contains_key(path));

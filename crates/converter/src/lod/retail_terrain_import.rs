@@ -50,7 +50,7 @@ pub struct WorldReport {
 pub(crate) struct LodWorld {
     pub id: u32,
     pub editor_id: String,
-    /// Lowercase editor id, the world name in retail file names.
+    /// Lowercase editor id, the world name in the `.btr` file names.
     pub file_name: String,
     pub origin: LodOrigin,
 }

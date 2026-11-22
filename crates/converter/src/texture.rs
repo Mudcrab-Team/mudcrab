@@ -216,21 +216,23 @@ impl TextureConverter {
         Ok(metadata)
     }
 
-    /// Encodes one RGBA8 image as a mipmapped UASTC KTX2 with the converter's default quality.
-    /// For callers that have already decoded and changed the pixels (the retail terrain LOD
-    /// normal maps); every other texture goes through [`TextureConverter::convert`].
+    /// Encodes one RGBA8 image as a UASTC KTX2 with the converter's default quality, with a full
+    /// mip chain when `mips` is true and the single level otherwise. For callers that decode
+    /// the pixels themselves (the retail terrain LOD maps); every other texture goes through
+    /// [`TextureConverter::convert`].
     pub(crate) fn encode_rgba8(
         width: u32,
         height: u32,
         rgba: &[u8],
         encoding: TextureEncoding,
+        mips: bool,
     ) -> Result<Vec<u8>> {
         let bytes = encode_basis_ktx2(
             width,
             height,
             rgba,
             encoding,
-            true,
+            mips,
             ETC1S_QUALITY_DEFAULT,
             UASTC_LEVEL_DEFAULT,
         )?;

@@ -224,6 +224,8 @@ fn texture(width: u32, seed: u64) -> Vec<u8> {
 fn cpu_config(data: &Path, output: &Path) -> PipelineConfig {
     let mut config = PipelineConfig::new(data, output);
     config.no_lod = true;
+    // The fixture has no retail terrain LOD files; these tests check the self-built LOD stage.
+    config.terrain_lod_source = converter::config::TerrainLodSource::SelfBuilt;
     config.cpu_jobs = 1;
     config.io_jobs = 1;
     config.texture_encoder = TextureEncoder::Cpu;

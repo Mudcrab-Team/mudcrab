@@ -9,10 +9,24 @@
 //! surface is the same surface). The colour map is the retail map. The normal map is the retail
 //! map with its channels moved into the glTF tangent-space layout ([`RETAIL_NORMAL_AXES`]).
 //!
-//! The `NORMAL` and `TANGENT` attributes are a reference frame for that map, not lighting
-//! data: `NORMAL` is straight up and `TANGENT` points east, which is how the retail UVs lay the map
-//! on the ground. Every shading rule beyond sampling the shipped maps is unverified (research
-//! item 7).
+//! Reviewed facts this follows, from <https://github.com/Mudcrab-Team/skyrim_decomp/pull/822>
+//! (static analysis, independently reviewed; the finding is `UNREVIEWED` for transfer):
+//! - The `.btr` vertex is position and UV0 only. There is no vertex normal, tangent or colour, so
+//!   retail has no vertex-normal term: the lit normal comes from the per-block normal map alone.
+//!   The importer computes no normal from geometry.
+//! - The normal is `N = 2 * ((R, B, G) - 0.5)`: X from red, Y from blue, Z from green, model
+//!   space, alpha unused. [`RETAIL_NORMAL_AXES`] is that decode with the model axes as the glTF
+//!   frame (east, north, up), and the ignored real-data test measures it against the mesh.
+//! - The diffuse map is slot 0 and the normal map slot 1, both sampled with linear min and mag,
+//!   a point mip filter and MaxLOD 0, so only the first mip is sampled. Each map is therefore
+//!   stored as its first mip alone.
+//!
+//! The `NORMAL` and `TANGENT` attributes are a constant reference frame so the engine's glTF
+//! material can apply the map as a model-space normal: `NORMAL` is straight up and `TANGENT`
+//! points east, which is how the retail UVs lay the map on the ground. They carry no lighting
+//! data and no geometry. Not done here, and unverified: the retail lighting equation, noise
+//! term, near-terrain overlap and the settings in the finding; the engine lights these chunks
+//! with its ordinary material.
 
 use super::{
     retail::btr::TerrainLodShape,
@@ -52,9 +66,11 @@ pub struct NormalAxes {
     pub up: (usize, i8),
 }
 
-/// The retail normal maps store the up axis in green. East and north are red and blue; the signs
-/// are the best fit against the retail mesh over every Tamriel level 4 block (see the ignored
-/// `retail_terrain_lod_real_blocks` test in this module). Unverified against retail code.
+/// The retail decode `N = 2 * ((R, B, G) - 0.5)` as a frame: red is east (X), blue is north (Y),
+/// green is up (Z), all positive. It matches the reviewed finding (see the module documentation)
+/// and the best fit against the retail mesh over Tamriel level 4 blocks (the ignored
+/// `retail_normal_map_axes_match_the_mesh_slope` test). Unverified against retail code: the base
+/// records use the value unnormalized and Bevy normalizes it.
 pub const RETAIL_NORMAL_AXES: NormalAxes = NormalAxes {
     east: (0, 1),
     north: (2, 1),
@@ -346,7 +362,7 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
     let anchor = ChunkAnchor::new(rel_x.div_euclid(side), rel_y.div_euclid(side));
     let key = ChunkKey::new(block.world, tier, anchor);
     let patches = cut_land(block.land, block.level)?;
-    let colour = TextureConverter::convert(block.colour_dds, TextureEncoding::ColorSrgb)
+    let colour = convert_first_mip(block.colour_dds, TextureEncoding::ColorSrgb, None)
         .wrap_err("the colour map cannot be converted")?;
     let normal = convert_normal_map(block.normal_dds, RETAIL_NORMAL_AXES)?;
     // Only cells that received terrain are source cells; the rest lie outside the worldspace.
@@ -565,7 +581,7 @@ fn emit_glb(
             { "bufferView": 5, "mimeType": "image/ktx2" },
             { "bufferView": 6, "mimeType": "image/ktx2" },
         ],
-        "samplers": [{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }],
+        "samplers": [{ "magFilter": 9729, "minFilter": 9729, "wrapS": 33071, "wrapT": 33071 }],
         "textures": [
             { "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } },
             { "source": 1, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 1 } } },
@@ -650,9 +666,10 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
             width == height && width.is_power_of_two() && (4..=1024).contains(&width),
             "image view {view} is {width}x{height}, expected a square power of two up to 1024"
         );
+        // Retail samples the first mip only, so only the first mip is stored.
         ensure!(
-            reader.levels().count() > 1,
-            "image view {view} has no mip chain"
+            reader.levels().count() == 1,
+            "image view {view} must hold the first mip alone"
         );
         let expected = if encoding == TextureEncoding::ColorSrgb {
             ktx2::TransferFunction::SRGB

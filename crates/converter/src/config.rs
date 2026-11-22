@@ -96,7 +96,7 @@ pub struct PipelineConfig {
     /// no LOD, never an assumed origin of zero (GEOM-02).
     #[serde(default)]
     pub lod_origins: BTreeMap<String, [i32; 2]>,
-    /// Where terrain LOD chunks come from. Retail (the default) imports the game's own `.btr`
+    /// Where terrain LOD chunks come from. The default `retail` imports the game's own `.btr`
     /// meshes, colour maps and normal maps; a world without them gets no terrain LOD.
     #[serde(default)]
     pub terrain_lod_source: TerrainLodSource,
