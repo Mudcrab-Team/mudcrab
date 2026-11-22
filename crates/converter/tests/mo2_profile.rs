@@ -469,9 +469,10 @@ async fn reads_sources_without_materializing_mo2_inputs() {
     );
 }
 
-/// A winner lost after ingestion must fall back without publishing a lower-priority copy.
+/// A default winner lost after ingestion fails the conversion. It neither publishes a
+/// lower-priority copy nor falls back to a generated white texture (#811, SI-23).
 #[tokio::test]
-async fn mo2_no_lod_lost_default_winner_is_advisory() {
+async fn mo2_no_lod_lost_default_winner_fails_without_white() {
     let (directory, mut config, instance) = fixture();
     let winner = instance.join("overwrite/textures/landscape/custombase.dds");
     let bytes = fs::read(config.data_dir.join("textures/landscape/dirt02.dds")).unwrap();
@@ -507,49 +508,32 @@ async fn mo2_no_lod_lost_default_winner_is_advisory() {
         }
         removed
     });
-    let report = AssetPipeline::run_async(config.clone(), tx).await.unwrap();
+    let failure = AssetPipeline::run_async(config.clone(), tx)
+        .await
+        .expect_err("a lost default winner must fail the conversion");
     assert!(
         inspect.await.unwrap(),
         "fixture must remove the winner after texture ingestion"
     );
-    assert!(report.complete, "{report:?}");
-    assert!(report.warnings.is_empty(), "{report:?}");
+    let message = format!("{:#}", failure.error);
     assert!(
-        report
-            .notices
-            .iter()
-            .any(|notice| notice.contains("default land input omitted")),
-        "{report:?}"
+        message.contains("no white texture replaces it"),
+        "{message}"
     );
     assert!(
         !config
             .output_dir
             .join("terrain/default-diffuse.ktx2")
-            .exists()
+            .exists(),
+        "nothing is published for a failed conversion"
     );
-    let database = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
-    let diffuse: Option<String> = database
-        .query_row(
-            "SELECT diffuse_path FROM terrain_default_texture WHERE id=0",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(diffuse, None);
-    let neighbor: u32 = database
-        .query_row(
-            "SELECT COUNT(*) FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(neighbor, 1);
 }
 
-/// A locked, readable stale DDS must not become the default or abort publication.
+/// A locked, readable stale DDS must not become the default. The conversion fails; it does
+/// not fall back to a generated white texture (#811, SI-23). Windows only: unrun elsewhere.
 #[cfg(windows)]
 #[tokio::test]
-async fn mo2_no_lod_locked_stale_default_is_withdrawn() {
+async fn mo2_no_lod_locked_stale_default_fails_without_white() {
     use std::os::windows::fs::OpenOptionsExt;
 
     let (directory, mut config, instance) = fixture();
@@ -572,7 +556,6 @@ async fn mo2_no_lod_locked_stale_default_is_withdrawn() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(1);
     let inspect = tokio::spawn(async move {
         let mut planted = false;
-        let mut survived = false;
         let mut locked = None;
         while let Some(event) = rx.recv().await {
             if !planted && event.stage == converter::ProgressStage::Scripts {
@@ -599,65 +582,21 @@ async fn mo2_no_lod_locked_stale_default_is_withdrawn() {
                 );
                 planted = true;
             }
-            if locked.is_some() && event.stage == converter::ProgressStage::LodChunks {
-                let (staging, _) = converter::config::find_resumable_staging(&output).unwrap();
-                assert_eq!(
-                    fs::read(staging.join("vfs/textures/landscape/custombase.dds")).unwrap(),
-                    bytes
-                );
-                assert!(!staging.join("terrain/default-diffuse.ktx2").exists());
-                // Release before the output directory is published; the stale copy still exists.
-                locked.take();
-                survived = true;
-            }
         }
-        (planted, survived)
+        // Release before the output directory is published; the stale copy still exists.
+        drop(locked);
+        planted
     });
     let result = AssetPipeline::run_async(config.clone(), tx).await;
-    assert_eq!(inspect.await.unwrap(), (true, true));
-    let report = result.expect("a stale optional default must not abort conversion");
-    assert!(report.complete && report.warnings.is_empty(), "{report:?}");
-    assert!(
-        report.notices.iter().any(|notice| {
-            notice.contains("configured default withdrawn")
-                && notice.contains("vfs")
-                && notice.contains("custombase.dds")
-                && notice.contains("os error")
-        }),
-        "{report:?}"
-    );
+    assert!(inspect.await.unwrap());
+    let failure = result.expect_err("a stale default that cannot be replaced fails the conversion");
+    let message = format!("{:#}", failure.error);
+    assert!(message.contains("no white texture"), "{message}");
     assert!(
         !config
             .output_dir
             .join("terrain/default-diffuse.ktx2")
             .exists()
-    );
-    assert!(
-        !config
-            .output_dir
-            .join("terrain/default-normal.ktx2")
-            .exists()
-    );
-    let database = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
-    let default: (Option<String>, Option<String>, Option<String>) = database.query_row(
-        "SELECT diffuse_path,normal_path,source_diffuse FROM terrain_default_texture WHERE id=0",
-        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).unwrap();
-    assert_eq!(default, (None, None, None));
-    let neighbor: f32 = database
-        .query_row(
-            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(neighbor, 444.0);
-    assert!(
-        converter::cache::ConversionManifest::load(
-            &config.output_dir.join("conversion-manifest.json")
-        )
-        .unwrap()
-        .complete
     );
 }
 

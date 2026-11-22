@@ -47,8 +47,10 @@ pub struct OutfitPart {
     pub armature_id: u32,
     /// `ARMA/BOD2` biped slot mask: the body regions this part covers.
     pub biped_mask: u32,
-    /// The armature's own `RNAM`: the actor's race, or `DefaultRace`.
-    pub armature_race_id: u32,
+    /// The armature's own `RNAM`: the actor's race, or `DefaultRace`. `None` when the armature has
+    /// no readable `RNAM`; no race is invented for it.
+    #[serde(default)]
+    pub armature_race_id: Option<u32>,
     /// The converted scene, a canonical `meshes/**.glb` key.
     pub scene: String,
 }
@@ -107,7 +109,7 @@ mod tests {
             armo_id: 1,
             armature_id: 2,
             biped_mask: mask,
-            armature_race_id: 25,
+            armature_race_id: Some(25),
             scene: scene.into(),
         }
     }

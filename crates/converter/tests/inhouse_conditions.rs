@@ -449,6 +449,21 @@ fn published_record(database: &Connection, id: u32) -> ArchivedRecordData {
 }
 
 /// Conversion publishes neighbors, clears broken full/light refs and omits malformed CTDA.
+/// Parent a placed reference in the generated world's exterior cell (0x10). A placed record
+/// without a parent cell gets no placement row, so pipeline fixtures give it one (#811).
+fn in_exterior_cell(reference: &[u8]) -> Vec<u8> {
+    fn group(label: u32, kind: i32, content: &[u8]) -> Vec<u8> {
+        let mut bytes = b"GRUP".to_vec();
+        bytes.extend_from_slice(&u32::try_from(content.len() + 24).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&label.to_le_bytes());
+        bytes.extend_from_slice(&kind.to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
+        bytes.extend_from_slice(content);
+        bytes
+    }
+    group(1, 1, &group(0x10, 8, reference))
+}
+
 #[tokio::test]
 async fn malformed_conditions_and_optional_refs_complete_real_publication() {
     let temp = tempfile::tempdir().unwrap();
@@ -476,14 +491,14 @@ async fn malformed_conditions_and_optional_refs_complete_real_publication() {
         header,
         0x200,
         &["Skyrim.esm"],
-        &fixture::reference(0x0100_0AAA),
+        &in_exterior_cell(&fixture::reference(0x0100_0AAA)),
     );
     write_plugin(
         &data.join("SecondLight.esl"),
         header,
         0x200,
         &["Skyrim.esm"],
-        &fixture::reference(0x0100_0BBB),
+        &in_exterior_cell(&fixture::reference(0x0100_0BBB)),
     );
     let mut fields = fixture::subrecord(b"CTDA", &[0; 31]);
     fields.extend(fixture::subrecord(b"CIS1", b"rejected condition string\0"));

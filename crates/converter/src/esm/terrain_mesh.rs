@@ -101,6 +101,11 @@ pub fn build_cell_mesh(
     let side = usize::from(LAND_SIDE);
     let view = SubrecordView::new(&record.subrecords);
 
+    ensure!(
+        crate::esm::cell_cache::land_has_heights(&view),
+        "LAND of cell {cell_id:08X}: {}",
+        crate::esm::cell_cache::LAND_WITHOUT_HEIGHTS
+    );
     let vhgt = view.find(b"VHGT").unwrap_or_default();
     if let Some(bytes) = vhgt.get(..4) {
         let offset = f32::from_le_bytes(bytes.try_into().expect("four-byte VHGT offset"));

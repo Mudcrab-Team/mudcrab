@@ -10,20 +10,37 @@ use std::{
     path::Path,
 };
 
+/// A flat authored height field (offset 0, zero deltas) for test LAND records. Tests that need a
+/// published cell state their terrain; the converter never fills heights in for them.
+#[cfg(test)]
+pub(crate) fn flat_test_vhgt() -> Vec<u8> {
+    let mut bytes = 0.0f32.to_le_bytes().to_vec();
+    bytes.extend(vec![0; usize::from(LAND_SIDE).pow(2) + 3]);
+    bytes
+}
+
+/// Why a LAND record gets no published heights: it has no usable `VHGT` field. The converter
+/// does not publish zero heights for it (#811 F7, SI-21). Retail's behaviour for a height-less
+/// LAND is unverified.
+pub(crate) const LAND_WITHOUT_HEIGHTS: &str =
+    "LAND has no VHGT height field; omitted, no heights invented";
+
+/// True when the record carries a `VHGT` field with at least one byte.
+pub(crate) fn land_has_heights(view: &SubrecordView<'_>) -> bool {
+    view.find(b"VHGT").is_some_and(|bytes| !bytes.is_empty())
+}
+
 /// Check one decoded terrain record before the tolerant reader publishes it.
 /// Errors stay local to this record; the adapter counts and omits it.
-/// Texture/color-only LAND may omit VHGT and uses the shared cache's default heights.
+/// A LAND without `VHGT` is rejected: the shared cache has no height to publish for it.
 pub(crate) fn validate_inhouse_land(record: &RawRecord) -> Result<()> {
     let view = SubrecordView::new(&record.subrecords);
-    let authored_heightmap = view.find(b"VHGT");
-    let heightmap = authored_heightmap.unwrap_or_default();
+    color_eyre::eyre::ensure!(land_has_heights(&view), LAND_WITHOUT_HEIGHTS);
+    let heightmap = view.find(b"VHGT").unwrap_or_default();
     let heights = decode_vhgt(heightmap);
     let count = usize::from(LAND_SIDE).pow(2);
     color_eyre::eyre::ensure!(
-        authored_heightmap.is_none()
-            || (!heightmap.is_empty()
-                && heights.len() == count
-                && heights.iter().all(|h| h.is_finite())),
+        heights.len() == count && heights.iter().all(|h| h.is_finite()),
         "incomplete or non-finite authored VHGT"
     );
     color_eyre::eyre::ensure!(
@@ -228,12 +245,18 @@ fn write_cell_cache_layers(
         .filter(|record| &record.record_type == b"LAND" && !record.is_deleted())
         .collect();
     land_records.sort_unstable_by_key(|record| land_source_priority(record, source_offsets));
+    // Winning LANDs without VHGT: no cell is published for them (no zero heights).
+    let mut without_heights: Vec<(u32, u32)> = Vec::new();
     for record in land_records {
         let cell_id = record.cell_form_id.unwrap_or(record.form_id);
         if winners[&cell_id] != record.form_id {
             continue;
         }
         let view = SubrecordView::new(&record.subrecords);
+        if !land_has_heights(&view) {
+            without_heights.push((cell_id, record.form_id));
+            continue;
+        }
         let heightmap = view.find(b"VHGT").unwrap_or_default();
         let (water_height, water_type_form_id) =
             water_by_cell.get(&cell_id).copied().unwrap_or((None, None));
@@ -325,6 +348,12 @@ fn write_cell_cache_layers(
                 water_height,
                 water_type_form_id,
             },
+        );
+    }
+    if let Some(&(cell_id, form_id)) = without_heights.iter().min() {
+        eprintln!(
+            "warning: {} winning LAND record(s) have no VHGT height field and publish no terrain cell; first cell {cell_id:08X}, record {form_id:08X}. Retail behaviour is unverified; no heights are invented",
+            without_heights.len()
         );
     }
     let mut rejected_overrides: Vec<_> = rejected_overrides.into_iter().collect();
@@ -422,9 +451,7 @@ fn normalize_water_height(height: f32) -> Option<f32> {
 
 pub(crate) fn decode_vhgt(bytes: &[u8]) -> Vec<f32> {
     let count = usize::from(LAND_SIDE) * usize::from(LAND_SIDE);
-    if bytes.is_empty() {
-        return vec![0.0; count];
-    }
+    // No bytes is no height field: never zero heights. Callers check `land_has_heights` first.
     if bytes.len() < 4 + count {
         return Vec::new();
     }
@@ -819,11 +846,12 @@ mod tests {
             bytes.extend(opacity.to_le_bytes());
             (b"VTXT".to_vec(), bytes)
         };
-        let mut land = record(0x1234, b"LAND", None, &[]);
+        let mut land = record(0x1234, b"LAND", None, &[(b"VHGT", flat_test_vhgt())]);
         land.cell_form_id = Some(0x5678);
         // These independent native assignments distinguish absent nonzero targets
         // from declared NULL, and distinguish the later slot's weights from earlier ones.
         land.subrecords = vec![
+            (b"VHGT".to_vec(), flat_test_vhgt()),
             assignment(b"BTXT", 0x2000, 0),
             assignment(b"ATXT", 0x2200, 2),
             weight(5, 0.25),
@@ -906,7 +934,7 @@ mod tests {
     #[test]
     fn preserved_layers_invalid_auxiliary_data_falls_back_and_publishes_neighbors() {
         let land = preservation_land();
-        let neighbor = record(0x9876, b"LAND", None, &[]);
+        let neighbor = record(0x9876, b"LAND", None, &[(b"VHGT", flat_test_vhgt())]);
         let records = HashMap::from([(land.form_id, land.clone()), (neighbor.form_id, neighbor)]);
         let valid = preserved_texture_layers(&land).unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -1138,12 +1166,23 @@ mod tests {
         assert_eq!(heights[usize::from(LAND_SIDE)], 32.0);
     }
 
+    /// A LAND without VHGT has no heights: none are invented, and the cache omits the cell.
     #[test]
-    fn supplies_flat_geometry_when_land_omits_vhgt_and_vnml() {
-        let heights = decode_vhgt(&[]);
+    fn omits_the_cell_when_land_has_no_vhgt() {
+        assert!(decode_vhgt(&[]).is_empty(), "no zero-filled heights");
+        let land = record(0x1234, b"LAND", None, &[(b"VNML", vec![1; 33 * 33 * 3])]);
+        assert!(!land_has_heights(&SubrecordView::new(&land.subrecords)));
+        let error = validate_inhouse_land(&land).unwrap_err().to_string();
+        assert_eq!(error, LAND_WITHOUT_HEIGHTS);
+        let empty = record(0x1234, b"LAND", None, &[(b"VHGT", Vec::new())]);
+        assert!(!land_has_heights(&SubrecordView::new(&empty.subrecords)));
+    }
+
+    /// Reconstructed normals come from authored heights only (retail zero-vector rule unverified).
+    #[test]
+    fn reconstructs_normals_from_authored_heights_only() {
+        let heights = vec![0.0; usize::from(LAND_SIDE).pow(2)];
         let normals = decode_normals(&[], &heights);
-        assert_eq!(heights.len(), usize::from(LAND_SIDE).pow(2));
-        assert!(heights.iter().all(|height| *height == 0.0));
         assert_eq!(normals.len(), heights.len() * 3);
         assert!(
             normals
@@ -1151,6 +1190,10 @@ mod tests {
                 .0
                 .iter()
                 .all(|normal| normal == &[0, 0, 127])
+        );
+        assert!(
+            decode_normals(&[], &[]).is_empty(),
+            "no heights, no normals"
         );
     }
 
@@ -1189,7 +1232,7 @@ mod tests {
     fn invalid_land_fails_before_replacing_an_existing_cache() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cell_cache.rkyv");
-        let valid = record(0x1234, b"LAND", None, &[]);
+        let valid = record(0x1234, b"LAND", None, &[(b"VHGT", flat_test_vhgt())]);
         let mut records = HashMap::from([(valid.form_id, valid)]);
         write_cell_cache(&records, &path).unwrap();
         let original = std::fs::read(&path).unwrap();
@@ -1208,7 +1251,11 @@ mod tests {
             } else {
                 "non-finite"
             };
-            records.get_mut(&0x1234).unwrap().subrecords = vec![(tag.to_vec(), bytes)];
+            let mut fields = vec![(tag.to_vec(), bytes)];
+            if tag != b"VHGT" {
+                fields.push((b"VHGT".to_vec(), flat_test_vhgt()));
+            }
+            records.get_mut(&0x1234).unwrap().subrecords = fields;
             let error = write_cell_cache(&records, &path).unwrap_err().to_string();
             assert!(error.contains("00001234"), "{error}");
             assert!(error.contains(expected), "{error}");
@@ -1279,9 +1326,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cell_cache.rkyv");
         for textures in [[1, 2, 3], [3, 2, 1], [1, 1, 1]] {
-            let mut land = record(0x1234, b"LAND", None, &[]);
+            let mut land = record(0x1234, b"LAND", None, &[(b"VHGT", flat_test_vhgt())]);
             land.cell_form_id = Some(0x5678);
             land.subrecords = vec![
+                (b"VHGT".to_vec(), flat_test_vhgt()),
                 overlay(textures[0], 0),
                 weight(5, 0.25),
                 overlay(textures[1], 0),
@@ -1362,8 +1410,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cell_cache.rkyv");
         for textures in [[0, 1, 0], [1, 0, 0], [0, 0, 1]] {
-            let mut land = record(0x1234, b"LAND", None, &[]);
-            land.subrecords = textures.into_iter().map(overlay).collect();
+            let mut land = record(0x1234, b"LAND", None, &[(b"VHGT", flat_test_vhgt())]);
+            land.subrecords = std::iter::once((b"VHGT".to_vec(), flat_test_vhgt()))
+                .chain(textures.into_iter().map(overlay))
+                .collect();
             write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).unwrap();
             let mmap = validate_cell_cache(&path).unwrap();
             let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
@@ -1376,11 +1426,19 @@ mod tests {
             assert_eq!(layers[1].layer, 2);
         }
         // Truncated tails drop locally; repeated authored vertices keep the final value.
-        let mut recovered = record(0x1234, b"LAND", None, &[]);
-        recovered.subrecords = vec![overlay(0), (b"VTXT".to_vec(), vec![0; 7])];
+        let mut recovered = record(0x1234, b"LAND", None, &[(b"VHGT", flat_test_vhgt())]);
+        recovered.subrecords = vec![
+            (b"VHGT".to_vec(), flat_test_vhgt()),
+            overlay(0),
+            (b"VTXT".to_vec(), vec![0; 7]),
+        ];
         write_cell_cache(&HashMap::from([(recovered.form_id, recovered)]), &path).unwrap();
-        let mut land = record(0x1234, b"LAND", None, &[]);
-        land.subrecords = vec![overlay(0), (b"VTXT".to_vec(), vec![0; 16])];
+        let mut land = record(0x1234, b"LAND", None, &[(b"VHGT", flat_test_vhgt())]);
+        land.subrecords = vec![
+            (b"VHGT".to_vec(), flat_test_vhgt()),
+            overlay(0),
+            (b"VTXT".to_vec(), vec![0; 16]),
+        ];
         write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).unwrap();
     }
 
@@ -1398,7 +1456,12 @@ mod tests {
             }
         }
         let output = tempfile::tempdir().unwrap();
-        let land = record(0x1234, b"LAND", None, &[(b"VNML", authored)]);
+        let land = record(
+            0x1234,
+            b"LAND",
+            None,
+            &[(b"VHGT", flat_test_vhgt()), (b"VNML", authored)],
+        );
         assert_eq!(
             write_cell_cache(
                 &HashMap::from([(land.form_id, land)]),
