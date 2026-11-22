@@ -6,8 +6,8 @@
     "crates/converter/src/lod/albedo.rs": 5,
     "crates/converter/src/reader_diff.rs": 2,
     "crates/converter/src/records/history_source.rs": 1,
-    "crates/converter/src/terrain_arrays.rs": 7,
-    "crates/converter/src/terrain_pipeline.rs": 4,
+    "crates/converter/src/terrain_arrays.rs": 8,
+    "crates/converter/src/terrain_pipeline.rs": 3,
     "crates/converter/src/texture.rs": 1,
     "crates/dummy-content/src/layout.rs": 7,
     "crates/dummy-content/src/nif.rs": 15,
@@ -53,7 +53,6 @@
     "docs/research/z-fighting-audit-20261008.md": 1,
     "docs/specs/converters/db-schema.md": 4,
     "docs/specs/converters/extensions.md": 1,
-    "docs/specs/converters/pipeline.md": 1,
     "docs/specs/engine/interior-environment.md": 1,
     "docs/specs/engine/lod-architecture.md": 1,
     "docs/specs/engine/object-carrying.md": 1,
@@ -62,5 +61,5 @@
     "docs/specs/engine/tonemap-tuning.md": 1,
     "docs/specs/modding/launcher.md": 1
   },
-  "revision": 2
+  "revision": 3
 }
