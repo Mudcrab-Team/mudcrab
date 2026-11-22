@@ -61,6 +61,13 @@ the sorted `Cargo.toml` workspace members. It then runs the fast gates. It stops
 the paths for any real conflict. Add `--dry-run` to see the plan first. Never hand-resolve a
 known mechanical conflict; a hand resolution can drop a table classification or a reader.
 
+If `dispositions.json` and `reviewed-surface.json` conflict together, resolve
+`dispositions.json` by hand first and keep valid JSON. Then run
+`inventory.py --review-sources` and `inventory.py --check` against the resolved tree. Stage
+`reviewed-surface.json` and commit. `dispositions.json` is human-authored; only the surface
+comes from the tool. The script leaves the surface conflicted until the source conflicts are
+resolved.
+
 ## 4. Open the pull request
 
 - Fill in the PR template, and write the text as [writing-prs.md](writing-prs.md) describes: the result first, the problem with an example, honest evidence.

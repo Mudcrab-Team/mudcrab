@@ -29,6 +29,7 @@ Exit codes: 0 = merged and gates passed (or dry run completed), 1 = real conflic
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 import shlex
@@ -102,6 +103,7 @@ def git(root, *args, check=True):
         ["git", *args],
         cwd=str(root),
         text=True,
+        encoding="utf-8",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -206,10 +208,32 @@ def resolve_inventory(root, path, inventory_command):
     stages = unmerged_stages(root, path)
     if 2 not in stages or 3 not in stages:
         raise SyncError(f"cannot regenerate {path}: it is not a two-sided text conflict")
+    ours = surface_columns(root, path, 2)
+    theirs = surface_columns(root, path, 3)
+    if ours != theirs:
+        raise SyncError(
+            f"{path}: reviewed columns differ on each side. Resolve the source conflicts, then run "
+            "inventory.py --review-sources --extraction <extraction.json> and --check; "
+            "taking main's copy would drop the branch's columns.")
     git(root, "checkout", "--theirs", "--", path)
     run_tool(root, inventory_command + ["--review-sources"], "inventory --review-sources")
     run_tool(root, inventory_command + ["--check"], "inventory --check")
     git(root, "add", "--", path)
+
+
+def surface_columns(root, path, stage):
+    """The reviewed emitted columns of one clean side of the conflict."""
+    done = git(root, "show", f":{stage}:{path}")
+    try:
+        document = json.loads(done.stdout)
+    except json.JSONDecodeError as error:
+        raise SyncError(f"{path}: cannot read stage {stage} as JSON: {error}") from None
+    if not isinstance(document, dict):
+        raise SyncError(f"{path}: stage {stage} is not a JSON object")
+    columns = document.get("columns", [])
+    if not isinstance(columns, list):
+        raise SyncError(f"{path}: columns in stage {stage} are not a list")
+    return columns
 
 
 def conflict_marker(line):
@@ -221,8 +245,46 @@ def conflict_marker(line):
     )
 
 
+def registry_members(text, path, registry):
+    """The member paths in one clean registry block. Raises when the block is malformed."""
+    lines = text.splitlines()
+    starts = [index for index, line in enumerate(lines) if re.match(registry.start, line)]
+    if len(starts) != 1:
+        raise SyncError(f"{path}: expected one registry block start, found {len(starts)}")
+    start = starts[0]
+    ends = [index for index in range(start + 1, len(lines)) if re.match(registry.end, lines[index])]
+    if not ends:
+        raise SyncError(f"{path}: registry block has no end line")
+    members = []
+    for line in lines[start + 1 : ends[0]]:
+        if not line.strip():
+            continue
+        if conflict_marker(line):
+            raise SyncError(f"{path}: conflict marker in a registry side")
+        match = re.match(r'^"([^"]+)"\s*,?$', line.strip())
+        if not match:
+            raise SyncError(f"{path}: registry line is not a member path: {line!r}")
+        members.append(match.group(1))
+    return members
+
+
+def side_members(root, path, stage, registry):
+    done = git(root, "show", f":{stage}:{path}")
+    return set(registry_members(done.stdout, path, registry))
+
+
 def resolve_registry(root, path, registry):
     """Replace the conflict hunks inside one sorted registry block with the sorted union."""
+    stages = unmerged_stages(root, path)
+    if 1 in stages:
+        base = side_members(root, path, 1, registry)
+        ours = side_members(root, path, 2, registry)
+        theirs = side_members(root, path, 3, registry)
+        removed = sorted((base - ours) | (base - theirs))
+        if removed:
+            raise SyncError(
+                f"{path}: registry member removed on one side ({', '.join(removed)}); "
+                "a union would add it back. Resolve this path by hand.")
     target = root / path
     try:
         original = target.read_text(encoding="utf-8")
@@ -294,12 +356,9 @@ def resolve_registry(root, path, registry):
     if any(conflict_marker(line) for line in text.splitlines()):
         raise SyncError(f"{path}: conflict markers remain after the registry union")
 
-    target.write_text(text, encoding="utf-8")
-    try:
-        validate_registry(root, registry, unique)
-    except SyncError:
-        target.write_text(original, encoding="utf-8")
-        raise
+    validate_registry(root, registry, unique)
+    with open(target, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
     git(root, "add", "--", path)
 
 
@@ -335,6 +394,7 @@ def run_tool(root, command, label):
         command,
         cwd=str(root),
         text=True,
+        encoding="utf-8",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
@@ -397,6 +457,7 @@ def run_gates(root, base_ref, inventory_command):
                 command,
                 cwd=str(root),
                 text=True,
+                encoding="utf-8",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
@@ -472,6 +533,9 @@ def dry_run(root, base):
 
 def merge(root, base):
     branch = branch_name(root)
+    if git(root, "merge-base", "--is-ancestor", base, "HEAD", check=False).returncode == 0:
+        print(f"sync-branch: HEAD already contains {base}; no merge commit")
+        return False
     print(f"sync-branch: merging {base} into {branch}")
     done = git(
         root,
@@ -495,6 +559,7 @@ def merge(root, base):
 def resolve(root, base, inventory_command):
     """Resolve every known class. Return the paths that need a person."""
     remaining = []
+    deferred = []
     for path in conflicted_paths(root):
         stages = unmerged_stages(root, path)
         if (
@@ -507,15 +572,30 @@ def resolve(root, base, inventory_command):
             delete_generated(root, path)
             continue
         if path in INVENTORY_REGENERATED:
-            print(f"sync-branch: take main's side, then regenerate: {path}")
-            resolve_inventory(root, path, inventory_command)
+            # Regenerate only after every source conflict is resolved. The inventory tool scans
+            # the working tree, and a reader source with conflict markers would produce a wrong
+            # surface that its own --check cannot detect.
+            deferred.append(path)
             continue
         if path in REGISTRIES:
             print(f"sync-branch: union the sorted registry: {path}")
             resolve_registry(root, path, REGISTRIES[path])
             continue
         remaining.append(path)
-    return remaining
+    if remaining:
+        if deferred:
+            print("sync-branch: the reviewed surface is still conflicted; it is regenerated only after the source conflicts are resolved")
+            print("sync-branch: after you resolve and stage the source conflicts, run:")
+            for command in (inventory_command + ["--review-sources"], inventory_command + ["--check"]):
+                print(f"  {shlex.join(command)}")
+            for path in deferred:
+                print(f"  git add -- {path}")
+            print("  git commit")
+        return remaining
+    for path in deferred:
+        print(f"sync-branch: take main's side, then regenerate: {path}")
+        resolve_inventory(root, path, inventory_command)
+    return []
 
 
 def run(argv=None):
