@@ -2231,10 +2231,15 @@ mod tests {
         ("workspace.py", "--no-run"),
         ("workspace.py", "--open"),
         ("workspace.py", "--timings"),
-        // The retail-claim checker owns its diff range and repository path.
+        // The retail-claim checker owns its diff range, repository path and the
+        // stand-in audit modes. It never launches the engine.
         ("check_retail_claims.py", "--base"),
         ("check_retail_claims.py", "--head"),
         ("check_retail_claims.py", "--repo"),
+        ("check_retail_claims.py", "--audit"),
+        ("check_retail_claims.py", "--baseline"),
+        ("check_retail_claims.py", "--write-baseline"),
+        ("check_retail_claims.py", "--check-issues"),
         // sync_branch.py merges origin/main and drives git and the inventory tool. It never
         // launches the engine, so these options belong to its own CLI and its Git commands.
         ("sync_branch.py", "--base"),
