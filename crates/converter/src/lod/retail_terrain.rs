@@ -1301,9 +1301,16 @@ mod tests {
         .unwrap();
         let glb = gltf::binary::Glb::from_slice(&chunk.glb).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
+        let mut external_buffer = json["buffers"][0].clone();
+        external_buffer["uri"] = serde_json::json!("external.bin");
         for (pointer, value, expected) in [
             ("/asset/version", serde_json::json!("1.0"), "asset version"),
-            ("/bufferViews/0/buffer", serde_json::json!(1), "buffer"),
+            ("/buffers/0", external_buffer, "one embedded buffer"),
+            (
+                "/bufferViews/0/buffer",
+                serde_json::json!(1),
+                "bufferView 0 does not reference buffer 0",
+            ),
             (
                 "/accessors/0/count",
                 serde_json::json!(usize::MAX),

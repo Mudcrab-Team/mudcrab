@@ -396,12 +396,20 @@ mod tests {
 
     #[test]
     fn a_damaged_archive_entry_does_not_hide_its_readable_neighbour() {
-        use dummy_content::{Entry, bsa};
+        use crate::lod::{
+            generation::StagedGeneration,
+            retail::btr::tests::land_block,
+            retail_terrain_import::{LodWorld, stage_world},
+        };
+        use dummy_content::{Entry, bsa, dds, rng::Rng};
+        use rusqlite::Connection;
+        use shared::lod::LodOrigin;
+
         let data = tempfile::tempdir().unwrap();
         let mut bytes = bsa::v105(
             &[
-                Entry::new("meshes/terrain/w/w.4.0.0.btr", b"damaged"),
-                Entry::new("meshes/terrain/w/w.4.4.0.btr", b"readable"),
+                Entry::new("meshes/terrain/w/w.16.0.0.btr", b"damaged"),
+                Entry::new("meshes/terrain/w/w.16.16.0.btr", &land_block()),
             ],
             bsa::Compression::Lz4,
         )
@@ -415,15 +423,59 @@ mod tests {
         fs::write(data.path().join("Terrain.bsa"), bytes).unwrap();
         let textures = data.path().join("textures/terrain/w");
         fs::create_dir_all(&textures).unwrap();
-        for x in [0, 4] {
-            fs::write(textures.join(format!("w.4.{x}.0.dds")), b"colour").unwrap();
-            fs::write(textures.join(format!("w.4.{x}.0_n.dds")), b"normal").unwrap();
+        let map = dds::generate(
+            &dds::Spec::new(dds::Format::X8R8G8B8, 8, 8),
+            &mut Rng::new(5),
+        )
+        .unwrap();
+        for x in [0, 16] {
+            fs::write(textures.join(format!("w.16.{x}.0.dds")), &map).unwrap();
+            fs::write(textures.join(format!("w.16.{x}.0_n.dds")), &map).unwrap();
         }
         let files = list(data.path()).unwrap();
-        let damaged = files.read(&("w".to_owned(), 4, 0, 0)).err().unwrap();
-        assert_eq!(damaged.class, "unreadable");
-        let neighbour = files.read(&("w".to_owned(), 4, 4, 0)).ok().unwrap();
-        assert_eq!(neighbour.mesh, b"readable");
+        let ids: Vec<_> = files.blocks.keys().cloned().collect();
+        let output = tempfile::tempdir().unwrap();
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO worldspaces(id, editor_id, flags) VALUES (60, 'W', 0)",
+                [],
+            )
+            .unwrap();
+        let tx = connection.transaction().unwrap();
+        let mut staged = StagedGeneration::new(output.path()).unwrap();
+        let world = LodWorld {
+            id: 60,
+            editor_id: "W".to_owned(),
+            file_name: "w".to_owned(),
+            origin: LodOrigin::new(0, 0),
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let imported = stage_world(
+            &tx,
+            &mut staged,
+            &world,
+            &files,
+            &ids,
+            &pool,
+            &BTreeMap::new(),
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(imported.report.skipped.len(), 1);
+        let (damaged, reason) = &imported.report.skipped[0];
+        assert_eq!(damaged, &("w".to_owned(), 16, 0, 0));
+        assert_eq!(reason.class, "unreadable");
+        assert_eq!(imported.report.compiled.get(&16), Some(&1));
+        let anchor: i32 = tx
+            .query_row("SELECT anchor_x FROM lod_chunks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(anchor, 1);
     }
 
     #[test]

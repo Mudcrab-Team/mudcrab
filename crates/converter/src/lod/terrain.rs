@@ -713,7 +713,7 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB buffers are missing"))?;
     color_eyre::eyre::ensure!(
-        buffers.len() == 1,
+        buffers.len() == 1 && buffers[0].get("uri").is_none(),
         "terrain GLB must use one embedded buffer"
     );
     let declared_buffer_length = json_usize(&buffers[0]["byteLength"], "buffer byteLength")?;
