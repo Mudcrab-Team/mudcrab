@@ -156,7 +156,7 @@ STAND_IN_NEGATION_RE = re.compile(
 )
 STAND_IN_IDENT_RE = re.compile(
     r"\bPLACEHOLDER\w*\b"
-    r"|\bGENERATED[_-]?(?:WHITE|COLOR|COLOUR|NORMAL)\w*\b"
+    r"|\bGENERATED(?:[_-]\w+|(?:WHITE|COLOR|COLOUR|NORMAL)\w*)\b"
     r"|\bSYNTHETIC\w*\b"
     r"|\bDUMMY\w*\b"
     r"|\bFAKE\w*\b"
@@ -338,6 +338,103 @@ def scan_comment_texts(lines):
     return texts
 
 
+def scan_code_texts(lines):
+    """Return each line with comment and string contents blanked.
+
+    State carries across lines, so a declaration inside a multiline raw string
+    or a block comment cannot look like code.  Everything that is not code
+    becomes a space, which keeps the text before an identifier aligned.
+    """
+    texts = []
+    block_depth = 0
+    string = None
+    for line in lines:
+        chars = list(line)
+        index = 0
+        while index < len(line):
+            if block_depth:
+                chars[index] = " "
+                if line.startswith("/*", index):
+                    block_depth += 1
+                    index += 1
+                    if index < len(line):
+                        chars[index] = " "
+                    index += 1
+                elif line.startswith("*/", index):
+                    block_depth -= 1
+                    index += 1
+                    if index < len(line):
+                        chars[index] = " "
+                    index += 1
+                else:
+                    index += 1
+                continue
+            if string is not None:
+                if string[0] == "raw":
+                    terminator = '"' + string[1]
+                    end = line.find(terminator, index)
+                    if end < 0:
+                        for position in range(index, len(line)):
+                            chars[position] = " "
+                        index = len(line)
+                    else:
+                        for position in range(index, end + len(terminator)):
+                            chars[position] = " "
+                        index = end + len(terminator)
+                        string = None
+                else:
+                    while index < len(line):
+                        chars[index] = " "
+                        if line[index] == "\\":
+                            if index + 1 < len(line):
+                                chars[index + 1] = " "
+                            index += 2
+                        elif line[index] == '"':
+                            index += 1
+                            string = None
+                            break
+                        else:
+                            index += 1
+                    if string is not None and not line.endswith("\\"):
+                        string = None
+                continue
+            if line.startswith("//", index):
+                for position in range(index, len(line)):
+                    chars[position] = " "
+                break
+            if line.startswith("/*", index):
+                chars[index] = " "
+                if index + 1 < len(line):
+                    chars[index + 1] = " "
+                block_depth = 1
+                index += 2
+                continue
+            char = line[index]
+            if char == '"':
+                chars[index] = " "
+                string = ("normal",)
+                index += 1
+            elif char == "'":
+                end = skip_char_or_lifetime(line, index)
+                if end > index + 1 and line[end - 1:end] == "'":
+                    for position in range(index, min(end, len(line))):
+                        chars[position] = " "
+                index = end
+            elif char == "r":
+                match = RAW_STRING_RE.match(line, index)
+                if match is None:
+                    index += 1
+                else:
+                    for position in range(index, match.end()):
+                        chars[position] = " "
+                    string = ("raw", match.group(1))
+                    index = match.end()
+            else:
+                index += 1
+        texts.append("".join(chars))
+    return texts
+
+
 def build_comment_blocks(lines, texts=None):
     """Return block text and a line-to-block map for // comments."""
     if texts is None:
@@ -484,20 +581,14 @@ def is_stand_in_trigger(text):
     return False
 
 
-def direct_type_member_lines(lines):
+def direct_type_member_lines(code_lines):
     """Return 1-based lines that are direct struct fields or enum variants."""
-    texts = scan_comment_texts(lines)
     members = set()
     stack = []
     pending_type = False
-    for number, raw in enumerate(lines, 1):
+    for number, code in enumerate(code_lines, 1):
         if stack and stack[-1] == "type":
             members.add(number)
-        code = raw
-        index = raw.find("//") if texts[number - 1] is not None else -1
-        if index >= 0:
-            code = raw[:index]
-        code = re.sub(r'"(?:\\.|[^"\\])*"', '""', code)
         if re.search(r"\b(?:struct|enum)\b", code):
             pending_type = True
         for char in code:
@@ -547,6 +638,15 @@ def preceding_comment_block(number, lines, line_block):
             continue
         return line_block.get(index)
     return None
+
+
+def declaration_is_labelled(number, lines, line_block, blocks):
+    """Return True when a declaration's own line or the block above has a marker."""
+    for block in (line_block.get(number),
+                  preceding_comment_block(number, lines, line_block)):
+        if block is not None and is_stand_in_labelled(blocks[block]):
+            return True
+    return False
 
 
 def is_test_path(path):
@@ -618,7 +718,9 @@ def check(repo, base, head):
             file_labelled = (language == "rust"
                              and module_doc_cites_registry(lines, texts))
         test_from = cfg_test_start(lines) if language == "rust" else None
-        type_members = direct_type_member_lines(lines) if language == "rust" else set()
+        code_lines = scan_code_texts(lines) if language == "rust" else None
+        type_members = (direct_type_member_lines(code_lines)
+                        if code_lines is not None else set())
         for number in sorted(added):
             if number < 1 or number > len(lines):
                 raise CheckError(f"{path}:{number}: line is outside the checked revision")
@@ -654,15 +756,11 @@ def check(repo, base, head):
                             ))
             if is_test_path(path) or (test_from is not None and number >= test_from):
                 continue
-            if not in_block:
-                if language != "rust" or claim is not None:
-                    continue
-                if stand_in_identifier(lines[number - 1],
-                                       number in type_members) is None:
-                    continue
+            if (code_lines is not None
+                    and stand_in_identifier(code_lines[number - 1],
+                                            number in type_members) is not None):
                 stand_ins += 1
-                block = preceding_comment_block(number, lines, line_block)
-                if block is None or not is_stand_in_labelled(blocks[block]):
+                if not declaration_is_labelled(number, lines, line_block, blocks):
                     findings.append(Finding(
                         path=path,
                         line=number,
@@ -670,8 +768,7 @@ def check(repo, base, head):
                         unreasoned_note=False,
                         stand_in_problem="stand-in identifier has no label",
                     ))
-                continue
-            if claim is None:
+            if not in_block or claim is None:
                 continue
             problem = stand_in_marker_problem(claim)
             if problem:
@@ -723,15 +820,26 @@ def stand_ins_in_lines(path, lines):
     if language == "markdown":
         blocks, line_block = build_markdown_blocks(lines)
         texts = None
+        code_lines = None
     else:
         texts = scan_comment_texts(lines)
         blocks, line_block = build_comment_blocks(lines, texts)
+        code_lines = scan_code_texts(lines) if language == "rust" else None
     test_from = cfg_test_start(lines) if language == "rust" else None
-    type_members = direct_type_member_lines(lines) if language == "rust" else set()
+    type_members = (direct_type_member_lines(code_lines)
+                    if code_lines is not None else set())
     for number, raw in enumerate(lines, 1):
         if test_from is not None and number >= test_from:
             break
         stripped = raw.strip()
+        if (code_lines is not None
+                and stand_in_identifier(code_lines[number - 1],
+                                        number in type_members) is not None
+                and not declaration_is_labelled(
+                    number, lines, line_block, blocks)):
+            hits.append(
+                (path, number, "stand-in identifier has no label", stripped)
+            )
         if texts is None:
             if number not in line_block:
                 continue
@@ -746,14 +854,6 @@ def stand_ins_in_lines(path, lines):
             continue
         comment = texts[number - 1]
         if comment is None:
-            if (language != "rust"
-                    or stand_in_identifier(raw, number in type_members) is None):
-                continue
-            block = preceding_comment_block(number, lines, line_block)
-            if block is None or not is_stand_in_labelled(blocks[block]):
-                hits.append(
-                    (path, number, "stand-in identifier has no label", stripped)
-                )
             continue
         if STAND_IN_WORD_RE.search(comment):
             problem = stand_in_marker_problem(comment)
@@ -854,13 +954,33 @@ def run_audit(repo, baseline, write):
     return 0
 
 
-def issue_number(value):
-    """Return the issue number from ``#900`` or a full issue URL."""
-    return int(value.rsplit("/", 1)[-1].lstrip("#"))
+def github_repository(repo):
+    """Return owner/repo for the inspected repository, or an empty string."""
+    configured = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", configured):
+        return configured
+    try:
+        remote = git(repo, "remote", "get-url", "origin").strip()
+    except CheckError:
+        return ""
+    match = re.search(
+        r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?$",
+        remote,
+    )
+    return match.group(1) if match else ""
+
+
+def issue_target(issue, repository):
+    """Return (cache key, gh query, repository argument) for a marker issue."""
+    if issue.startswith("#"):
+        number = str(int(issue[1:]))
+        key = f"{repository}#{number}" if repository else f"#{number}"
+        return key, number, repository
+    return issue, issue, ""
 
 
 def collect_markers(repo):
-    """Return (path, line, issue number) for every valid marker."""
+    """Return (path, line, issue) for every valid marker."""
     markers = []
     for path in tracked_paths(repo):
         language = language_for(path)
@@ -885,17 +1005,16 @@ def collect_markers(repo):
             match = stand_in_marker(line)
             if match is None:
                 continue
-            markers.append((
-                path,
-                number,
-                issue_number(match.group("issue")),
-            ))
+            markers.append((path, number, match.group("issue")))
     return markers
 
 
-def review_issue(number):
-    """Return the state of one issue, or raise CheckError."""
-    command = ["gh", "issue", "view", str(number), "--json", "state"]
+def review_issue(query, repository):
+    """Return the state of one issue target, or raise CheckError."""
+    command = ["gh", "issue", "view", query]
+    if repository:
+        command += ["-R", repository]
+    command += ["--json", "state"]
     try:
         result = subprocess.run(
             command,
@@ -924,14 +1043,16 @@ def review_issue(number):
 def check_issues(repo):
     """Report markers whose issue is closed."""
     markers = collect_markers(repo)
+    repository = github_repository(repo)
     states = {}
     problems = []
-    for path, line, number in markers:
-        if number not in states:
-            states[number] = review_issue(number)
-        state = states[number]
+    for path, line, issue in markers:
+        key, query, target_repository = issue_target(issue, repository)
+        if key not in states:
+            states[key] = review_issue(query, target_repository)
+        state = states[key]
         if state.upper() != "OPEN":
-            problems.append((path, line, f"issue #{number} is {state.lower()}"))
+            problems.append((path, line, f"issue {issue} is {state.lower()}"))
     for path, line, problem in problems:
         print(f"{path}:{line}: {problem}", file=sys.stderr)
     if problems:

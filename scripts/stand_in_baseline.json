@@ -9,12 +9,13 @@
     "crates/converter/src/terrain_arrays.rs": 7,
     "crates/converter/src/terrain_pipeline.rs": 4,
     "crates/converter/src/texture.rs": 1,
-    "crates/dummy-content/src/layout.rs": 1,
+    "crates/dummy-content/src/layout.rs": 7,
     "crates/dummy-content/src/nif.rs": 15,
     "crates/engine/examples/color_pipeline_probe.rs": 1,
+    "crates/engine/examples/material_texel_probe.rs": 1,
     "crates/engine/src/app.rs": 3,
     "crates/engine/src/lights.rs": 5,
-    "crates/engine/src/metrics.rs": 1,
+    "crates/engine/src/metrics.rs": 2,
     "crates/engine/src/physics/carry.rs": 2,
     "crates/engine/src/physics/vertical.rs": 1,
     "crates/engine/src/streaming/runtime.rs": 1,
@@ -61,5 +62,5 @@
     "docs/specs/engine/tonemap-tuning.md": 1,
     "docs/specs/modding/launcher.md": 1
   },
-  "revision": 1
+  "revision": 2
 }

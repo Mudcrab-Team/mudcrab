@@ -47,8 +47,7 @@ eyeball, fitted, generated white, invented value/colour/constant/normal,
 It also fails an added `const`, `static`, `fn`, enum variant or struct field whose name matches one of these patterns without a marker:
 
 ```text
-PLACEHOLDER, GENERATED_WHITE, GENERATED_COLOR, GENERATED_NORMAL,
-SYNTHETIC, DUMMY, FAKE, LEGACY_
+PLACEHOLDER, GENERATED_*, SYNTHETIC, DUMMY, FAKE, LEGACY_
 ```
 
 A malformed marker fails. A line with a negation such as "no" before the word is not a finding. Test code is out of scope: `tests.rs`, `*_tests.rs`, paths under `tests/` or `recovery_tests/`, and every line after the first `#[cfg(test)]`.

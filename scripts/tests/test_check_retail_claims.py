@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -611,6 +612,84 @@ class StandInTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("stand-in identifier has no label", err)
 
+    def test_generated_family_identifier_fails(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "const GENERATED_HEIGHT: f32 = 1.0;\n",
+        )
+        self.repo.commit("generated height stand-in")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("GENERATED_HEIGHT", err)
+        self.assertIn("stand-in identifier has no label", err)
+
+    def test_audit_lists_generated_family_identifier(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "const GENERATED_HEIGHT: f32 = 1.0;\n",
+        )
+        self.repo.commit("generated height stand-in")
+        code, out, err = self.check(self.repo.run("--audit"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("crates/engine/src/x.rs:1", out)
+        self.assertIn("GENERATED_HEIGHT", out)
+        self.assertIn("stand-in identifier has no label", out)
+
+    def test_declaration_with_a_trailing_comment_fails_without_marker(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "pub const GENERATED_WHITE: [u8; 4] = [255; 4]; // RGBA bytes\n",
+        )
+        self.repo.commit("stand-in declaration with a trailing comment")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("stand-in identifier has no label", err)
+
+    def test_declaration_with_a_trailing_comment_and_marker_passes(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// STAND-IN(#900): generated white bytes for a missing texture\n"
+            "pub const GENERATED_WHITE: [u8; 4] = [255; 4]; // RGBA bytes\n",
+        )
+        self.repo.commit("labelled stand-in declaration with a trailing comment")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_audit_finds_a_declaration_with_a_trailing_comment(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "pub const GENERATED_WHITE: [u8; 4] = [255; 4]; // RGBA bytes\n",
+        )
+        self.repo.commit("stand-in declaration with a trailing comment")
+        code, out, err = self.check(self.repo.run("--audit"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("crates/engine/src/x.rs:1", out)
+        self.assertIn("stand-in identifier has no label", out)
+
+    def test_declaration_inside_a_raw_string_is_ignored(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            'const NOTE: &str = r#"\n'
+            "const GENERATED_WHITE: [u8; 4] = [255; 4];\n"
+            '"#;\nfn main() {}\n',
+        )
+        self.repo.commit("declaration inside a raw string")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 stand-in line(s)", out)
+
+    def test_audit_ignores_a_declaration_inside_a_raw_string(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            'const NOTE: &str = r#"\n'
+            "const GENERATED_WHITE: [u8; 4] = [255; 4];\n"
+            '"#;\nfn main() {}\n',
+        )
+        self.repo.commit("declaration inside a raw string")
+        code, out, err = self.check(self.repo.run("--audit"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 unlabelled hit(s)", out)
+
     def test_stand_in_identifier_with_a_marker_passes(self):
         self.repo.write(
             "crates/engine/src/x.rs",
@@ -729,22 +808,28 @@ class StandInTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("cannot read baseline", err)
 
-    def gh_stub(self, state, assignees=None):
+    def gh_stub(self, state, assignees=None, log=None):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         script = Path(directory.name) / "gh"
         payload = {"state": state}
         if assignees is not None:
             payload["assignees"] = [{"login": login} for login in assignees]
-        script.write_text(
-            "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(payload) + "\nJSON\n",
-            encoding="utf-8",
-        )
+        lines = ["#!/bin/sh"]
+        if log is not None:
+            lines.append(f"printf '%s\\n' \"$*\" >> {shlex.quote(str(log))}")
+        lines.append("cat <<'JSON'")
+        lines.append(json.dumps(payload))
+        lines.append("JSON")
+        script.write_text("\n".join(lines) + "\n", encoding="utf-8")
         script.chmod(0o755)
         return directory.name
 
-    def check_issues_env(self, directory):
-        return {"PATH": directory + os.pathsep + os.environ.get("PATH", "")}
+    def check_issues_env(self, directory, repository="Mudcrab-Team/mudcrab"):
+        env = {"PATH": directory + os.pathsep + os.environ.get("PATH", "")}
+        if repository:
+            env["GITHUB_REPOSITORY"] = repository
+        return env
 
     def test_check_issues_closed_issue_fails(self):
         self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
@@ -775,6 +860,74 @@ class StandInTests(unittest.TestCase):
         ))
         self.assertEqual(code, 0, err)
         self.assertIn("open issue", out)
+
+    def test_check_issues_shorthand_uses_the_inspected_repository(self):
+        self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
+        self.repo.commit("marker for a shorthand issue")
+        log = self.repo.root / "gh.log"
+        directory = self.gh_stub("OPEN", log=log)
+        code, out, err = self.check(self.repo.run(
+            "--check-issues", env=self.check_issues_env(directory)
+        ))
+        self.assertEqual(code, 0, err)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("issue view 900", calls[0])
+        self.assertIn("-R Mudcrab-Team/mudcrab", calls[0])
+
+    def test_check_issues_url_keeps_the_full_target(self):
+        url = "https://github.com/other/project/issues/900"
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            f"// STAND-IN({url}): terrain LOD mesh built from LAND heights\n"
+            "fn main() {}\n",
+        )
+        self.repo.commit("marker for a URL issue")
+        log = self.repo.root / "gh.log"
+        directory = self.gh_stub("OPEN", log=log)
+        code, out, err = self.check(self.repo.run(
+            "--check-issues", env=self.check_issues_env(directory)
+        ))
+        self.assertEqual(code, 0, err)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertIn(url, calls[0])
+        self.assertNotIn("-R", calls[0])
+
+    def test_check_issues_distinct_repositories_do_not_share_the_cache(self):
+        url = "https://github.com/other/project/issues/900"
+        self.repo.write(
+            "crates/engine/src/a.rs",
+            f"// STAND-IN({url}): terrain LOD mesh built from LAND heights\n"
+            "fn a() {}\n",
+        )
+        self.repo.write(
+            "crates/engine/src/b.rs",
+            self.MARKER + "fn b() {}\n",
+        )
+        self.repo.commit("markers for two repositories")
+        log = self.repo.root / "gh.log"
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        script = Path(directory.name) / "gh"
+        script.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {shlex.quote(str(log))}\n"
+            "case \"$*\" in\n"
+            "  *other/project/issues/900*) echo '{\"state\":\"CLOSED\"}' ;;\n"
+            "  *) echo '{\"state\":\"OPEN\"}' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        code, _, err = self.check(self.repo.run(
+            "--check-issues", env=self.check_issues_env(directory.name)
+        ))
+        self.assertEqual(code, 1)
+        self.assertIn(url, err)
+        self.assertIn("is closed", err)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
 
     def test_check_issues_missing_gh_exits_two(self):
         self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
