@@ -10,6 +10,7 @@ use converter::{
     lod::retail::{
         atlas::{DdsFormat, read_dds_info},
         bto::read_object_lod,
+        btr::{TerrainLodShapeKind, read_terrain_lod},
         btt::{BttError, parse_tree_block, parse_tree_block_prefix},
         lst::parse_tree_list,
         name::{RetailLodKind, parse_lod_file_name},
@@ -231,6 +232,154 @@ fn tamriel_level_4_large_references_are_kept_as_opaque_blocks() {
         "level 4: {shapes} shapes, {large_refs} large-ref blocks, {segments} segment entries, {multi_segment_shapes} shapes with several segments"
     );
     assert!(large_refs > 0, "level 4 carries large references");
+}
+
+/// Every retail terrain LOD block of every worldspace in the base game archives: the format study
+/// of the `.btr` reader (`lod::retail::btr`).
+#[test]
+#[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
+fn every_base_game_terrain_lod_block_parses_and_matches_the_format_study() {
+    use std::collections::BTreeMap;
+    let data = data_dir();
+    let temp = tempfile::tempdir().unwrap();
+    // Only the base-game archives: Creation Club worlds ship in their own archives.
+    let files = extract(&archives(&data, "Skyrim - Meshes"), temp.path(), |path| {
+        let text = path.to_string_lossy();
+        parse_lod_file_name(&text).is_some_and(|name| name.kind == RetailLodKind::Terrain)
+    });
+    assert_eq!(
+        files.len(),
+        9_584,
+        "the base game ships 9,584 terrain LOD blocks"
+    );
+
+    // (blocks, land vertices, land triangles, water shapes, water triangles) per world and level.
+    let mut totals: BTreeMap<(String, u32), [usize; 5]> = BTreeMap::new();
+    let mut max_uv_error_below_32 = 0.0f64;
+    let mut blocks_with_transformed_ancestors = 0;
+    for file in &files {
+        let bytes = std::fs::read(file).unwrap();
+        let name = parse_lod_file_name(&file.to_string_lossy()).unwrap();
+        let level = name.level.unwrap();
+        let (cell_x, cell_y) = name.cell.unwrap();
+        let parsed = read_terrain_lod(&bytes, file).unwrap();
+        let context = file.display().to_string();
+        assert_eq!(
+            (parsed.bethesda_version, parsed.user_version),
+            (100, 12),
+            "{context}"
+        );
+        blocks_with_transformed_ancestors += usize::from(
+            parsed
+                .shapes
+                .iter()
+                .any(|shape| shape.transformed_ancestor.is_some()),
+        );
+        // Every block of the file is decoded.
+        assert!(parsed.unhandled_blocks.is_empty(), "{context}");
+        // One land shape; everything else is a water plane under the WATER node.
+        assert_eq!(parsed.unrecognised_shapes(), 0, "{context}");
+        let lands: Vec<_> = parsed.shapes_of(TerrainLodShapeKind::Terrain).collect();
+        assert_eq!(lands.len(), 1, "{context}");
+        let land = lands[0];
+        assert_eq!(land.block_type, "BSTriShape");
+        assert_eq!(land.parent_name.as_deref(), Some("chunk"), "{context}");
+        // Positions are block-local; the stored scale is the block level; no rotation.
+        assert_eq!(land.scale, level as f32, "{context}");
+        assert_eq!(land.translation, [0.0; 3], "{context}");
+        assert!(land.is_axis_aligned_identity_rotation(), "{context}");
+        // The shader names this block's own colour and normal maps (and nothing else).
+        let shader = land.shader.as_ref().expect("the land shape has a shader");
+        assert_eq!(
+            (shader.shader_type, shader.flags_1, shader.flags_2),
+            (18, 0x8040_1000, 0x3),
+            "{context}"
+        );
+        let stem = format!("{}.{level}.{cell_x}.{cell_y}", name.world);
+        let slot = |index: usize| shader.texture_slots[index].clone().unwrap_or_default();
+        assert!(
+            slot(0).ends_with(&format!("{stem}.dds")),
+            "{context}: {:?}",
+            slot(0)
+        );
+        assert!(
+            slot(1).ends_with(&format!("{stem}_n.dds")),
+            "{context}: {:?}",
+            slot(1)
+        );
+        assert_eq!(
+            shader
+                .texture_slots
+                .iter()
+                .filter(|slot| slot.is_some())
+                .count(),
+            2,
+            "{context}"
+        );
+        // Land vertices carry a position and a UV and nothing else: the normal comes from the map.
+        let side = f64::from(level) * 4096.0;
+        for vertex in &land.vertices {
+            assert!(vertex.uv.is_some() && vertex.normal.is_none() && vertex.color.is_none());
+            if level < 32 {
+                let uv = vertex.uv.unwrap();
+                let [x, y, _] = vertex.position;
+                let eu = (f64::from(uv[0]) - f64::from(x) * f64::from(level) / side).abs();
+                let ev = (f64::from(uv[1]) - (1.0 - f64::from(y) * f64::from(level) / side)).abs();
+                assert!(
+                    eu.is_finite() && ev.is_finite(),
+                    "{context}: non-finite UV error"
+                );
+                max_uv_error_below_32 = max_uv_error_below_32.max(eu).max(ev);
+            }
+        }
+        // The block lies on the 4-cell grid it is named for; Tamriel's LOD origin is -96.
+        if name.world == "tamriel" {
+            let lod_origin = -96i32;
+            assert_eq!(
+                (cell_x - lod_origin).rem_euclid(level as i32),
+                0,
+                "{context}"
+            );
+            assert_eq!(
+                (cell_y - lod_origin).rem_euclid(level as i32),
+                0,
+                "{context}"
+            );
+        }
+        let entry = totals.entry((name.world.clone(), level)).or_default();
+        entry[0] += 1;
+        entry[1] += land.vertices.len();
+        entry[2] += land.triangles.len();
+        entry[3] += parsed.shapes_of(TerrainLodShapeKind::Water).count();
+        entry[4] += parsed.triangle_count(TerrainLodShapeKind::Water);
+    }
+    println!(
+        "{blocks_with_transformed_ancestors} of {} base-game .btr blocks have non-identity ancestors",
+        files.len()
+    );
+    assert_eq!(blocks_with_transformed_ancestors, 0);
+    for ((world, level), [blocks, vertices, triangles, water, water_triangles]) in &totals {
+        println!(
+            "{world} level {level}: {blocks} blocks, land {vertices} vertices {triangles} triangles, water {water} shapes {water_triangles} triangles"
+        );
+    }
+    // Levels 4, 8 and 16 follow the planar rule u = x / 4096, v = 1 - y / 4096 (in block units);
+    // half-float rounding is far below 0.01. Level 32 does not: its edge vertices overshoot.
+    assert!(
+        max_uv_error_below_32 < 0.01,
+        "max UV error {max_uv_error_below_32}"
+    );
+    // Tamriel: [blocks, land vertices, land triangles, water shapes, water triangles].
+    let tamriel = |level: u32| totals[&("tamriel".to_owned(), level)];
+    assert_eq!(tamriel(4), [2_304, 2_178_456, 4_192_762, 1_444, 35_916]);
+    assert_eq!(tamriel(8), [576, 617_137, 1_188_877, 410, 35_916]);
+    assert_eq!(tamriel(16), [144, 155_872, 299_584, 118, 35_916]);
+    assert_eq!(tamriel(32), [36, 40_879, 73_603, 34, 35_930]);
+    assert_eq!(
+        totals.len(),
+        4 * 12 - 1,
+        "12 worlds; Japhet's Folly has no level 32"
+    );
 }
 
 #[test]

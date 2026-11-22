@@ -154,8 +154,8 @@ impl Ba2Entry {
         }
     }
 
-    pub fn decompress(self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
-        match self.record {
+    pub fn decompress(&self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
+        match &self.record {
             Record::General(record) => extract_chunk(
                 source,
                 record.offset,
@@ -519,7 +519,7 @@ fn read_bounded(reader: &mut impl Read, expected_size: usize) -> Result<Vec<u8>>
 
 fn extract_dx10(
     source: &ArchiveSource<'_>,
-    record: Dx10Record,
+    record: &Dx10Record,
     compression: Compression,
     name: &str,
 ) -> Result<Vec<u8>> {
@@ -543,7 +543,7 @@ fn extract_dx10(
             name,
         )?);
     }
-    let mut dds = build_dds_header(&record);
+    let mut dds = build_dds_header(record);
     dds.extend_from_slice(&pixels);
     Ok(dds)
 }

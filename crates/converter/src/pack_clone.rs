@@ -12,6 +12,7 @@ use color_eyre::{
     eyre::{WrapErr, bail, ensure},
 };
 use serde::Deserialize;
+use shared::asset_lock::{AssetLock, asset_lock_path};
 use std::{
     collections::BTreeMap,
     fs,
@@ -117,6 +118,15 @@ pub fn check_clone(registry_path: &Path, clone_of: &str, target: &Path) -> Resul
         manifests: source.manifests.clone(),
         target,
     })
+}
+
+/// Hold the same exclusive pack lock across both LOD derive commands.
+pub(crate) fn lock_for_derive(target: &Path) -> Result<AssetLock> {
+    let path = asset_lock_path(target);
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        require_private_output(parent, Path::new(name))?;
+    }
+    Ok(AssetLock::acquire_exclusive(target)?)
 }
 
 /// Checks every existing component under a canonical clone root without following symlinks.

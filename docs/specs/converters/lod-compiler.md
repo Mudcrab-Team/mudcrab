@@ -30,6 +30,40 @@ describes Phase 2 work; the optional cluster experiment in
 [hybrid object LOD](../engine/hybrid-object-lod.md) is a proposed extension,
 not an implemented output or a new default.
 
+## Retail terrain import (the default source)
+
+Terrain LOD chunks come from the game's own files by default
+(`PipelineConfig::terrain_lod_source = retail`, CLI `--terrain-lod retail`). The importer reads
+the `.btr` meshes, the colour map and the normal map of each block of levels 4, 8 and 16
+(`lod::retail_terrain`, `lod::retail_terrain_source`). Each block becomes the chunk of the same
+tier and anchor. The `land` mesh is cut along the quadrant boundaries so the runtime keeps its
+per-quadrant handoff. A cut interpolates the retail positions and UVs along retail edges. A
+quadrant that no retail triangle reaches gets no node. Source:
+<https://github.com/Mudcrab-Team/skyrim_decomp/pull/822> (static, reviewed; unverified live).
+
+- The `.btr` vertex holds position and UV0 only. The importer computes no normal from geometry.
+  The chunk carries a constant reference frame (`NORMAL` up, `TANGENT` east) so the engine applies
+  the normal map as a model-space normal. `N = 2 * ((R, B, G) - 0.5)` becomes east = red,
+  north = blue, up = green in the stored map.
+- Both maps are stored as their first mip only: the finding gives MaxLOD 0 for both samplers.
+- Missing, unreadable or ambiguous files are counted by class (`missing_mesh`,
+  `missing_colour_map`, `missing_normal_map`, `unreadable_mesh`, `compile_failed`,
+  `invalid_chunk`, `ambiguous`) and reported as LOD warnings. Level 32 blocks are counted as
+  `no_runtime_tier`. A world with no retail files gets no terrain LOD and a warning. Nothing is
+  generated in its place.
+- Water planes in the `.btr` files are not imported.
+- `lod-manifest.json` records `terrain_lod_source`, `retail_terrain_import_version` and
+  `retail_terrain_inputs` (a hash over each chunk's three input files and the importer revision).
+  Retail chunks are recompiled on every conversion; there is no reuse proof for them yet.
+- `converter derive-terrain-lod <clone> --registry <packs.json> --clone-of <pack> --data <Data>`
+  replaces the terrain chunks of an APFS clone of a registered pack, without a conversion. It
+  verifies every archive it reads against the pack manifest and writes `terrain-lod-receipt.json`.
+- `--terrain-lod self-built` selects the old height-built compiler. It invents geometry, colour
+  and normals, so it is not the default. Fixtures use it because they ship no retail files.
+- Not done and unverified: the retail lighting, noise and near-terrain overlap rules from the
+  finding, and the nine compiled distance settings. The engine lights these chunks with its
+  ordinary material.
+
 ## Inputs
 
 - `references` (placement, rotation, scale, `radius_override`), `statics`

@@ -638,9 +638,11 @@ impl MeshConverter {
         root: &Path,
         source_textures: &BTreeSet<String>,
     ) -> Result<Vec<PrunedGlb>> {
+        let checkpoint = root.join(crate::lod::retail_terrain_import::CHECKPOINT_DIR);
         let mut glbs: Vec<PathBuf> = WalkDir::new(root)
             .follow_links(false)
             .into_iter()
+            .filter_entry(|entry| entry.path() != checkpoint)
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
                 entry.file_type().is_file()

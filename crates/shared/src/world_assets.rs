@@ -101,10 +101,8 @@ pub fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u32) -> 
         );
         return Ok(version);
     }
-    let chunk_count: i64 = connection
-        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
-        .wrap_err("world database has no LOD chunk table")?;
     if !manifest_path.is_file() {
+        let chunk_count = lod_chunk_count(&connection)?;
         color_eyre::eyre::ensure!(
             chunk_count == 0,
             "world database contains {chunk_count} LOD chunks but {} is missing",
@@ -126,8 +124,20 @@ pub fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u32) -> 
 
     let bytes = std::fs::read(&manifest_path)
         .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
+    validate_lod_manifest(&connection, &bytes, converter_schema)?;
+    Ok(version)
+}
+
+/// Checks the manifest against database rows, including rows in an uncommitted generation.
+/// The caller checks the conversion producer manifest separately.
+pub fn validate_lod_manifest(
+    connection: &Connection,
+    bytes: &[u8],
+    converter_schema: u32,
+) -> Result<()> {
+    let chunk_count = lod_chunk_count(connection)?;
     let manifest: LodBuildManifest =
-        serde_json::from_slice(&bytes).wrap_err("invalid LOD build manifest")?;
+        serde_json::from_slice(bytes).wrap_err("invalid LOD build manifest")?;
     color_eyre::eyre::ensure!(
         manifest.land_texture_repeats_per_cell == crate::LAND_TEXTURE_REPEATS_PER_CELL,
         "LOD terrain texture scale is stale; rebuild LOD metadata for {} repeats per cell",
@@ -163,7 +173,13 @@ pub fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u32) -> 
         "LOD manifest declares {} chunks but the world database contains {chunk_count}",
         manifest.chunks
     );
-    Ok(version)
+    Ok(())
+}
+
+fn lod_chunk_count(connection: &Connection) -> Result<i64> {
+    connection
+        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
+        .wrap_err("world database has no LOD chunk table")
 }
 
 #[derive(Deserialize)]

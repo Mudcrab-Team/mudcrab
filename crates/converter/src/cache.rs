@@ -1502,7 +1502,7 @@ pub fn hash_file_if_present(path: &Path) -> Result<Option<String>> {
     }
 }
 
-fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
+pub(crate) fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
     file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
     let mut digest = Sha256::new();

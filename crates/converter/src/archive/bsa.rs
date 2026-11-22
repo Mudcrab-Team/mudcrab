@@ -111,7 +111,7 @@ impl BsaEntry {
             .saturating_add(frame_buffers))
     }
 
-    pub(super) fn decompress(self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
+    pub(super) fn decompress(&self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
         let payload = source
             .read_payload(self.offset, self.stored_size)
             .wrap_err_with(|| format!("invalid BSA file payload: {}", self.name))?;

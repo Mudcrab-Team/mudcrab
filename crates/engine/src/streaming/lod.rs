@@ -21,10 +21,7 @@ use bevy::{
     world_serialization::{WorldAsset, WorldAssetRoot, WorldInstanceReady},
 };
 use sha2::{Digest, Sha256};
-use shared::lod::{
-    ChunkKey, LodOrigin, LodTier, TERRAIN_QUADRANT_INDEX_COUNT, TERRAIN_QUADRANT_VERTEX_COUNT,
-    nodes,
-};
+use shared::lod::{ChunkKey, LodOrigin, LodTier, TERRAIN_QUADRANT_INDEX_COUNT, nodes};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
@@ -1439,6 +1436,8 @@ pub(super) fn update_terrain_lod_visibility(
             "lod/pending_terrain_selection_uploads",
             batches.pending_selection_uploads() as f64,
         );
+        // An estimate from the self-built quadrant's fixed fan: quadrants cut from a `.btr` block
+        // have their own triangle counts, so for them this is a quadrant count in disguise.
         profiler.set_gauge(
             "lod/batched_selected_triangles",
             (batched_quadrants * TERRAIN_QUADRANT_INDEX_COUNT / 3) as f64,
@@ -1616,27 +1615,32 @@ fn validate_lod_scene(
         }
     }
 
-    if seen.len() != source_cells.len() * 4 {
+    // The self-built chunk has four quadrants per source cell. A chunk cut from a `.btr` block has
+    // one to four: the retail mesh does not reach every quadrant at the edge of a worldspace. Every
+    // source cell still needs at least one, and none may be missing.
+    let covered: HashSet<IVec2> = seen.iter().map(|(grid, _)| *grid).collect();
+    if covered != source_cells || seen.len() > source_cells.len() * 4 {
         return Err(format!(
-            "{key:?} contains {} terrain quadrants for {} source cells; expected {}",
+            "{key:?} contains {} terrain quadrants over {} of {} source cells; every source cell needs one to four",
             seen.len(),
-            source_cells.len(),
-            source_cells.len() * 4
+            covered.len(),
+            source_cells.len()
         ));
     }
     Ok(patches)
 }
 
+/// Checks one terrain quadrant mesh. Two chunk kinds reach this: the converter's self-built
+/// quadrant (a fixed 65-vertex fan with vertex colours) and a quadrant cut from a `.btr` block
+/// (any vertex count, no vertex colours, with the tangent frame its normal map is stored in).
+/// Both need finite positions, UVs in 0..1, normals that match the positions, and whole
+/// triangles that index inside the mesh. Colours and tangents are optional but checked when present.
 fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
     if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
         return Err("mesh is not a triangle list".to_owned());
     }
     let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        Some(VertexAttributeValues::Float32x3(values))
-            if values.len() == TERRAIN_QUADRANT_VERTEX_COUNT =>
-        {
-            values
-        }
+        Some(VertexAttributeValues::Float32x3(values)) if values.len() >= 3 => values,
         _ => return Err("mesh has an invalid Float32x3 position count".to_owned()),
     };
     if !positions.iter().flatten().all(|value| value.is_finite()) {
@@ -1658,39 +1662,46 @@ fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
         _ => return Err("mesh UVs are missing, non-finite, or outside 0..1".to_owned()),
     }
     match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+        None => {}
         Some(VertexAttributeValues::Float32x4(values))
             if values.len() == positions.len()
                 && values
                     .iter()
                     .flatten()
                     .all(|value| value.is_finite() && (0.0..=1.0).contains(value)) => {}
-        _ => return Err("mesh colors are missing, non-finite, or outside 0..1".to_owned()),
+        Some(_) => return Err("mesh colors are non-finite, outside 0..1, or mismatched".to_owned()),
     }
-    let index_count = match mesh.indices() {
-        Some(Indices::U16(indices)) if indices.len() == TERRAIN_QUADRANT_INDEX_COUNT => {
-            if indices
-                .iter()
-                .any(|index| usize::from(*index) >= positions.len())
-            {
-                return Err("mesh has an out-of-range index".to_owned());
-            }
-            indices.len()
+    match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+        None => {}
+        Some(VertexAttributeValues::Float32x4(values))
+            if values.len() == positions.len()
+                && values.iter().flatten().all(|value| value.is_finite()) => {}
+        Some(_) => return Err("mesh tangents are non-finite or mismatched".to_owned()),
+    }
+    let in_range = |count: usize, any_out: bool| -> Result<(), String> {
+        if count < 3 || !count.is_multiple_of(3) {
+            return Err("mesh indices do not form complete triangles".to_owned());
         }
-        Some(Indices::U32(indices)) if indices.len() == TERRAIN_QUADRANT_INDEX_COUNT => {
-            if indices
-                .iter()
-                .any(|index| *index as usize >= positions.len())
-            {
-                return Err("mesh has an out-of-range index".to_owned());
-            }
-            indices.len()
+        if any_out {
+            return Err("mesh has an out-of-range index".to_owned());
         }
-        _ => return Err("mesh has an invalid triangle index count".to_owned()),
+        Ok(())
     };
-    if index_count % 3 != 0 {
-        return Err("mesh indices do not form complete triangles".to_owned());
+    match mesh.indices() {
+        Some(Indices::U16(indices)) => in_range(
+            indices.len(),
+            indices
+                .iter()
+                .any(|index| usize::from(*index) >= positions.len()),
+        ),
+        Some(Indices::U32(indices)) => in_range(
+            indices.len(),
+            indices
+                .iter()
+                .any(|index| *index as usize >= positions.len()),
+        ),
+        None => Err("mesh has an invalid triangle index count".to_owned()),
     }
-    Ok(())
 }
 
 /// The finest ready tier at least as coarse as the tier retail's terrain rule draws for `cell`
@@ -1939,6 +1950,61 @@ fn update_counts(
 mod tests {
     use super::*;
     use crate::world::database::LodChunkBounds;
+
+    /// A quadrant mesh the way the `.btr` importer writes it: any vertex count, a reference
+    /// normal and tangent for the normal map, and no vertex colours.
+    fn retail_quadrant_mesh(vertices: usize, indices: Vec<u32>) -> Mesh {
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            (0..vertices)
+                .map(|i| [i as f32, 0.0, 1.0])
+                .collect::<Vec<_>>(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; vertices])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.5, 0.5]; vertices])
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_TANGENT,
+            vec![[1.0, 0.0, 0.0, 1.0]; vertices],
+        )
+        .with_inserted_indices(Indices::U32(indices))
+    }
+
+    #[test]
+    fn a_quadrant_cut_from_a_retail_block_validates_with_any_vertex_count() {
+        assert_eq!(
+            validate_lod_quadrant_mesh(&retail_quadrant_mesh(5, vec![0, 1, 2, 2, 3, 4])),
+            Ok(())
+        );
+        assert_eq!(
+            validate_lod_quadrant_mesh(&retail_quadrant_mesh(3, vec![0, 1, 2])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_malformed_quadrant_mesh_is_refused_with_its_reason() {
+        let reason = |mesh: Mesh| validate_lod_quadrant_mesh(&mesh).unwrap_err();
+        assert!(reason(retail_quadrant_mesh(5, vec![0, 1, 5])).contains("out-of-range"));
+        assert!(reason(retail_quadrant_mesh(5, vec![0, 1, 2, 3])).contains("complete triangles"));
+        assert!(reason(retail_quadrant_mesh(5, vec![])).contains("complete triangles"));
+        assert!(reason(retail_quadrant_mesh(2, vec![0, 1, 1])).contains("position count"));
+        let mut no_uv = retail_quadrant_mesh(3, vec![0, 1, 2]);
+        no_uv.remove_attribute(Mesh::ATTRIBUTE_UV_0);
+        assert!(reason(no_uv).contains("UVs"));
+        let outside = retail_quadrant_mesh(3, vec![0, 1, 2])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[1.5, 0.5]; 3]);
+        assert!(reason(outside).contains("UVs"));
+        let bad_tangent = retail_quadrant_mesh(3, vec![0, 1, 2])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[f32::NAN, 0.0, 0.0, 1.0]; 3]);
+        assert!(reason(bad_tangent).contains("tangents"));
+        let bad_colour = retail_quadrant_mesh(3, vec![0, 1, 2])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[2.0, 0.0, 0.0, 1.0]; 3]);
+        assert!(reason(bad_colour).contains("colors"));
+    }
 
     #[test]
     fn a_spawned_lod_chunks_srgb_albedo_is_retagged_once_and_counted() {

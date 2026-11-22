@@ -32,6 +32,7 @@ use crate::{
     integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
         albedo::{LoadedDefault, TerrainAtlas, TerrainTextureCache, TerrainTextures},
+        retail_terrain_import::{CHECKPOINT_DIR, LodWorld, TerrainCheckpoint, import_world},
         reuse::{LodManifest, LodReuse},
         terrain::{
             PreparedTerrainChunk, TerrainCellCache, TerrainChunk, exterior_terrain_cells,
@@ -108,7 +109,7 @@ pub struct PipelineReport {
     pub lod_gpu_chunks: u64,
     #[serde(default)]
     pub lod_cpu_fallback_chunks: u64,
-    /// Wall time spent compiling terrain LOD, excluding other conversion stages.
+    /// Wall time spent building terrain and object LOD, excluding other conversion stages.
     #[serde(default)]
     pub lod_elapsed_ms: u128,
     /// Retail object LOD chunks published this run (separate from the terrain `lod_chunks`).
@@ -3570,9 +3571,10 @@ pub(crate) fn collect_texture_semantics(
 ) -> Result<BTreeMap<String, BTreeSet<TextureSemantic>>> {
     use rayon::prelude::*;
     let mut semantics = BTreeMap::<String, BTreeSet<TextureSemantic>>::new();
+    let checkpoint = staging.join(CHECKPOINT_DIR);
     let glbs: Vec<_> = discover(staging)?
         .into_iter()
-        .filter(|path| extension(path, &["glb"]))
+        .filter(|path| !path.starts_with(&checkpoint) && extension(path, &["glb"]))
         .collect();
     let dependencies = glbs
         .par_iter()
@@ -3735,9 +3737,11 @@ pub(crate) use publish_texture_aliases as publish_srgb_texture_aliases;
 /// Returns the published paths relative to staging; references without a source file are skipped.
 pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
     let mut aliases = BTreeSet::new();
+    let checkpoint = staging.join(CHECKPOINT_DIR);
     for entry in WalkDir::new(staging)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|entry| entry.path() != checkpoint)
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().is_file() && extension(entry.path(), &["glb"]))
     {
@@ -4671,9 +4675,10 @@ fn extension(path: &Path, expected: &[&str]) -> bool {
 /// downstream scans must see exactly the meshes publication will include.
 fn invalidate_staged_mesh_outputs(staging: &Path, verified: &BTreeSet<String>) -> Result<()> {
     let vfs = staging.join("vfs");
+    let checkpoint = staging.join(CHECKPOINT_DIR);
     for entry in WalkDir::new(staging)
         .into_iter()
-        .filter_entry(|entry| entry.path() != vfs.as_path())
+        .filter_entry(|entry| entry.path() != vfs && entry.path() != checkpoint)
     {
         let entry = entry?;
         if !entry.file_type().is_file() || !extension(entry.path(), &["glb"]) {
@@ -4758,9 +4763,10 @@ fn remove_orphan_staged_assets(staging: &Path, sources: &[PathBuf]) -> Result<()
             output_extension,
         )?));
     }
+    let checkpoint = staging.join(CHECKPOINT_DIR);
     for entry in WalkDir::new(staging)
         .into_iter()
-        .filter_entry(|entry| entry.path() != vfs.as_path())
+        .filter_entry(|entry| entry.path() != vfs && entry.path() != checkpoint)
     {
         let entry = entry?;
         let relative = entry.path().strip_prefix(staging)?;
@@ -5321,13 +5327,38 @@ async fn compile_lod_chunks_inline(
         crate::terrain_pipeline::TerrainDefaultDiffuse::GeneratedWhite,
         crate::terrain_pipeline::TerrainDefaultDiffuse::Image,
     );
+    let retail_terrain = config.terrain_lod_source == crate::config::TerrainLodSource::Retail;
     let (default_textures, default_error) =
         LoadedDefault::load(&default_diffuse, &staging.join("vfs"), &mut texture_cache);
-    if let Some(reason) = default_error {
+    if let Some(reason) = default_error
+        && !retail_terrain
+    {
         report.lod_warnings.push(format!(
             "terrain LOD default land texture falls back to the generated white one: {reason}"
         ));
     }
+    // List the retail files once. A listing failure still allows verified checkpoints to resume.
+    let retail_files = if retail_terrain {
+        let files = match crate::lod::retail_terrain_source::list(&config.data_dir) {
+            Ok(files) => {
+                report
+                    .lod_warnings
+                    .extend(files.archive_warnings.iter().cloned());
+                files
+            }
+            Err(error) => {
+                report.lod_warnings.push(format!(
+                    "the retail terrain LOD files cannot be listed: {error:#}; no new terrain LOD is imported"
+                ));
+                Default::default()
+            }
+        };
+        Some((files, TerrainCheckpoint::open(staging, plugin_hashes)?))
+    } else {
+        None
+    };
+    let mut retail_inputs = BTreeMap::new();
+    let mut retail_payload_hashes = BTreeMap::new();
     let mut chunk_inputs = BTreeMap::new();
     let mut worlds: Vec<(u32, String)> = connection
         .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
@@ -5432,6 +5463,89 @@ async fn compile_lod_chunks_inline(
             )
             .await;
             continue;
+        }
+        if let Some((files, checkpoint)) = &retail_files {
+            let file_name = editor_id.to_ascii_lowercase();
+            let ids: Vec<crate::lod::retail_terrain_source::BlockId> = files
+                .blocks
+                .keys()
+                .filter(|(world, ..)| *world == file_name)
+                .cloned()
+                .collect();
+            let world = LodWorld {
+                id: *worldspace_id,
+                editor_id: editor_id.clone(),
+                file_name,
+                origin,
+            };
+            let imported = import_world(
+                &connection,
+                checkpoint,
+                &world,
+                files,
+                &ids,
+                &compiler_pool,
+                &mut retail_inputs,
+                &mut retail_payload_hashes,
+                || interrupt(cancellation),
+            )?;
+            let compiled: usize = imported.compiled.values().sum();
+            report.lod_warnings.extend(imported.checkpoint_warnings);
+            let retained = imported.kept_from_previous_generation;
+            if ids.is_empty() && retained == 0 {
+                report.lod_warnings.push(format!(
+                    "worldspace {editor_id} ({worldspace_id:08X}) has no retail terrain LOD files; its terrain LOD is skipped and nothing is generated in its place"
+                ));
+                if let Some(settings) = world_settings.last_mut() {
+                    settings["status"] = serde_json::json!("no_retail_files");
+                }
+            } else {
+                for (class, count) in &imported.skipped_by_class {
+                    report.lod_warnings.push(format!(
+                        "worldspace {editor_id} ({worldspace_id:08X}): {count} retail terrain LOD blocks skipped ({class}); first: {}",
+                        imported
+                            .skipped
+                            .iter()
+                            .find(|(_, skipped)| skipped.class == *class)
+                            .map_or("", |(_, skipped)| skipped.detail.as_str())
+                    ));
+                }
+                report.notices.push(format!(
+                    "Terrain LOD {editor_id}: {compiled} retail chunks imported ({} blocks found, {} skipped)",
+                    imported.found.values().sum::<usize>(),
+                    imported.skipped.len()
+                ));
+                if let Some(settings) = world_settings.last_mut() {
+                    settings["status"] = serde_json::json!(if compiled + retained == 0 {
+                        "no_retail_chunks"
+                    } else {
+                        "retail_imported"
+                    });
+                    settings["retail_chunks"] = serde_json::json!(compiled);
+                    settings["retail_skipped"] = serde_json::json!(imported.skipped.len());
+                    if retained > 0 {
+                        settings["retail_kept_from_previous_generation"] =
+                            serde_json::json!(retained);
+                    }
+                }
+                if retained > 0 {
+                    report.notices.push(format!(
+                        "Terrain LOD {editor_id}: {retained} retail chunks kept from previous generation"
+                    ));
+                }
+                report.lod_chunks += (compiled + retained) as u64;
+                compiled_worlds += 1;
+            }
+            send(
+                progress_tx,
+                ProgressStage::LodChunks,
+                (index + 1) as u64,
+                worlds.len() as u64,
+                None,
+                "Compiling terrain LOD chunks",
+            )
+            .await;
+            continue 'world;
         }
         let lookup: std::collections::HashMap<u32, (i32, i32)> = cells
             .iter()
@@ -5738,6 +5852,11 @@ async fn compile_lod_chunks_inline(
         );
         report.notices.push(message);
     }
+    chunk_hashes.extend(
+        retail_payload_hashes
+            .iter()
+            .map(|(path, hash)| format!("{path}:{hash}")),
+    );
     chunk_hashes.sort();
     let current_plugin_hashes = plugins
         .iter()
@@ -5747,13 +5866,25 @@ async fn compile_lod_chunks_inline(
         current_plugin_hashes == plugin_hashes,
         "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation"
     );
-    let lod_configuration = hash_bytes(&serde_json::to_vec(&serde_json::json!({
+    if let Some((_, checkpoint)) = &retail_files {
+        checkpoint.publish_payloads(staging, &retail_payload_hashes, || interrupt(cancellation))?;
+    }
+    for relative in retail_inputs.keys() {
+        report.artifacts.push(PathBuf::from(relative));
+    }
+    let mut lod_configuration_json = serde_json::json!({
         "assets": configuration_hash(config)?,
         "atlas_encoder": match config.lod_texture_encoder {
             TextureEncoder::Cpu => "cpu-terrain-uastc-v1".to_owned(),
             TextureEncoder::Gpu { quality, .. } => format!("terrain-atlas{}", texture_gpu::cache_label(quality)),
         },
-    }))?);
+    });
+    if retail_terrain {
+        lod_configuration_json["terrain_lod_source"] = serde_json::json!("retail");
+        lod_configuration_json["retail_import_version"] =
+            serde_json::json!(crate::lod::retail_terrain::IMPORT_VERSION);
+    }
+    let lod_configuration = hash_bytes(&serde_json::to_vec(&lod_configuration_json)?);
     let identity = build_identity(
         plugin_hashes,
         &chunk_hashes,
@@ -5796,6 +5927,20 @@ async fn compile_lod_chunks_inline(
             terrain_sources,
             compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
             chunk_inputs,
+            terrain_lod_source: Some(
+                if retail_terrain {
+                    crate::lod::reuse::TERRAIN_SOURCE_RETAIL
+                } else {
+                    crate::lod::reuse::TERRAIN_SOURCE_SELF_BUILT
+                }
+                .to_owned(),
+            ),
+            retail_terrain_import_version: if retail_terrain {
+                crate::lod::retail_terrain::IMPORT_VERSION
+            } else {
+                0
+            },
+            retail_terrain_inputs: retail_inputs,
             object_chunks: object_lod.chunks.len() as u64,
             objects_compiler_version: if object_lod.chunks.is_empty() {
                 0
@@ -6949,6 +7094,8 @@ mod tests {
     fn cpu_lod_config(data: impl Into<PathBuf>, output: impl Into<PathBuf>) -> PipelineConfig {
         let mut config = PipelineConfig::new(data, output);
         config.lod_texture_encoder = TextureEncoder::Cpu;
+        // The fixtures have no retail terrain LOD files; these tests exercise the self-built stage.
+        config.terrain_lod_source = crate::config::TerrainLodSource::SelfBuilt;
         config
     }
 
@@ -7698,6 +7845,9 @@ mod tests {
                 terrain_sources,
                 compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
                 chunk_inputs,
+                terrain_lod_source: Some(crate::lod::reuse::TERRAIN_SOURCE_SELF_BUILT.to_owned()),
+                retail_terrain_import_version: 0,
+                retail_terrain_inputs: BTreeMap::new(),
                 object_chunks: 0,
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
@@ -8453,12 +8603,10 @@ mod tests {
         }
     }
 
-    /// Object LOD is built by the LOD stage of a normal conversion and of a metadata rebuild, from
-    /// retail `.bto` blocks and the object atlas in the Data folder (loose files here). A pack
-    /// converted before the blocks existed gains the chunks from a rebuild without reconverting
-    /// any mesh or texture.
+    /// Both retail LOD stages publish into the same pack during conversion and metadata rebuild.
+    /// The rebuild reuses the ordinary converted meshes and textures.
     #[tokio::test]
-    async fn object_lod_is_built_by_a_normal_conversion_and_a_metadata_rebuild() {
+    async fn both_retail_lod_stages_publish_during_conversion_and_metadata_rebuild() {
         use crate::lod::retail::bto::tests::{SHAPE, nif_bytes, shape_block};
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
@@ -8532,12 +8680,40 @@ mod tests {
         )
         .unwrap();
 
+        let stem = format!("{world}.16.{x}.{y}");
+        fs::write(
+            data.join("meshes/terrain")
+                .join(&world)
+                .join(format!("{stem}.btr")),
+            crate::lod::retail::btr::tests::land_block(),
+        )
+        .unwrap();
+        let map = fs::read(textures.join(format!("{world}.objects.dds"))).unwrap();
+        let terrain_textures = data.join("textures/terrain").join(&world);
+        fs::write(terrain_textures.join(format!("{stem}.dds")), &map).unwrap();
+        fs::write(terrain_textures.join(format!("{stem}_n.dds")), &map).unwrap();
+        config.terrain_lod_source = crate::config::TerrainLodSource::Retail;
+
         let check = |root: &Path, report: &PipelineReport| {
             assert!(report.complete, "{:?}", report.warnings);
+            assert!(!root.join(CHECKPOINT_DIR).exists());
             assert_eq!(report.object_lod_chunks, 1, "{:?}", report.lod_warnings);
             let manifest: LodManifest =
                 serde_json::from_slice(&fs::read(root.join("lod-manifest.json")).unwrap()).unwrap();
             assert_eq!(manifest.object_chunks, 1);
+            assert_eq!(report.lod_chunks, 1, "{:?}", report.lod_warnings);
+            assert_eq!(manifest.chunks, report.lod_chunks);
+            assert_eq!(
+                manifest.terrain_lod_source.as_deref(),
+                Some(crate::lod::reuse::TERRAIN_SOURCE_RETAIL)
+            );
+            assert_eq!(
+                manifest.retail_terrain_import_version,
+                crate::lod::retail_terrain::IMPORT_VERSION
+            );
+            assert_eq!(manifest.retail_terrain_inputs.len(), 1);
+            shared::world_assets::validate_lod_build_contract(root, CONVERTER_SCHEMA_VERSION)
+                .unwrap();
             assert_eq!(manifest.object_chunk_inputs.len(), 1);
             // One shared atlas file per world, listed with its hash and written once.
             assert_eq!(manifest.object_atlases.len(), 1);
@@ -8599,6 +8775,142 @@ mod tests {
         drain.await.unwrap();
         check(&directory.path().join("rebuilt"), &rebuilt);
         assert_eq!(rebuilt.converted, 0, "a rebuild reconverts nothing");
+    }
+
+    #[tokio::test]
+    async fn resumed_conversion_keeps_verified_retail_terrain_when_a_block_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("output");
+        let staging = staging_path(&output);
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(staging.join("vfs")).unwrap();
+        overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
+        let plugins = vec![data.join("Skyrim.esm")];
+        let database = staging.join("skyrim_world.db");
+        let records = EsmParser::convert_plugins_with_records(&plugins, &database).unwrap();
+        write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
+        let (world_id, editor_id): (u32, String) = Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT w.id, w.editor_id FROM worldspaces w JOIN cells c ON c.worldspace_id = w.id JOIN land l ON c.id = l.cell_id ORDER BY w.id LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let origin = resolve_lod_settings(
+            &cpu_lod_config(&data, &output),
+            &staging.join("vfs"),
+            &editor_id,
+        )
+        .unwrap()
+        .unwrap()
+        .origin;
+        let world = editor_id.to_ascii_lowercase();
+        let mesh_dir = data.join("meshes/terrain").join(&world);
+        let texture_dir = data.join("textures/terrain").join(&world);
+        fs::create_dir_all(&mesh_dir).unwrap();
+        fs::create_dir_all(&texture_dir).unwrap();
+        let dds = |seed| {
+            dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+                &mut dummy_content::rng::Rng::new(seed),
+            )
+            .unwrap()
+        };
+        let mut block_paths = Vec::new();
+        for anchor_x in 0..2 {
+            let x = origin.grid_x + anchor_x * 16;
+            let y = origin.grid_y;
+            let stem = format!("{world}.16.{x}.{y}");
+            let mesh = mesh_dir.join(format!("{stem}.btr"));
+            let colour = texture_dir.join(format!("{stem}.dds"));
+            fs::write(&mesh, crate::lod::retail::btr::tests::land_block()).unwrap();
+            fs::write(&colour, dds(5)).unwrap();
+            fs::write(texture_dir.join(format!("{stem}_n.dds")), dds(7)).unwrap();
+            let payload = shared::lod::chunk_payload_path(shared::lod::ChunkKey::new(
+                world_id,
+                shared::lod::LodTier::Tier16,
+                shared::lod::ChunkAnchor::new(anchor_x, 0),
+            ));
+            block_paths.push((mesh, colour, payload));
+        }
+        let [(damaged_mesh, _, retained), (_, new_colour, replaced)] = block_paths.as_slice()
+        else {
+            panic!("expected two fixture blocks");
+        };
+        let mut config = cpu_lod_config(&data, &output);
+        config.cpu_jobs = 2;
+        config.terrain_lod_source = crate::config::TerrainLodSource::Retail;
+        let (tx, _rx) = mpsc::channel(64);
+        let mut first = PipelineReport::default();
+        let hashes = vec![hash_file(&plugins[0]).unwrap()];
+        compile_lod_chunks(
+            &config, &staging, &output, &plugins, &hashes, &tx, &mut first, None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.lod_chunks, 2, "{:?}", first.lod_warnings);
+        let manifest_path = staging.join("lod-manifest.json");
+        let before: LodManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let before_retained = fs::read(staging.join(retained)).unwrap();
+        let before_replaced = hash_file(&staging.join(replaced)).unwrap();
+
+        // Model a stop after committing the world but before writing the final manifest.
+        fs::remove_file(manifest_path).unwrap();
+        fs::write(damaged_mesh, b"damaged terrain block").unwrap();
+        fs::write(new_colour, dds(9)).unwrap();
+        config.resume_staging = Some(staging);
+        let report = run_without_progress(config).await;
+        assert!(report.complete, "{:?}", report.warnings);
+        assert_eq!(report.lod_chunks, 2, "{:?}", report.lod_warnings);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|line| line.contains("1 retail chunks kept"))
+        );
+        assert!(
+            report
+                .lod_warnings
+                .iter()
+                .any(|line| line.contains("unreadable_mesh"))
+        );
+
+        let after: LodManifest =
+            serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
+        assert_eq!(after.retail_terrain_inputs.len(), 2);
+        assert_eq!(
+            before.retail_terrain_inputs[retained],
+            after.retail_terrain_inputs[retained]
+        );
+        assert_ne!(
+            before.retail_terrain_inputs[replaced],
+            after.retail_terrain_inputs[replaced]
+        );
+        assert_eq!(fs::read(output.join(retained)).unwrap(), before_retained);
+        assert_ne!(hash_file(&output.join(replaced)).unwrap(), before_replaced);
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        for relative in [retained, replaced] {
+            let hash: String = database
+                .query_row(
+                    "SELECT content_hash FROM lod_chunks WHERE payload_path = ?1",
+                    [relative],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(hash, hash_file(&output.join(relative)).unwrap());
+        }
+        shared::world_assets::validate_lod_build_contract(&output, CONVERTER_SCHEMA_VERSION)
+            .unwrap();
+        assert!(!output.join(CHECKPOINT_DIR).exists());
     }
 
     #[tokio::test]

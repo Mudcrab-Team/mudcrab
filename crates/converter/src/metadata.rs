@@ -983,6 +983,7 @@ async fn rebuild_into(
     )
     .await?;
     report.lod_elapsed_ms = lod_started.elapsed().as_millis();
+    crate::lod::retail_terrain_import::TerrainCheckpoint::remove_from(staging)?;
     // Merged terrain (#215) is rebuilt from the records like the database and the LOD chunks
     // are, so a rebuild with the option on produces it instead of ignoring the option.
     if config.merged_terrain {
