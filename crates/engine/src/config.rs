@@ -354,6 +354,9 @@ pub struct EngineConfig {
     pub always_active: bool,
     /// Disable Bevy's GPU timing and pipeline-statistics query collection.
     pub no_render_diagnostics: bool,
+    /// Draw no object LOD, although the pack has it (`--no-object-lod`): nothing is read, hashed
+    /// or drawn for it, so a run with and a run without it use the same pack.
+    pub no_object_lod: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
@@ -529,6 +532,7 @@ impl Default for EngineConfig {
             stdin_console: false,
             always_active: false,
             no_render_diagnostics: false,
+            no_object_lod: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
@@ -608,6 +612,7 @@ Assets and start position:
   --always-active                     keep simulating when the primary window loses focus
   --stdin-console                     accept developer console commands on stdin
   --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
+  --no-object-lod                     draw no object LOD although the pack has it (terrain LOD is unchanged)
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
@@ -1695,6 +1700,7 @@ impl EngineConfig {
                 "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--no-object-lod" => config.no_object_lod = true,
                 "--shots-no-room-culling" => config.shots_no_room_culling = true,
                 "--shots-settle-timeout" => {
                     const EXPECTED: &str = "a positive number of seconds up to 600";
@@ -3026,6 +3032,14 @@ mod tests {
                     .always_active
             );
         }
+    }
+
+    #[test]
+    fn no_object_lod_is_an_opt_out_flag() {
+        assert!(!EngineConfig::default().no_object_lod);
+        assert!(!run_config(&["--headless"]).no_object_lod);
+        assert!(run_config(&["--no-object-lod", "--headless"]).no_object_lod);
+        assert!(HELP_TEXT.contains("--no-object-lod"));
     }
 
     #[test]

@@ -342,6 +342,11 @@ pub(super) fn update_lod_objects(
     if objects.pack.as_deref() != Some(config.assets_dir.as_path()) {
         objects.reset_pack(&mut commands, config.assets_dir.clone());
     }
+    // `--no-object-lod`: nothing is requested, hashed, loaded or drawn for object LOD.
+    if config.no_object_lod {
+        objects.suspend(&mut commands);
+        return;
+    }
     let worldspace = lod_worldspace(config.stream_radius, space.as_deref(), config.worldspace_id);
     let Some(worldspace_id) = worldspace else {
         // An interior, or LOD off: keep the verified rows, drop what is drawn.
@@ -1118,6 +1123,34 @@ mod tests {
                 .unwrap()
                 .contains("atlas row is invalid")
         );
+    }
+
+    #[test]
+    fn the_no_object_lod_flag_reads_hashes_and_draws_nothing() {
+        let mut rig = rig(false);
+        rig.app
+            .world_mut()
+            .resource_mut::<EngineConfig>()
+            .no_object_lod = true;
+        for _ in 0..5 {
+            rig.app.update();
+        }
+        assert!(
+            rig.requests.try_recv().is_err(),
+            "the rows are not even requested"
+        );
+        assert_eq!(rig.root_count(), 0);
+        assert!(rig.objects().failure().is_none());
+        // Turning it off again starts the normal request.
+        rig.app
+            .world_mut()
+            .resource_mut::<EngineConfig>()
+            .no_object_lod = false;
+        rig.app.update();
+        assert!(matches!(
+            rig.requests.try_recv(),
+            Ok(DatabaseRequest::LoadLodObjectChunks { .. })
+        ));
     }
 
     #[test]
