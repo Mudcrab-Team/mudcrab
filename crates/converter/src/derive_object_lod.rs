@@ -19,7 +19,7 @@ pub use crate::lod::object_stage::{BlockCandidate, SkippedBlock, WorldFacts};
 use crate::{
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes, hash_file},
     lod::{
-        object_stage::{LEVEL, compile_candidates, read_retail},
+        object_stage::{LevelCounts, compile_candidates, level_counts, read_retail},
         objects::{OBJECT_COMPILER_VERSION, ObjectChunk, publish_object_chunk},
         reuse::LodManifest,
     },
@@ -73,6 +73,8 @@ pub struct DeriveObjectLodReport {
     pub blocks_found: usize,
     pub chunks: usize,
     pub triangles: usize,
+    /// Counts per block level (16, 8, 4).
+    pub levels: BTreeMap<u32, LevelCounts>,
     pub vertices: usize,
     pub skipped: Vec<SkippedBlock>,
     pub skipped_by_class: BTreeMap<&'static str, usize>,
@@ -149,7 +151,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
     let retail =
         read_retail(&options.data, &world_file, scratch.path(), &mut verify)?.ok_or_else(|| {
             color_eyre::eyre::eyre!(
-                "refused: the game data has no level-{LEVEL} object LOD blocks for `{world_file}`"
+                "refused: the game data has no level 16, 8 or 4 object LOD blocks for `{world_file}`"
             )
         })?;
     let blocks_found = retail.blocks.len();
@@ -171,6 +173,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         "the derived pack no longer satisfies the engine's LOD contract; discard this clone",
     )?;
 
+    let levels = level_counts(&core.chunks);
     let triangles = core.chunks.iter().map(|(chunk, _)| chunk.triangles).sum();
     let vertices = core
         .chunks
@@ -227,8 +230,17 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
             "chunk_bytes": chunk_bytes,
             "skipped": skipped.len(),
         },
+        "levels": levels.iter().map(|(level, counts)| (level.to_string(), serde_json::json!({
+            "chunks": counts.chunks,
+            "triangles": counts.triangles,
+            "vertices": counts.vertices,
+            "cell_pieces": counts.cell_pieces,
+            "chunks_with_large_reference_data": counts.large_ref_chunks,
+            "bytes": counts.bytes,
+        }))).collect::<serde_json::Map<_, _>>(),
         "skipped_by_class": skipped_by_class,
         "skipped": skipped.iter().map(|block| serde_json::json!({
+            "level": block.level,
             "cell": [block.cell.0, block.cell.1],
             "class": block.class,
             "detail": block.detail,
@@ -240,6 +252,8 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         "unverified": [
             "Material: alpha mask 128/255 and single-sided unless node flags & 0x108 (reviewed static research, culling medium confidence).",
             "Vertex alpha is written as stored; whether retail multiplies it into the cutout is not verified.",
+            "Level-4 segment i covers cell (x + i / 4, y + i % 4): a measured fit (6,706 of 6,708 segments), not decoded from retail code.",
+            "Large-reference data (levels 8 and 4) is kept undecoded and not applied.",
             "The atlas is embedded in every chunk; a shared texture is a later optimisation.",
         ],
         "elapsed_ms": elapsed_ms,
@@ -259,6 +273,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         blocks_found,
         chunks: core.chunks.len(),
         triangles,
+        levels,
         vertices,
         skipped,
         skipped_by_class,
@@ -582,6 +597,7 @@ mod tests {
         parsed: std::result::Result<ObjectLodFile, String>,
     ) -> BlockCandidate {
         BlockCandidate {
+            level: 16,
             cell,
             sha256: hash_bytes(format!("{cell:?}").as_bytes()),
             parsed,

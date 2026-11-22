@@ -968,6 +968,12 @@ fn derive_object_lod(args: &[OsString], command_line: Vec<String>) -> Result<()>
         report.bytes_added,
         report.elapsed_ms
     );
+    for (level, counts) in report.levels.iter().rev() {
+        println!(
+            "  level {level}: {} chunks, {} triangles, {} cell pieces, {} bytes",
+            counts.chunks, counts.triangles, counts.cell_pieces, counts.bytes
+        );
+    }
     println!("Receipt: {}", report.receipt.display());
     println!("Atlas KTX2: {} bytes per chunk", report.atlas_ktx2_bytes);
     if report.skipped.is_empty() {
@@ -980,8 +986,8 @@ fn derive_object_lod(args: &[OsString], command_line: Vec<String>) -> Result<()>
         );
         for block in &report.skipped {
             eprintln!(
-                "  skipped block ({}, {}): {}: {}",
-                block.cell.0, block.cell.1, block.class, block.detail
+                "  skipped level-{} block ({}, {}): {}: {}",
+                block.level, block.cell.0, block.cell.1, block.class, block.detail
             );
         }
     }

@@ -34,12 +34,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The only block level compiled in this slice.
-pub(crate) const LEVEL: u32 = 16;
+/// The block levels the retail files ship (no level 32) and this compiler handles.
+pub(crate) const LEVELS: [u32; 3] = [16, 8, 4];
 
 /// A block the run did not compile, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedBlock {
+    /// Block level (16, 8 or 4).
+    pub level: u32,
     pub cell: (i32, i32),
     /// The class of the reason, the key of the counts.
     pub class: &'static str,
@@ -48,6 +50,8 @@ pub struct SkippedBlock {
 
 /// One `.bto` block read from the game data, before compilation.
 pub struct BlockCandidate {
+    /// Block level, from the file name (16, 8 or 4).
+    pub level: u32,
     /// South-west cell, from the file name.
     pub cell: (i32, i32),
     /// SHA-256 of the `.bto` bytes.
@@ -233,7 +237,7 @@ pub(crate) fn read_retail(
         parse_lod_file_name(path).is_some_and(|name| {
             name.kind == RetailLodKind::Object
                 && name.world == world_file
-                && name.level == Some(LEVEL)
+                && name.level.is_some_and(|level| LEVELS.contains(&level))
         }) && path.starts_with("meshes/")
     };
     let wanted = |path: &str| path == atlas_path || is_block(path);
@@ -307,9 +311,12 @@ pub(crate) fn read_retail(
         let Some(name) = parse_lod_file_name(relative) else {
             continue;
         };
-        let Some(cell) = name.cell else { continue };
+        let (Some(cell), Some(level)) = (name.cell, name.level) else {
+            continue;
+        };
         match read_provider_bytes(relative, options, &extracted)? {
             Err(conflict) => skipped.push(SkippedBlock {
+                level,
                 cell,
                 class: "several providers with different bytes",
                 detail: conflict,
@@ -322,6 +329,7 @@ pub(crate) fn read_retail(
                 let parsed = read_object_lod(&bytes, Path::new(relative))
                     .map_err(|error| format!("{error:#}"));
                 blocks.push(BlockCandidate {
+                    level,
                     cell,
                     sha256: hash_bytes(&bytes),
                     parsed,
@@ -361,6 +369,7 @@ pub(crate) fn compile_candidates(
             Ok(block) => block,
             Err(reason) => {
                 skipped.push(SkippedBlock {
+                    level: candidate.level,
                     cell: candidate.cell,
                     class: "block cannot be read",
                     detail: reason.clone(),
@@ -371,13 +380,14 @@ pub(crate) fn compile_candidates(
         let key = match chunk_key_for_block(
             world.id,
             world.origin,
-            LEVEL,
+            candidate.level,
             candidate.cell.0,
             candidate.cell.1,
         ) {
             Ok(key) => key,
             Err(error) => {
                 skipped.push(SkippedBlock {
+                    level: candidate.level,
                     cell: candidate.cell,
                     class: "block is not on the LOD grid",
                     detail: format!("{error:#}"),
@@ -392,6 +402,7 @@ pub(crate) fn compile_candidates(
                 chunks.push((chunk, input));
             }
             Err(error) => skipped.push(SkippedBlock {
+                level: candidate.level,
                 cell: candidate.cell,
                 class: "block refused by the compiler",
                 detail: format!("{error:#}"),
@@ -401,12 +412,43 @@ pub(crate) fn compile_candidates(
     Ok((chunks, skipped))
 }
 
+/// Counts of the chunks of one block level.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LevelCounts {
+    pub chunks: usize,
+    pub triangles: usize,
+    pub vertices: usize,
+    /// Cell-tagged pieces (level-4 segments).
+    pub cell_pieces: usize,
+    /// Chunks whose source `.bto` carries large-reference data (kept undecoded, not applied).
+    pub large_ref_chunks: usize,
+    pub bytes: u64,
+}
+
+/// Counts per block level of a set of compiled chunks.
+pub fn level_counts(chunks: &[(ObjectChunk, String)]) -> BTreeMap<u32, LevelCounts> {
+    let mut counts: BTreeMap<u32, LevelCounts> = BTreeMap::new();
+    for (chunk, _) in chunks {
+        let level = u32::try_from(chunk.key.tier.side_cells()).unwrap_or(0);
+        let entry = counts.entry(level).or_default();
+        entry.chunks += 1;
+        entry.triangles += chunk.triangles;
+        entry.vertices += chunk.vertices;
+        entry.cell_pieces += chunk.cell_pieces;
+        entry.large_ref_chunks += usize::from(chunk.large_ref_blocks > 0);
+        entry.bytes += chunk.glb.len() as u64;
+    }
+    counts
+}
+
 /// What the pipeline stage added to the staged pack.
 #[derive(Debug, Default)]
 pub(crate) struct ObjectLodStage {
     /// Payload path and input proof of each published chunk.
     pub chunks: Vec<(String, String)>,
     pub triangles: usize,
+    /// Counts per block level.
+    pub levels: BTreeMap<u32, LevelCounts>,
     /// Notices that do not make the run incomplete (for example, worlds without object LOD).
     pub notices: Vec<String>,
     /// One line per skipped block or refused world, counted in the LOD warnings.
@@ -501,6 +543,21 @@ pub(crate) fn build_object_lod(
             ));
             continue;
         }
+        for (level, counts) in level_counts(&chunks) {
+            if counts.large_ref_chunks > 0 {
+                stage.warnings.push(format!(
+                    "object LOD {editor_id}: {} level-{level} blocks carry large-reference data, which is kept undecoded and not applied",
+                    counts.large_ref_chunks
+                ));
+            }
+            let total = stage.levels.entry(level).or_default();
+            total.chunks += counts.chunks;
+            total.triangles += counts.triangles;
+            total.vertices += counts.vertices;
+            total.cell_pieces += counts.cell_pieces;
+            total.large_ref_chunks += counts.large_ref_chunks;
+            total.bytes += counts.bytes;
+        }
         for (chunk, input) in &chunks {
             publish_object_chunk(connection, staging, chunk)
                 .wrap_err_with(|| format!("failed to publish an object chunk of {editor_id}"))?;
@@ -512,14 +569,26 @@ pub(crate) fn build_object_lod(
     }
     if without > 0 {
         stage.notices.push(format!(
-            "Object LOD: {without} worldspace(s) with terrain LOD have no level-{LEVEL} object blocks in the game data"
+            "Object LOD: {without} worldspace(s) with terrain LOD have no level 16, 8 or 4 object blocks in the game data"
         ));
     }
     if !stage.chunks.is_empty() {
+        let per_level: Vec<String> = stage
+            .levels
+            .iter()
+            .rev()
+            .map(|(level, counts)| {
+                format!(
+                    "level {level}: {} chunks, {} triangles",
+                    counts.chunks, counts.triangles
+                )
+            })
+            .collect();
         stage.notices.push(format!(
-            "Object LOD: {} chunks, {} triangles",
+            "Object LOD: {} chunks, {} triangles ({})",
             stage.chunks.len(),
-            stage.triangles
+            stage.triangles,
+            per_level.join("; ")
         ));
     }
     Ok(stage)
@@ -621,6 +690,54 @@ mod tests {
                 .notices
                 .iter()
                 .any(|notice| notice.contains("1 worldspace"))
+        );
+    }
+
+    #[test]
+    fn levels_8_and_4_are_built_beside_level_16_with_counts_per_level() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        let meshes = data.path().join("Meshes/Terrain/Tamriel/Objects");
+        fs::write(
+            meshes.join("Tamriel.8.0.-16.bto"),
+            bto(0, -16, &[(0, 0, 1)]),
+        )
+        .unwrap();
+        // A level-4 shape with two segments, one empty: one cell-tagged piece.
+        fs::write(
+            meshes.join("Tamriel.4.0.-16.bto"),
+            bto(0, -16, &[(0, 0, 1), (0, 3, 0)]),
+        )
+        .unwrap();
+        // Level 32 is not a shipped level: it is not read.
+        fs::write(
+            meshes.join("Tamriel.32.0.-32.bto"),
+            bto(0, -32, &[(0, 0, 1)]),
+        )
+        .unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
+        assert_eq!(stage.chunks.len(), 3);
+        assert_eq!(
+            stage.levels.keys().copied().collect::<Vec<_>>(),
+            vec![4, 8, 16]
+        );
+        assert_eq!(stage.levels[&4].cell_pieces, 1);
+        assert_eq!(stage.levels[&8].cell_pieces, 0);
+        let tiers: Vec<i64> = connection
+            .prepare("SELECT tier FROM lod_object_chunks ORDER BY tier")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(tiers, vec![4, 8, 16]);
+        assert!(
+            stage
+                .notices
+                .iter()
+                .any(|notice| notice.contains("level 4: 1 chunks"))
         );
     }
 

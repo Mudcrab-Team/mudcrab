@@ -38,7 +38,7 @@ use shared::lod::{ChunkKey, LodOrigin, LodTier, nodes, object_chunk_payload_path
 use std::path::Path;
 
 /// Explicit producer revision of the object chunk compiler. Terrain chunk reuse is unaffected.
-pub const OBJECT_COMPILER_VERSION: u32 = 1;
+pub const OBJECT_COMPILER_VERSION: u32 = 2;
 
 /// Alpha-test reference of the retail object LOD material: 128 of 255, discard strictly below.
 pub const ALPHA_CUTOFF: f64 = 128.0 / 255.0;
@@ -58,6 +58,10 @@ pub struct ObjectChunk {
     pub glb: Vec<u8>,
     pub triangles: usize,
     pub vertices: usize,
+    /// Large-reference blocks of the source `.bto`, kept undecoded and not used (level 8 and 4).
+    pub large_ref_blocks: usize,
+    /// Cell-tagged pieces (level-4 segments), which the engine can hide per loaded cell.
+    pub cell_pieces: usize,
 }
 
 /// The south-west cell of the chunk's block: the cell a retail `.bto` file name carries.
@@ -133,12 +137,43 @@ fn transform(shape: &ObjectLodShape, v: [f32; 3], translate: bool) -> [f32; 3] {
     out
 }
 
-/// Compiles one retail level-16 block into an object chunk. `atlas_ktx2` is the world's object
-/// atlas, already encoded as a KTX2 container, embedded as the single base-colour texture.
+/// One drawn piece of a chunk: a triangle range of one shape, optionally tied to a cell.
+struct Piece {
+    shape: usize,
+    vertex_start: usize,
+    vertex_count: usize,
+    /// Start in the chunk's index stream, and the index count.
+    index_start: usize,
+    index_count: usize,
+    /// The cell this piece covers, for a level-4 segment (see [`segment_cell`]).
+    cell: Option<(i32, i32)>,
+}
+
+/// Level-4 shapes are split into 16 segments, one per cell of the 4 x 4 block, ordered x-major:
+/// segment `i` covers cell `(block_x + i / 4, block_y + i % 4)`. Measured, not decoded from retail
+/// code: on all 6,708 non-empty segments of the 1,408 Tamriel level-4 shapes with several segments,
+/// this mapping puts the segment's mean vertex inside the cell's neighbourhood 6,706 times (the
+/// y-major order, 3,268 times). Unverified against the retail routine (the reviewed research names
+/// only the packed cell key of its lookup). Shapes with one segment carry no cell.
+fn segment_cell(block: (i32, i32), segment: usize) -> Option<(i32, i32)> {
+    let column = i32::try_from(segment / 4).ok()?;
+    let row = i32::try_from(segment % 4).ok()?;
+    (column < 4).then_some((block.0 + column, block.1 + row))
+}
+
+/// Compiles one retail object block (level 16, 8 or 4) into an object chunk. `atlas_ktx2` is the
+/// world's object atlas, already encoded as a KTX2 container, embedded as the single base-colour
+/// texture.
 ///
-/// Fails for a tier other than 16 (not compiled yet), for a block with no geometry, and for a
-/// shape that has more than one segment or any large-reference block, which a level-16 shape never
-/// has: such a file is not what this slice understands, so it is refused instead of guessed.
+/// A shape with one segment is one mesh. At level 4 a shape with several segments becomes one mesh
+/// per non-empty segment, tagged with its cell. Large-reference data (`BSDistantObjectLargeRefExtraData`,
+/// level 8 and 4) is kept undecoded and not applied: the engine hides a level-4 segment only for
+/// cells it has loaded, and does not implement the large-reference takeover of cells beyond them.
+///
+/// Fails for a tier that is not 16, 8 or 4, for a block with no geometry, for a shape with several
+/// segments outside level 4 (never seen), for a level-4 shape with more than 16 segments, for
+/// large-reference data at level 16 (never seen), and for a non-finite vertex: such a file is not
+/// what this compiler understands, so it is refused instead of guessed.
 pub fn compile_object_chunk(
     key: ChunkKey,
     origin: LodOrigin,
@@ -146,16 +181,12 @@ pub fn compile_object_chunk(
     atlas_ktx2: &[u8],
 ) -> Result<ObjectChunk> {
     ensure!(
-        key.tier == LodTier::Tier16,
-        "object chunk {key:?}: only tier 16 is compiled in this slice (lower tiers need the per-cell segment split)"
-    );
-    ensure!(
         !block.shapes.is_empty(),
         "object chunk {key:?}: the retail block has no geometry"
     );
     ensure!(
-        block.large_ref_blocks.is_empty(),
-        "object chunk {key:?}: a level-16 block carries large-reference markers, which this slice does not read"
+        key.tier != LodTier::Tier16 || block.large_ref_blocks.is_empty(),
+        "object chunk {key:?}: a level-16 block carries large-reference markers, which are not read"
     );
     ensure!(
         !atlas_ktx2.is_empty(),
@@ -165,14 +196,20 @@ pub fn compile_object_chunk(
     let block_origin = [cell_to_units(cell_x), cell_to_units(cell_y), 0.0];
 
     let mut streams = Streams::default();
-    let mut shape_ranges = Vec::new(); // (vertex start, vertex count, index start, index count)
+    let mut pieces: Vec<Piece> = Vec::new();
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     let mut triangles = 0usize;
-    for shape in &block.shapes {
+    for (shape_index, shape) in block.shapes.iter().enumerate() {
         ensure!(
-            shape.segments.len() == 1,
-            "object chunk {key:?}: shape at block {} has {} segments, a level-16 shape has one",
+            shape.segments.len() == 1 || key.tier == LodTier::Tier4,
+            "object chunk {key:?}: shape at block {} has {} segments, only a level-4 shape may have several",
+            shape.block_index,
+            shape.segments.len()
+        );
+        ensure!(
+            shape.segments.len() <= 16,
+            "object chunk {key:?}: shape at block {} has {} segments, a level-4 block has 16 cells",
             shape.block_index,
             shape.segments.len()
         );
@@ -215,15 +252,43 @@ pub fn compile_object_chunk(
             streams.indices.extend(triangle.map(u32::from));
         }
         triangles += shape.triangles.len();
-        shape_ranges.push((
-            vertex_start,
-            shape.vertices.len(),
-            index_start,
-            shape.triangles.len() * 3,
-        ));
+        if shape.segments.len() == 1 {
+            pieces.push(Piece {
+                shape: shape_index,
+                vertex_start,
+                vertex_count: shape.vertices.len(),
+                index_start,
+                index_count: shape.triangles.len() * 3,
+                cell: None,
+            });
+            continue;
+        }
+        // The segments partition the shape's triangles in order.
+        let mut start = 0usize;
+        for (segment_index, segment) in shape.segments.iter().enumerate() {
+            let count = usize::try_from(segment.num_primitives)
+                .wrap_err("a segment's triangle count does not fit")?;
+            if count > 0 {
+                let cell = segment_cell((cell_x, cell_y), segment_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "object chunk {key:?}: segment {segment_index} has no cell in a 4 x 4 block"
+                    )
+                })?;
+                pieces.push(Piece {
+                    shape: shape_index,
+                    vertex_start,
+                    vertex_count: shape.vertices.len(),
+                    index_start: index_start + start * 3,
+                    index_count: count * 3,
+                    cell: Some(cell),
+                });
+            }
+            start += count;
+        }
     }
 
-    let glb = emit_object_glb(key, &streams, &shape_ranges, atlas_ktx2, block)?;
+    let cell_pieces = pieces.iter().filter(|piece| piece.cell.is_some()).count();
+    let glb = emit_object_glb(key, &streams, &pieces, atlas_ktx2, block)?;
     let side = key.tier.side_cells();
     let cells = (0..side)
         .flat_map(|dy| (0..side).map(move |dx| (cell_x + dx, cell_y + dy)))
@@ -236,13 +301,15 @@ pub fn compile_object_chunk(
         glb,
         triangles,
         vertices: streams.positions.len() / 3,
+        large_ref_blocks: block.large_ref_blocks.len(),
+        cell_pieces,
     })
 }
 
 fn emit_object_glb(
     key: ChunkKey,
     streams: &Streams,
-    shape_ranges: &[(usize, usize, usize, usize)],
+    pieces: &[Piece],
     atlas: &[u8],
     block: &ObjectLodFile,
 ) -> Result<Vec<u8>> {
@@ -270,7 +337,7 @@ fn emit_object_glb(
         key.anchor.x,
         key.anchor.y
     );
-    let shape_count = shape_ranges.len();
+    let shape_count = pieces.len();
     // Node 0 is the scene root with the Creation-to-glTF axis rotation (as terrain chunks), node
     // 1 the `objects` group, then one mesh node per retail shape.
     let mut nodes_json = vec![
@@ -286,17 +353,29 @@ fn emit_object_glb(
     ];
     let mut meshes_json = Vec::new();
     let mut accessors_json = Vec::new();
-    for (index, ((vertex_start, vertex_count, index_start, index_count), shape)) in
-        shape_ranges.iter().zip(&block.shapes).enumerate()
-    {
+    for (index, piece) in pieces.iter().enumerate() {
+        let shape = &block.shapes[piece.shape];
+        let (vertex_start, vertex_count, index_start, index_count) = (
+            &piece.vertex_start,
+            &piece.vertex_count,
+            piece.index_start,
+            piece.index_count,
+        );
         let base = index * 5;
         let positions = &streams.positions[vertex_start * 3..(vertex_start + vertex_count) * 3];
         let (shape_min, shape_max) = bounds(positions);
-        nodes_json.push(serde_json::json!({
-            "name": format!("object_batch_{index}"),
-            "extras": { "source_block": shape.block_index },
-            "mesh": index,
-        }));
+        nodes_json.push(match piece.cell {
+            Some((cell_x, cell_y)) => serde_json::json!({
+                "name": format!("object_cell_{cell_x}_{cell_y}_{index}"),
+                "extras": { "source_block": shape.block_index, "cell": [cell_x, cell_y] },
+                "mesh": index,
+            }),
+            None => serde_json::json!({
+                "name": format!("object_batch_{index}"),
+                "extras": { "source_block": shape.block_index },
+                "mesh": index,
+            }),
+        });
         for (view, offset, count, kind, extra) in [
             (
                 0,
@@ -330,7 +409,7 @@ fn emit_object_glb(
             "type": "SCALAR",
         }));
         meshes_json.push(serde_json::json!({
-            "name": format!("objects_{}_{}_shape_{index}", key.anchor.x, key.anchor.y),
+            "name": format!("objects_{}_{}_piece_{index}", key.anchor.x, key.anchor.y),
             "primitives": [{
                 "attributes": {
                     "POSITION": base,
@@ -565,10 +644,10 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
             .and_then(|index| nodes_json.get(index))
             .ok_or_else(|| color_eyre::eyre::eyre!("a group child is not a node"))?;
         ensure!(
-            node["name"]
-                .as_str()
-                .is_some_and(|name| name.starts_with("object_batch_")),
-            "a node under `objects` is not an object batch: {node}"
+            node["name"].as_str().is_some_and(
+                |name| name.starts_with("object_batch_") || name.starts_with("object_cell_")
+            ),
+            "a node under `objects` is not an object batch or cell piece: {node}"
         );
         let mesh = json_index(&node["mesh"])
             .and_then(|index| meshes.get(index))
@@ -1043,15 +1122,21 @@ mod tests {
     }
 
     #[test]
-    fn what_this_slice_does_not_understand_is_refused_not_guessed() {
+    fn what_this_compiler_does_not_understand_is_refused_not_guessed() {
         let good = block(vec![shape(1, [0.0; 3])]);
-        let tier8 = ChunkKey::new(60, LodTier::Tier8, ChunkAnchor::new(12, 10));
-        assert!(compile_object_chunk(tier8, ORIGIN, &good, &atlas()).is_err());
         assert!(compile_object_chunk(key(), ORIGIN, &block(Vec::new()), &atlas()).is_err());
         assert!(compile_object_chunk(key(), ORIGIN, &good, b"").is_err());
         let mut two_segments = shape(1, [0.0; 3]);
         two_segments.segments.push(two_segments.segments[0]);
-        assert!(compile_object_chunk(key(), ORIGIN, &block(vec![two_segments]), &atlas()).is_err());
+        assert!(
+            compile_object_chunk(key(), ORIGIN, &block(vec![two_segments.clone()]), &atlas())
+                .is_err()
+        );
+        let tier8 = ChunkKey::new(60, LodTier::Tier8, ChunkAnchor::new(12, 10));
+        assert!(
+            compile_object_chunk(tier8, ORIGIN, &block(vec![two_segments]), &atlas()).is_err(),
+            "only level 4 splits a shape into cells"
+        );
         let mut marked = good.clone();
         marked.large_ref_blocks.push(OpaqueBlock {
             block_index: 0,
@@ -1062,6 +1147,88 @@ mod tests {
         let mut nan = shape(1, [0.0; 3]);
         nan.vertices[0].position[0] = f32::NAN;
         assert!(compile_object_chunk(key(), ORIGIN, &block(vec![nan]), &atlas()).is_err());
+    }
+
+    #[test]
+    fn level_8_compiles_like_level_16_and_keeps_large_reference_data_undecoded() {
+        let tier8 = ChunkKey::new(60, LodTier::Tier8, ChunkAnchor::new(12, 10));
+        let mut marked = block(vec![shape(1, [0.0; 3])]);
+        marked.large_ref_blocks.push(OpaqueBlock {
+            block_index: 0,
+            block_type: "BSDistantObjectLargeRefExtraData".into(),
+            bytes: vec![1],
+        });
+        let chunk = compile_object_chunk(tier8, ORIGIN, &marked, &atlas()).unwrap();
+        validate_object_glb(&chunk.glb).unwrap();
+        assert_eq!(chunk.large_ref_blocks, 1);
+        assert_eq!(chunk.cells.len(), 64);
+        assert_eq!(chunk.cell_pieces, 0);
+    }
+
+    /// A level-4 shape of `triangles` triangles split into segments of the given sizes.
+    fn segmented(triangles: usize, sizes: &[u32]) -> ObjectLodShape {
+        let mut shape = shape(1, [0.0; 3]);
+        shape.triangles = vec![[0, 1, 2]; triangles];
+        shape.segments = sizes
+            .iter()
+            .map(|&num_primitives| ObjectLodSegment {
+                flag: 0,
+                value: 0,
+                num_primitives,
+            })
+            .collect();
+        shape
+    }
+
+    #[test]
+    fn a_level_4_shape_becomes_one_cell_tagged_piece_per_non_empty_segment() {
+        // Anchor (24, 20) from origin -96 is the 4-cell block whose south-west cell is (0, -16).
+        let tier4 = ChunkKey::new(60, LodTier::Tier4, ChunkAnchor::new(24, 20));
+        let chunk = compile_object_chunk(
+            tier4,
+            ORIGIN,
+            &block(vec![segmented(4, &[1, 0, 2, 1])]),
+            &atlas(),
+        )
+        .unwrap();
+        validate_object_glb(&chunk.glb).unwrap();
+        assert_eq!(chunk.triangles, 4);
+        assert_eq!(chunk.cell_pieces, 3);
+        let document = json_of(&chunk.glb);
+        let nodes = document["nodes"].as_array().unwrap();
+        let cells: Vec<_> = nodes
+            .iter()
+            .filter(|node| {
+                node["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("object_cell_"))
+            })
+            .map(|node| node["extras"]["cell"].clone())
+            .collect();
+        // Segment i covers cell (x + i / 4, y + i % 4): segments 0, 2 and 3 are non-empty.
+        assert_eq!(
+            cells,
+            vec![
+                serde_json::json!([0, -16]),
+                serde_json::json!([0, -14]),
+                serde_json::json!([0, -13])
+            ]
+        );
+        // The pieces share one vertex run and index their own triangles.
+        let accessors = document["accessors"].as_array().unwrap();
+        let counts: Vec<_> = accessors
+            .iter()
+            .filter(|accessor| accessor["type"] == "SCALAR")
+            .map(|accessor| accessor["count"].as_u64().unwrap())
+            .collect();
+        assert_eq!(counts, vec![3, 6, 3]);
+        // A shape with one segment at level 4 carries no cell.
+        let plain = compile_object_chunk(tier4, ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
+            .unwrap();
+        assert_eq!(plain.cell_pieces, 0);
+        // More than 16 segments is refused.
+        let too_many = segmented(17, &[1; 17]);
+        assert!(compile_object_chunk(tier4, ORIGIN, &block(vec![too_many]), &atlas()).is_err());
     }
 
     #[test]

@@ -300,3 +300,105 @@ fn tamriel_level_16_blocks_compile_to_valid_chunk_local_object_chunks() {
     println!("level 16 shape node flags: {flag_counts:?}");
     assert_eq!(triangles, 311_641);
 }
+
+#[test]
+#[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
+fn tamriel_level_8_and_4_blocks_compile_and_level_4_segments_are_cells() {
+    let data = data_dir();
+    let temp = tempfile::tempdir().unwrap();
+    let origin = LodOrigin::new(-96, -96);
+    let atlas = {
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        converter::texture::TextureConverter::convert(
+            &dds,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    };
+    // (blocks, triangles) measured on the shipped files.
+    for (level, expected_blocks, expected_triangles) in
+        [(8u32, 152usize, 1_016_520usize), (4, 517, 2_350_870)]
+    {
+        let files = extract(&archives(&data, "Skyrim - Meshes"), temp.path(), |path| {
+            let text = path.to_string_lossy();
+            parse_lod_file_name(&text).is_some_and(|name| {
+                name.kind == RetailLodKind::Object
+                    && name.world == "tamriel"
+                    && name.level == Some(level)
+            })
+        });
+        assert_eq!(
+            files.len(),
+            expected_blocks,
+            "Tamriel level {level} block count"
+        );
+        let (mut triangles, mut pieces, mut with_large_refs) = (0usize, 0usize, 0usize);
+        // Segment i of a 16-segment level-4 shape covers cell (x + i / 4, y + i % 4): the mean
+        // vertex of the segment lies within 0.75 cell of that cell.
+        let (mut fitted, mut total) = (0usize, 0usize);
+        for file in &files {
+            let name = parse_lod_file_name(&file.to_string_lossy()).unwrap();
+            let (x, y) = name.cell.unwrap();
+            let key = chunk_key_for_block(0x3c, origin, level, x, y).unwrap();
+            let block = read_object_lod(&std::fs::read(file).unwrap(), file).unwrap();
+            let chunk = compile_object_chunk(key, origin, &block, &atlas).unwrap();
+            validate_object_glb(&chunk.glb).unwrap();
+            triangles += chunk.triangles;
+            pieces += chunk.cell_pieces;
+            with_large_refs += usize::from(chunk.large_ref_blocks > 0);
+            if level != 4 {
+                continue;
+            }
+            for shape in block.shapes.iter().filter(|shape| shape.segments.len() > 1) {
+                let mut start = 0usize;
+                for (index, segment) in shape.segments.iter().enumerate() {
+                    let count = segment.num_primitives as usize;
+                    if count == 0 {
+                        continue;
+                    }
+                    let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0u32);
+                    for triangle in &shape.triangles[start..start + count] {
+                        for &vertex in triangle {
+                            let position = shape.vertices[vertex as usize].position;
+                            sx += f64::from(position[0]);
+                            sy += f64::from(position[1]);
+                            n += 1;
+                        }
+                    }
+                    start += count;
+                    let world_x = (f64::from(shape.translation[0])
+                        + sx / f64::from(n) * f64::from(shape.scale))
+                        / 4096.0;
+                    let world_y = (f64::from(shape.translation[1])
+                        + sy / f64::from(n) * f64::from(shape.scale))
+                        / 4096.0;
+                    let (cell_x, cell_y) = (x + (index / 4) as i32, y + (index % 4) as i32);
+                    total += 1;
+                    fitted += usize::from(
+                        world_x > f64::from(cell_x) - 0.75
+                            && world_x < f64::from(cell_x) + 1.75
+                            && world_y > f64::from(cell_y) - 0.75
+                            && world_y < f64::from(cell_y) + 1.75,
+                    );
+                }
+            }
+        }
+        println!(
+            "level {level}: {triangles} triangles, {pieces} cell pieces, {with_large_refs} blocks with large-reference data, segment fit {fitted}/{total}"
+        );
+        assert_eq!(triangles, expected_triangles);
+        if level == 4 {
+            assert!(
+                total > 6_000 && fitted * 1000 >= total * 999,
+                "segment fit {fitted}/{total}"
+            );
+            assert!(pieces > 0 && with_large_refs == 496);
+        } else {
+            assert_eq!(pieces, 0);
+        }
+    }
+}
