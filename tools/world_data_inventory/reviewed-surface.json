@@ -385,6 +385,7 @@
     "landscape_textures.material_type",
     "landscape_textures.restitution",
     "landscape_textures.texture_set_id",
+    "large_reference_omissions.confirmed_removed_count",
     "large_reference_omissions.grid_x",
     "large_reference_omissions.grid_y",
     "large_reference_omissions.omitted_count",
