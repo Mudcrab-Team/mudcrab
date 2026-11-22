@@ -35,12 +35,13 @@ Contributors cannot set milestones. A maintainer assigns one within one working 
 - Run what CI runs before you push (see "Run What CI Runs" in [CONTRIBUTING.md](../../CONTRIBUTING.md)).
 - If a run exits 0 but the system diagnostic reports show a GPU fault, use [Finding a Metal GPU fault](gpu-faults.md) to find the failing pass.
 - Keep a PR to one change a reviewer can hold in their head. Split a large feature into PRs that each work on their own.
-- **Inventory stores:** each external store has its own file under
-  `tools/world_data_inventory/stores/` with its own `reviewed_at_commit`. Add or edit only
-  the file for your store; do not add a shared `stores` block to `dispositions.json`. Two
-  PRs that add different stores then merge without a conflict. The per-store commit records
-  the last human review of that store and is provenance only; the gate does not check
-  reachability. See
+- **Inventory tables and stores:** each table has its own file under
+  `tools/world_data_inventory/tables/`, and each external store its own file under
+  `tools/world_data_inventory/stores/`. Add or edit only the file for your table or store;
+  do not add a shared `tables` or `stores` block to `dispositions.json`. Two PRs that add
+  different tables or stores then merge without a conflict. A store file records its last
+  human review in `reviewed_at_commit`; that commit is provenance only and the gate does not
+  check reachability. See
   [data-inventory/README.md](../data-inventory/README.md#migrating-a-branch-that-adds-a-store).
 
 ### Splitting a large pull request
@@ -50,6 +51,22 @@ One feature per pull request. A mixed pull request hides defects behind its desc
 - **Independent parts** become separate pull requests against `main`.
 - **Dependent parts** become a stack: each layer targets the branch below it. A set of three or more carries the same `stack: <name> <i>/<n>` label (see [labels.md](labels.md)); a single dependency uses `**Merge after:** #N` at the top of the PR. Land the stack bottom-up with merge commits, as [step 6](#6-merge-maintainers) describes.
 - **Test and generated files do not count** towards the size. The [PR size workflow](../../.github/workflows/pr_size.yml) skips test code, fixtures, snapshots, vendored code, recorded evidence and generated data; the full list is in [scripts/pr_size.py](../../scripts/pr_size.py). It labels a pull request `size: L` above 2,000 remaining lines and `size: XL` above 5,000, then comments once with this guidance. The label is advisory and does not block a merge.
+
+## When `main` moves
+
+Run `python3 scripts/sync_branch.py`. It merges `origin/main` with a merge commit and never
+rebases or forces. It resolves only the known mechanical conflicts: generated inventory
+files that `main` deleted, `reviewed-surface.json` (take main's side, then regenerate), and
+the sorted `Cargo.toml` workspace members. It then runs the fast gates. It stops and lists
+the paths for any real conflict. Add `--dry-run` to see the plan first. Never hand-resolve a
+known mechanical conflict; a hand resolution can drop a table classification or a reader.
+
+If `dispositions.json` and `reviewed-surface.json` conflict together, resolve
+`dispositions.json` by hand first and keep valid JSON. Then run
+`inventory.py --review-sources` and `inventory.py --check` against the resolved tree. Stage
+`reviewed-surface.json` and commit. `dispositions.json` is human-authored; only the surface
+comes from the tool. The script leaves the surface conflicted until the source conflicts are
+resolved.
 
 ## 4. Open the pull request
 

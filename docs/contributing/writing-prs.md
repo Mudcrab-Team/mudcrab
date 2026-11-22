@@ -18,6 +18,8 @@ A line that says `non-retail`, `not vanilla` or `Mudcrab-only` still needs a rea
 
 The accepted reason words are `because`, `since`, `so that`, `to avoid`, `to keep`, `to prevent`, `to match` and `due to`. Naming what Mudcrab does instead also counts (`Mudcrab uses ...`).
 
+The check also reads added rows of the retail-facts registry. A row may carry `kind: rule`, `kind: quirk` or `kind: defect`, and a row without the field is a rule. A row with another kind value fails. A row that says quirk or defect in its text without a `kind:` field also fails. See [ADR-0015](../adr/0015-retail-rule-quirk-defect.md).
+
 Run it locally with `python3 scripts/check_retail_claims.py --base origin/main`. CI runs it in the `scripts` job and prints the file and line for each finding. The gate is required: a finding fails the `scripts` job.
 
 ## Voice

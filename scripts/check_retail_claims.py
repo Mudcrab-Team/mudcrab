@@ -24,6 +24,12 @@ compounds such as ``retail-parity`` are not claims.  The accepted reason
 markers are listed in ``REASON_RE`` and in
 ``docs/contributing/writing-prs.md``.
 
+An added row of ``docs/research/retail/registry.md`` also needs a valid kind.
+A row may carry ``kind: rule``, ``kind: quirk`` or ``kind: defect``; a row
+without the field is a rule.  A row that uses another kind value, or that says
+"quirk" or "defect" in its text but has no ``kind:`` field, is a finding.  See
+ADR-0015.
+
 Exit 0 means no unlabelled claims, 1 means findings, and 2 means the diff or
 one of its files could not be read.  Standard library only.
 """
@@ -97,6 +103,11 @@ REASON_RE = re.compile(
     r"|\bwe\s+(?:use|need|add|keep|do)\b",
     re.IGNORECASE,
 )
+REGISTRY_PATH = "docs/research/retail/registry.md"
+REGISTRY_ROW_RE = re.compile(r"^\s*\|\s*RF-[A-Z0-9]+-[0-9]+\s*\|")
+KIND_RE = re.compile(r"\bkind:\s*([A-Za-z-]+)", re.IGNORECASE)
+KIND_WORD_RE = re.compile(r"\b(?:quirk|defect)s?\b", re.IGNORECASE)
+KINDS = ("rule", "quirk", "defect")
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -110,6 +121,7 @@ class Finding:
     line: int
     text: str
     unreasoned_note: bool
+    kind_problem: str = ""
 
 
 class CheckError(RuntimeError):
@@ -373,6 +385,24 @@ def module_doc_cites_registry(lines, texts=None):
     )
 
 
+def registry_kind_problem(text):
+    """Return the kind problem of an added registry row, or an empty string."""
+    if REGISTRY_ROW_RE.match(text) is None:
+        return ""
+    kinds = [value.lower() for value in KIND_RE.findall(text)]
+    if len(kinds) > 1:
+        return "registry row has more than one kind field"
+    if kinds:
+        if kinds[0] in KINDS:
+            return ""
+        return (f"registry row has the invalid kind \"{kinds[0]}\"; "
+                "use rule, quirk or defect")
+    if KIND_WORD_RE.search(text):
+        return ("registry row says quirk or defect but has no kind field; "
+                "add \"kind: quirk\" or \"kind: defect\"")
+    return ""
+
+
 def check(repo, base, head):
     """Return (checked lines, claim lines, findings) for one revision range."""
     # A second -C is the expensive copy search: it finds a copy whose source
@@ -410,6 +440,16 @@ def check(repo, base, head):
                 removed[text] -= 1
                 continue
             checked += 1
+            if path == REGISTRY_PATH:
+                problem = registry_kind_problem(text)
+                if problem:
+                    findings.append(Finding(
+                        path=path,
+                        line=number,
+                        text=text.strip(),
+                        unreasoned_note=False,
+                        kind_problem=problem,
+                    ))
             if not makes_claim(claim):
                 continue
             claims += 1
@@ -447,6 +487,18 @@ def main(argv=None):
     except (CheckError, OSError) as error:
         print(f"retail claim check: {error}", file=sys.stderr)
         return 2
+    kind_findings = [finding for finding in findings if finding.kind_problem]
+    findings = [finding for finding in findings if not finding.kind_problem]
+    for finding in kind_findings:
+        print(f"{finding.path}:{finding.line}: {finding.kind_problem}: "
+              f"{finding.text}", file=sys.stderr)
+    if kind_findings:
+        print(
+            f"\n{len(kind_findings)} registry row(s) have a kind problem. "
+            "Kinds are rule, quirk and defect; see docs/adr/"
+            "0015-retail-rule-quirk-defect.md.",
+            file=sys.stderr,
+        )
     if findings:
         for finding in findings:
             if finding.unreasoned_note:
@@ -470,6 +522,7 @@ def main(argv=None):
                 "or what Mudcrab does instead.",
                 file=sys.stderr,
             )
+    if findings or kind_findings:
         return 1
     print(f"Retail claims: {claims} claim line(s) checked in {checked} added "
           "comment/doc line(s), all labelled.")

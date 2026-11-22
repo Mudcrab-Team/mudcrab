@@ -22,7 +22,8 @@ record reader needs a reviewed disposition. Only the reviewed, stable facts are 
 
 | File | Content | Changes when |
 |---|---|---|
-| `tools/world_data_inventory/dispositions.json` | Human dispositions: owner, reason, states and anchors per table and traced field | A person classifies a table or field |
+| `tools/world_data_inventory/dispositions.json` | Human dispositions for blob default, traced fields, legacy shapes and limits | A person classifies a field, a legacy shape or a limit |
+| `tools/world_data_inventory/tables/<table>.json` | One table: classification, owner and reason | A person classifies that table |
 | `tools/world_data_inventory/stores/<store>.json` | One external store: owner, reason, states, anchors and its own review-provenance `reviewed_at_commit` | A person adds or edits that store |
 | `tools/world_data_inventory/reviewed-surface.json` | One line per reviewed record reader (call-site key and hash of its SQL) and one line per reviewed `table.column` | A reader or a column is added, changed or removed |
 
@@ -30,9 +31,9 @@ The key of a reader holds the file path, the method, a hash of the call expressi
 occurrence number. It holds no line number and no hash of the whole file. The SQL hash
 catches a changed constant behind an unchanged call.
 
-Each external store has its own file and its own reviewed commit. A pull request that adds
-or changes a store edits only that file. Two pull requests that add different stores
-therefore never conflict on a shared line.
+Each table has its own file. Each external store has its own file and its own reviewed
+commit. A pull request that adds or changes a table or a store edits only that file. Two pull
+requests that add different tables or stores therefore never conflict on a shared line.
 
 The per-store `reviewed_at_commit` records the last human review of that store. It is
 provenance only. The gate checks the store anchors against the checked-out tree and does not
@@ -80,6 +81,20 @@ instead of disappearing from the report. The tool refuses a `stores` block in
 A branch that changes the old top-level `reviewed_at_commit` in `dispositions.json` gets one
 conflict after this change. Resolve it by deleting that line and taking main's version. The
 line no longer exists, and the report takes the commit under test from `git rev-parse HEAD`.
+
+## Migrating a branch that adds a table
+
+Main moved the `tables` block out of `dispositions.json`. A branch that adds or edits a table
+there gets a conflict on the next merge. Move the entry to its own file:
+
+1. Create `tools/world_data_inventory/tables/<table>.json`. The `table` value is the old key.
+   Use the entry's `classification`, `owner` and `reason`, and add `"format_version": 1`.
+2. Delete the entry and the now-empty `tables` block from `dispositions.json`.
+3. Run `python3 -B tools/world_data_inventory/inventory.py --check`.
+
+Only `*.json` files are loaded. Any other regular file in `tables/` fails the check instead
+of disappearing from the report. The tool refuses a `tables` block in `dispositions.json`
+and names the directory in its error message.
 
 ## Generate and check
 
@@ -138,15 +153,18 @@ extracted report identity; incompatible replay/preparation fails visibly.
 
 [dispositions.json](../../tools/world_data_inventory/dispositions.json) follows
 [dispositions.schema.json](../../tools/world_data_inventory/dispositions.schema.json).
+Each file under [tables/](../../tools/world_data_inventory/tables) follows
+[table.schema.json](../../tools/world_data_inventory/table.schema.json).
 Each file under [stores/](../../tools/world_data_inventory/stores) follows
 [store.schema.json](../../tools/world_data_inventory/store.schema.json).
 Selected fields carry independent states, roles, owner, reason, exact source anchors,
 mapping ordinals/expressions and sink/test references. Existing test references identify
 relevant evidence; they do not assert that those tests ran in this task. All other table
 fields have explicit deferred/provenance policies; BLOBs have an opaque disposition.
-Named external stores remain separate from SQL accounting. Each store has its own file and
-`reviewed_at_commit`, so a store change touches one file and one review record. That commit
-is provenance for the last human review, not a reachability check.
+Tables and named external stores remain separate from SQL accounting. Each table and store
+has its own file, and each store has its own `reviewed_at_commit`, so a change touches one
+file and one review record. That commit is provenance for the last human review, not a
+reachability check.
 
 The committed gate is deliberately narrow, so it stays stable. The scripts job checks every
 record reader that the lexical scan finds: a new reader, a reader whose SQL changed, or a
@@ -186,7 +204,7 @@ python3 -B tools/world_data_inventory/inventory.py --review-sources
 python3 -B tools/world_data_inventory/inventory.py --check
 ```
 
-For a new table or column, classify the table in `dispositions.json` first. Then take an
+For a new table or column, classify the table in `tables/<table>.json` first. Then take an
 extraction: run the Rust extraction test with `WORLD_DATA_INVENTORY_OUTPUT` set to a
 task-owned folder (it keeps `extraction.json` even when the check fails), or download
 `extraction.json` from the failed CI run's `world-data-inventory` artifact. Then run:
@@ -195,11 +213,11 @@ task-owned folder (it keeps `extraction.json` even when the check fails), or dow
 python3 -B tools/world_data_inventory/inventory.py --review-sources --extraction /path/to/extraction.json
 ```
 
-Review the diff of `reviewed-surface.json` and `dispositions.json`. Do not use regeneration
-to substitute for classification review. An emitted extraction can also be analyzed with
-`inventory.py --extraction /path/to/extraction.json --output /path/to/report`. Its source
-commit and source fingerprint identify the evidence; it is not transferable to another
-checkout just because the world schema version matches.
+Review the diff of `reviewed-surface.json`, the table file and `dispositions.json`. Do not
+use regeneration to substitute for classification review. An emitted extraction can also be
+analyzed with `inventory.py --extraction /path/to/extraction.json --output /path/to/report`.
+Its source commit and source fingerprint identify the evidence; it is not transferable to
+another checkout just because the world schema version matches.
 
 ## Evidence limits and next instrumentation
 

@@ -444,6 +444,9 @@ pub struct EngineConfig {
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
     /// every run that does not ask for lights renders exactly as it did before.
     pub lights: bool,
+    /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
+    /// small vetted set to the references that carry them. Off by default.
+    pub papyrus_scripts: bool,
     pub physics_fixture: bool,
 }
 
@@ -577,6 +580,7 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            papyrus_scripts: false,
             physics_fixture: false,
         }
     }
@@ -609,6 +613,7 @@ Assets and start position:
   --hidden-window                       render screenshots without showing a window
   --background-window                   open the window behind other windows without taking focus
   --lights                              place a point light for each streamed LIGH reference
+  --papyrus-scripts                     run the first slice of converted Papyrus scripts
 
 Streaming:
   --ini <file>                        layer Skyrim INI settings; CLI options override files
@@ -1747,6 +1752,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--papyrus-scripts" => config.papyrus_scripts = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
@@ -2229,6 +2235,30 @@ mod tests {
         ("check_retail_claims.py", "--base"),
         ("check_retail_claims.py", "--head"),
         ("check_retail_claims.py", "--repo"),
+        // sync_branch.py merges origin/main and drives git and the inventory tool. It never
+        // launches the engine, so these options belong to its own CLI and its Git commands.
+        ("sync_branch.py", "--base"),
+        ("sync_branch.py", "--base-root"),
+        ("sync_branch.py", "--detach"),
+        ("sync_branch.py", "--diff-filter"),
+        ("sync_branch.py", "--dry-run"),
+        ("sync_branch.py", "--extraction"),
+        ("sync_branch.py", "--force"),
+        ("sync_branch.py", "--head"),
+        ("sync_branch.py", "--ignore-unmatch"),
+        ("sync_branch.py", "--inventory-command"),
+        ("sync_branch.py", "--is-ancestor"),
+        ("sync_branch.py", "--name-only"),
+        ("sync_branch.py", "--no-edit"),
+        ("sync_branch.py", "--no-fetch"),
+        ("sync_branch.py", "--no-ff"),
+        ("sync_branch.py", "--no-messages"),
+        ("sync_branch.py", "--repo"),
+        ("sync_branch.py", "--review-sources"),
+        ("sync_branch.py", "--show-toplevel"),
+        ("sync_branch.py", "--theirs"),
+        ("sync_branch.py", "--verify"),
+        ("sync_branch.py", "--write-tree"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -3972,6 +4002,14 @@ mod tests {
         assert_eq!(missing.terrain_lod, TerrainLodDistances::default());
     }
 
+    /// Converted Papyrus scripts are opt-in: the flag is off unless it is given.
+    #[test]
+    fn papyrus_scripts_are_off_until_the_flag_is_given() {
+        assert!(!EngineConfig::default().papyrus_scripts);
+        assert!(!run_config(&["--lights"]).papyrus_scripts);
+        assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
+    }
+
     /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
     /// acceptance or benchmark baseline taken from one - is unchanged.
     #[test]
@@ -4371,6 +4409,7 @@ mod tests {
             "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
+            "--papyrus-scripts",
             "--physics-fixture",
         ] {
             assert!(options.contains(&option), "the scan missed {option}");

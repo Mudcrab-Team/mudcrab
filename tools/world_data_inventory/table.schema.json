@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "classification": {
+      "enum": [
+        "deferred",
+        "provenance"
+      ]
+    },
+    "format_version": {
+      "const": 1
+    },
+    "owner": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "reason": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "table": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "format_version",
+    "table",
+    "classification",
+    "owner",
+    "reason"
+  ],
+  "title": "World-data table disposition v1",
+  "type": "object"
+}
