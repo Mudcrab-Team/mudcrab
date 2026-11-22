@@ -232,7 +232,8 @@ row-mapping closure. Schema column denominators count declarations per extracted
 
 The current traces preserve important distinctions:
 
-- Light falloff is published but absent from the audited light suffix. Day emittance
+- Light falloff is published. Since #488 the engine reads it only for lights with a shadow
+  mode and does not apply it. Reference light fade and radius have status columns. Day emittance
   reaches a material multiplier; other time slots are not implied.
 - Shallow water color gates row eligibility and maps into a DTO. Since #299 the water
   material setup passes it to the water shader, as it does the deep color.
@@ -262,7 +263,7 @@ in the open PR list. #269 owns publication gaps, #264 authored resolution/proven
 remain separate tools; this adds no record decoder.
 
 #270/#271/#276/#277/#278/#279 and #236 are merged. #225 rooms and #282 grass remain open.
-Active #488 (`094f4674b2dfeaca66c57df853cf83a9461a0f76`) changes local-light consumption;
+#488 (this refresh) changes local-light consumption and adds the `reference_light_data` table;
 #299 (merged) changes shallow-water consumption;
 #246 (`0524aab7a3875651ec57d7f03bfdfa058ef3371f`) owns movement/default selection;
 #480 (`d38f461b036a25458c548124b8c0b7f08c0f9070`) adds interior lighting consumers.
