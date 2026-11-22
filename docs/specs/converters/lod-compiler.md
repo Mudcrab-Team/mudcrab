@@ -144,13 +144,20 @@ is unchanged. Never index chunk-local coordinates as world-space bounds.
 Retail object LOD is imported, not computed from references (draft; Taylor has not decided whether
 it ships in v0.1.0). `crates/converter/src/lod/objects.rs` compiles one retail level-16 `.bto`
 block into one object chunk GLB beside the terrain chunk of the same key
-(`lod/<world>/16/objects_<x>_<y>.glb`). Levels 8 and 4 are not compiled yet.
+(`lod/<world>/<tier>/objects_<x>_<y>.glb`) for each shipped block level: 16, 8 and 4 (retail ships no level 32).
 
 - **Geometry.** The stored shape transform is applied and the block origin is subtracted, so the
   chunk is chunk-local like terrain chunks (the root node carries the Creation-to-glTF rotation).
-  One `objects` group holds one `object_batch_<n>` mesh per shape. A block with several segments
-  per shape, large-reference markers, no geometry or a non-finite vertex is refused and reported,
-  never guessed.
+  One `objects` group holds one mesh node per piece. A shape with one segment is one
+  `object_batch_<n>` piece. At level 4 a shape has up to 16 segments, one per cell of the 4 x 4
+  block, and becomes one `object_cell_<x>_<y>_<n>` piece per non-empty segment, tagged with its cell
+  so the engine can hide the pieces of cells it has loaded in full detail. Segment `i` covers cell
+  `(block_x + i / 4, block_y + i % 4)`: a measured fit (6,706 of 6,708 Tamriel segments), not
+  decoded from retail code. Large-reference data (`BSDistantObjectLargeRefExtraData`, 496 of 517
+  Tamriel level-4 blocks) is kept undecoded and not applied (counted in the LOD warnings), because
+  the engine does not implement the large-reference takeover. A block with no geometry, a shape with
+  several segments outside level 4, a level-4 shape with more than 16 segments, large-reference data
+  at level 16, or a non-finite vertex is refused and reported, never guessed.
 - **Atlas.** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`) goes
   through the existing texture stage as sRGB KTX2 and is embedded in every chunk (see Producers).
 - **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
