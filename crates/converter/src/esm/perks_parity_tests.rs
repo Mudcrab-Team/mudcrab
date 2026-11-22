@@ -1561,3 +1561,122 @@ fn wrong_type_condition_target_warns_and_clears_on_both_readers() {
         assert_eq!(row, (0, None), "{reader:?}");
     }
 }
+
+#[test]
+fn unknown_effect_type_prke_preserves_alignment_for_following_sibling_on_both_readers() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skyrim = esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &[esm::PRESET_EXTERIOR_CELL],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap();
+        skyrim.extend(perks::targets());
+        let mut perk = perks::prefix(10);
+        // Effect 0: 3-byte PRKE with unknown effect_type=3 (> 2); decoder keeps PRKE and drops DATA.
+        perk.extend(sub(b"PRKE", &[3, 0, 0]));
+        perk.extend(sub(b"DATA", &[0, 3, 0]));
+        perk.extend(sub(b"PRKF", &[]));
+        // Effect 1: valid entry point must remain aligned at effect_index = 1 and publish cleanly.
+        perk.extend(perks::entry_effect(
+            0,
+            3,
+            1,
+            Some(&2.25f32.to_le_bytes()),
+            None,
+        ));
+        skyrim.extend(top(
+            b"PERK",
+            &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+        ));
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let surviving: Vec<(i64, f64)> = conn
+            .prepare(
+                "SELECT effect_index, value_float_1 FROM perk_entry_points
+                 WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(surviving, vec![(1, 2.25)], "{reader:?}");
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        assert_eq!(
+            omissions.categories[OmissionCategory::PerkEffectUndecoded.name()].count,
+            1,
+            "{reader:?}: {omissions:?}"
+        );
+    }
+}
+
+#[test]
+fn trailing_effect_without_prkf_at_eof_is_omitted_on_both_readers() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skyrim = esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &[esm::PRESET_EXTERIOR_CELL],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap();
+        skyrim.extend(perks::targets());
+        let mut perk = perks::prefix(10);
+        // Effect 0: intact entry point with PRKF.
+        perk.extend(perks::entry_effect(
+            0,
+            3,
+            1,
+            Some(&4.5f32.to_le_bytes()),
+            None,
+        ));
+        // Effect 1 (last effect at EOF): valid fields but missing its PRKF terminator.
+        perk.extend(sub(b"PRKE", &[2, 0, 0]));
+        perk.extend(sub(b"DATA", &[0, 3, 0]));
+        perk.extend(sub(b"EPFT", &[1]));
+        perk.extend(sub(b"EPFD", &1.25f32.to_le_bytes()));
+        skyrim.extend(top(
+            b"PERK",
+            &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+        ));
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let surviving: Vec<(i64, f64)> = conn
+            .prepare(
+                "SELECT effect_index, value_float_1 FROM perk_entry_points
+                 WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(surviving, vec![(0, 4.5)], "{reader:?}");
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        assert_eq!(
+            omissions.categories[OmissionCategory::PerkEffectUndecoded.name()].count,
+            1,
+            "{reader:?}: {omissions:?}"
+        );
+    }
+}

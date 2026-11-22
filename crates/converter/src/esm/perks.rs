@@ -279,9 +279,12 @@ pub(crate) fn inhouse_rejected_sections(
     let mut canon_cursor = 0usize;
     let mut aligned_indices = Vec::with_capacity(canon_blocks.len());
     for (effect_index, raw_block) in raw_blocks.iter().enumerate() {
+        // The in-house decoder accepts any 3-byte `PRKE` (enum values decode as `u8`), so
+        // canonical blocks stay aligned 1-to-1 with every 3-byte source `PRKE`, including
+        // unknown effect types (> 2) that `insert_record` reports as `perk_effect_undecoded`.
         let valid_prke = raw_block
             .first()
-            .is_some_and(|(tag, bytes)| tag == b"PRKE" && bytes.len() == 3 && bytes[0] <= 2);
+            .is_some_and(|(tag, bytes)| tag == b"PRKE" && bytes.len() == 3);
         let Some(&canon_block) = valid_prke.then(|| canon_blocks.get(canon_cursor)).flatten()
         else {
             sections.effect_indices.insert(effect_index);
@@ -339,8 +342,8 @@ pub(crate) fn inhouse_rejected_sections(
     sections
 }
 
-/// Map legacy `malformed_subrecords` indices and link-rejected effects to `PERK` sections.
-pub(crate) fn legacy_rejected_sections(
+/// Map remapper `malformed_subrecords` indices and link-rejected effects to `PERK` sections.
+pub(crate) fn remap_rejected_sections(
     subrecords: &[Subrecord],
     malformed_indices: &[usize],
     rejected_link_effects: &std::collections::BTreeSet<usize>,

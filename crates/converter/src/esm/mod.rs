@@ -1791,7 +1791,7 @@ fn remap_record_form_ids(
     let rejected = if (!malformed_subrecords.is_empty() || !rejected_perk_effects.is_empty())
         && record.record_type == *b"PERK"
     {
-        let sections = perks::legacy_rejected_sections(
+        let sections = perks::remap_rejected_sections(
             &record.subrecords,
             &malformed_subrecords,
             &rejected_perk_effects,

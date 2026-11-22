@@ -3390,6 +3390,7 @@ mod tests {
             ExportOptions {
                 runtime_views: true,
                 scalar_scripts: false,
+                perk_rejections: None,
                 rejected_light_fields: Some(&rejected),
                 trusted_portal_nulls: true,
                 deleted_ids: None,
