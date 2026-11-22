@@ -16,6 +16,9 @@ SURFACE_NAME = "reviewed-surface.json"
 STORE_DIR = "stores"
 STORE_FIELDS = ("format_version", "store", "reviewed_at_commit", "owner", "reason", "states", "evidence")
 STORE_DISPOSITIONS = ("reviewed_at_commit", "owner", "reason", "states", "evidence")
+TABLE_DIR = "tables"
+TABLE_FIELDS = ("format_version", "table", "classification", "owner", "reason")
+TABLE_DISPOSITIONS = ("classification", "owner", "reason")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 # Derived files. Never commit them: they hold fingerprints of source files, so every unrelated source edit
 # changes them and every open pull request then conflicts. CI and this tool regenerate them. The list matches
@@ -352,15 +355,77 @@ def load_stores(here):
     return dict(sorted(stores.items()))
 
 
+def table_paths(here):
+    """The committed table files, sorted. Each table is its own file so table PRs never share a line."""
+    directory = here / TABLE_DIR
+    if not directory.is_dir():
+        raise ValueError(f"missing {TABLE_DIR}/ directory; each table needs its own JSON file")
+    paths = sorted(directory.glob("*.json"))
+    loaded = set(paths)
+    for path in sorted(directory.iterdir()):
+        if path.is_file() and path not in loaded:
+            name = path.relative_to(here).as_posix()
+            raise ValueError(f"unexpected file in table directory: {name}; only lowercase *.json table files are read")
+    return paths
+
+
+def load_tables(here):
+    """Load one disposition per table. Refuse a partial or mistyped file instead of dropping fields."""
+    tables = {}
+    sources = {}
+    for path in table_paths(here):
+        name = path.relative_to(here).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f"cannot read table file {name}: {error}") from None
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid JSON in table file {name}: {error}") from None
+        if not isinstance(value, dict):
+            raise ValueError(f"table file is not an object: {name}")
+        problems = []
+        missing = sorted(set(TABLE_FIELDS) - set(value))
+        extra = sorted(set(value) - set(TABLE_FIELDS))
+        if missing:
+            problems.append("missing " + ", ".join(missing))
+        if extra:
+            problems.append("unknown " + ", ".join(extra))
+        if problems:
+            raise ValueError(f"invalid table file {name}: " + "; ".join(problems))
+        if value["format_version"] != 1:
+            raise ValueError(f"unsupported table file version: {name}")
+        key = value["table"]
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"missing table name: {name}")
+        if key in tables:
+            raise ValueError(f"duplicate table {key}: {sources[key]} and {name}")
+        tables[key] = {field: value[field] for field in TABLE_DISPOSITIONS}
+        tables[key]["source"] = name
+        sources[key] = name
+    return dict(sorted(tables.items()))
+
+
 def load_manual(here):
-    """Load dispositions.json and join the per-store files. A legacy stores block fails with the migration."""
+    """Load dispositions.json and join the per-store and per-table files.
+
+    A legacy `stores` or `tables` block fails with the migration path, so no entry
+    disappears when two pull requests edit the same shared object.
+    """
     manual = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
     if "stores" in manual:
         raise ValueError(
             f"dispositions.json must not contain a stores block; each store has its own file under "
             f"tools/world_data_inventory/{STORE_DIR}/ with its own reviewed_at_commit. "
             "Move each entry to that directory and delete the block.")
+    if "tables" in manual:
+        raise ValueError(
+            f"dispositions.json must not contain a tables block; each table has its own file under "
+            f"tools/world_data_inventory/{TABLE_DIR}/. "
+            "Move each entry to that directory and delete the block.")
     manual["stores"] = load_stores(here)
+    manual["tables"] = load_tables(here)
     return manual
 
 
@@ -394,8 +459,9 @@ def validate_manual(root, manual):
     for value in manual["legacy_shapes"]:
         validate_refs(root, value["evidence"])
     for key, value in manual["tables"].items():
+        source = value.get("source", "unknown table file")
         if value["classification"] not in {"deferred", "provenance"} or not value["owner"] or not value["reason"]:
-            raise ValueError(f"invalid table disposition: {key}")
+            raise ValueError(f"invalid table disposition: {key} ({source})")
 
 
 def checked_at(root):
@@ -443,7 +509,8 @@ def build(root, manual, extraction=None, queries=None):
                 for cid, column, kind, required, default, pk in table_info:
                     disposition = manual["fields"].get(f"{table}.{column}")
                     if disposition is None:
-                        disposition = manual["blob_default"] if "BLOB" in kind.upper() else manual["tables"][table]
+                        disposition = (manual["blob_default"] if "BLOB" in kind.upper()
+                                       else {field: manual["tables"][table][field] for field in TABLE_DISPOSITIONS})
                     columns.append({"ordinal": cid, "name": column, "type": kind, "not_null": bool(required),
                                     "default": default, "primary_key": pk,
                                     "disposition": disposition,
@@ -568,11 +635,14 @@ def source_guard(root, queries, manual):
                       for group in ("evidence", "sink", "tests") for ref in field.get(group, [])}
     evidence_paths.update(ref["path"] for store in manual["stores"].values() for ref in store["evidence"])
     store_dir = root / "tools/world_data_inventory" / STORE_DIR
+    table_dir = root / "tools/world_data_inventory" / TABLE_DIR
     tooling = ["tools/world_data_inventory/inventory.py", "tools/world_data_inventory/dispositions.json",
                "tools/world_data_inventory/dispositions.schema.json",
                "tools/world_data_inventory/store.schema.json",
+               "tools/world_data_inventory/table.schema.json",
                "crates/engine/src/world/inventory_tests.rs"]
     tooling += sorted(path.relative_to(root).as_posix() for path in store_dir.glob("*.json")) if store_dir.is_dir() else []
+    tooling += sorted(path.relative_to(root).as_posix() for path in table_dir.glob("*.json")) if table_dir.is_dir() else []
     return {"projection_sources": source_files(root), "query_candidates": [q["id"] for q in queries],
             "reader_sources": {p: digest((root / p).read_text(encoding="utf-8"))
                                for p in sorted({q["path"] for q in queries} | evidence_paths)},
@@ -682,11 +752,11 @@ def run(argv, root=ROOT, here=HERE):
     surface_path = here / SURFACE_NAME
     if args.review_sources:
         if extraction:
-            # Reviewing a column never replaces classifying its table in dispositions.json.
+            # Reviewing a column never replaces classifying its table under tables/.
             tables = sorted({name.split(".", 1)[0] for name in emitted_columns(extraction)} - set(manual["tables"]))
             if tables:
                 raise ValueError("unclassified emitted table: " + ", ".join(tables)
-                                 + ". Add a disposition to dispositions.json first")
+                                 + ". Add a disposition under tools/world_data_inventory/tables/ first")
         previous = json.loads(surface_path.read_text(encoding="utf-8")) if surface_path.is_file() else {}
         columns = emitted_columns(extraction) if extraction else previous.get("columns", [])
         write_text(surface_path, surface_text({"readers": reader_surface(queries), "columns": columns}))
@@ -696,7 +766,7 @@ def run(argv, root=ROOT, here=HERE):
         problems += surface_difference("column", surface["columns"], emitted_columns(extraction))
     if problems:
         raise ValueError("unreviewed change to the record readers or columns. Review the dispositions in "
-                         "dispositions.json, then run inventory.py --review-sources"
+                         "tables/ and dispositions.json, then run inventory.py --review-sources"
                          + (" --extraction <extraction.json>" if extraction else "")
                          + " and commit " + SURFACE_NAME + ":\n" + "\n".join(problems))
     result = build(root, manual, extraction, queries)

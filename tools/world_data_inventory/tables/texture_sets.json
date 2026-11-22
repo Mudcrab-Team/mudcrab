@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict.",
+  "table": "texture_sets"
+}
