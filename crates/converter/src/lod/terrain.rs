@@ -642,13 +642,13 @@ fn cell_bounds(positions: &[f32], start_vertex: usize) -> ([f32; 3], [f32; 3]) {
     (min, max)
 }
 
-fn f32_slice_bytes(values: &[f32]) -> &[u8] {
+pub(super) fn f32_slice_bytes(values: &[f32]) -> &[u8] {
     // SAFETY: `f32` is `repr(Rust)` but plain-old-data with no padding; a
     // shared slice reborrow as bytes reads exactly the values' storage.
     unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
 }
 
-fn pad_to_4(bytes: &mut Vec<u8>) {
+pub(super) fn pad_to_4(bytes: &mut Vec<u8>) {
     while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
     }
@@ -698,6 +698,12 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
     let asset = json["asset"]
         .as_object()
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB asset header is missing"))?;
+    // A chunk from the .btr importer has its own contract.
+    if asset.get("generator").and_then(|value| value.as_str())
+        == Some(super::retail_terrain::GENERATOR)
+    {
+        return super::retail_terrain::validate_glb(&json, &bytes[binary_start..binary_end]);
+    }
     color_eyre::eyre::ensure!(
         asset.get("version").and_then(|v| v.as_str()) == Some("2.0"),
         "GLB asset version is not 2.0"

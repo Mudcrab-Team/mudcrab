@@ -6,6 +6,7 @@
 
 pub mod albedo;
 pub mod retail;
+pub mod retail_terrain;
 pub(crate) mod reuse;
 pub mod terrain;
 
