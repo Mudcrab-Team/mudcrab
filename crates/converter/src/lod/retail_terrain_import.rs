@@ -4,6 +4,7 @@
 //! pipeline.
 
 use super::{
+    generation::StagedGeneration,
     retail::btr::{TerrainLodShapeKind, read_terrain_lod},
     retail_terrain::{
         IMPORT_VERSION, RETAIL_NORMAL_AXES, RetailBlock, compile_block, tier_for_level,
@@ -11,17 +12,16 @@ use super::{
     retail_terrain_source::{BlockId, RetailTerrainFiles, Skipped},
     terrain::publish_chunk,
 };
-use crate::{cache::hash_bytes, pack_clone::require_private_output};
+use crate::cache::hash_bytes;
 use color_eyre::{
     Result,
-    eyre::{ContextCompat, WrapErr, bail, ensure},
+    eyre::{ContextCompat, ensure},
 };
 use rayon::prelude::*;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use shared::lod::LodOrigin;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -56,6 +56,13 @@ pub(crate) struct LodWorld {
     pub origin: LodOrigin,
 }
 
+/// The report and identity inputs for one staged world.
+pub(crate) struct WorldImport {
+    pub(crate) report: WorldReport,
+    pub(crate) retail_inputs: BTreeMap<String, String>,
+    pub(crate) payload_hashes: Vec<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn import_world(
     connection: &Connection,
@@ -68,6 +75,28 @@ pub(crate) fn import_world(
     payload_hashes: &mut Vec<String>,
     check_stop: impl Fn() -> Result<()>,
 ) -> Result<WorldReport> {
+    let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    let mut staged = StagedGeneration::new(target)?;
+    let imported = stage_world(&tx, &mut staged, world, files, ids, pool, &check_stop)?;
+    if !imported.retail_inputs.is_empty() {
+        check_stop()?;
+        staged.publish(target, tx, check_stop)?;
+        retail_inputs.extend(imported.retail_inputs);
+        payload_hashes.extend(imported.payload_hashes);
+    }
+    Ok(imported.report)
+}
+
+/// Compiles one world into the caller's generation. No live files are changed here.
+pub(crate) fn stage_world(
+    tx: &Transaction<'_>,
+    staged: &mut StagedGeneration,
+    world: &LodWorld,
+    files: &RetailTerrainFiles,
+    ids: &[BlockId],
+    pool: &rayon::ThreadPool,
+    check_stop: impl Fn() -> Result<()>,
+) -> Result<WorldImport> {
     let mut report = WorldReport {
         editor_id: world.editor_id.clone(),
         ..Default::default()
@@ -91,21 +120,10 @@ pub(crate) fn import_world(
             },
         );
     }
-    if plan.is_empty() {
-        return Ok(report);
+    if !plan.is_empty() {
+        check_stop()?;
     }
-    check_stop()?;
-    let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
-    let old = old_chunk_paths(&tx, world.id)?;
-    tx.execute(
-        "DELETE FROM lod_chunks WHERE worldspace_id = ?1",
-        [world.id],
-    )?;
-    tx.execute(
-        "DELETE FROM lod_chunks_spatial WHERE worldspace_id = ?1",
-        [world.id],
-    )?;
-    let staged = tempfile::tempdir_in(target).wrap_err("failed to stage terrain LOD payloads")?;
+    let staging = staged.staging_root();
     let mut new_inputs = BTreeMap::new();
     let mut new_payload_hashes = Vec::new();
 
@@ -130,8 +148,24 @@ pub(crate) fn import_world(
         for (id, result) in results {
             match result {
                 Ok((chunk, stats, input_hash)) => {
-                    publish_chunk(&tx, staged.path(), &chunk)?;
+                    // A world whose blocks all fail keeps its existing chunks.
+                    if new_inputs.is_empty() {
+                        report.replaced_paths = old_chunk_paths(tx, world.id)?;
+                        tx.execute(
+                            "DELETE FROM lod_chunks WHERE worldspace_id = ?1",
+                            [world.id],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM lod_chunks_spatial WHERE worldspace_id = ?1",
+                            [world.id],
+                        )?;
+                    }
                     let relative = shared::lod::chunk_payload_path(chunk.key);
+                    ensure!(
+                        staged.paths.insert(PathBuf::from(&relative)),
+                        "duplicate terrain LOD chunk {relative}"
+                    );
+                    publish_chunk(tx, &staging, &chunk)?;
                     new_payload_hashes.push(format!("{relative}:{}", hash_bytes(&chunk.glb)));
                     new_inputs.insert(relative, input_hash);
                     *report.compiled.entry(id.1).or_default() += 1;
@@ -143,70 +177,18 @@ pub(crate) fn import_world(
             }
         }
     }
-    files.check_archives(ids)?;
-    if new_inputs.is_empty() {
-        // Dropping the transaction restores the old rows and leaves the old files in place.
-        return Ok(report);
+    if !plan.is_empty() {
+        files.check_archives(ids)?;
     }
-    check_stop()?;
-    let affected: Vec<_> = old
-        .iter()
-        .chain(new_inputs.keys())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let mut moved = Vec::new();
-    let publish = (|| {
-        for relative in affected {
-            require_private_output(target, Path::new(relative))?;
-            let destination = target.join(relative);
-            let parent = destination
-                .parent()
-                .wrap_err("missing LOD payload parent")?;
-            fs::create_dir_all(parent)?;
-            let backup = staged.path().join(format!("old-{}", moved.len()));
-            let backed_up = match fs::symlink_metadata(&destination) {
-                Ok(_) => {
-                    fs::rename(&destination, &backup)?;
-                    Some(backup)
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.into()),
-            };
-            moved.push((destination, backed_up, false));
-            if new_inputs.contains_key(relative) {
-                let (destination, _, installed) =
-                    moved.last_mut().wrap_err("missing payload backup record")?;
-                fs::rename(staged.path().join(relative), destination)?;
-                *installed = true;
-            }
-        }
-        check_stop()?;
-        tx.commit()?;
-        Ok(())
-    })();
-    if let Err(error) = publish {
-        for (destination, backup, installed) in moved.into_iter().rev() {
-            let restored = match (backup, installed) {
-                (Some(backup), _) => fs::rename(backup, destination),
-                (None, true) => fs::remove_file(destination),
-                (None, false) => Ok(()),
-            };
-            if let Err(restore_error) = restored {
-                let recovery = staged.keep();
-                bail!(
-                    "cannot publish terrain LOD: {error:#}; cannot restore a payload: {restore_error}; backups remain in {}",
-                    recovery.display()
-                );
-            }
-        }
-        return Err(error);
-    }
-    report.old_chunks_removed = old.len();
-    report.replaced_paths = old;
-    retail_inputs.extend(new_inputs);
-    payload_hashes.extend(new_payload_hashes);
-    Ok(report)
+    report.old_chunks_removed = report.replaced_paths.len();
+    staged
+        .stale
+        .extend(report.replaced_paths.iter().map(PathBuf::from));
+    Ok(WorldImport {
+        report,
+        retail_inputs: new_inputs,
+        payload_hashes: new_payload_hashes,
+    })
 }
 
 pub(crate) fn skip(report: &mut WorldReport, id: &BlockId, skipped: Skipped) {
@@ -307,6 +289,7 @@ mod tests {
     use super::super::retail_terrain_source;
     use super::*;
     use shared::lod::{ChunkAnchor, ChunkKey, LodTier, chunk_payload_path};
+    use std::fs;
 
     #[test]
     fn a_world_with_all_failed_blocks_keeps_its_rows_and_payload_for_retry() {

@@ -20,6 +20,7 @@ use crate::{
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes, hash_file},
     integration::open_private_world_database,
     lod::{
+        generation::StagedGeneration,
         object_stage::{LevelCounts, compile_candidates, level_counts, read_retail},
         objects::{
             OBJECT_COMPILER_VERSION, ObjectChunk, publish_object_atlas, publish_object_chunk,
@@ -39,7 +40,6 @@ use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, object_chunk_payloa
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::ErrorKind,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -269,7 +269,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         })).collect::<Vec<_>>(),
         "lod_manifest_sha256": {
             "before": hash_bytes(&manifest_before),
-            "after": hash_file(&staged.files.path().join("new/lod-manifest.json"))?,
+            "after": hash_file(&staged.staging_root().join("lod-manifest.json"))?,
         },
         "verified": [
             "Level-4 segment i covers cell (x + i / 4, y + i % 4): verified in the retail loader (skyrim_decomp#816, static reading). Level-8 and level-16 shapes are whole shapes, not split per cell.",
@@ -288,7 +288,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         "elapsed_ms": elapsed_ms,
     });
     let text = serde_json::to_string_pretty(&receipt)? + "\n";
-    fs::write(staged.files.path().join("new").join(RECEIPT_FILE), &text)
+    fs::write(staged.staging_root().join(RECEIPT_FILE), &text)
         .wrap_err("failed to stage the object LOD receipt")?;
     staged.paths.insert(RECEIPT_FILE.into());
     // The registered manifests are untouched by this command; prove it.
@@ -298,7 +298,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
             "the derive changed {file}, which it must not touch"
         );
     }
-    staged.publish(&target, transaction)?;
+    staged.publish(&target, transaction, || Ok(()))?;
     Ok(DeriveObjectLodReport {
         receipt: target.join(RECEIPT_FILE),
         blocks_found,
@@ -379,13 +379,6 @@ fn object_row_count(connection: &Connection) -> Result<i64> {
     )
 }
 
-/// Keeps the new files and any backups on the clone's filesystem until the database commits.
-struct StagedGeneration {
-    files: tempfile::TempDir,
-    paths: BTreeSet<PathBuf>,
-    stale: BTreeSet<PathBuf>,
-}
-
 fn stage_generation(
     target: &Path,
     transaction: &Transaction<'_>,
@@ -454,10 +447,8 @@ fn stage_generation(
         )?;
     }
 
-    let files = tempfile::Builder::new()
-        .prefix(".object-lod-")
-        .tempdir_in(target)?;
-    let new = files.path().join("new");
+    let mut staged = StagedGeneration::new(target)?;
+    let new = staged.staging_root();
     let (atlas_path, atlas_file_sha256) =
         publish_object_atlas(transaction, &new, world.id, &atlas)?;
     let mut paths = BTreeSet::from([PathBuf::from(&atlas_path)]);
@@ -499,14 +490,11 @@ fn stage_generation(
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     paths.insert(manifest_path.into());
-    stale.retain(|path| !paths.contains(path));
+    staged.paths = paths;
+    staged.stale = stale;
 
     Ok((
-        StagedGeneration {
-            files,
-            paths,
-            stale,
-        },
+        staged,
         CoreReport {
             chunks,
             skipped,
@@ -518,79 +506,6 @@ fn stage_generation(
             atlas_levels: metadata.levels,
         },
     ))
-}
-
-impl StagedGeneration {
-    /// Moves the old files aside under the pack lock. A failed install or SQLite commit restores
-    /// them. Stale payloads are backed up too, so retirement is part of the same operation.
-    fn publish(self, target: &Path, transaction: Transaction<'_>) -> Result<()> {
-        for path in self.paths.iter().chain(&self.stale) {
-            require_private_output(target, path)?;
-        }
-        let new = self.files.path().join("new");
-        let backup = self.files.path().join("previous");
-        let mut moved = Vec::new();
-        let result = (|| -> Result<()> {
-            for path in self.paths.iter().chain(&self.stale) {
-                let destination = target.join(path);
-                let saved = backup.join(path);
-                if let Some(parent) = saved.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let had_previous = match fs::rename(&destination, &saved) {
-                    Ok(()) => true,
-                    Err(error) if error.kind() == ErrorKind::NotFound => false,
-                    Err(error) => {
-                        return Err(error)
-                            .wrap_err_with(|| format!("cannot save {}", destination.display()));
-                    }
-                };
-                moved.push((path, had_previous, false));
-                if self.paths.contains(path) {
-                    if let Some(parent) = destination.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    fs::rename(new.join(path), &destination)
-                        .wrap_err_with(|| format!("cannot install {}", destination.display()))?;
-                    if let Some((_, _, installed)) = moved.last_mut() {
-                        *installed = true;
-                    }
-                }
-            }
-            transaction.commit()?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let mut failures = Vec::new();
-            for (path, had_previous, installed) in moved.into_iter().rev() {
-                let destination = target.join(path);
-                let restore = if had_previous {
-                    fs::rename(backup.join(path), &destination)
-                } else if installed {
-                    fs::remove_file(&destination)
-                } else {
-                    continue;
-                };
-                if let Err(error) = restore {
-                    failures.push(format!("{}: {error}", destination.display()));
-                }
-            }
-            if !failures.is_empty() {
-                let retained = self.files.keep();
-                return Err(error.wrap_err(format!(
-                    "object LOD rollback failed ({}); backups remain in {}",
-                    failures.join(", "),
-                    retained.display(),
-                )));
-            }
-            return Err(error
-                .wrap_err("publishing object LOD failed; the previous generation was restored"));
-        }
-        if let Err(error) = self.files.close() {
-            eprintln!("Warning: could not remove object LOD staging files: {error}");
-        }
-        Ok(())
-    }
 }
 
 fn object_has_table(connection: &Connection) -> Result<bool> {
@@ -723,7 +638,7 @@ mod tests {
             "atlas",
             force,
         )?;
-        staged.publish(root, transaction)?;
+        staged.publish(root, transaction, || Ok(()))?;
         Ok(report)
     }
 
@@ -913,8 +828,10 @@ mod tests {
         // The manifest sorts ahead of all the payloads. Lose the last staged file to force an
         // installation failure after the manifest and the required old payloads have moved.
         let last = staged.paths.last().unwrap();
-        fs::remove_file(staged.files.path().join("new").join(last)).unwrap();
-        let failure = staged.publish(root.path(), transaction).unwrap_err();
+        fs::remove_file(staged.staging_root().join(last)).unwrap();
+        let failure = staged
+            .publish(root.path(), transaction, || Ok(()))
+            .unwrap_err();
         assert!(format!("{failure:#}").contains("previous generation was restored"));
         assert_eq!(paths.map(hash), before);
         assert_eq!(rows(root.path()), 1);

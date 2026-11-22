@@ -18,8 +18,9 @@ use crate::{
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes, hash_file},
     integration::open_private_world_database,
     lod::{
+        generation::StagedGeneration,
         retail_terrain::{IMPORT_VERSION, RETAIL_NORMAL_AXES},
-        retail_terrain_import::{LodWorld, WorldReport, import_world},
+        retail_terrain_import::{LodWorld, WorldReport, stage_world},
         retail_terrain_source::{self as source, BlockId},
         reuse::{LodManifest, TERRAIN_SOURCE_RETAIL},
     },
@@ -29,7 +30,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, ensure},
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use shared::lod::LodOrigin;
 use std::{
     collections::BTreeMap,
@@ -82,7 +83,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     for file in ["lod-manifest.json", RECEIPT_FILE] {
         require_private_output(&target, Path::new(file))?;
     }
-    let connection = open_private_world_database(&target)?;
+    let mut connection = open_private_world_database(&target)?;
     let conversion = ConversionManifest::load(&target.join("conversion-manifest.json"))
         .wrap_err("refused: the target conversion manifest cannot be read")?;
     ensure!(
@@ -91,9 +92,9 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     );
     shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION)
         .wrap_err("refused: the target has no valid terrain LOD to replace")?;
-    let manifest_path = target.join("lod-manifest.json");
-    let manifest_before =
-        fs::read(&manifest_path).wrap_err("refused: the target has no lod-manifest.json")?;
+    let manifest_path = Path::new("lod-manifest.json");
+    let manifest_before = fs::read(target.join(manifest_path))
+        .wrap_err("refused: the target has no lod-manifest.json")?;
     let mut manifest: LodManifest = serde_json::from_slice(&manifest_before)
         .wrap_err("refused: lod-manifest.json is not valid")?;
     ensure!(
@@ -137,6 +138,8 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         );
     }
 
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut staged = StagedGeneration::new(&target)?;
     let mut reports = Vec::new();
     let mut kept = Vec::new();
     let mut retail_inputs: BTreeMap<String, String> = BTreeMap::new();
@@ -155,17 +158,19 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             kept.push(world.editor_id.clone());
             continue;
         }
-        let report = import_world(
-            &connection,
-            &target,
+        let imported = stage_world(
+            &transaction,
+            &mut staged,
             world,
             &files,
             &ids,
             &pool,
-            &mut retail_inputs,
-            &mut payload_hashes,
             || Ok(()),
-        )?;
+        )
+        .wrap_err_with(|| format!("failed to stage terrain LOD for {}", world.editor_id))?;
+        retail_inputs.extend(imported.retail_inputs);
+        payload_hashes.extend(imported.payload_hashes);
+        let report = imported.report;
         if report.compiled.is_empty() {
             kept.push(world.editor_id.clone());
             eprintln!(
@@ -182,13 +187,13 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     for (name, path) in verified_archives {
         ensure!(
             files.archive_hash(path)? == conversion.archives[name].source_hash,
-            "archive {name} changed during terrain LOD import; discard this clone"
+            "archive {name} changed during terrain LOD import"
         );
     }
 
     // Manifest and database identity: one new identity shared by both.
     let chunk_count: i64 =
-        connection.query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))?;
+        transaction.query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))?;
     payload_hashes.sort();
     let identity = hash_bytes(&serde_json::to_vec(&serde_json::json!({
         "previous": manifest.build_identity,
@@ -196,7 +201,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         "import_version": IMPORT_VERSION,
         "payloads": payload_hashes,
     }))?);
-    connection.execute(
+    transaction.execute(
         "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
         [&identity],
     )?;
@@ -218,11 +223,18 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         manifest.terrain_sources.clear();
         manifest.chunk_inputs.clear();
     }
-    crate::mesh::write_glb_atomic(&manifest_path, &serde_json::to_vec_pretty(&manifest)?)?;
-    drop(connection);
-    shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION).wrap_err(
-        "the derived pack no longer satisfies the engine's LOD contract; discard this clone",
-    )?;
+    let staging = staged.staging_root();
+    let staged_manifest = staging.join(manifest_path);
+    fs::write(&staged_manifest, serde_json::to_vec_pretty(&manifest)?)
+        .wrap_err("failed to stage the terrain LOD manifest")?;
+    let manifest_after = fs::read(&staged_manifest)?;
+    shared::world_assets::validate_lod_manifest(
+        &transaction,
+        &manifest_after,
+        CONVERTER_SCHEMA_VERSION,
+    )
+    .wrap_err("the staged generation does not satisfy the engine's LOD contract")?;
+    staged.paths.insert(manifest_path.into());
 
     let chunks = reports
         .iter()
@@ -262,7 +274,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         })).collect::<Vec<_>>(),
         "lod_manifest_sha256": {
             "before": hash_bytes(&manifest_before),
-            "after": hash_file(&manifest_path)?,
+            "after": hash_bytes(&manifest_after),
         },
         "unverified": [
             "Shading beyond sampling the shipped colour and normal maps is research item 7 and is not verified.",
@@ -272,11 +284,12 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         ],
         "elapsed_ms": elapsed_ms,
     });
-    crate::mesh::write_glb_atomic(
-        &target.join(RECEIPT_FILE),
-        (serde_json::to_string_pretty(&receipt)? + "\n").as_bytes(),
+    fs::write(
+        staging.join(RECEIPT_FILE),
+        serde_json::to_string_pretty(&receipt)? + "\n",
     )
-    .wrap_err("failed to write the terrain LOD receipt")?;
+    .wrap_err("failed to stage the terrain LOD receipt")?;
+    staged.paths.insert(RECEIPT_FILE.into());
     // The registered manifests are untouched by this command; prove it.
     for (file, expected) in &clone.manifests {
         ensure!(
@@ -284,6 +297,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             "the derive changed {file}, which it must not touch"
         );
     }
+    staged.publish(&target, transaction, || Ok(()))?;
     Ok(DeriveTerrainLodReport {
         receipt: target.join(RECEIPT_FILE),
         worlds: reports,
@@ -323,6 +337,160 @@ fn lod_worlds(connection: &Connection) -> Result<Vec<LodWorld>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_world_failure_keeps_the_previous_terrain_generation() {
+        use shared::lod::{ChunkAnchor, ChunkKey, LodTier, chunk_payload_path};
+
+        let directory = tempfile::tempdir().unwrap();
+        let registered = directory.path().join("registered");
+        let target = directory.path().join("clone");
+        let data = directory.path().join("Data");
+        fs::create_dir(&registered).unwrap();
+        fs::create_dir(&target).unwrap();
+        let conversion = serde_json::to_vec(&ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            ..Default::default()
+        })
+        .unwrap();
+        for root in [&registered, &target] {
+            fs::write(root.join("conversion-manifest.json"), &conversion).unwrap();
+        }
+        let registry = directory.path().join("packs.json");
+        fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!({
+                "pack": {
+                    "path": registered,
+                    "manifests": { "conversion-manifest.json": hash_bytes(&conversion) },
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let db = target.join("skyrim_world.db");
+        let connection = Connection::open(&db).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO worldspaces(id, editor_id, flags, lod_origin_x, lod_origin_y)
+                    VALUES (60, 'First', 0, 0, 0), (61, 'Second', 0, 0, 0);
+                 CREATE TRIGGER fail_second_world BEFORE INSERT ON lod_chunks
+                    WHEN new.worldspace_id = 61 AND
+                         (SELECT count(*) FROM lod_chunks WHERE worldspace_id = 60) = 1
+                    BEGIN SELECT RAISE(ABORT, 'second world failed after the first replaced its chunks'); END;",
+            )
+            .unwrap();
+        let mut previous = Vec::new();
+        for (world, x) in [(60, 0), (60, 1), (61, 0)] {
+            let relative = chunk_payload_path(ChunkKey::new(
+                world,
+                LodTier::Tier16,
+                ChunkAnchor::new(x, 0),
+            ));
+            let path = target.join(&relative);
+            let bytes = format!("old terrain for world {world}, anchor {x}");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO lod_chunks VALUES (?1, 16, ?2, 0, ?3, ?4, 0, 0, 0, 1, 1, 1, '0,0')",
+                    rusqlite::params![world, x, relative, hash_bytes(bytes.as_bytes())],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO lod_chunks_spatial VALUES ((SELECT count(*)+1 FROM lod_chunks_spatial),
+                     0, 1, 0, 1, ?1, 16, ?2, 0)",
+                    rusqlite::params![world, x],
+                )
+                .unwrap();
+            previous.push((path, bytes.into_bytes()));
+        }
+        let identity = "a".repeat(64);
+        connection
+            .execute("INSERT INTO lod_build VALUES (1, ?1)", [&identity])
+            .unwrap();
+        drop(connection);
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "build_identity": identity,
+            "converter_schema": CONVERTER_SCHEMA_VERSION,
+            "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
+            "chunks": 3,
+            "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
+            "terrain_sources": {},
+            "terrain_lod_source": TERRAIN_SOURCE_RETAIL,
+            "retail_terrain_import_version": IMPORT_VERSION,
+        }))
+        .unwrap();
+        let manifest_path = target.join("lod-manifest.json");
+        fs::write(&manifest_path, &manifest).unwrap();
+        let receipt_path = target.join(RECEIPT_FILE);
+        fs::write(&receipt_path, b"previous receipt").unwrap();
+        previous.push((manifest_path.clone(), manifest));
+        previous.push((receipt_path.clone(), b"previous receipt".to_vec()));
+        previous.push((db.clone(), fs::read(&db).unwrap()));
+        shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION)
+            .unwrap();
+
+        let mesh = crate::lod::retail::btr::tests::land_block();
+        let map = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(5),
+        )
+        .unwrap();
+        for world in ["first", "second"] {
+            let meshes = data.join("meshes/terrain").join(world);
+            let textures = data.join("textures/terrain").join(world);
+            fs::create_dir_all(&meshes).unwrap();
+            fs::create_dir_all(&textures).unwrap();
+            fs::write(meshes.join(format!("{world}.16.0.0.btr")), &mesh).unwrap();
+            fs::write(textures.join(format!("{world}.16.0.0.dds")), &map).unwrap();
+            fs::write(textures.join(format!("{world}.16.0.0_n.dds")), &map).unwrap();
+        }
+        let options = DeriveTerrainLodOptions {
+            target: target.clone(),
+            registry,
+            clone_of: "pack".into(),
+            data,
+            force: true,
+            converter_head: None,
+            command: Vec::new(),
+        };
+        let error = run(&options).unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("second world failed after the first replaced its chunks"),
+            "{error:#}"
+        );
+        for (path, bytes) in &previous {
+            assert_eq!(&fs::read(path).unwrap(), bytes, "{}", path.display());
+        }
+        shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION)
+            .unwrap();
+
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER fail_second_world")
+            .unwrap();
+        drop(connection);
+        let report = run(&options).unwrap();
+        assert_eq!(report.chunks, 2);
+        assert_eq!(report.worlds.len(), 2);
+        assert!(
+            !previous[1].0.exists(),
+            "the stale chunk is retired on success"
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(receipt_path).unwrap()).unwrap()
+                ["lod_manifest_sha256"]["after"],
+            hash_file(&manifest_path).unwrap()
+        );
+        shared::world_assets::validate_lod_build_contract(&target, CONVERTER_SCHEMA_VERSION)
+            .unwrap();
+    }
 
     #[test]
     fn terrain_derive_rejects_a_hard_link_to_the_registered_database() {
