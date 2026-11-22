@@ -127,8 +127,12 @@ object path (`streaming/lod_objects.rs`) works as follows.
   tagged `LodObjectCell`). A piece is hidden while its cell is inside the loaded grid (camera cell
   plus or minus the stream radius), where full-detail objects draw. Large-reference takeover of
   cells beyond the loaded grid is not implemented.
+- **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
+  KTX2 file (`lod/<world>/objects_atlas.ktx2`). The engine hash-checks it like a chunk, loads it
+  once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an
+  earlier pack) loads as before.
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
-  every file of every tier is hash-checked, one IO-pool task per file. A bad row, a missing file
+  every file of every tier, and the shared atlas, is hash-checked, one IO-pool task per file. A bad row, a missing file
   or a wrong hash logs one error and turns object LOD off for the pack. No chunk is skipped on its
   own, and the failure stays through worldspace changes until the pack changes.
 - **Order and limits.** The system runs inside the commit window: after `plan_lod_chunks`,

@@ -158,8 +158,13 @@ block into one object chunk GLB beside the terrain chunk of the same key
   the engine does not implement the large-reference takeover. A block with no geometry, a shape with
   several segments outside level 4, a level-4 shape with more than 16 segments, large-reference data
   at level 16, or a non-finite vertex is refused and reported, never guessed.
-- **Atlas.** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`) goes
-  through the existing texture stage as sRGB KTX2 and is embedded in every chunk (see Producers).
+- **Atlas (format 3).** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`)
+  goes through the existing texture stage once per worldspace as sRGB KTX2 and is written to
+  `lod/<world>/objects_atlas.ktx2`. Every chunk of the worldspace references it with the image URI
+  `../objects_atlas.ktx2` (relative to the chunk file, so it is the same file for every tier). The
+  file has a row in the additive table `lod_object_atlases` (path and SHA-256) and an entry in the
+  `object_atlases` field of `lod-manifest.json`. `OBJECT_COMPILER_VERSION` is 3. A chunk that embeds
+  the atlas (format 2, from an earlier derive) is still valid and still loads.
 - **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
   128/255 with no blending (high confidence). A shape is single-sided unless its node flags
   intersect mask `0x108`, and then it uses the double-sided material (medium confidence: the live
@@ -185,9 +190,6 @@ block into one object chunk GLB beside the terrain chunk of the same key
     `object-lod-overlay-receipt.json`, and reports every skipped block with its reason. It refuses a
     registered pack, a clone that does not match the registry, a pack that already has object chunks
     (unless `--force`) and a pack without terrain LOD.
-- **Atlas.** Every chunk embeds the whole atlas (2.7 MB for Tamriel). Sharing one atlas file between
-  chunks is a follow-up: it changes the chunk format contract with the engine and needs an engine
-  integrity check for the shared file.
 
 ### Proposed object sidecars
 
