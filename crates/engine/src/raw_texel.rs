@@ -6,7 +6,7 @@
 //! twin. [`RawTexelImageLoader`] claims only the alias extensions and forces `is_srgb = false`;
 //! every other image keeps Bevy's own loader.
 //!
-//! A self-built terrain LOD chunk embeds its albedo in the GLB, where `bevy_gltf` decodes it without any
+//! A terrain LOD chunk embeds its albedo in the GLB, where `bevy_gltf` decodes it without any
 //! asset loader. [`LodAlbedoRawTexelHandler`] gives that one image its UNORM twin inside the glTF
 //! load, so it enters `Assets<Image>` already raw.
 
@@ -169,7 +169,7 @@ fn is_lod_chunk_payload(path: &std::path::Path) -> bool {
     path.starts_with("lod")
 }
 
-/// Gives a self-built terrain LOD chunk's embedded albedo its UNORM twin while the GLB loads.
+/// Gives a terrain LOD chunk's embedded albedo its UNORM twin while the GLB is still loading.
 ///
 /// `bevy_gltf` decodes a bufferView image itself and tags it sRGB, and offers no setting to
 /// change that. Its extension hooks run inside the load, though, and a sub-asset added again
@@ -196,9 +196,7 @@ impl GltfExtensionHandler for LodAlbedoRawTexelHandler {
         _loaded: &GltfMaterial,
         _label: &str,
     ) {
-        if !is_lod_chunk_payload(context.path().path())
-            || source.name() == Some(shared::lod::RETAIL_TERRAIN_MATERIAL_NAME)
-        {
+        if !is_lod_chunk_payload(context.path().path()) {
             return;
         }
         let Some(base_color) = source.pbr_metallic_roughness().base_color_texture() else {
@@ -728,25 +726,29 @@ mod tests {
     }
 
     #[test]
-    fn imported_terrain_albedo_loads_as_srgb_in_both_profiles() {
+    fn retail_terrain_lod_albedo_matches_diffuse_aliases_in_both_profiles() {
         let directory = tempfile::tempdir().unwrap();
         let chunk = "lod/0000003c/4/cell_2_-1.glb";
+        let diffuse = "object.opensky-srgb.ktx2";
         write_asset(
             directory.path(),
             chunk,
             &embedded_albedo_glb(shared::lod::RETAIL_TERRAIN_MATERIAL_NAME),
         );
-        for profile in [VisualProfile::Skyrim, VisualProfile::Mudcrab] {
+        write_ktx2(directory.path(), diffuse, DxgiFormat::BC1_UNorm);
+
+        for (profile, expected) in [
+            (VisualProfile::Skyrim, TextureFormat::Bc1RgbaUnorm),
+            (VisualProfile::Mudcrab, TextureFormat::Bc1RgbaUnormSrgb),
+        ] {
             let mut app = app(directory.path(), profile);
+            let diffuse = app.world().resource::<AssetServer>().load::<Image>(diffuse);
+            wait_for_asset(&mut app, &diffuse);
             let (albedo, changes) = load_embedded_albedo(&mut app, chunk);
-            assert_eq!(
-                loaded_format(&app, &albedo),
-                TextureFormat::Bc1RgbaUnormSrgb
-            );
-            assert_eq!(
-                changes,
-                [ImageChange::Added(Some(TextureFormat::Bc1RgbaUnormSrgb))]
-            );
+            let diffuse_format = loaded_format(&app, &diffuse);
+            assert_eq!(diffuse_format, expected, "{profile:?}");
+            assert_eq!(loaded_format(&app, &albedo), diffuse_format, "{profile:?}");
+            assert_eq!(changes, [ImageChange::Added(Some(expected))], "{profile:?}");
         }
     }
 

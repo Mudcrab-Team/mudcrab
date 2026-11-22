@@ -14,7 +14,7 @@ use crate::{
 };
 use bevy::{
     asset::{AssetLoadError, LoadState, RecursiveDependencyLoadState, io::AssetReaderError},
-    gltf::{GltfAssetLabel, GltfMaterialName},
+    gltf::GltfAssetLabel,
     mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
     tasks::{IoTaskPool, Task, block_on},
@@ -711,7 +711,7 @@ pub(super) fn track_lod_readiness(
     children: Query<&Children>,
     names: Query<&Name>,
     mesh_handles: Query<&Mesh3d>,
-    materials: Query<(&MeshMaterial3d<StandardMaterial>, Option<&GltfMaterialName>)>,
+    materials: Query<&MeshMaterial3d<StandardMaterial>>,
     material_assets: Res<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     profile: Res<VisualProfile>,
@@ -1488,7 +1488,7 @@ fn fail_chunk(
     commands.entity(entity).try_despawn();
 }
 
-/// Retags any self-built chunk albedo that is still sRGB, returning how many it changed.
+/// Retags any albedo of a spawned chunk that is still sRGB, returning how many it changed.
 ///
 /// A chunk GLB carries its albedo as a bufferView image, which the raw-texel glTF handler tags
 /// UNORM while the GLB loads, so this normally finds nothing to do. It stays as the guard that
@@ -1498,15 +1498,14 @@ fn fail_chunk(
 fn adopt_raw_lod_colour_textures(
     root: Entity,
     children: &Query<&Children>,
-    materials: &Query<(&MeshMaterial3d<StandardMaterial>, Option<&GltfMaterialName>)>,
+    materials: &Query<&MeshMaterial3d<StandardMaterial>>,
     material_assets: &Assets<StandardMaterial>,
     images: &mut Assets<Image>,
 ) -> usize {
     let mut retagged = 0;
     let mut stack = vec![root];
     while let Some(entity) = stack.pop() {
-        if let Ok((material_handle, name)) = materials.get(entity)
-            && !name.is_some_and(|name| name.0 == shared::lod::RETAIL_TERRAIN_MATERIAL_NAME)
+        if let Ok(material_handle) = materials.get(entity)
             && let Some(material) = material_assets.get(&material_handle.0)
             && let Some(base_color) = material.base_color_texture.as_ref()
             && crate::raw_texel::retag_to_raw_texels(images, base_color)
@@ -2008,7 +2007,7 @@ mod tests {
     }
 
     #[test]
-    fn spawned_self_built_lod_is_retagged_once_and_imported_lod_stays_srgb() {
+    fn a_spawned_lod_chunks_srgb_albedo_is_retagged_once_and_counted() {
         use bevy::ecs::system::RunSystemOnce;
 
         #[derive(Resource)]
@@ -2017,7 +2016,7 @@ mod tests {
         fn adopt(
             root: Res<Root>,
             children: Query<&Children>,
-            materials: Query<(&MeshMaterial3d<StandardMaterial>, Option<&GltfMaterialName>)>,
+            materials: Query<&MeshMaterial3d<StandardMaterial>>,
             material_assets: Res<Assets<StandardMaterial>>,
             mut images: ResMut<Assets<Image>>,
         ) -> usize {
@@ -2057,23 +2056,6 @@ mod tests {
         let root = app.world_mut().spawn_empty().id();
         app.world_mut()
             .spawn((MeshMaterial3d(material), ChildOf(root)));
-        let retail_albedo = {
-            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-            let image = images.get(&albedo).unwrap().clone();
-            images.add(image)
-        };
-        let retail_material = app
-            .world_mut()
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(StandardMaterial {
-                base_color_texture: Some(retail_albedo.clone()),
-                ..default()
-            });
-        app.world_mut().spawn((
-            MeshMaterial3d(retail_material),
-            GltfMaterialName(shared::lod::RETAIL_TERRAIN_MATERIAL_NAME.into()),
-            ChildOf(root),
-        ));
         app.insert_resource(Root(root));
         assert_eq!(app.world_mut().run_system_once(adopt).unwrap(), 1);
         // An albedo that is already raw is left alone, so it raises no further change.
@@ -2087,15 +2069,6 @@ mod tests {
                 .texture_descriptor
                 .format,
             bevy::render::render_resource::TextureFormat::Bc1RgbaUnorm
-        );
-        assert_eq!(
-            app.world()
-                .resource::<Assets<Image>>()
-                .get(&retail_albedo)
-                .unwrap()
-                .texture_descriptor
-                .format,
-            bevy::render::render_resource::TextureFormat::Bc1RgbaUnormSrgb,
         );
     }
     use bevy::ecs::system::RunSystemOnce;
