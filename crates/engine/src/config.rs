@@ -2236,6 +2236,7 @@ mod tests {
         ("sync_branch.py", "--detach"),
         ("sync_branch.py", "--diff-filter"),
         ("sync_branch.py", "--dry-run"),
+        ("sync_branch.py", "--extraction"),
         ("sync_branch.py", "--force"),
         ("sync_branch.py", "--head"),
         ("sync_branch.py", "--ignore-unmatch"),
