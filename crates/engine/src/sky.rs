@@ -1076,6 +1076,7 @@ mod tests {
             color: Color::srgb(0.1, 0.2, 0.05),
             near: -500.0,
             far: 1600.0,
+            source: crate::underwater::UnderwaterFogSource::NoRecord,
         };
         app.insert_resource(UnderwaterState::below(fog));
         app.update();
