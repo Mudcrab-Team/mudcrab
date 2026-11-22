@@ -71,6 +71,12 @@ Fill in [the PR template](../../.github/PULL_REQUEST_TEMPLATE.md): a one-sentenc
 
 Open a draft for anything that isn't ready for review yet: work in progress, or code that works while something is still undecided or unmeasured (a design choice for the maintainers, or a measurement you couldn't do). End **For reviewers** with **Still open (why this is a draft):** what is missing, and what would make it ready. Mark it ready for review once that is done.
 
+## Milestones
+
+Every issue and pull request carries a milestone from [the milestone list](https://github.com/Mudcrab-Team/mudcrab/milestones), so nothing stays uncategorized. Contributors cannot set one: a maintainer assigns it within one working day, and you open the item as usual.
+
+A pull request inherits the milestone of the issues it links with `Closes #N`, `Part of #N` or `Related to #N`, but only when every linked issue that has a milestone agrees. Otherwise it gets the `needs milestone` label and one comment that says what to do. The rule and the daily check are in [workflow.md](workflow.md#milestones).
+
 ## Issues
 
 - **Title:** the ask or the problem in plain words.

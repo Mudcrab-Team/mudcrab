@@ -348,7 +348,12 @@ fn extract_capture_frames(
             uploads,
             renderer.final_path_active(),
         )
-        .with_room_graphs(room_culling.as_deref());
+        .with_room_graphs(
+            room_culling.as_deref(),
+            config
+                .as_ref()
+                .is_some_and(|config| config.shots_no_room_culling),
+        );
         work.read_grass(
             config.as_ref().is_some_and(|config| config.grass),
             grass.as_deref(),

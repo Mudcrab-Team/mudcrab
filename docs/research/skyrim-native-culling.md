@@ -60,17 +60,17 @@ owned executable. Generated projects, game binaries, and raw decompilation remai
 
 ### Prepare visibility and select starting rooms
 
-In the portal-enabled branches of RVAs `0x1512540` and `0x1513290`, preparation clears
-accumulated rooms and visibility-map entries. It retains a compatible cached root if that
-room still contains the computed viewpoint. It then scans other rooms and starts traversal
-for every containing room. The cached root remains preferred. Otherwise, the first containing
-room becomes the cache. Overlapping rooms contribute visibility rather than requiring
-exclusive room selection.
+The main world-camera builder at RVA `0x1a97b0` clears the entry’s root
+(`+0x30`) and accumulated rooms before testing containment. The ordinary scan reads the
+graph’s room array (`+0x40`) from index zero upward. It starts a walk for every containing
+room and records the first match as the root. A previous frame’s root is cleared before the
+builder reads that field again. The light-owned paths at `0x1512540` and `0x1513290`
+have their own preparation logic.
 
-The tested point is camera translation plus a camera-basis vector scaled by camera field
-`+0x160`. The installed `NiCamera` and `NiFrustum` declarations identify that field as the
-near distance. This supports a point shifted toward the near plane, although the full camera
-coordinate convention still needs an experiment.
+The containment point is camera translation plus the forward basis vector times the near
+distance (`+0x160`). Fixed-eye poses in Treva’s Watch verified this direction in the main
+view. The [parity notes](skyrim-culling-rea-parity.md#camera-and-portal-boundary-rules-are-more-specific-than-a-distance-constant)
+describe the retail overlap test and its limits.
 
 Room `QPointWithin`, RVA `0xfce0c0`, accepts the primary multibound or any joined multibound.
 The bound classifiers at `0xfce130` and `0xfce1c0` also aggregate primary and joined shapes,
@@ -216,7 +216,7 @@ The priorities below identify the next implementation and research work.
 | 6 | Preparation and culling have multiple modes and caller paths. | Main-view mesh filtering leaves lights and shadow lists independent. | Trace pass ownership, room lights, shadow behavior, and always-render children before claiming parity across passes. |
 
 Mudcrab already starts traversal from all containing rooms. Preserve that behavior.
-The remaining viewpoint difference is the tested point and cached-root handling.
+The interior loader visits the physical slots of its live cell reference set. The same stock assets produced different room arrays across loads. Capture-specific replay uses the ordered room FormIDs. See the [load-order evidence](skyrim-culling-rea-parity.md).
 The code comparison is in [room traversal](../../crates/engine/src/room_culling.rs),
 [membership conversion](../../crates/converter/src/esm/rooms.rs), and
 [spawned reference policy](../../crates/engine/src/streaming.rs).
@@ -240,7 +240,7 @@ cycles, near-boundary cases, assignment updates, and pass ownership. The install
 framework can help repeat poses. Its presence alone does not record room visibility or prove
 the plugin loaded successfully.
 
-The useful runtime comparison records camera pose and FOV, containing rooms, the cached root,
+The useful runtime comparison records camera pose and FOV, containing rooms in graph order, the selected root,
 unbounded visibility, per-node expressions, and submitted reference IDs at matching frames.
 Image comparisons then check visible output. Cases need to include an outside-room viewpoint,
 a null endpoint, overlapping starts, a joined room, multiple portal paths, shared geometry,
@@ -272,5 +272,5 @@ Remaining assignment limits include native candidate/hash order, named-target ne
 unsupported/animated source bounds, primitive overrides, and forced/actor paths. Independent static
 plane and box occluders now have export and path-local exclusion support; see the
 [implementation contract](skyrim-culling-rea-parity.md#independent-occluder-implementation).
-Linked/stateful occluders, clipping tolerances, traversal revisits, lights, shadows, and always-render pass ownership remain separate
+Retail captures establish independent shadows for [isolated linked plane references](skyrim-culling-rea-parity.md#linked-plane-references-in-retail). Runtime shapes with populated partner pointers, stateful occluders, clipping tolerances, lights, shadows, and always-render pass ownership remain separate
 parity work. These implementations do not establish full original-runtime parity.

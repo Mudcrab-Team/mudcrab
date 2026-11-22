@@ -2630,6 +2630,7 @@ fn setup_world(
         Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
+        crate::room_culling::RoomCullingNear::SKYRIM,
         IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
@@ -2693,6 +2694,12 @@ fn setup_world(
         target = ?target,
         "Mudcrab runtime initialized"
     );
+}
+
+#[cfg(test)]
+pub(crate) fn add_test_world_camera(app: &mut App) {
+    app.insert_resource(EngineConfig::default())
+        .add_systems(Startup, setup_world);
 }
 
 fn initial_camera_ground_height(

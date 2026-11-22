@@ -406,6 +406,14 @@ fn asset_closure_tool_refusal_rejects_old_success_and_preserves_neighbor() {
     let root = tempfile::tempdir().unwrap();
     let (sources, assets) = tool_inputs(root.path());
     let neighbor = fs::read(assets.join("meshes/generated.glb")).unwrap();
+    // Seed a readable destination produced from different geometry.
+    let stale = sources.join("old.nif");
+    fs::write(&stale, partial_skeleton()).unwrap();
+    MeshConverter::convert_nif_to_glb(stale, assets.join("meshes/generated.glb")).unwrap();
+    assert_ne!(
+        fs::read(assets.join("meshes/generated.glb")).unwrap(),
+        neighbor
+    );
     let database = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     database.execute_batch("CREATE TABLE statics(id INTEGER PRIMARY KEY, model_path TEXT); CREATE TABLE \"references\"(base_form_id INTEGER); INSERT INTO statics VALUES(1,'generated.nif'),(2,'actors/test/body.nif'); INSERT INTO \"references\" VALUES(1),(2);").unwrap();
     drop(database);
@@ -423,7 +431,8 @@ fn asset_closure_tool_refusal_rejects_old_success_and_preserves_neighbor() {
     let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(report["passed"], false);
     assert_eq!(report["failures"], 1);
-    assert_eq!(report["reused"], 1);
+    assert_eq!(report["reused"], 0);
+    assert_eq!(report["converted"], 1);
     let failed = report["results"]
         .as_array()
         .unwrap()
@@ -460,13 +469,14 @@ fn asset_closure_tool_reports_every_alias_of_one_output() {
     assert!(!run.status.success());
     let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(report["requested"], 4);
-    assert_eq!(report["reused"], 2);
+    assert_eq!(report["reused"], 0);
+    assert_eq!(report["converted"], 2);
     assert_eq!(report["failures"], 2);
     let results = report["results"].as_array().unwrap();
     assert_eq!(results.len(), 4, "every stored path needs one result");
     for row in results {
         let expected = if row["output_path"] == "meshes/generated.glb" {
-            "reused"
+            "converted"
         } else {
             "failed"
         };
