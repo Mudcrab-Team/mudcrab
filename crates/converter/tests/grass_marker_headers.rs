@@ -194,6 +194,8 @@ fn fixture(root: &Path, reader: RecordReader) -> PipelineConfig {
     config.plugins_file = Some(selection);
     config.record_reader = reader;
     config.no_lod = true;
+    // The fixture supplies no landscape images: select the labelled white default (#811).
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::White;
     config.lod_texture_encoder = converter::TextureEncoder::Cpu;
     config.cpu_jobs = 2;
     config.io_jobs = 1;

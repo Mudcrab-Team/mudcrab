@@ -145,6 +145,23 @@ async fn legacy_dangling_base_retains_unresolved_identity() {
     dangling_base_publication(converter::config::RecordReader::Legacy, 0x899).await;
 }
 
+/// A used default that cannot be read, converted or resolved fails the rebuild (#811, SI-23).
+/// No generated white texture replaces it, and the source pack stays unchanged.
+fn assert_default_failure(
+    result: &Result<converter::PipelineReport, impl std::fmt::Debug>,
+    what: &str,
+) {
+    let message = format!("{result:?}");
+    assert!(
+        result.is_err(),
+        "{what}: expected a failed rebuild, got {message}"
+    );
+    assert!(
+        message.contains("no white texture replaces it"),
+        "{what}: {message}"
+    );
+}
+
 /// Verify complete publication, white default metadata, and an intact neighboring record.
 fn assert_white_rebuild(report: &converter::PipelineReport, output: &Path, needed: bool) {
     assert!(report.complete, "{report:?}");
@@ -186,16 +203,7 @@ fn assert_white_rebuild(report: &converter::PipelineReport, output: &Path, neede
             vec![(0, 4), (1, 4), (2, 4), (3, 4)]
         }
     );
-    if needed {
-        assert!(
-            report
-                .notices
-                .iter()
-                .any(|notice| notice.contains("falls back to white")),
-            "{:?}",
-            report.notices
-        );
-    } else {
+    if !needed {
         assert!(
             !report
                 .notices
@@ -244,11 +252,15 @@ async fn rebuild_with_unreadable_default(needed: bool) {
     );
     let result = rebuild(&data, &source, &output).await;
     drop(unreadable);
-    assert!(
-        result.is_ok(),
-        "unreadable default aborted metadata rebuild (needed={needed}): {result:?}"
-    );
-    assert_white_rebuild(&result.unwrap(), &output, needed);
+    if needed {
+        assert_default_failure(&result, "unreadable loose default");
+    } else {
+        assert_white_rebuild(
+            result.as_ref().expect("an unused default is never opened"),
+            &output,
+            false,
+        );
+    }
     assert_eq!(
         hash_file(&source.join("conversion-manifest.json")).unwrap(),
         manifest_hash
@@ -262,16 +274,16 @@ async fn metadata_rebuild_default_unused_unreadable_loose_completes() {
     rebuild_with_unreadable_default(false).await;
 }
 
-/// An unreadable used default falls back to white without losing usable neighboring data.
+/// An unreadable used default fails the rebuild; no white texture replaces it (#811).
 #[cfg(any(windows, unix))]
 #[tokio::test]
-async fn metadata_rebuild_default_needed_unreadable_loose_falls_back() {
+async fn metadata_rebuild_default_needed_unreadable_loose_fails() {
     rebuild_with_unreadable_default(true).await;
 }
 
-/// A damaged archive-only default falls back locally without blocking publication.
+/// A damaged archive-only default fails the rebuild; no white texture replaces it (#811).
 #[tokio::test]
-async fn metadata_rebuild_default_changed_archive_falls_back() {
+async fn metadata_rebuild_default_changed_archive_fails() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -293,11 +305,7 @@ async fn metadata_rebuild_default_changed_archive_falls_back() {
     )
     .unwrap();
     let result = rebuild(&data, &source, &output).await;
-    assert!(
-        result.is_ok(),
-        "changed archive default aborted metadata rebuild: {result:?}"
-    );
-    assert_white_rebuild(&result.unwrap(), &output, true);
+    assert_default_failure(&result, "damaged archive default");
 }
 
 /// Regenerated default images use current loose or archive bytes, unlike retained LTEX assets.
@@ -407,9 +415,9 @@ async fn metadata_rebuild_defaults_use_current_bytes() {
     }
 }
 
-/// A corrupt compressed default entry cannot abort extraction of usable neighboring inputs.
+/// A corrupt compressed default entry fails the rebuild; no white texture replaces it (#811).
 #[tokio::test]
-async fn metadata_rebuild_default_damaged_compressed_archive_falls_back() {
+async fn metadata_rebuild_default_damaged_compressed_archive_fails() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -437,11 +445,7 @@ async fn metadata_rebuild_default_damaged_compressed_archive_falls_back() {
     fs::write(data.join("Skyrim - Textures.bsa"), archive).unwrap();
     fs::remove_file(default).unwrap();
     let result = rebuild(&data, &source, &output).await;
-    assert!(
-        result.is_ok(),
-        "damaged compressed default aborted metadata rebuild: {result:?}"
-    );
-    assert_white_rebuild(&result.unwrap(), &output, true);
+    assert_default_failure(&result, "damaged compressed default");
 }
 
 /// Default recovery must not relax source identity checks for an LTEX-required diffuse.

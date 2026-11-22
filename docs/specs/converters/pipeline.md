@@ -35,8 +35,9 @@ warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
 code 1. Compatibility notices remain visible without affecting completeness or
 the exit code; a mixed run retains both severities and stays incomplete.
-Recoverable configured-default land texture fallbacks are also `notices`: an unusable
-diffuse uses generated white, while an unusable optional normal leaves a valid diffuse intact.
+An unusable optional default land normal is a `notice` and leaves a valid diffuse intact. An
+unusable default land diffuse fails the conversion; no generated white texture replaces it (#811).
+`--terrain-default white` still selects white on purpose.
 These advisories alone do not make the report or manifest incomplete or make the CLI exit 1;
 failures that prevent publishing usable output still fail conversion.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
@@ -238,7 +239,7 @@ MO2 also checks the longest installed owner, using all root plugin identities in
 
 Metadata rebuilds use the source package's checksum-matched plugin order for archive priority. The longest installed direct-Data owner must appear in that order before an archive supplies current LOD settings or terrain diffuse inputs. Verified source assets remain retained.
 
-Default-only terrain sources are collected only when the rebuilt cell cache needs the configured Skyrim land default. Default-only images are regenerated from current source bytes and are not compared with retained asset hashes. Unusable default archive entries or loose overrides are omitted with advisory notices so default publication can fall back to white or omit only the normal. A path also named by an LTEX remains an ordinary required source with strict extraction, overlay and source-identity checks.
+Default-only terrain sources are collected only when the rebuilt cell cache needs the configured Skyrim land default. Default-only images are regenerated from current source bytes and are not compared with retained asset hashes. Unusable default archive entries or loose overrides are omitted with advisory notices. Publication then omits only an unusable normal; an unusable diffuse fails the conversion (#811). A path also named by an LTEX remains an ordinary required source with strict extraction, overlay and source-identity checks.
 
 Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
 

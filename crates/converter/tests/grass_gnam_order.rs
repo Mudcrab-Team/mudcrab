@@ -50,7 +50,11 @@ fn land(cell: u32, texture: u32) -> Vec<u8> {
         &record(
             b"LAND",
             cell + 1,
-            field(b"BTXT", &[texture.to_le_bytes(), [0; 4]].concat()),
+            [
+                field(b"VHGT", &[0u8; 4 + 33 * 33 + 3]),
+                field(b"BTXT", &[texture.to_le_bytes(), [0; 4]].concat()),
+            ]
+            .concat(),
         ),
     )
 }
@@ -155,6 +159,8 @@ fn fixture(root: &Path, reader: RecordReader, overridden: bool, malformed: bool)
     config.plugins_file = Some(plugins_file);
     config.record_reader = reader;
     config.no_lod = true;
+    // The fixture supplies no landscape images: select the labelled white default (#811).
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::White;
     config.cpu_jobs = 2;
     config.io_jobs = 1;
     config
@@ -354,7 +360,11 @@ async fn check_land_source_winner(reader: RecordReader) {
         &record(
             b"LAND",
             0x0100_08f0,
-            field(b"BTXT", &[NEIGHBOR_TEXTURE.to_le_bytes(), [0; 4]].concat()),
+            [
+                field(b"VHGT", &[0u8; 4 + 33 * 33 + 3]),
+                field(b"BTXT", &[NEIGHBOR_TEXTURE.to_le_bytes(), [0; 4]].concat()),
+            ]
+            .concat(),
         ),
     );
     let offset = bytes
@@ -388,7 +398,11 @@ async fn check_land_source_winner(reader: RecordReader) {
                 &record(
                     b"LAND",
                     0x0100_0820,
-                    field(b"BTXT", &[TEXTURE.to_le_bytes(), [0; 4]].concat()),
+                    [
+                        field(b"VHGT", &[0u8; 4 + 33 * 33 + 3]),
+                        field(b"BTXT", &[TEXTURE.to_le_bytes(), [0; 4]].concat()),
+                    ]
+                    .concat(),
                 ),
             ),
         ),

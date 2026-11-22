@@ -290,6 +290,7 @@ fn remaps_reordered_masters_light_plugins_terrain_and_alternate_textures() {
                         0x02000830,
                         0,
                         [
+                            sub(b"VHGT", &[0; 4 + 33 * 33 + 3]),
                             sub(b"BTXT", &texture_layer(0x02000820, 2, 0)),
                             sub(b"ATXT", &texture_layer(0x01000802, 2, 3)),
                             sub(
@@ -411,16 +412,20 @@ fn remaps_every_vtex_entry_without_layer_metadata() {
         b"LAND",
         0x01000900,
         0,
-        sub(
-            b"VTEX",
-            &[
-                0x800u32.to_le_bytes(),
-                0x801u32.to_le_bytes(),
-                0u32.to_le_bytes(),
-                0x01000802u32.to_le_bytes(),
-            ]
-            .concat(),
-        ),
+        [
+            sub(b"VHGT", &[0; 4 + 33 * 33 + 3]),
+            sub(
+                b"VTEX",
+                &[
+                    0x800u32.to_le_bytes(),
+                    0x801u32.to_le_bytes(),
+                    0u32.to_le_bytes(),
+                    0x01000802u32.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
     );
     let patch = plugin(dir.path(), "Patch.esp", &["Base.esm"], 0, land);
     let merged = EsmParser::merge_plugins(&[filler, base, patch]).unwrap();
@@ -1485,7 +1490,16 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
         drain.await.unwrap();
         assert!(!report.complete, "malformed fields must remain visible");
         assert_eq!(report.skipped, 0, "usable assets and records still publish");
-        assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+        // Two reader warnings, plus the omission of the placement that has no parent cell (#811).
+        assert_eq!(report.warnings.len(), 3, "{:?}", report.warnings);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("reference_missing_cell")),
+            "{:?}",
+            report.warnings
+        );
         for plugin in ["links.esp", "override.esp"] {
             let warnings: Vec<_> = report
                 .warnings
@@ -3015,9 +3029,12 @@ fn ambiguous_room_headers_keep_both_readers_conservative() {
             let rooms: i64 = conn
                 .query_row("SELECT COUNT(*) FROM room_bounds", [], |row| row.get(0))
                 .unwrap();
+            // Unreadable flags (a short or repeated XRMR) get no row instead of flags 0 (#811);
+            // readable headers keep their geometry.
             assert_eq!(
-                rooms, 3,
-                "ambiguous metadata must not discard valid room geometry"
+                rooms,
+                if expected { 3 } else { 2 },
+                "{headers:?}: an unreadable XRMR header publishes no room row"
             );
         }
     }
@@ -3489,7 +3506,8 @@ fn room_link_anomalies_reach_both_readers_integration_reports() {
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(output.join("integration-report.json")).unwrap())
                 .unwrap();
-        assert_eq!(report["room_graph"]["rooms"], 5);
+        // Two markers with unreadable XRMR flags get no room row (#811), so 3 of 5 remain.
+        assert_eq!(report["room_graph"]["rooms"], 3);
         assert_eq!(
             report["room_graph"]["room_link_anomalies"],
             serde_json::json!({
@@ -9669,11 +9687,8 @@ fn typed_placement_winner_checks_grouped_duplicates_before_ungrouped_override() 
         (0x853, None, 0x831),
         (0x854, None, 0x831),
     ] {
-        assert_eq!(
-            placement_winner_cell(&db, id),
-            Some(cell.unwrap_or(0)),
-            "{id:08X}"
-        );
+        // A placement with no parent cell gets no row: no cell 0 is invented for it (#811).
+        assert_eq!(placement_winner_cell(&db, id), cell, "{id:08X}");
         assert_eq!(
             SubrecordView::new(&records[&id].subrecords).get_form_id(b"NAME"),
             Some(base),
