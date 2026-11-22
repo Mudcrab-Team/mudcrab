@@ -235,7 +235,9 @@ terrain chunk of the same key (`lod/<world>/<tier>/objects_<x>_<y>.glb`).
     use the ingestion selection, so no NIF, texture or script output changes and an existing pack
     gains object LOD from a rebuild without reconverting anything. A world with no level-16 block is a
     notice; a skipped block is a line in the LOD warnings (they do not make the run incomplete);
-    a world with blocks but no usable atlas fails the stage. An MO2 selection builds none (a warning
+    a world with blocks but no atlas file under either name is skipped with `missing_atlas` (a LOD
+    warning with the absent paths and near matches), while an atlas that exists but cannot be read
+    or is damaged fails the stage. An MO2 selection builds none (a warning
     says so), because the blocks are read from the Data folder. The chunks are recomputed on each run
     (seconds); they are not reused by their input proofs yet.
   - `converter derive-object-lod <clone> --registry <packs.json> --clone-of <pack> --data <Skyrim Data>

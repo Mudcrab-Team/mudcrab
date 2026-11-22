@@ -5493,8 +5493,13 @@ async fn compile_lod_chunks_inline(
             report.lod_warnings.extend(imported.checkpoint_warnings);
             let retained = imported.kept_from_previous_generation;
             if ids.is_empty() && retained == 0 {
+                // List near matches, so a naming form the reader does not know is visible.
+                let block = format!("meshes/terrain/{0}/{0}.4.<x>.<y>.btr", world.file_name);
+                let near = files
+                    .index
+                    .describe_missing(&[&block], Some(&world.file_name));
                 report.lod_warnings.push(format!(
-                    "worldspace {editor_id} ({worldspace_id:08X}) has no retail terrain LOD files; its terrain LOD is skipped and nothing is generated in its place"
+                    "worldspace {editor_id} ({worldspace_id:08X}) has no retail terrain LOD files ({near}); its terrain LOD is skipped and nothing is generated in its place"
                 ));
                 if let Some(settings) = world_settings.last_mut() {
                     settings["status"] = serde_json::json!("no_retail_files");
