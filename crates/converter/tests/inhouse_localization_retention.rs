@@ -1082,6 +1082,7 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "reference_linked_refs",
             "reference_activate_parents",
             "reference_details",
+            "reference_light_data",
             "reference_authored_targets",
             "reference_authored_changes",
             "door_links",

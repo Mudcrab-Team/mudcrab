@@ -309,6 +309,43 @@
         "semantic_use": "source_sink"
       }
     },
+    "lights.fade_status": {
+      "evidence": [
+        {
+          "anchor": "add_missing_columns(conn, \"lights\", &[(\"fade_status\", \"INTEGER\")])?;",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "fade_status: row.get(STATIC_FLAGS_INDEX + 8)?,",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Status of the LIGH FNAM fade: 0 absent, 1 valid, 2 malformed or negative. evaluate_light treats status 2 as unit fade (#488). The SELECT mapping is not verified: the column is optional and added by a format! fragment.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "light.fade_status == Some(2)",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn the_max_fade_sentinel_means_no_fade_and_never_a_maximum_light()",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ]
+    },
     "lights.falloff": {
       "evidence": [
         {
@@ -321,7 +358,7 @@
         }
       ],
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Published LIGH falloff; no mapping in the audited ReferenceQuery light suffix. Other paths remain unknown. Active PR #488 adds a consumer; it is not part of this reviewed head.",
+      "reason": "Published LIGH falloff. Since #488 it reaches LightRow.falloff and evaluate_light reads it only for lights whose flags carry a shadow mode (0x1C00); the renderer does not apply it (counted as unsupported_falloff). No mapping in the audited ReferenceQuery light suffix; other paths remain unknown.",
       "roles": [
         "result"
       ],
@@ -351,13 +388,13 @@
         "query": "reference"
       },
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Source path sets PointLight.range and intensity through radius_of; overrides and caps remain separate policy. No native parity claim.",
+      "reason": "Source path: evaluate_light adds the reference's signed XRDS offset to this radius (#488) and sets PointLight.range through backend_range; the 0.1 fallback, the 8192 cap and the intensity normalization remain separate backend policy. No native parity claim.",
       "roles": [
         "result"
       ],
       "sink": [
         {
-          "anchor": "range: radius,",
+          "anchor": "range: self.backend_range?,",
           "path": "crates/engine/src/lights.rs"
         }
       ],
@@ -371,7 +408,7 @@
       },
       "tests": [
         {
-          "anchor": "fn a_reference_radius_override_replaces_the_record_radius()",
+          "anchor": "fn a_reference_radius_offset_adds_to_the_record_radius()",
           "path": "crates/engine/src/lights.rs"
         }
       ]
@@ -535,6 +572,80 @@
         "semantic_use": "unknown"
       }
     },
+    "reference_light_data.data_size": {
+      "evidence": [
+        {
+          "anchor": "data_size INTEGER NOT NULL,",
+          "path": "crates/converter/src/esm/reference_links.rs"
+        },
+        {
+          "anchor": "INSERT INTO reference_light_data VALUES",
+          "path": "crates/converter/src/esm/reference_links.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Byte size of the XLIG subrecord. evaluate_light accepts only 16 or 20 bytes and counts any other size as malformed reference data (#488).",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": ".contains(&data.data_size)",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn the_max_fade_sentinel_means_no_fade_and_never_a_maximum_light()",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ]
+    },
+    "reference_light_data.fade_offset": {
+      "evidence": [
+        {
+          "anchor": "fade_offset REAL,",
+          "path": "crates/converter/src/esm/reference_links.rs"
+        },
+        {
+          "anchor": "INSERT INTO reference_light_data VALUES",
+          "path": "crates/converter/src/esm/reference_links.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Second float of the REFR XLIG subrecord (xEdit name; not traced to a retail row beyond RF-LIGHT-GPU-007). evaluate_light adds it to the base fade (#488). A 16 or 20 byte XLIG is the only valid size.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "then_some(data.fade_offset)",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn the_max_fade_sentinel_means_no_fade_and_never_a_maximum_light()",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ]
+    },
     "references.data": {
       "evidence": [
         {
@@ -567,6 +678,43 @@
         {
           "anchor": "fn short_reference_subset_update_removes_the_old_dependent_rows()",
           "path": "crates/converter/tests/fixture_short_runtime_fields.rs"
+        }
+      ]
+    },
+    "references.radius_status": {
+      "evidence": [
+        {
+          "anchor": "(\"radius_status\", \"INTEGER\")",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "radius_status: row.get(STATIC_FLAGS_INDEX + 9)?,",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Status of the reference XRDS radius offset: 0 absent, 1 valid, 2 malformed or not finite. evaluate_light rejects the radius when the status is 2 (#488). The SELECT mapping is not verified: the column is optional and added by a format! fragment.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "light.radius_status != Some(2)",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_reference_radius_offset_adds_to_the_record_radius()",
+          "path": "crates/engine/src/lights.rs"
         }
       ]
     },

@@ -18,13 +18,22 @@ pub(super) const SUBSET_NONPLACEMENT_DELETIONS_SQL: &str =
     "CREATE TABLE IF NOT EXISTS subset_nonplacement_deletions (form_id INTEGER PRIMARY KEY)";
 
 /// Tables this module owns. A complete export drops and recreates them.
-pub(crate) const REFERENCE_LINK_TABLES: [&str; 3] = [
+pub(crate) const REFERENCE_LINK_TABLES: [&str; 4] = [
     "reference_linked_refs",
     "reference_activate_parents",
     "reference_details",
+    "reference_light_data",
 ];
 
 pub(crate) const REFERENCE_LINK_TABLES_SQL: &str = "
+CREATE TABLE IF NOT EXISTS reference_light_data (
+    reference_id INTEGER PRIMARY KEY,
+    data_size INTEGER NOT NULL,
+    fov_offset REAL,
+    fade_offset REAL,
+    end_distance_cap REAL,
+    shadow_depth_bias REAL
+);
 CREATE TABLE IF NOT EXISTS reference_linked_refs (
     reference_id INTEGER NOT NULL,
     position INTEGER NOT NULL,
@@ -695,6 +704,29 @@ pub(crate) fn insert(
     for table in REFERENCE_LINK_TABLES {
         tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
             .execute([id])?;
+    }
+
+    // xEdit cce1c42403b279957e1e78bfe38100b29f39f72c, wbDefinitionsTES5.pas,
+    // REFR/XLIG: four little-endian floats and an optional four-byte tail (16/20 bytes).
+    // Preserve presence and malformed size separately from absent XLIG. Non-finite fields
+    // are NULL; the canonical subrecord archive retains the original bits.
+    if let Some(bytes) = view.find(b"XLIG") {
+        // The validated XLIG layout is 16 or 20 bytes, so the length fits a SQLite integer.
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "sized() admits only 16 or 20 bytes"
+        )]
+        let data_size = bytes.len() as i64;
+        let real = |offset: usize| {
+            sized(Some(bytes), &[16, 20])
+                .and_then(|bytes| bytes.get(offset..offset + 4))
+                // silent-ok: sized() admits only the 16/20-byte XLIG layouts, so the four-byte slice converts.
+                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                .map(f32::from_le_bytes)
+                .filter(|value| value.is_finite())
+        };
+        tx.prepare_cached("INSERT INTO reference_light_data VALUES (?1,?2,?3,?4,?5,?6)")?
+            .execute(params![id, data_size, real(0), real(4), real(8), real(12)])?;
     }
 
     // XLKR: one subrecord per link, a keyword and a reference, or (14 official references) the

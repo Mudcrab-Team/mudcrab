@@ -492,6 +492,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "verified-fixed-ordered-descendants",
     "non-finite-uv-repair-v1",
     "verified-static-drawable-spheres",
+    "collision-body-node-rebind",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
