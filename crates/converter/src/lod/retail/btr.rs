@@ -316,6 +316,10 @@ macro_rules! read_shape {
 ///
 /// Fails if the NIF is malformed, a shape has no vertex positions or no name, a triangle indexes
 /// past its vertices, or a segment table does not add up to its shape's triangle count.
+#[allow(
+    clippy::float_cmp,
+    reason = "a stored identity transform is compared exactly: any other value is reported, not rounded"
+)]
 pub fn read_terrain_lod(bytes: &[u8], label: &Path) -> Result<TerrainLodFile> {
     let (nif, diagnostics) = MeshConverter::parse_nif_bytes(bytes, label)?;
     let parents = parent_names(&nif);
@@ -414,6 +418,13 @@ fn read_shader(nif: &NifFile, reference: u32, label: &Path) -> Result<TerrainLod
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp,
+    reason = "test builders write small counts and compare exact stored values"
+)]
 mod tests {
     use super::*;
 

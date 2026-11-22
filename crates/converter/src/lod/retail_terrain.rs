@@ -154,6 +154,13 @@ fn clip_half(polygon: &[Point], axis: usize, bound: f64, upper: bool) -> Vec<Poi
 /// quadrant that no retail triangle reaches gets no patch: the retail mesh has no terrain there
 /// (the edge of a worldspace), and nothing is invented to fill it. A block with no terrain at all
 /// is an error.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp,
+    reason = "geometry is cut in f64 and stored as f32 on purpose; quadrant indices are bounded by the block level; the stored scale is compared exactly"
+)]
 pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
     ensure!(
         land.scale == level as f32,
@@ -364,6 +371,13 @@ pub fn tier_for_level(level: u32) -> Option<LodTier> {
 }
 
 /// Compiles one block into a chunk.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp,
+    reason = "cell offsets are bounded by the tier side (4, 8 or 16); bounds are stored as f32"
+)]
 pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStats)> {
     let tier = tier_for_level(block.level)
         .ok_or_else(|| eyre!("level {} has no runtime tier", block.level))?;
@@ -445,6 +459,13 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
 /// rotation full-detail terrain uses); then per cell a cell node, a `terrain` group and four
 /// quadrant nodes. Buffer views: 0 positions, 1 normals, 2 UVs, 3 tangents, 4 indices, 5 colour
 /// KTX2, 6 normal KTX2.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp,
+    reason = "cell offsets are bounded by the tier side; a GLB is far below 4 GiB"
+)]
 fn emit_glb(
     key: ChunkKey,
     south_west: (i32, i32),
@@ -633,6 +654,13 @@ fn emit_glb(
 
 /// Checks a chunk written by [`compile_block`]: the container, every accessor and view range, every
 /// index, the node layout the runtime looks up by name, and the two embedded KTX2 images.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp,
+    reason = "the reference frame values are compared exactly; counts index into a validated buffer"
+)]
 pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()> {
     let array = |name: &str| {
         json[name]
@@ -887,6 +915,13 @@ pub(crate) fn validate_glb(json: &serde_json::Value, binary: &[u8]) -> Result<()
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp,
+    reason = "test grids use small counts and exact expected values"
+)]
 mod tests {
     use super::*;
     use crate::lod::retail::btr::{TerrainLodShapeKind, TerrainLodVertex};
@@ -1201,6 +1236,13 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp,
+    reason = "real-data checks use bounded counts and exact expected values"
+)]
 mod real_data {
     use super::*;
     use crate::{

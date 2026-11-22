@@ -6994,6 +6994,8 @@ mod tests {
     fn cpu_lod_config(data: impl Into<PathBuf>, output: impl Into<PathBuf>) -> PipelineConfig {
         let mut config = PipelineConfig::new(data, output);
         config.lod_texture_encoder = TextureEncoder::Cpu;
+        // The fixtures have no retail terrain LOD files; these tests exercise the self-built stage.
+        config.terrain_lod_source = crate::config::TerrainLodSource::SelfBuilt;
         config
     }
 
