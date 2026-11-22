@@ -132,7 +132,7 @@ def mask_with_comments(text):
         ):
             quote = i if c == "'" else i + 1
             if text[quote + 1 : quote + 2] == "\\":
-                j = quote + 2
+                j = quote + 3
                 while j < n and text[j] not in "'\n":
                     j += 1
                 if j < n and text[j] == "'":

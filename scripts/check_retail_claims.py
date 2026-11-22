@@ -495,10 +495,10 @@ def is_test_path(path):
             or TEST_PATH_RE.search(path) is not None)
 
 
-def cfg_test_start(lines):
-    """Return the 1-based line of the first ``#[cfg(test)]``, or None."""
-    for number, line in enumerate(lines, 1):
-        if line.strip().startswith("#[cfg(test)]"):
+def cfg_test_start(lines, code_lines):
+    for number, (raw, code) in enumerate(zip(lines, code_lines), 1):
+        first_token = len(raw) - len(raw.lstrip())
+        if code.startswith("#[cfg(test)]", first_token):
             return number
     return None
 
@@ -550,7 +550,7 @@ def check(repo, base, head):
         else:
             blocks, line_block = build_comment_blocks(texts)
         file_labelled = language == "rust" and module_doc_cites_registry(texts)
-        test_from = cfg_test_start(code_lines) if code_lines is not None else None
+        test_from = cfg_test_start(lines, code_lines) if code_lines is not None else None
         type_members = (direct_type_member_lines(code_lines)
                         if code_lines is not None else set())
         for number in sorted(added):
@@ -654,7 +654,7 @@ def stand_ins_in_lines(path, lines):
         blocks, line_block = build_markdown_blocks(lines)
     else:
         blocks, line_block = build_comment_blocks(texts)
-    test_from = cfg_test_start(code_lines) if code_lines is not None else None
+    test_from = cfg_test_start(lines, code_lines) if code_lines is not None else None
     type_members = (direct_type_member_lines(code_lines)
                     if code_lines is not None else set())
     for number, raw in enumerate(lines, 1):
@@ -821,7 +821,7 @@ def collect_markers(repo):
             _, line_block = build_markdown_blocks(lines)
         else:
             _, line_block = build_comment_blocks(texts)
-        test_from = cfg_test_start(code_lines) if code_lines is not None else None
+        test_from = cfg_test_start(lines, code_lines) if code_lines is not None else None
         for number, raw in enumerate(lines, 1):
             if test_from is not None and number >= test_from:
                 break

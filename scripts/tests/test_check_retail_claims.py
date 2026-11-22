@@ -261,15 +261,31 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("0 claim line(s)", out)
 
-    def test_multiline_raw_string_is_ignored(self):
-        self.repo.write(
-            "crates/engine/src/lib.rs",
-            'const NOTE: &str = r#"\n// Retail does X.\n"#;\nfn main() {}\n',
-        )
-        self.repo.commit("raw string only")
-        code, out, err = self.check(self.repo.run())
-        self.assertEqual(code, 0, err)
-        self.assertIn("0 claim line(s)", out)
+    def test_only_the_claim_after_a_raw_string_is_checked(self):
+        path = "crates/engine/src/lib.rs"
+        hashes = "#" * 255
+        self.repo.write(path, (
+            f'const NOTE: &str = r{hashes}"contains a bare " quote\n'
+            '// Retail does X.\n'
+            f'"{hashes};\n'
+            '// Retail does Y.\n'
+        ))
+        self.repo.commit("real claim follows raw string")
+        result = self.repo.run()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"{path}:4:", result.stderr)
+        self.assertNotIn(f"{path}:2:", result.stderr)
+
+    def test_claim_after_escaped_apostrophe_and_quote_is_checked(self):
+        path = "crates/engine/src/lib.rs"
+        self.repo.write(path, (
+            r"""const PAIR: (char, char) = ('\'','"');"""
+            "\n// Retail does X.\n"
+        ))
+        self.repo.commit("quote characters before a real claim")
+        result = self.repo.run()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"{path}:2:", result.stderr)
 
     def test_block_comment_is_ignored(self):
         self.repo.write(
@@ -601,6 +617,26 @@ class StandInTests(unittest.TestCase):
         code, out, err = self.check(self.repo.run())
         self.assertEqual(code, 0, err)
         self.assertIn("0 stand-in line(s)", out)
+
+    def test_block_comment_before_test_attribute_does_not_hide_following_items(self):
+        path = "crates/engine/src/lib.rs"
+        self.repo.write(path, (
+            "/* note */ #[cfg(test)] mod tests {}\n"
+            "const GENERATED_HEIGHT: u8 = 1;\n"
+            "// STAND-IN(#901): fill a missing terrain texture\n"
+        ))
+        self.repo.commit("production code after an inline test module")
+        diff = self.repo.run()
+        audit = self.repo.run("--audit")
+        issues = self.repo.run(
+            "--check-issues", env=self.check_issues_env(self.gh_stub("CLOSED", []))
+        )
+        self.assertEqual(diff.returncode, 1, diff.stderr)
+        self.assertIn(f"{path}:2:", diff.stderr)
+        self.assertEqual(audit.returncode, 0, audit.stderr)
+        self.assertIn(f"{path}:2:", audit.stdout)
+        self.assertEqual(issues.returncode, 1, issues.stderr)
+        self.assertIn("issue #901 is closed", issues.stderr)
 
     def test_stand_in_identifier_without_a_comment_fails(self):
         self.repo.write(
