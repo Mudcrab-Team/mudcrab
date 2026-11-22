@@ -83,8 +83,8 @@ impl RetailTerrainFiles {
             .wrap_err_with(|| format!("cannot verify archive {}", path.display()))
     }
 
-    pub(crate) fn check_archives(&self, ids: &[BlockId]) -> Result<()> {
-        for (name, path) in self.archives_used(ids.iter()) {
+    pub(crate) fn check_archives(&self, ids: &[&BlockId]) -> Result<()> {
+        for (name, path) in self.archives_used(ids.iter().copied()) {
             self.archives[path]
                 .check_unchanged()
                 .wrap_err_with(|| format!("archive {name} changed during terrain LOD import"))?;

@@ -180,9 +180,7 @@ pub(crate) fn stage_world(
             }
         }
     }
-    if !plan.is_empty() {
-        files.check_archives(ids)?;
-    }
+    files.check_archives(&plan)?;
     for (key, relative) in previous_chunks {
         let was_retail = previous_retail_inputs.contains_key(&relative);
         let replaced = new_inputs.contains_key(&relative);

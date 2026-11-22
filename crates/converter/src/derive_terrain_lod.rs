@@ -18,7 +18,7 @@ use crate::{
     integration::open_private_world_database,
     lod::{
         generation::StagedGeneration,
-        retail_terrain::{IMPORT_VERSION, RETAIL_NORMAL_AXES},
+        retail_terrain::{IMPORT_VERSION, RETAIL_NORMAL_AXES, tier_for_level},
         retail_terrain_import::{LodWorld, WorldReport, stage_world},
         retail_terrain_source::{self as source, BlockId},
         reuse::{LodManifest, TERRAIN_SOURCE_RETAIL},
@@ -109,16 +109,16 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         "refused: the pack has no worldspace with terrain LOD"
     );
 
-    // List what the game data offers; verify every archive that provides a file.
+    // Verify archives that supply blocks eligible for compilation.
     let files = source::list(&options.data)?;
     for warning in &files.archive_warnings {
         eprintln!("{warning}");
     }
     let mut sources = Vec::new();
-    let relevant_ids = files
-        .blocks
-        .keys()
-        .filter(|(world, ..)| worlds.iter().any(|candidate| candidate.file_name == *world));
+    let relevant_ids = files.blocks.keys().filter(|(world, level, ..)| {
+        tier_for_level(*level).is_some()
+            && worlds.iter().any(|candidate| candidate.file_name == *world)
+    });
     let verified_archives = files.archives_used(relevant_ids);
     for (&name, &path) in &verified_archives {
         let recorded = conversion.archives.get(name).ok_or_else(|| {
@@ -602,6 +602,45 @@ mod tests {
         assert_eq!(receipt["worlds"][0]["kept_from_previous_generation"], 1);
         shared::world_assets::validate_lod_build_contract(target, CONVERTER_SCHEMA_VERSION)
             .unwrap();
+    }
+
+    #[test]
+    fn unlisted_level_32_archive_is_skipped_but_still_reported() {
+        use dummy_content::{Entry, bsa};
+
+        let directory = tempfile::tempdir().unwrap();
+        let options = derive_fixture(directory.path());
+        let path = options.data.join("Unused.bsa");
+        let level_32_mesh = Entry::new("meshes/terrain/first/first.32.0.0.btr", b"level 32");
+        fs::write(
+            &path,
+            bsa::v105(&[level_32_mesh], bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+
+        let report = run(&options).unwrap();
+        assert_eq!(report.chunks, 2);
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(report.receipt).unwrap()).unwrap();
+        assert_eq!(receipt["sources"], serde_json::json!([]));
+        let world = &receipt["worlds"][0];
+        assert_eq!(world["blocks_found_by_level"]["32"], 1);
+        assert_eq!(world["skipped_by_class"]["no_runtime_tier"], 1);
+        assert_eq!(world["skipped"][0]["block"], "first.32.0.0");
+
+        let level_16_mesh = Entry::new("meshes/terrain/first/first.16.16.0.btr", b"level 16");
+        fs::write(
+            &path,
+            bsa::v105(&[level_16_mesh], bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+        let error = run(&options).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("archive unused.bsa provides retail terrain LOD files"),
+            "{error:#}"
+        );
     }
 
     #[test]
