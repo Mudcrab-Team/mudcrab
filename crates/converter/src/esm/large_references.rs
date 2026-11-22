@@ -41,7 +41,7 @@ fn members(bytes: &[u8]) -> Option<impl Iterator<Item = (i32, i32, u32)> + '_> {
     let [lo_y, hi_y, lo_x, hi_x] = <[u8; 4]>::try_from(key).ok()?;
     let x = i32::from(i16::from_le_bytes([lo_x, hi_x]));
     let y = i32::from(i16::from_le_bytes([lo_y, hi_y]));
-    Some(tuples.chunks_exact(8).filter_map(move |tuple| {
+    Some(tuples.as_chunks::<8>().0.iter().filter_map(move |tuple| {
         let (form, placement) = tuple.split_at(4);
         (placement == key).then_some((x, y, word(form)?))
     }))
@@ -144,7 +144,8 @@ mod tests {
                     ..Default::default()
                 },
             ],
-        );
+        )
+        .unwrap();
         let key = [0; 4];
         let record = RawRecord {
             form_id: 0x0200_0001,
