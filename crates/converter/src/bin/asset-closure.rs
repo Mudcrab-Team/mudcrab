@@ -292,8 +292,8 @@ fn inspect_asset(
     glb_path: &Path,
     source_texture_root: Option<&Path>,
 ) -> Result<AssetInspection> {
-    let bounds = match MeshConverter::glb_bounds(glb_path) {
-        Ok(bounds) => Some(bounds),
+    let bounds = match MeshConverter::drawable_bounds(glb_path) {
+        Ok(bounds) => bounds,
         Err(error)
             if format!("{error:#}").contains("GLB contains no bounded POSITION accessor")
                 || format!("{error:#}").contains("GLB has no accessors") =>
