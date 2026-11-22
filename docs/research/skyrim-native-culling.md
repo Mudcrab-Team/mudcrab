@@ -4,6 +4,9 @@ Research date: 2026-11-15. Mudcrab baseline: `8624434`.
 
 ## Overview
 
+For the current implementation and the later REA trace of exclusion predicates, portal
+visitation, and selective complexity fallback, see [remaining parity gaps from REA](skyrim-culling-rea-parity.md).
+
 Decompilation of the installed SkyrimSE 1.7.104.0 executable establishes that Skyrim retains
 **per-node visibility volumes and consumes them during object culling**. Mudcrab at baseline
 `8624434` discards portal regions after traversal and retains room booleans. This is a demonstrated
@@ -57,17 +60,17 @@ owned executable. Generated projects, game binaries, and raw decompilation remai
 
 ### Prepare visibility and select starting rooms
 
-In the portal-enabled branches of RVAs `0x1512540` and `0x1513290`, preparation clears
-accumulated rooms and visibility-map entries. It retains a compatible cached root if that
-room still contains the computed viewpoint. It then scans other rooms and starts traversal
-for every containing room. The cached root remains preferred. Otherwise, the first containing
-room becomes the cache. Overlapping rooms contribute visibility rather than requiring
-exclusive room selection.
+The main world-camera builder at RVA `0x1a97b0` clears the entry’s root
+(`+0x30`) and accumulated rooms before testing containment. The ordinary scan reads the
+graph’s room array (`+0x40`) from index zero upward. It starts a walk for every containing
+room and records the first match as the root. A previous frame’s root is cleared before the
+builder reads that field again. The light-owned paths at `0x1512540` and `0x1513290`
+have their own preparation logic.
 
-The tested point is camera translation plus a camera-basis vector scaled by camera field
-`+0x160`. The installed `NiCamera` and `NiFrustum` declarations identify that field as the
-near distance. This supports a point shifted toward the near plane, although the full camera
-coordinate convention still needs an experiment.
+The containment point is camera translation plus the forward basis vector times the near
+distance (`+0x160`). Fixed-eye poses in Treva’s Watch verified this direction in the main
+view. The [parity notes](skyrim-culling-rea-parity.md#camera-and-portal-boundary-rules-are-more-specific-than-a-distance-constant)
+describe the retail overlap test and its limits.
 
 Room `QPointWithin`, RVA `0xfce0c0`, accepts the primary multibound or any joined multibound.
 The bound classifiers at `0xfce130` and `0xfce1c0` also aggregate primary and joined shapes,
@@ -153,19 +156,51 @@ Occluder helpers `0xff8010` and `0xff7f50` build exclusion expressions for suppo
 shapes. They include plane and box paths. Our exported room graph currently has no equivalent
 occluder-volume data. Evidence: `plane-helpers.json` and `assignment-helpers.json`.
 
-The `XMBR` loader branch at `0x15ca54`, inside the function beginning at `0x15b040`, reads its
-four-byte payload and calls `0x16a640`. That helper creates or updates extra-data type `0x60`
-for a nonzero value and removes it for zero. Getter `0x16a610` reads the extra's `+0x10` value.
-These observations establish storage behavior, not the complete authored `NONE` policy.
+### Authored joins and object assignment
 
-Assignment candidate `0x2ca230` reads this getter before scanning room candidates. Its helper
-`0x2c9b90` looks up a room node, invokes its point-containment virtual, examines attached
-portals, and attaches geometry to a selected node. The input point initially comes from the
-render node's world-bound center. An `ExtraOcclusionShape` can replace that point with its
-shape translation, as shown by getter `0x16aa20` reading extra-data type `0x6d`.
-Other branches test the reference position or sphere. Named-override precedence across all
-paths, the header flag, pointer fixup, and movement timing still require a complete trace.
-Evidence: `assignment-decomp.json` and `assignment-helpers.json`.
+Further focused traces on the same pinned executable establish the normal static-reference
+paths below. Raw native decompilation remains local in `assignment-decomp.json`,
+`assignment-helpers.json`, and `/tmp/pr225-assignment-traces/`.
+
+| RVA | Observed behavior |
+| --- | --- |
+| `0x15b040` | Record loader reads `XRMR` as a 14-bit link count, two metadata bits, master byte at byte 2, and padding byte. The byte goes to `RoomRefData +0x20`. `XMBR` reads a FormID through `0x16a640`; zero removes extra type `0x60`. |
+| `0x16ba20` | A marker is a master if room data is absent, its master byte is nonzero, or its room-link list is empty. |
+| `0x16ba90`, `0x17e9b0` | Resolve direct linked masters first, then recurse through links with cycle protection. Head-inserted link lists reverse source `XLRM` order. |
+| `0x301be0` | Creates a master room and installs reciprocal links to its linked markers. |
+| `0x2da3d0` | Appends a slave multibound to the master's joined list at `+0x168`; it does not create an independent room node. |
+| `0x2d77d0` | Portal setup resolves slave endpoints through their master before attaching them. |
+| `0x2d8740` | Initial attachment to a supplied multibound node bypasses ordinary reassignment when its `AsMultiBoundNode` virtual succeeds. Thus a valid named target can own geometry outside its bounds. |
+| `0x2ca230`, `0x2c9b90` | Normal reassignment prefers the authored target, then its portal neighbors, then other room candidates. Tests begin with render-node bound center `+0xe4`, radius `+0xf0`. A containing primary/joined room with zero touched portals owns the object; one physical portal uses its shared node; multiple portals use the common multibound node. Outside geometry scans graph portals, then uses the unbounded node. |
+| `0x2d55d0` | An update caller invokes normal reassignment with arguments `(cell, reference, 1, 0)`. This is separate from initial attachment. |
+| `0xee2920`, `0xefeca0` | Node world bounds skip zero-radius children and merge nonzero child spheres in child order. The enclosing-sphere merge retains containment cases and has a `1e-6` center-update threshold. |
+
+An `ExtraOcclusionShape` can substitute its translation for the bound-center containment point;
+this and forced/actor paths are not implemented by the normal mesh assignment port. Native room
+candidate iteration uses runtime handles/hash storage, not ascending persistent FormIDs. When
+several distinct masters contain a bound center, a deterministic single-owner choice from the
+export alone would invent native order. Mudcrab retains all possible owners instead.
+
+The local all-plugins scan found 4,246 box rooms, 2,444 links, and 817 explicit master bytes.
+There are 831 portal endpoint occurrences naming slaves. Components with several explicitly
+marked masters exist and must not be collapsed by connected-component union. Fourteen links
+lack a mirror. Creating a master can add a missing reverse link; where several inferred incoming
+masters depend on unknown construction order, Mudcrab retains full rendering.
+
+The portal/sphere leaf at `0xfe9860` was checked in machine instructions, including the `cosf`
+import thunk. For absolute portal-frame coordinates `(x, y, z)`, normal coordinate `y`, radius
+`r > 0`, and half-width/height `(w, h)`, it rejects `x-r > w`, `z-r > h`, or `y-r > 0`.
+It then computes `inset = cosf(abs(y-r)/r) * r` and accepts only when `x-inset <= w` and
+`y-inset <= h`. The last comparison uses the normal coordinate, despite its unusual appearance.
+An AABB/rectangle overlap or textbook sphere/rectangle-distance replacement changes this result.
+
+[The local instruction probe](../../scripts/research/skyrim_portal_sphere_probe.py) extracts only
+this function from an owned hash-pinned executable into executable memory. A small `ms_abi`
+bridge supplies host `cosf` and the absolute-value constant. It executed 1,617 sampled cases with
+zero mismatches against the port's formula. [The checked-in corpus](../../crates/engine/tests/fixtures/portal-sphere-native-1.7.104.json)
+retains 36 boundary cases, also checked by the Rust test. This is an instruction-level experiment,
+not a running-game comparison; host `cosf` need not match the Windows library at every last bit.
+No extracted native instructions or assets are distributed.
 
 ## What Mudcrab needs for parity
 
@@ -181,7 +216,7 @@ The priorities below identify the next implementation and research work.
 | 6 | Preparation and culling have multiple modes and caller paths. | Main-view mesh filtering leaves lights and shadow lists independent. | Trace pass ownership, room lights, shadow behavior, and always-render children before claiming parity across passes. |
 
 Mudcrab already starts traversal from all containing rooms. Preserve that behavior.
-The remaining viewpoint difference is the tested point and cached-root handling.
+The interior loader visits the physical slots of its live cell reference set. The same stock assets produced different room arrays across loads. Capture-specific replay uses the ordered room FormIDs. See the [load-order evidence](skyrim-culling-rea-parity.md).
 The code comparison is in [room traversal](../../crates/engine/src/room_culling.rs),
 [membership conversion](../../crates/converter/src/esm/rooms.rs), and
 [spawned reference policy](../../crates/engine/src/streaming.rs).
@@ -205,7 +240,7 @@ cycles, near-boundary cases, assignment updates, and pass ownership. The install
 framework can help repeat poses. Its presence alone does not record room visibility or prove
 the plugin loaded successfully.
 
-The useful runtime comparison records camera pose and FOV, containing rooms, the cached root,
+The useful runtime comparison records camera pose and FOV, containing rooms in graph order, the selected root,
 unbounded visibility, per-node expressions, and submitted reference IDs at matching frames.
 Image comparisons then check visible output. Cases need to include an outside-room viewpoint,
 a null endpoint, overlapping starts, a joined room, multiple portal paths, shared geometry,
@@ -219,15 +254,23 @@ do not substitute for an original-runtime comparison.
 
 The first implementation replaces room booleans with unions of convex portal volumes and
 tests each eligible mesh's transformed AABB against its membership volumes. It preserves
-separate paths, clips portal polygons, and supports perspective and orthographic views.
+separate paths and clips portal polygons for perspective views. Orthographic views keep full
+rendering in interiors with rooms.
 The native sphere test and our transformed AABB test can retain different conservative false
 positives, so identical submitted-object lists are not guaranteed by this implementation.
 The [current policy report](skyrim-room-culling.md#runtime-choices) describes the work limits,
 fallbacks, and exemptions. The table above remains a comparison against baseline `8624434`.
-The next implementation adds an unbounded traversal node, source-verified outside endpoints,
-and combined endpoint volumes for portal-shared geometry. Portal overlap uses aggregate affine
-model bounds and retains geometric overlap candidates. Native assignment helper `0x2c9b90`
-instead calls the sphere/portal test at `0xfe9860`; exact ownership, particularly for references
-touching multiple portals, remains unresolved. Legacy and unknown endpoint data retain conservative
-fallbacks. Occluders, authored joined bounds, full assignment, and pass ownership remain separate
-work. These changes do not claim exact Skyrim clipping or traversal parity.
+The second implementation adds an unbounded traversal node, source-verified outside endpoints,
+and combined endpoint volumes for portal-shared geometry. The authored-assignment update replaces
+its approximate aggregate-AABB ownership for newly converted graphs. It resolves master/slave
+unions, redirects portal endpoints, retains source NIF spheres, ports the native sphere/portal
+leaf, honors initial named targets, and updates supported ownership after reference movement.
+Legacy graphs retain their previous behavior. The authored path removes heuristic overlap edges
+and portal-less-room fallbacks, while incomplete graphs still retain full rendering.
+
+Remaining assignment limits include native candidate/hash order, named-target neighbor precedence,
+unsupported/animated source bounds, primitive overrides, and forced/actor paths. Independent static
+plane and box occluders now have export and path-local exclusion support; see the
+[implementation contract](skyrim-culling-rea-parity.md#independent-occluder-implementation).
+Retail captures establish independent shadows for [isolated linked plane references](skyrim-culling-rea-parity.md#linked-plane-references-in-retail). Runtime shapes with populated partner pointers, stateful occluders, clipping tolerances, lights, shadows, and always-render pass ownership remain separate
+parity work. These implementations do not establish full original-runtime parity.

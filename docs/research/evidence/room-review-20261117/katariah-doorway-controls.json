@@ -1,0 +1,386 @@
+{
+  "method": {
+    "matched": "Free camera and first person at the same measured eye, with the player in 0006EE50.",
+    "inside-first": "First person farther inside 0006EE50.",
+    "disabled-reentry": "Disable 0006EF37 and leave for TPFParallelBoth before returning.",
+    "restored-reentry": "Issue enable and repeat the cell round trip before purging.",
+    "purge-disabled": "Disable, leave the cell, run pcb, return and repeat the matched pose.",
+    "purge-enabled": "Issue enable, leave, run pcb, return. The link remained absent.",
+    "explicit-enabled": "Repeat the purge with a fully qualified enable command. The link remained absent.",
+    "fresh-start": "Quit without saving, launch a new process with the same plugins, return to the matched pose."
+  },
+  "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "cell_id": "000BBB2F",
+  "load_order": [
+    "Skyrim.esm",
+    "Update.esm",
+    "Dawnguard.esm",
+    "HearthFires.esm",
+    "Dragonborn.esm",
+    "PortalFixtures.esp"
+  ],
+  "coordinates": "Creation units",
+  "doorway_under_test": {
+    "reference": "0006EF37",
+    "center": [-508.0, 1408.0, 684.0],
+    "endpoints": ["0006EE1E", "0006EE50"],
+    "identity_source": "room_portals in the Katariah pack hashed in katariah-wedge-control.json"
+  },
+  "wall_patch_xyxy_half_open": [
+    1320,
+    50,
+    1360,
+    90
+  ],
+  "patch_baseline_sha256": "ba006c4d2253a5248ecc425a84b0d1ab03e432bc82374a018f9c19ebf959b690",
+  "reload_via": "TPFParallelBoth",
+  "runs": {
+    "matched-free": {
+      "camera": {
+        "camera_state_id": 3,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 180.00000500895572,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE1E",
+        "0006EE50"
+      ],
+      "image_sha256": "e965a6e5cfc8798ad347399fe4a6f6c6407963329991f9b51a8964ebf3915b5c",
+      "wall_patch_luma_stddev": 13.3108,
+      "wall_patch_correlation_with_archived_baseline": 0.99329
+    },
+    "matched-first": {
+      "camera": {
+        "camera_state_id": 0,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 179.99999499104428,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE1E",
+        "0006EE50"
+      ],
+      "image_sha256": "8cfbc9775e4d4f55ede9b21c7cf8eced97f6cde841d9d5649f5a67f18c11cd37",
+      "wall_patch_luma_stddev": 13.5863,
+      "wall_patch_correlation_with_archived_baseline": 0.99507
+    },
+    "inside-first": {
+      "camera": {
+        "camera_state_id": 0,
+        "position": [
+          -400.0,
+          1780.0,
+          748.0
+        ],
+        "player_position": [
+          -400.0,
+          1780.0,
+          627.5
+        ],
+        "yaw": 179.99999499104428,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDC5",
+        "0006EDCA",
+        "0006EE1E",
+        "0006EE50"
+      ],
+      "image_sha256": "2eb929353a6e0ac96a44168129958bca9b57d0f162b0f55794268844ebaf9d65"
+    },
+    "disabled-reentry": {
+      "camera": {
+        "camera_state_id": 3,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 180.00000500895572,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE1E",
+        "0006EE50"
+      ],
+      "image_sha256": "56a93cf1e8144f25c537c2423cf3a4cab2be6b4259386a0e2baa41a0a956460e",
+      "root_room_doorway_count": 5,
+      "readback_source": "disabled-reentry.json",
+      "readback_sha256": "5659e671de5c243356ddb44eb8af3834b5d826cd2ea8c550f4f6080302daca8b",
+      "root_room_doorways": [
+        {"center": [-508.0, 1408.0, 684.0], "endpoints": ["0006EE1E", "0006EE50"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
+      "root_room_doorways_to_0006EE1E": [
+        {
+          "center": [
+            -508.0,
+            1408.0,
+            684.0
+          ],
+          "endpoints": [
+            "0006EE1E",
+            "0006EE50"
+          ]
+        }
+      ],
+      "wall_patch_luma_stddev": 13.7798,
+      "wall_patch_correlation_with_archived_baseline": 0.99747
+    },
+    "restored-reentry": {
+      "camera": {
+        "camera_state_id": 3,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 180.00000500895572,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE1E",
+        "0006EE50"
+      ],
+      "image_sha256": "0a0960061eb29e123b449f7e7e4700ea4e58bafdcc5b8f9b2dca0358473f6d9f",
+      "root_room_doorway_count": 5,
+      "readback_source": "restored-reentry.json",
+      "readback_sha256": "45f5673ba18a91e488da5db75017c851ff2e41eb4c01e35195ef2509f3af6b3b",
+      "root_room_doorways": [
+        {"center": [-508.0, 1408.0, 684.0], "endpoints": ["0006EE1E", "0006EE50"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
+      "root_room_doorways_to_0006EE1E": [
+        {
+          "center": [
+            -508.0,
+            1408.0,
+            684.0
+          ],
+          "endpoints": [
+            "0006EE1E",
+            "0006EE50"
+          ]
+        }
+      ],
+      "wall_patch_luma_stddev": 14.2573,
+      "wall_patch_correlation_with_archived_baseline": 0.99352
+    },
+    "purge-disabled": {
+      "camera": {
+        "camera_state_id": 3,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 180.00000500895572,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE50"
+      ],
+      "image_sha256": "73cfd705485a040bf3e9cb8543f4588d0bd6e8c14326395f1ef4a202e6fd7a92",
+      "root_room_doorway_count": 4,
+      "readback_source": "purge-disabled.json",
+      "readback_sha256": "e9f2ab668a3616dbcb05281569df815511d8943369e6ab6dac0f6b40cdf745f5",
+      "root_room_doorways": [
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
+      "root_room_doorways_to_0006EE1E": [],
+      "wall_patch_luma_stddev": 0.4078,
+      "wall_patch_correlation_with_archived_baseline": 0.11989
+    },
+    "purge-enabled": {
+      "camera": {
+        "camera_state_id": 3,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 180.00000500895572,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE50"
+      ],
+      "image_sha256": "0b015ec4324e15144d1fc0bc864ec73cac7cca5135148bb14d668e85b3dc2410",
+      "root_room_doorway_count": 4,
+      "readback_source": "purge-enabled.json",
+      "readback_sha256": "1c1e90cfde58ed0b5b2eb04e941fe746e8cf0151d0430f56cf6143accc7dd1df",
+      "root_room_doorways": [
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
+      "root_room_doorways_to_0006EE1E": [],
+      "wall_patch_luma_stddev": 0.2087,
+      "wall_patch_correlation_with_archived_baseline": -0.02831
+    },
+    "explicit-enabled": {
+      "camera": {
+        "camera_state_id": 3,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 180.00000500895572,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE50"
+      ],
+      "image_sha256": "259fa69b5e131ed48a1337eb07a9672e1e952ba8bc8ed068c653db2253582dd8",
+      "root_room_doorway_count": 4,
+      "readback_source": "explicit-enabled.json",
+      "readback_sha256": "80008ed437127d243ea9bf7e82d45379c7c94ad04fe7cbb2f3059f6c3295b00d",
+      "root_room_doorways": [
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]},
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]}
+      ],
+      "root_room_doorways_to_0006EE1E": [],
+      "wall_patch_luma_stddev": 0.441,
+      "wall_patch_correlation_with_archived_baseline": 0.07908
+    },
+    "fresh-start": {
+      "camera": {
+        "camera_state_id": 3,
+        "position": [
+          -768.0,
+          1536.0,
+          748.0
+        ],
+        "player_position": [
+          -768.0,
+          1536.0,
+          627.5
+        ],
+        "yaw": 180.00000500895572,
+        "pitch": 59.99999955470786,
+        "hfov": 74.99999733483311,
+        "use_multibounds": true
+      },
+      "root": "0006EE50",
+      "mapped": [
+        "0006EDCA",
+        "0006EE1E",
+        "0006EE50"
+      ],
+      "image_sha256": "bfef359aedf15cdb73bc11992980788ef469f79790582b0236705c3969c8fd89",
+      "root_room_doorway_count": 5,
+      "readback_source": "fresh-start.json",
+      "readback_sha256": "109b3cdebb2dc2dfef4d96ca3c0e41371ef9f770360f3d9f6d20bf4e0648a79a",
+      "root_room_doorways": [
+        {"center": [-256.0, 2416.0, 768.0], "endpoints": ["0006EE50", "000D4F9E"]},
+        {"center": [-772.0003051757812, 1792.7855224609375, 680.6649169921875], "endpoints": ["0006EE50", "0006EE4F"]},
+        {"center": [-508.0, 1408.0, 684.0], "endpoints": ["0006EE1E", "0006EE50"]},
+        {"center": [-220.028564453125, 1792.4771728515625, 600.0], "endpoints": ["0006EE50", "0006EDCA"]},
+        {"center": [0.0, 1408.0, 732.0], "endpoints": ["0006EDCA", "0006EE50"]}
+      ],
+      "root_room_doorways_to_0006EE1E": [
+        {
+          "center": [
+            -508.0,
+            1408.0,
+            684.0
+          ],
+          "endpoints": [
+            "0006EE1E",
+            "0006EE50"
+          ]
+        }
+      ],
+      "wall_patch_luma_stddev": 14.32,
+      "wall_patch_correlation_with_archived_baseline": 0.99206
+    }
+  }
+}

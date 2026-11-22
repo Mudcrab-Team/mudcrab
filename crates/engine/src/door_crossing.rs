@@ -357,7 +357,7 @@ fn describe_destination(key: &CellKey) -> String {
 ///
 /// The bounds are the converter's model-space box; the ray is taken into the door's local space
 /// so a rotated or scaled door is tested as the oriented box it is.
-fn ray_hits_door(
+pub(crate) fn ray_hits_door(
     origin: Vec3,
     direction: Vec3,
     door: &GlobalTransform,

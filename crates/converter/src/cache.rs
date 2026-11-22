@@ -472,6 +472,27 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "skin-static-fallback",
     "object-texture-swap-geometry-index-v1",
     "object-texture-swap-geometry-index-v2",
+    "native-room-assignment-spheres",
+    "leaf-ordered-and-static-skin-room-spheres",
+    "complete-root-room-spheres",
+    "rigid-child-and-depth-room-spheres",
+    "export-leaf-scene-nodes",
+    "skin-auto-quality-room-spheres",
+    "ordered-node-loader-room-spheres",
+    "snapshot-and-keyframed-skin-room-spheres",
+    "animated-skin-bone-room-spheres",
+    "animated-skin-ancestor-and-character-room-spheres",
+    "switch-value-and-multibound-room-spheres",
+    "skin-ancestor-room-spheres",
+    "initial-switch-scene",
+    "inactive-switch-scene-bounds",
+    "signed-switch-selectors",
+    "renderer-verified-room-spheres",
+    "scene-ancestor-skin-motion",
+    "verified-fixed-ordered-descendants",
+    "non-finite-uv-repair-v1",
+    "verified-static-drawable-spheres",
+    "collision-body-node-rebind",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -586,12 +607,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// These compatibility pairs are limited to metadata adapters 11 to 14; a future
+/// These compatibility pairs are limited to metadata adapters 11 to 15; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=14) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -602,12 +623,12 @@ pub(crate) fn inhouse_adapter10_reader_identity(
     Some(identity)
 }
 
-/// Adapters 12 to 14 retain adapter-11 asset bytes. Adapter 14 rebuilds NIF output through its
+/// Adapters 12 to 15 retain adapter-11 asset bytes. Adapter 14 rebuilds NIF output through its
 /// own mesh contract, so retained DDS and PEX candidates stay reusable.
 pub(crate) fn inhouse_adapter11_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12..=14) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12..=15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -619,12 +640,12 @@ pub(crate) fn inhouse_adapter11_reader_identity(
 }
 
 /// Adapter 13 adds placed database rows without changing converted asset bytes. Adapter 14
-/// retains that proof for DDS and PEX candidates.
+/// retains that proof for DDS and PEX candidates, as does metadata-only adapter 15.
 pub(crate) fn inhouse_adapter12_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 13 | 14) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 13..=15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
@@ -642,7 +663,7 @@ pub(crate) fn inhouse_adapter13_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 14 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 14 | 15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
@@ -651,6 +672,23 @@ pub(crate) fn inhouse_adapter13_reader_identity(
         language,
     );
     identity["adapter_version"] = serde_json::json!(13);
+    Some(identity)
+}
+
+/// Adapter 15 adds authored occlusion metadata without changing converted asset bytes.
+pub(crate) fn inhouse_adapter14_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+    language: &str,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 15 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+        language,
+    );
+    identity["adapter_version"] = serde_json::json!(14);
     Some(identity)
 }
 
@@ -1352,6 +1390,7 @@ pub(crate) fn retained_configuration_matches_for_reader(
             inhouse_adapter11_reader_identity(config.schemas()?.as_ref()),
             inhouse_adapter12_reader_identity(config.schemas()?.as_ref(), &config.language),
             inhouse_adapter13_reader_identity(config.schemas()?.as_ref(), &config.language),
+            inhouse_adapter14_reader_identity(config.schemas()?.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(identity))
@@ -1406,6 +1445,7 @@ pub(crate) fn retained_configuration_matches_for_lineage_reader(
             inhouse_adapter10_reader_identity(schemas.as_ref()),
             inhouse_adapter11_reader_identity(schemas.as_ref()),
             inhouse_adapter12_reader_identity(schemas.as_ref(), &config.language),
+            inhouse_adapter14_reader_identity(schemas.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(&normalized));
@@ -2385,6 +2425,40 @@ mod tests {
         );
         assert_eq!(original["adapter_version"], 13);
         assert_ne!(recorded, configuration_hash(&config).unwrap());
+    }
+
+    #[test]
+    fn adapter14_asset_proof_survives_occlusion_metadata_update() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.language = "french".into();
+        let original =
+            inhouse_adapter14_reader_identity(config.schemas().unwrap().as_ref(), &config.language)
+                .unwrap();
+        let recorded =
+            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
+                .unwrap();
+        assert!(
+            retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        assert_eq!(original["adapter_version"], 14);
+        assert_ne!(recorded, configuration_hash(&config).unwrap());
+        config.texture_fallback_quality += 1;
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
     }
 
     /// Known prior adapter proofs retain asset bytes without accepting unknown readers.

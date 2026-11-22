@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Marks placed sources edited by a subset export so incoming owner-link restoration skips the superseded native source payload.",
+  "table": "reference_link_subset_sources"
+}

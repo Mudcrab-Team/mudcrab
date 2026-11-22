@@ -7,8 +7,8 @@ use crate::{
         RecordConversion,
         cell_cache::validate_inhouse_land,
         exporter::{
-            create_tables, export_inhouse_record_archive_to_db, export_inhouse_to_db,
-            validate_inhouse_record,
+            RejectedLightFields, RejectedLightInputs, create_tables,
+            export_inhouse_record_archive_to_db, export_inhouse_to_db, validate_inhouse_record,
         },
         load_order::LoadOrder,
         records::RawRecord,
@@ -26,9 +26,7 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-/// Version 14 projects STAT MODS texture swaps.
-/// Later LAND item recovery shares this identity; reconvert to pick up recovered paint.
-pub const ADAPTER_VERSION: u32 = 14;
+pub const ADAPTER_VERSION: u32 = 15;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
@@ -113,7 +111,11 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "script_property_values",
     "room_bounds",
     "room_portals",
+    "room_occluders",
+    "room_occluder_links",
     "room_links",
+    "room_reference_rules",
+    "room_model_bounds",
     "room_graph_cells",
     "reference_rooms",
     "room_graph_stats",
@@ -135,6 +137,9 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "reference_linked_refs",
     "reference_activate_parents",
     "reference_details",
+    "reference_light_data",
+    "reference_authored_targets",
+    "reference_authored_changes",
     "door_links",
     "emittance",
 ];
@@ -403,7 +408,7 @@ fn write_record_archive_scope(output: &Path, complete: bool, signatures: &[[u8; 
             "status": if complete { "COMPLETE_DIAGNOSTIC_ARCHIVE_RUNTIME_VIEWS_DEFERRED" } else { "INCOMPLETE" },
             "runtime_ready": false,
             "runtime_views_materialized": false,
-            "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map",
+            "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map", "subset_nonplacement_deletions",
                 "inhouse_source_records", "inhouse_localized_fields", "inhouse_terrain_source_order",
                 "inhouse_terrain_layers", "inhouse_unresolved_terrain_textures", "record_overrides", "inhouse_plugin_masters", "inhouse_schema_addons", "record_diagnostics"],
         "deferred_runtime_tables": DEFERRED_RUNTIME_TABLES,
@@ -1004,6 +1009,9 @@ fn convert_plugins_with_text_sources_report_impl(
         .map(|record| record.form_id)
         .collect::<BTreeSet<_>>();
     let mut opaque_fields = HashMap::new();
+    // Malformed FNAM/XRDS are rejected before export; remember them so the light status columns
+    // match the legacy reader's "malformed" instead of reading "absent".
+    let mut rejected_light_fields = RejectedLightFields::new();
     // Sort compact keys, leaving record payloads in place and streaming one JSON line at a time.
     // The same traversal fixes localized provenance rowids when no typed dump is requested.
     let mut record_keys = decoded
@@ -1149,6 +1157,13 @@ fn convert_plugins_with_text_sources_report_impl(
             records::typed_export::write_record(writer, record, &localization)?;
             writer.write_all(b"\n")?;
         }
+        let rejected_light = RejectedLightInputs {
+            fnam: record.rejected_fields.contains(b"FNAM"),
+            xrds: record.rejected_fields.contains(b"XRDS"),
+        };
+        if rejected_light != RejectedLightInputs::default() {
+            rejected_light_fields.insert(record.form_id, rejected_light);
+        }
         // Typed fields and the source digest have been written before ownership moves.
         let mut raw = take_canonical_record(record);
         // These indices still refer to the decoded field vector; apply translations
@@ -1275,10 +1290,17 @@ fn convert_plugins_with_text_sources_report_impl(
             plugin_paths,
             &unresolved_fields,
             &terrain_offsets,
+            Some(&rejected_light_fields),
             &decoded,
         )?;
     } else {
-        export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
+        export_inhouse_record_archive_to_db(
+            &conn,
+            &master,
+            &order,
+            plugin_paths,
+            &decoded.deleted_ids,
+        )?;
     }
     runtime_stage.finish(master.len());
     phases.insert(
@@ -1358,7 +1380,10 @@ fn convert_plugins_with_text_sources_report_impl(
                 if let Some(id) = entry.form_id {
                     damage.accepted(id);
                 }
-            } else {
+            } else if !decoded
+                .retired_placements
+                .contains(&(entry.plugin_index, entry.source_record_offset))
+            {
                 damage.reject(
                     &entry.record_type,
                     entry.source_form_id,
@@ -1377,7 +1402,8 @@ fn convert_plugins_with_text_sources_report_impl(
             incomplete.execute([cell])?;
         }
         tx.execute(
-            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES
+             ('visibility_version',2),('occlusion_version',1)",
             [],
         )?;
     }
@@ -1495,6 +1521,26 @@ fn validate_candidate_with_string_sources(
 ) -> std::result::Result<(), String> {
     if super::is_placed_record_type(&record.record_type) {
         record.validate_placement_base()?;
+        let kept_transform = record
+            .fields
+            .iter()
+            .find(|field| field.signature == *b"DATA");
+        let valid_transform = if let Some(field) = kept_transform {
+            super::valid_initial_placement_transform(Some(&field.canonical_bytes))
+        } else if record.rejected_fields.contains(b"DATA") {
+            // Rejected nonfinite coordinates disappear from the typed projection. A short
+            // source field can still carry a canonical record with no spatial row.
+            record
+                .framed_source_prefix()
+                .into_iter()
+                .filter(|(tag, _)| tag == b"DATA")
+                .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
+        } else {
+            true
+        };
+        if !valid_transform {
+            return Err("invalid placement transform".into());
+        }
     }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
         return Ok(());

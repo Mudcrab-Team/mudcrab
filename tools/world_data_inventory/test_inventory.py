@@ -127,6 +127,12 @@ def store_document(name, anchor="fn query", commit="0" * 40):
             "evidence": [{"path": "crates/engine/src/world.rs", "anchor": anchor}]}
 
 
+def table_document(name, classification="deferred", owner="fixture", reason="Future feature allowed."):
+    """One committed table file. Its own file keeps table pull requests apart."""
+    return {"classification": classification, "format_version": 1, "owner": owner,
+            "reason": reason, "table": name}
+
+
 def make_tree(directory, source=READER):
     """A disposable checkout: one reader, the fixture dispositions and the converter/shared source roots."""
     root = Path(directory)
@@ -134,7 +140,12 @@ def make_tree(directory, source=READER):
     here.mkdir(parents=True)
     dispositions = manual()
     dispositions.pop("stores")
+    tables = dispositions.pop("tables")
     (here / "stores").mkdir()
+    (here / "tables").mkdir()
+    for key, value in tables.items():
+        (here / "tables" / (key + ".json")).write_text(
+            json.dumps(table_document(key, **value), sort_keys=True) + "\n", encoding="utf-8")
     (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
     for folder in ("crates/converter/src", "crates/converter/records", "crates/shared/src"):
         (root / folder).mkdir(parents=True)
@@ -245,9 +256,9 @@ class CommittedSurface(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unclassified emitted table: brand_new"):
                 run_tool(root, here, "--review-sources", "--extraction", str(path))
             self.assertEqual(committed_bytes(root), before)
-            dispositions = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
-            dispositions["tables"]["brand_new"] = {"classification": "deferred", "owner": "fixture", "reason": "Reviewed."}
-            (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
+            (here / "tables" / "brand_new.json").write_text(
+                json.dumps(table_document("brand_new", reason="Reviewed."), sort_keys=True) + "\n",
+                encoding="utf-8")
             write(grown)
             run_tool(root, here, "--review-sources", "--extraction", str(path))
             run_tool(root, here, "--check", "--extraction", str(path))
@@ -429,6 +440,58 @@ class StoreFiles(unittest.TestCase):
             dispositions["stores"] = {"legacy": store_document("legacy")}
             (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, r"must not contain a stores block.*stores/"):
+                run_tool(root, here, "--check")
+
+
+class TableFiles(unittest.TestCase):
+    """One table per file; a bad or old layout fails instead of dropping a classification."""
+
+    def write_table(self, here, filename, document):
+        (here / "tables" / filename).write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
+
+    def test_check_fails_closed_on_malformed_table_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "tables" / "broken.json").write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid JSON in table file tables/broken.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_duplicate_table(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_table(here, "one.json", table_document("same"))
+            self.write_table(here, "two.json", table_document("same"))
+            with self.assertRaisesRegex(ValueError, "duplicate table same: tables/one.json and tables/two.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_an_unexpected_file_in_the_table_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "tables" / "table.JSON").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,
+                                        "unexpected file in table directory: tables/table.JSON"):
+                run_tool(root, here, "--check")
+
+    def test_emitted_payload_uses_only_the_old_table_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            manual = inv.load_manual(here)
+            extraction = {"format_version": 1, "source_commit": "fixture",
+                          "schemas": {"fixture": fixture()}, "variants": []}
+            loaded = inv.build(root, manual, copy.deepcopy(extraction))
+            stripped = copy.deepcopy(manual)
+            stripped["tables"] = {name: {field: value[field] for field in inv.TABLE_DISPOSITIONS}
+                                  for name, value in stripped["tables"].items()}
+            old = inv.build(root, stripped, copy.deepcopy(extraction))
+            self.assertEqual(inv.canonical(loaded), inv.canonical(old))
+
+    def test_a_legacy_tables_block_fails_with_the_migration_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            dispositions = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            dispositions["tables"] = {"legacy": {"classification": "deferred", "owner": "fixture", "reason": "Old."}}
+            (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"must not contain a tables block.*tables/"):
                 run_tool(root, here, "--check")
 
 

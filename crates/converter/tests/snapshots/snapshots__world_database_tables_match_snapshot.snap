@@ -161,22 +161,30 @@ records|form_id=65536|record_type="CELL"|cell_id=NULL|worldspace_id=NULL|load_or
 records|form_id=65537|record_type="REFR"|cell_id=65536|worldspace_id=NULL|load_order=0|data=blob:ab774ad964fcaacc:104
 records|form_id=219149|record_type="MOVT"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:0af9321d5d2980d0:92
 ## reference_activate_parents (0 rows)
+## reference_authored_changes (0 rows)
+## reference_authored_targets (0 rows)
 ## reference_details (0 rows)
+## reference_light_data (0 rows)
 ## reference_linked_refs (0 rows)
 ## reference_rooms (0 rows)
 ## references (3 rows)
-references|id=18|cell_id=16|worldspace_id=1|base_form_id=3|is_exterior=1|pos_x=2048.000000000|pos_y=2048.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=2048.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:a996c9c4bd516ec8:60
-references|id=19|cell_id=16|worldspace_id=1|base_form_id=5|is_exterior=1|pos_x=2048.000000000|pos_y=1024.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=1024.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:f80c00a339781201:104
-references|id=65537|cell_id=65536|worldspace_id=NULL|base_form_id=6|is_exterior=0|pos_x=128.000000000|pos_y=512.000000000|pos_z=0.000000000|local_x=NULL|local_y=NULL|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:ab774ad964fcaacc:104
+references|id=18|cell_id=16|worldspace_id=1|base_form_id=3|is_exterior=1|pos_x=2048.000000000|pos_y=2048.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=2048.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:a996c9c4bd516ec8:60|radius_status=0
+references|id=19|cell_id=16|worldspace_id=1|base_form_id=5|is_exterior=1|pos_x=2048.000000000|pos_y=1024.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=1024.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:f80c00a339781201:104|radius_status=0
+references|id=65537|cell_id=65536|worldspace_id=NULL|base_form_id=6|is_exterior=0|pos_x=128.000000000|pos_y=512.000000000|pos_z=0.000000000|local_x=NULL|local_y=NULL|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:ab774ad964fcaacc:104|radius_status=0
 ## region_weathers (0 rows)
 ## room_bounds (0 rows)
 ## room_graph_cells (0 rows)
-## room_graph_stats (13 rows)
+## room_graph_stats (18 rows)
+room_graph_stats|name="assignment_version"|value=1
 room_graph_stats|name="invalid_markers_skipped"|value=0
+room_graph_stats|name="invalid_occluders_skipped"|value=0
 room_graph_stats|name="links"|value=0
 room_graph_stats|name="non_box_rooms_skipped"|value=0
 room_graph_stats|name="objects_in_no_room"|value=0
 room_graph_stats|name="objects_in_several_rooms"|value=0
+room_graph_stats|name="occluders"|value=0
+room_graph_stats|name="occlusion_links_verified"|value=1
+room_graph_stats|name="occlusion_version"|value=1
 room_graph_stats|name="overlap_rows"|value=0
 room_graph_stats|name="portals"|value=0
 room_graph_stats|name="portals_with_extra_pairs"|value=0
@@ -187,7 +195,12 @@ room_graph_stats|name="rooms"|value=0
 room_graph_stats|name="visibility_version"|value=2
 ## room_link_anomalies (0 rows)
 ## room_links (0 rows)
+## room_model_bounds (0 rows)
+## room_occluder_links (0 rows)
+## room_occluders (0 rows)
 ## room_portals (0 rows)
+## room_reference_rules (1 rows)
+room_reference_rules|reference_id=65537|cell_id=65536|assignment="auto"|target_ref=NULL
 ## schema_info (1 rows)
 schema_info|version=9
 ## script_properties (0 rows)
@@ -197,6 +210,7 @@ schema_info|version=9
 statics|id=3|editor_id="GeneratedStatic"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
 statics|id=5|editor_id="AutoLoadDoor01"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
 statics|id=6|editor_id="GeneratedDoor01"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
+## subset_nonplacement_deletions (0 rows)
 ## texture_sets (1 rows)
 texture_sets|id=2|editor_id="GeneratedTextures"|diffuse_path="textures/generated_color.dds"|normal_path="textures/generated_normal.dds"|glow_path=NULL|height_path=NULL|environment_path=NULL|mask_path=NULL|specular_path=NULL|detail_path=NULL
 ## waters (0 rows)

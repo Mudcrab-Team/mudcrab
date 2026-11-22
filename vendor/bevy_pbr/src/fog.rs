@@ -304,6 +304,39 @@ pub enum FogFalloff {
         /// For artistic control, use the [`FogFalloff::from_visibility_colors()`] convenience method.
         inscattering: Vec3,
     },
+
+    // mudcrab: a power ramp between two colours, for the weather's exterior fog (#891). Mudcrab-only,
+    // since Bevy has no such falloff. The formula is in the doc comment below.
+    /// A power ramp capped by the fog colour's alpha, and a colour that runs from `near_color` to
+    /// the [`DistanceFog`] `color` as the fog strengthens.
+    ///
+    /// ## Formula
+    ///
+    /// ```text
+    /// let s = ((distance - start) / (end - start)).clamp(0.0, 1.0);
+    /// let fog_intensity = s.powf(power).min(color.a);
+    /// let fog_color = near_color + fog_intensity * (color.rgb - near_color);
+    /// // the lit colour then runs to the fog colour by the fog intensity
+    /// let result = lit + fog_intensity * (fog_color - lit);
+    /// ```
+    ///
+    /// A `power` of 1 is the linear ramp of [`FogFalloff::Linear`], with a colour that changes with
+    /// the intensity. Mudcrab's exterior fog uses this falloff for the weather record's fog
+    /// distances, power and max. The directional light glow adds to the far colour, as in the
+    /// other modes.
+    PowerRamp {
+        /// Distance from the camera where fog starts, in world units.
+        start: f32,
+
+        /// Distance from the camera where the ramp reaches 1 before the cap, in world units.
+        end: f32,
+
+        /// Exponent of the ramp. Below 1 the fog gains strength quickly near `start`.
+        power: f32,
+
+        /// The colour at the start of the ramp, linear RGB. The alpha channel is not used.
+        near_color: Color,
+    },
 }
 
 impl FogFalloff {

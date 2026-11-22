@@ -135,6 +135,47 @@ pub(crate) fn water_refraction_leaks(
     (camera_height - surface_height) * (scene_height - surface_height) > 0.0
 }
 
+/// The cells whose flow maps the flow program's shifted taps read past a cell's east and south
+/// edges: east (x + 1, y), south (x, y - 1) and south-east (x + 1, y - 1). Retail's flow atlas puts
+/// geographic neighbours next to each other and samples it with wrap addressing, so a tap shifted
+/// half a texel east or south at the edge reads the neighbour's first texel (RF-WATER-063,
+/// RF-WATER-036). The cell's V axis runs south, toward smaller Y.
+pub(crate) fn water_flow_neighbour_cells(grid: IVec2) -> [IVec2; 3] {
+    [
+        grid + IVec2::new(1, 0),
+        grid + IVec2::new(0, -1),
+        grid + IVec2::new(1, -1),
+    ]
+}
+
+/// Which flow map a texel read lands in.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaterFlowTile {
+    Own,
+    East,
+    South,
+    SouthEast,
+}
+
+/// Where the flow program's point read of texel `texel` (which may be 64, one past the cell's last
+/// texel, for a tap shifted past the east or south edge) lands: the cell's own map, or a bound
+/// neighbour's first row or column; `bound` is the bit set of `settings.flow.w`. A side with no
+/// neighbour bound clamps to the cell's own edge texel, as the flow program did before neighbours.
+/// Mirrors `flow_texel` in `water.wgsl`.
+#[cfg(test)]
+pub(crate) fn water_flow_texel_source(texel: IVec2, bound: u8) -> (WaterFlowTile, IVec2) {
+    let past_east = texel.x >= 64;
+    let past_south = texel.y >= 64;
+    match (past_east, past_south) {
+        (false, false) => (WaterFlowTile::Own, texel),
+        (true, false) if bound & 1 != 0 => (WaterFlowTile::East, IVec2::new(0, texel.y)),
+        (false, true) if bound & 2 != 0 => (WaterFlowTile::South, IVec2::new(texel.x, 0)),
+        (true, true) if bound & 4 != 0 => (WaterFlowTile::SouthEast, IVec2::ZERO),
+        _ => (WaterFlowTile::Own, texel.min(IVec2::splat(63))),
+    }
+}
+
 /// The bilinear weight of the flow-map program along one axis (RF-WATER-044): `1 - |2 * fract(64 *
 /// uv) - 1|`, 1 at a texel centre and 0 at a texel edge.
 #[cfg(test)]
@@ -191,6 +232,29 @@ pub(crate) fn water_variant_body(
     sun_dot_n: Option<f32>,
 ) -> f32 {
     (shallow + (deep - shallow) * fresnel) * sun_dot_n.map_or(1.0, |dot| dot.clamp(0.0, 1.0))
+}
+
+/// The depth terms of the retail water programs that have depth (RF-WATER-048, RF-WATER-059), as
+/// `water_body` in `water.wgsl` computes them: `x = sat(L / F)`, `y` = the body's share over the bed
+/// `1 - sat((F - min(L, F)) / range)^exponent`, `z = sat(h / F)`. `body` is the uniform's
+/// `(opacity, range, F, exponent)`; `path` is L and `vertical` is h, both in world units.
+#[cfg(test)]
+pub(crate) fn water_depth_terms(path: f32, vertical: f32, body: [f32; 4]) -> [f32; 3] {
+    let [_, range, far, exponent] = body;
+    [
+        (path / far).clamp(0.0, 1.0),
+        1.0 - ((far - path.min(far)) / range)
+            .clamp(0.0, 1.0)
+            .powf(exponent),
+        (vertical / far).clamp(0.0, 1.0),
+    ]
+}
+
+/// A DepthControl factor: `lerp(1, t, D)` for the term `t` in 0..1 and the record's property `D`
+/// (RF-WATER-048); at the waterline `t = 0`, so it is `1 - D` (RF-WATER-059).
+#[cfg(test)]
+pub(crate) fn water_depth_factor(depth_property: f32, term: f32) -> f32 {
+    depth_property * (term - 1.0) + 1.0
 }
 
 /// A phase below zero makes the shader run the waves on the frame clock instead of a phase the CPU
@@ -989,6 +1053,16 @@ pub struct WaterExtension {
     /// and the phase speed (a). Read by texel with `textureLoad`, so it is not filtered.
     #[texture(110, filterable = false)]
     flow_map: Option<Handle<Image>>,
+    /// The flow maps of the three cells whose first texels the program's shifted taps read past
+    /// this cell's east and south edges: east (x + 1, y), south (x, y - 1) and south-east
+    /// (x + 1, y - 1). Retail reads them from its flow atlas, where geographic neighbours are
+    /// adjacent (RF-WATER-063). `settings.flow.w` says which are bound.
+    #[texture(111, filterable = false)]
+    flow_map_east: Option<Handle<Image>>,
+    #[texture(112, filterable = false)]
+    flow_map_south: Option<Handle<Image>>,
+    #[texture(113, filterable = false)]
+    flow_map_south_east: Option<Handle<Image>>,
     /// The weather's Water Multiplier as 0..1 values, applied to the colours set after it.
     multiplier: [f32; 3],
 }
@@ -1013,8 +1087,9 @@ struct WaterSettings {
     /// The water's Shallow Color (WATR DNAM), linear; alpha unused. The deep colour is the
     /// StandardMaterial base colour.
     shallow_color: Vec4,
-    /// x = opacity 0..1 (WATR ANAM / 100), used where the depth is unknown; y, z = above-water fog
-    /// near and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
+    /// x = opacity 0..1 (WATR ANAM / 100), used where the depth is unknown; y = the above-water fog
+    /// range (far - near, 1e-5 when zero), z = max(far, 1) in world units, w = the curve exponent
+    /// max(4 * fog amount, 1) (WATR DNAM +0x20, +0x24, +0x84; RF-SHADER-006).
     body: Vec4,
     /// x = 1 when a snapshot texture is bound to `bed_depth`, 0 when none is and the body falls
     /// back to its ANAM opacity. It says nothing about whether this frame's depth is valid: a
@@ -1030,8 +1105,8 @@ struct WaterSettings {
     /// xyz = the three noise layers' amplitudes (WATR DNAM `amplitudeA`).
     noise_amplitude: Vec4,
     /// x, y, z, w = the WATR DNAM depth properties: reflections, refraction, normals and specular
-    /// lighting. How much of each effect is left at zero depth is `1 - value`; only the normals one
-    /// is used.
+    /// lighting. How much of each effect is left at zero depth is `1 - value` (RF-WATER-048,
+    /// RF-WATER-059); all four are used.
     depth_control: Vec4,
     /// x = sun specular power, y = its magnitude, z = sparkle power, w = its magnitude (WATR DNAM
     /// +0x10, +0xCC, +0xE0, +0xC8; RF-WATER-010).
@@ -1042,7 +1117,8 @@ struct WaterSettings {
     /// x = the refraction magnitude in world units (WATR DNAM +0x98; RF-WATER-049); yzw unused.
     refraction: Vec4,
     /// xy = the cell's grid coordinates, z = 1 when the water runs retail's flow-map program
-    /// (FNAM bit 3 with a flow map and a flow normal texture bound), w unused (RF-WATER-044).
+    /// (FNAM bit 3 with a flow map and a flow normal texture bound), w = the bound neighbour flow
+    /// maps as a bit set (1 east, 2 south, 4 south-east; RF-WATER-044, RF-WATER-063).
     flow: Vec4,
     /// The sky dome's colour table (`SkyUniform`): row elevations in degrees, four rows to a
     /// vector. The water reflects it where retail reflects its sky cube (see `with_sky`).
@@ -1088,6 +1164,9 @@ impl Default for WaterExtension {
             noise_normal_1: None,
             noise_normal_2: None,
             flow_map: None,
+            flow_map_east: None,
+            flow_map_south: None,
+            flow_map_south_east: None,
             multiplier: [1.0; 3],
         }
     }
@@ -1103,6 +1182,9 @@ impl WaterExtension {
             .chain(self.noise_normal_1.iter())
             .chain(self.noise_normal_2.iter())
             .chain(self.flow_map.iter())
+            .chain(self.flow_map_east.iter())
+            .chain(self.flow_map_south.iter())
+            .chain(self.flow_map_south_east.iter())
             .map(Handle::id)
     }
 
@@ -1158,6 +1240,9 @@ impl WaterExtension {
             noise_normal_1: None,
             noise_normal_2: None,
             flow_map: None,
+            flow_map_east: None,
+            flow_map_south: None,
+            flow_map_south_east: None,
             multiplier: [1.0; 3],
         }
     }
@@ -1192,6 +1277,27 @@ impl WaterExtension {
             0.0,
         );
         self.flow_map = flow_map;
+        // Neighbours belong to a flow map: dropping it drops them, and `with_flow_neighbours`
+        // adds them back.
+        self.flow_map_east = None;
+        self.flow_map_south = None;
+        self.flow_map_south_east = None;
+        self.settings.flow.w = 0.0;
+        self
+    }
+
+    /// Binds the flow maps of the east, south and south-east neighbour cells (see
+    /// [`water_flow_neighbour_cells`]); a `None` leaves the program clamping to this cell's own
+    /// edge texels on that side. Call it after [`Self::with_flow`].
+    pub fn with_flow_neighbours(mut self, neighbours: [Option<Handle<Image>>; 3]) -> Self {
+        let [east, south, south_east] = neighbours;
+        let mask = u8::from(east.is_some())
+            | (u8::from(south.is_some()) << 1)
+            | (u8::from(south_east.is_some()) << 2);
+        self.settings.flow.w = f32::from(mask);
+        self.flow_map_east = east;
+        self.flow_map_south = south;
+        self.flow_map_south_east = south_east;
         self
     }
 
@@ -3023,7 +3129,10 @@ mod tests {
             "let flow_b = flow_texel(cell_uv + vec2<f32>(h, h));",
             "let flow_c = flow_texel(cell_uv);",
             "let flow_d = flow_texel(cell_uv + vec2<f32>(h, 0.0));",
-            "return textureLoad(water_flow_map, texel, 0);",
+            "return textureLoad(water_flow_map, min(texel, vec2<i32>(last)), 0);",
+            "return textureLoad(water_flow_map_east, vec2<i32>(0, texel.y), 0);",
+            "return textureLoad(water_flow_map_south, vec2<i32>(texel.x, 0), 0);",
+            "return textureLoad(water_flow_map_south_east, vec2<i32>(0, 0), 0);",
             "const FLOW_RATES: vec4<f32> = vec4<f32>(10.64, 9.92, 8.0, 8.48);",
             "const FLOW_OFFSETS: vec4<f32> = vec4<f32>(0.27, 0.0, 0.0, 0.62);",
             "const FLOW_SCALE_BASE: f32 = 1.01;",
@@ -3066,12 +3175,174 @@ mod tests {
             .with_flow(IVec2::new(-3, 12), handle());
         assert_eq!(both.settings.flow, Vec4::new(-3.0, 12.0, 1.0, 0.0));
         assert_eq!(both.image_ids().count(), 2);
+        // The neighbours' maps are bound after the cell's own and set the bit mask of the uniform
+        // (1 east, 2 south, 4 south-east); a side left out keeps its bit clear, and dropping the
+        // cell's own map drops them all.
+        let bound = both
+            .clone()
+            .with_flow_neighbours([handle(), None, handle()]);
+        assert_eq!(bound.settings.flow, Vec4::new(-3.0, 12.0, 1.0, 5.0));
+        assert_eq!(bound.image_ids().count(), 4);
+        let dropped = bound.with_flow(IVec2::new(-3, 12), None);
+        assert_eq!(
+            (dropped.settings.flow.w, dropped.image_ids().count()),
+            (0.0, 1)
+        );
         let no_normal = WaterExtension::default().with_flow(IVec2::new(1, 2), handle());
         assert_eq!(no_normal.settings.flow.z, 0.0);
         assert_eq!(
             both.with_flow(IVec2::new(-3, 12), None).settings.flow.z,
             0.0
         );
+    }
+
+    /// The flow program's blend of four point taps (RF-WATER-044), on one scalar per texel instead
+    /// of a normal: taps C at `t`, D half a texel east, A half a texel south, B both, weighted
+    /// `w = 1 - |2 fract(t) - 1|` per axis and renormalised. `t` is in texels; `texel` reads one.
+    fn flow_blend_model(t: Vec2, texel: impl Fn(IVec2) -> f32) -> f32 {
+        let weight = |component: f32| water_flow_weight(component / 64.0);
+        let (wx, wy) = (weight(t.x), weight(t.y));
+        let read = |shift: Vec2| texel((t + shift).floor().as_ivec2());
+        let (c, d) = (read(Vec2::ZERO), read(Vec2::new(0.5, 0.0)));
+        let (a, b) = (read(Vec2::new(0.0, 0.5)), read(Vec2::new(0.5, 0.5)));
+        let blended = wy * (wx * c + (1.0 - wx) * d) + (1.0 - wy) * (wx * a + (1.0 - wx) * b);
+        (blended - 0.5) / water_flow_divisor(wx, wy)
+    }
+
+    /// Flow maps whose neighbouring tiles differ (a different value per tile, and a gradient inside
+    /// each), so a cell border that does not read its neighbour shows a step. Tile contents are
+    /// scalars standing for the 64 by 64 texels.
+    fn flow_model_tile(tile: WaterFlowTile, texel: IVec2) -> f32 {
+        let base = match tile {
+            WaterFlowTile::Own => 0.25,
+            WaterFlowTile::East => 0.75,
+            WaterFlowTile::South => 0.60,
+            WaterFlowTile::SouthEast => 0.90,
+        };
+        base + 0.001 * texel.x as f32 + 0.0005 * texel.y as f32
+    }
+
+    /// Retail is continuous across every cell border (RF-WATER-063): just before a cell's east or
+    /// south edge the shifted taps read the neighbour's first texel, so the blend there equals the
+    /// neighbour cell's blend just after the border. With the neighbours unbound, the clamp the
+    /// engine used to apply steps by far more (the numeric model of RF-WATER-063 gave 0.19 against 0).
+    #[test]
+    fn the_flow_blend_is_continuous_across_cell_borders_when_neighbours_are_read() {
+        let eps = 0.001;
+        let sample = |own: WaterFlowTile, t: Vec2, bound: u8| {
+            flow_blend_model(t, |raw| {
+                let (tile, at) = water_flow_texel_source(raw, bound);
+                // A cell standing in `own` reads its own tile as `Own`, so a tile that is the
+                // cell's neighbour reads its data under that neighbour's name.
+                let named = if tile == WaterFlowTile::Own {
+                    own
+                } else {
+                    tile
+                };
+                flow_model_tile(named, at)
+            })
+        };
+        // The east border of (5, -10), against (6, -10): the left side is cell (5, -10) at u = 1 - eps,
+        // the right side cell (6, -10) at u = eps, on the same row.
+        for row in [3.5, 31.25, 62.75] {
+            let left = |bound| sample(WaterFlowTile::Own, Vec2::new(64.0 - eps, row), bound);
+            let right = sample(WaterFlowTile::East, Vec2::new(eps, row), 0);
+            assert!((left(0b001) - right).abs() < 0.01, "east border, row {row}");
+            assert!(
+                (left(0) - right).abs() > 0.1,
+                "clamped east border, row {row}"
+            );
+        }
+        // The south border of (5, -10), against (5, -11), the cell below it (V runs south).
+        for column in [3.5, 31.25, 62.75] {
+            let above = |bound| sample(WaterFlowTile::Own, Vec2::new(column, 64.0 - eps), bound);
+            let below = sample(WaterFlowTile::South, Vec2::new(column, eps), 0);
+            assert!(
+                (above(0b010) - below).abs() < 0.01,
+                "south border, column {column}"
+            );
+            assert!(
+                (above(0) - below).abs() > 0.1,
+                "clamped south border, column {column}"
+            );
+        }
+        // The corner reads the south-east cell.
+        let corner = |bound| sample(WaterFlowTile::Own, Vec2::new(64.0 - eps, 64.0 - eps), bound);
+        let beyond = sample(WaterFlowTile::SouthEast, Vec2::new(eps, eps), 0);
+        assert!((corner(0b111) - beyond).abs() < 0.01);
+        assert!((corner(0) - beyond).abs() > 0.1);
+    }
+
+    /// The tap's texel lands in the neighbour's first column or row, or clamps when the neighbour
+    /// is not bound, and never reads outside the 64 by 64 map.
+    #[test]
+    fn a_flow_tap_past_the_edge_reads_the_neighbours_first_texel() {
+        use WaterFlowTile::*;
+        let source = |x, y, bound| water_flow_texel_source(IVec2::new(x, y), bound);
+        assert_eq!(source(10, 20, 0b111), (Own, IVec2::new(10, 20)));
+        assert_eq!(source(63, 63, 0b111), (Own, IVec2::new(63, 63)));
+        assert_eq!(source(64, 20, 0b111), (East, IVec2::new(0, 20)));
+        assert_eq!(source(10, 64, 0b111), (South, IVec2::new(10, 0)));
+        assert_eq!(source(64, 64, 0b111), (SouthEast, IVec2::new(0, 0)));
+        assert_eq!(source(64, 20, 0b110), (Own, IVec2::new(63, 20)));
+        assert_eq!(source(10, 64, 0b101), (Own, IVec2::new(10, 63)));
+        assert_eq!(source(64, 64, 0b011), (Own, IVec2::new(63, 63)));
+        // The neighbours of Taylor's bridge cell (5, -10): east (6, -10), south (5, -11).
+        assert_eq!(
+            water_flow_neighbour_cells(IVec2::new(5, -10)),
+            [IVec2::new(6, -10), IVec2::new(5, -11), IVec2::new(6, -11)]
+        );
+    }
+
+    /// At the waterline (L = h = 0) retail shows the bed through the body, the shallow colour, a
+    /// reduced reflection, almost no refraction offset and a muted sun (RF-WATER-059); the engine's
+    /// depth terms reproduce those numbers for RiverWaterFlow and CreekWaterFlow, and the water
+    /// shader computes them with the same lines.
+    #[test]
+    fn the_waterline_matches_the_retail_depth_terms() {
+        // RiverWaterFlow: fog -10 / 150 / 0.70, so (opacity, range, F, exponent) = (_, 160, 150, 2.8).
+        let river = [0.5, 160.0, 150.0, 2.8];
+        let bed_share = |path: f32| 1.0 - water_depth_terms(path, 0.0, river)[1];
+        for (path, share) in [
+            (0.0, 0.835),
+            (5.0, 0.759),
+            (20.0, 0.559),
+            (50.0, 0.268),
+            (100.0, 0.039),
+        ] {
+            assert!((bed_share(path) - share).abs() < 0.001, "L = {path}");
+        }
+        // The terms are zero at the waterline, so the colour is the shallow one (lerp x = 0).
+        assert_eq!(water_depth_terms(0.0, 0.0, river)[0], 0.0);
+        // RiverWaterFlow DepthControl (0.3, 0.95, 0.25, 0.9): reflection x0.70, refraction x0.05,
+        // normals x0.75, sun x0.10.
+        let at_waterline = |d: [f32; 4]| d.map(|property| water_depth_factor(property, 0.0));
+        let river_factors = at_waterline([0.3, 0.95, 0.25, 0.9]);
+        for (factor, expected) in river_factors.into_iter().zip([0.70, 0.05, 0.75, 0.10]) {
+            assert!((factor - expected).abs() < 1e-6);
+        }
+        // The refraction offset at the bank is 2 of the river's 40 units, not the full magnitude.
+        let offset = water_refraction_offset([1.0, 0.0], 40.0, 0.95, 0.0);
+        assert!((offset[0] - 2.0).abs() < 1e-4);
+        // CreekWaterFlow: fog 20 / 160 / 0.87 (range 140, exponent 3.48): the bed is the whole
+        // body for L <= 20; DepthControl (0.7, 0.1, 0.05, 0.05).
+        let creek = [0.5, 140.0, 160.0, 3.48];
+        assert_eq!(water_depth_terms(20.0, 0.0, creek)[1], 0.0);
+        assert!((1.0 - water_depth_terms(50.0, 0.0, creek)[1] - 0.432).abs() < 0.001);
+        let creek_factors = at_waterline([0.7, 0.1, 0.05, 0.05]);
+        for (factor, expected) in creek_factors.into_iter().zip([0.30, 0.90, 0.95, 0.95]) {
+            assert!((factor - expected).abs() < 1e-6);
+        }
+        // The shader holds the same lines.
+        let source = include_str!("shaders/water.wgsl");
+        for needle in [
+            "return vec3<f32>(along, 1.0 - pow(clear, exponent), vertical);",
+            "let clear = clamp((far - min(path, far)) / range, 0.0, 1.0);",
+            "let depth_reflections = water.depth_control.x * (body.x - 1.0) + 1.0;",
+            "let specular_depth = water.depth_control.w * (body.z - 1.0) + 1.0;",
+        ] {
+            assert!(source.contains(needle), "missing {needle}");
+        }
     }
 
     #[test]
@@ -4238,7 +4509,8 @@ mod water_body_tests {
     use super::*;
 
     const NEAR_PLANE: f32 = 0.1;
-    const MAX_WATER_PATH: f32 = 16384.0;
+    /// The shader's `BOTTOMLESS_PATH`.
+    const BOTTOMLESS_PATH: f32 = 1.0e7;
     /// What `water_depth.rs` clears the snapshot to when it cannot resolve the bed.
     const UNRESOLVED: f32 = -1.0;
 
@@ -4251,11 +4523,11 @@ mod water_body_tests {
         let path = if settings.depth_params.x < 0.5 || texel < 0.0 {
             -1.0
         } else if texel <= 0.0 {
-            MAX_WATER_PATH
+            BOTTOMLESS_PATH
         } else {
             let bed_view_z = -NEAR_PLANE / texel;
             let past_surface = (bed_view_z / SURFACE_VIEW.z.min(-1e-4) - 1.0).max(0.0);
-            (SURFACE_VIEW.length() * past_surface).min(MAX_WATER_PATH)
+            (SURFACE_VIEW.length() * past_surface).min(BOTTOMLESS_PATH)
         };
         let vertical = path * SURFACE_VIEW.y.abs() / SURFACE_VIEW.length().max(1e-4);
         let body = settings.body;

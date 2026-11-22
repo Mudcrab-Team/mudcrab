@@ -430,6 +430,8 @@ pub struct EngineConfig {
     pub shots_out: Option<PathBuf>,
     /// Maximum settling time per shot, in seconds.
     pub shots_settle_timeout: f32,
+    /// Capture the ordinary main-camera mesh list as the control for room-culling comparisons.
+    pub shots_no_room_culling: bool,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -442,6 +444,9 @@ pub struct EngineConfig {
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
     /// every run that does not ask for lights renders exactly as it did before.
     pub lights: bool,
+    /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
+    /// small vetted set to the references that carry them. Off by default.
+    pub papyrus_scripts: bool,
     pub physics_fixture: bool,
 }
 
@@ -566,6 +571,7 @@ impl Default for EngineConfig {
             matched_route: None,
             shots_out: None,
             shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
+            shots_no_room_culling: false,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -574,6 +580,7 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            papyrus_scripts: false,
             physics_fixture: false,
         }
     }
@@ -606,6 +613,7 @@ Assets and start position:
   --hidden-window                       render screenshots without showing a window
   --background-window                   open the window behind other windows without taking focus
   --lights                              place a point light for each streamed LIGH reference
+  --papyrus-scripts                     run the first slice of converted Papyrus scripts
 
 Streaming:
   --ini <file>                        layer Skyrim INI settings; CLI options override files
@@ -682,6 +690,7 @@ Benchmark and profiling:
   --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-no-room-culling              capture with room filtering disabled (requires --shots)
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --water-time <seconds>                pin the water's wave phase so captures match
@@ -1686,6 +1695,7 @@ impl EngineConfig {
                 "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--shots-no-room-culling" => config.shots_no_room_culling = true,
                 "--shots-settle-timeout" => {
                     const EXPECTED: &str = "a positive number of seconds up to 600";
                     let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
@@ -1742,6 +1752,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--papyrus-scripts" => config.papyrus_scripts = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
@@ -1799,6 +1810,12 @@ impl EngineConfig {
             return Err(ConfigError::MissingRequirement {
                 option: "--profile-gpu-inventory",
                 requires: "--profile-output",
+            });
+        }
+        if config.shots_no_room_culling && config.shots.is_none() {
+            return Err(ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots",
             });
         }
         config.check_visual_profile()?;
@@ -2180,6 +2197,16 @@ mod tests {
         // to its own CLI. Any other script passing them still fails the audit.
         ("pr_size.py", "--files"),
         ("pr_size.py", "--github-output"),
+        // assign_milestones.py is the GitHub issue and pull request milestone
+        // helper. It never launches the engine: it reads and writes the tracker
+        // through `gh api`, so its own CLI and the gh flags belong to it alone.
+        ("assign_milestones.py", "--repository"),
+        ("assign_milestones.py", "--default-branch"),
+        ("assign_milestones.py", "--dry-run"),
+        ("assign_milestones.py", "--item"),
+        ("assign_milestones.py", "--paginate"),
+        ("assign_milestones.py", "--slurp"),
+        ("assign_milestones.py", "--method"),
         // workspace.py owns its storage CLI and forwards Cargo and Git options. It
         // never launches the engine, so its flags are not engine options.
         ("workspace.py", "--apply"),
@@ -2208,6 +2235,30 @@ mod tests {
         ("check_retail_claims.py", "--base"),
         ("check_retail_claims.py", "--head"),
         ("check_retail_claims.py", "--repo"),
+        // sync_branch.py merges origin/main and drives git and the inventory tool. It never
+        // launches the engine, so these options belong to its own CLI and its Git commands.
+        ("sync_branch.py", "--base"),
+        ("sync_branch.py", "--base-root"),
+        ("sync_branch.py", "--detach"),
+        ("sync_branch.py", "--diff-filter"),
+        ("sync_branch.py", "--dry-run"),
+        ("sync_branch.py", "--extraction"),
+        ("sync_branch.py", "--force"),
+        ("sync_branch.py", "--head"),
+        ("sync_branch.py", "--ignore-unmatch"),
+        ("sync_branch.py", "--inventory-command"),
+        ("sync_branch.py", "--is-ancestor"),
+        ("sync_branch.py", "--name-only"),
+        ("sync_branch.py", "--no-edit"),
+        ("sync_branch.py", "--no-fetch"),
+        ("sync_branch.py", "--no-ff"),
+        ("sync_branch.py", "--no-messages"),
+        ("sync_branch.py", "--repo"),
+        ("sync_branch.py", "--review-sources"),
+        ("sync_branch.py", "--show-toplevel"),
+        ("sync_branch.py", "--theirs"),
+        ("sync_branch.py", "--verify"),
+        ("sync_branch.py", "--write-tree"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -3728,6 +3779,21 @@ mod tests {
     }
 
     #[test]
+    fn shots_control_requires_a_capture() {
+        assert!(!run_config(&["--shots", "poses.json"]).shots_no_room_culling);
+        assert!(
+            run_config(&["--shots-no-room-culling", "--shots", "poses.json"]).shots_no_room_culling
+        );
+        assert!(matches!(
+            parse_error(&["--shots-no-room-culling"]),
+            ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots"
+            }
+        ));
+    }
+
+    #[test]
     fn shots_settle_timeout_is_finite_positive_and_bounded() {
         assert_eq!(run_config(&[]).shots_settle_timeout, 30.0);
         assert_eq!(
@@ -3934,6 +4000,14 @@ mod tests {
         ]);
         assert!(missing.headless, "a missing file is reported and skipped");
         assert_eq!(missing.terrain_lod, TerrainLodDistances::default());
+    }
+
+    /// Converted Papyrus scripts are opt-in: the flag is off unless it is given.
+    #[test]
+    fn papyrus_scripts_are_off_until_the_flag_is_given() {
+        assert!(!EngineConfig::default().papyrus_scripts);
+        assert!(!run_config(&["--lights"]).papyrus_scripts);
+        assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
     }
 
     /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
@@ -4335,6 +4409,7 @@ mod tests {
             "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
+            "--papyrus-scripts",
             "--physics-fixture",
         ] {
             assert!(options.contains(&option), "the scan missed {option}");
@@ -4611,6 +4686,15 @@ mod tests {
                     "--video-format",
                 ]
                 .contains(&flag);
+            let portal_comparison_declaration = path
+                .ends_with("scripts/research/prepare_portal_comparison.py")
+                && matches!(flag, "--native" | "--model")
+                && {
+                    let offset = flag.as_ptr() as usize - scanned.as_ptr() as usize;
+                    scanned[..offset]
+                        .strip_suffix(['\'', '"'])
+                        .is_some_and(|prefix| prefix.trim_end().ends_with(".add_argument("))
+                };
             let release_option = path.file_name().is_some_and(|name| {
                 SCRIPT_SCOPED_FLAGS
                     .iter()
@@ -4700,6 +4784,7 @@ mod tests {
                     });
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
+                || portal_comparison_declaration
                 || material_oracle_option
                 || harness_option
                 || inspector_option
@@ -4855,6 +4940,19 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn portal_comparison_parser_options_are_rejected_in_engine_commands() {
+        let path = std::path::Path::new("scripts/research/prepare_portal_comparison.py");
+        for flag in ["--native", "--model"] {
+            let declaration = format!("parser.add_argument(\"{flag}\", type=Path)");
+            assert_eq!(checked_script_engine_flags(&declaration, path), 0);
+            let command = format!("{declaration}\ncmd = [\"engine\", \"{flag}\", path]");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&command, path)).is_err()
+            );
+        }
     }
 
     #[test]

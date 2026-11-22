@@ -306,6 +306,8 @@ fn superseded_placement_duplicates_contribute_only_admitted_default_objects() {
     let text = |key: &str, id: u32| vec![Value::Text(key.into()), Value::Integer(i64::from(id))];
     let mut deleted = record(b"DOBJ", DEFAULT_OBJECTS, &[]);
     deleted[8..12].copy_from_slice(&0x20u32.to_le_bytes());
+    let mut deleted_reference = deleted.clone();
+    deleted_reference[..4].copy_from_slice(b"REFR");
     let original = vec![
         text("DMRN", DEFAULT_MT),
         text("DMSW", CREATURE_MT),
@@ -348,6 +350,27 @@ fn superseded_placement_duplicates_contribute_only_admitted_default_objects() {
             vec!["skipped", "accepted", "skipped"],
         ),
         (
+            "queued grouped owner blocks ungrouped claimant",
+            0xdead,
+            placement(0x20),
+            [
+                record(
+                    b"REFR",
+                    DEFAULT_OBJECTS,
+                    &[sub(b"NAME", &0x20u32.to_le_bytes()), sub(b"DATA", &[0; 24])].concat(),
+                ),
+                top(b"DOBJ", &[default_objects(&[(b"DMSN", CREATURE_MT)])]),
+            ]
+            .concat(),
+            vec![
+                text("DMRN", DEFAULT_MT),
+                text("DMSN", CREATURE_MT),
+                text("DMSW", CREATURE_MT),
+                text("DMWL", DEFAULT_MT),
+            ],
+            vec!["skipped", "accepted", "skipped"],
+        ),
+        (
             "queued tombstone",
             0xdead,
             top(b"DOBJ", &[deleted.clone()]),
@@ -362,6 +385,14 @@ fn superseded_placement_duplicates_contribute_only_admitted_default_objects() {
             vec![],
             original,
             vec!["accepted", "skipped", "skipped"],
+        ),
+        (
+            "intervening placement tombstone",
+            0xdead,
+            top(b"DOBJ", &[default_objects(&[(b"DMSN", CREATURE_MT)])]),
+            top(b"REFR", &[deleted_reference]),
+            vec![text("DMRN", DEFAULT_MT)],
+            vec!["skipped", "accepted", "skipped"],
         ),
         (
             "intervening tombstone",

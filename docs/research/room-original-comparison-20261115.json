@@ -1,0 +1,1353 @@
+{
+  "provenance": {
+    "date": "2026-11-15",
+    "skyrim_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "version": "1.7.104.0",
+    "mudcrab_commit": "7bd5d0ac4f5d0e38eb4a4752930cb507feb949dc",
+    "camera_mode": "built-in tfc 1",
+    "dimensions": [
+      1400,
+      1030
+    ],
+    "native_captures": 12,
+    "poses": 4,
+    "skse_module_loaded": false,
+    "mbc": {
+      "command_entry_va": "0x1420906f0",
+      "execute_callback_rva": "0x372eb0",
+      "returns_success_without_setting_write": true,
+      "use_multibounds": true
+    },
+    "probe": "read-only /proc/PID/mem; RTTI checked",
+    "native_culling_disabled_control": false
+  },
+  "scope": "Four-pose visual geometry comparison; not RGB equality between engines, object-level validation, or a performance measurement",
+  "native_captures": [
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "repeat": 1,
+      "image": "skyrim-BleakFallsBarrow01-room1-c-1.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          -467.1600036621094,
+          -3488.0,
+          -2080.0
+        ],
+        "rotation_matrix": [
+          0.9999998807907104,
+          0.0,
+          -1.1920928955078125e-07,
+          -1.1920928955078125e-07,
+          0.0,
+          -0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 90.00000683018999,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          -467.1600036621094,
+          -3488.0,
+          -2200.5
+        ],
+        "cell_address": "0x23a21ae8",
+        "cell_id": 225758,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "repeat": 2,
+      "image": "skyrim-BleakFallsBarrow01-room1-c-2.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          -467.1600036621094,
+          -3488.0,
+          -2080.0
+        ],
+        "rotation_matrix": [
+          0.9999998807907104,
+          0.0,
+          -1.1920928955078125e-07,
+          -1.1920928955078125e-07,
+          0.0,
+          -0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 90.00000683018999,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          -467.1600036621094,
+          -3488.0,
+          -2200.5
+        ],
+        "cell_address": "0x23a21ae8",
+        "cell_id": 225758,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "repeat": 3,
+      "image": "skyrim-BleakFallsBarrow01-room1-c-3.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          -467.1600036621094,
+          -3488.0,
+          -2080.0
+        ],
+        "rotation_matrix": [
+          0.9999998807907104,
+          0.0,
+          -1.1920928955078125e-07,
+          -1.1920928955078125e-07,
+          0.0,
+          -0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 90.00000683018999,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          -467.1600036621094,
+          -3488.0,
+          -2200.5
+        ],
+        "cell_address": "0x23a21ae8",
+        "cell_id": 225758,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "BleakFallsBarrow01-joined-slave-walk",
+      "repeat": 1,
+      "image": "skyrim-BleakFallsBarrow01-joined-slave-walk-1.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          447.9999084472656,
+          -5056.0,
+          -2399.998779296875
+        ],
+        "rotation_matrix": [
+          0.9999998807907104,
+          0.0,
+          -1.1920928955078125e-07,
+          -1.1920928955078125e-07,
+          0.0,
+          -0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 90.00000683018999,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          447.9999084472656,
+          -5056.0,
+          -2520.498779296875
+        ],
+        "cell_address": "0x23a21ae8",
+        "cell_id": 225758,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "BleakFallsBarrow01-joined-slave-walk",
+      "repeat": 2,
+      "image": "skyrim-BleakFallsBarrow01-joined-slave-walk-2.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          447.9999084472656,
+          -5056.0,
+          -2399.998779296875
+        ],
+        "rotation_matrix": [
+          0.9999998807907104,
+          0.0,
+          -1.1920928955078125e-07,
+          -1.1920928955078125e-07,
+          0.0,
+          -0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 90.00000683018999,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          447.9999084472656,
+          -5056.0,
+          -2520.498779296875
+        ],
+        "cell_address": "0x23a21ae8",
+        "cell_id": 225758,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "BleakFallsBarrow01-joined-slave-walk",
+      "repeat": 3,
+      "image": "skyrim-BleakFallsBarrow01-joined-slave-walk-3.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          447.9999084472656,
+          -5056.0,
+          -2399.998779296875
+        ],
+        "rotation_matrix": [
+          0.9999998807907104,
+          0.0,
+          -1.1920928955078125e-07,
+          -1.1920928955078125e-07,
+          0.0,
+          -0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 90.00000683018999,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          447.9999084472656,
+          -5056.0,
+          -2520.498779296875
+        ],
+        "cell_address": "0x23a21ae8",
+        "cell_id": 225758,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "repeat": 1,
+      "image": "skyrim-GallowsRock01-outside-away-1.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          4591.9990234375,
+          -3999.999267578125,
+          160.000732421875
+        ],
+        "rotation_matrix": [
+          -0.9999998807907104,
+          0.0,
+          8.940696716308594e-07,
+          8.940696716308594e-07,
+          0.0,
+          0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          4591.9990234375,
+          -3999.999267578125,
+          39.500755310058594
+        ],
+        "cell_address": "0x236e0a40",
+        "cell_id": 86643,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "repeat": 2,
+      "image": "skyrim-GallowsRock01-outside-away-2.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          4591.9990234375,
+          -3999.999267578125,
+          160.000732421875
+        ],
+        "rotation_matrix": [
+          -0.9999998807907104,
+          0.0,
+          8.940696716308594e-07,
+          8.940696716308594e-07,
+          0.0,
+          0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          4591.9990234375,
+          -3999.999267578125,
+          39.500755310058594
+        ],
+        "cell_address": "0x236e0a40",
+        "cell_id": 86643,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "repeat": 3,
+      "image": "skyrim-GallowsRock01-outside-away-3.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          4591.9990234375,
+          -3999.999267578125,
+          160.000732421875
+        ],
+        "rotation_matrix": [
+          -0.9999998807907104,
+          0.0,
+          8.940696716308594e-07,
+          8.940696716308594e-07,
+          0.0,
+          0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          4591.9990234375,
+          -3999.999267578125,
+          39.500755310058594
+        ],
+        "cell_address": "0x236e0a40",
+        "cell_id": 86643,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "repeat": 1,
+      "image": "skyrim-GallowsRock01-inside-out-1.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          4623.99658203125,
+          -3999.999267578125,
+          159.99998474121094
+        ],
+        "rotation_matrix": [
+          -0.9999998807907104,
+          0.0,
+          8.940696716308594e-07,
+          8.940696716308594e-07,
+          0.0,
+          0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          4623.99658203125,
+          -3999.999267578125,
+          39.500003814697266
+        ],
+        "cell_address": "0x236e0a40",
+        "cell_id": 86643,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "repeat": 2,
+      "image": "skyrim-GallowsRock01-inside-out-2.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          4623.99658203125,
+          -3999.999267578125,
+          159.99998474121094
+        ],
+        "rotation_matrix": [
+          -0.9999998807907104,
+          0.0,
+          8.940696716308594e-07,
+          8.940696716308594e-07,
+          0.0,
+          0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          4623.99658203125,
+          -3999.999267578125,
+          39.500003814697266
+        ],
+        "cell_address": "0x236e0a40",
+        "cell_id": 86643,
+        "use_multibounds": true
+      }
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "repeat": 3,
+      "image": "skyrim-GallowsRock01-inside-out-3.png",
+      "camera": {
+        "pid": 811867,
+        "camera_address": "0x2210fb90",
+        "rtti": ".?AVNiCamera@@",
+        "position": [
+          4623.99658203125,
+          -3999.999267578125,
+          159.99998474121094
+        ],
+        "rotation_matrix": [
+          -0.9999998807907104,
+          0.0,
+          8.940696716308594e-07,
+          8.940696716308594e-07,
+          0.0,
+          0.9999998807907104,
+          0.0,
+          1.0,
+          0.0
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311,
+        "vfov": 58.89235935734706,
+        "frustum": [
+          -0.7673269510269165,
+          0.7673269510269165,
+          0.5645334124565125,
+          -0.5645334124565125,
+          15.0,
+          353840.0
+        ],
+        "port": [
+          0.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "player_camera_world_fov": 90.20674896240234,
+        "camera_state": "0x27417b80",
+        "camera_state_id": 3,
+        "player_position": [
+          4623.99658203125,
+          -3999.999267578125,
+          39.500003814697266
+        ],
+        "cell_address": "0x236e0a40",
+        "cell_id": 86643,
+        "use_multibounds": true
+      }
+    }
+  ],
+  "mudcrab_validation": {
+    "scope": "rendered correctness and mesh-list counts; no timing claim",
+    "engine": "/tmp/pr225-original-runtime/mudcrab-engine",
+    "poses": "/tmp/pr225-original-runtime/matched-shots.json",
+    "repeats": 3,
+    "threshold_per_channel": 8,
+    "runs": [
+      {
+        "name": "off-1",
+        "command": [
+          "/tmp/pr225-original-runtime/mudcrab-engine",
+          "--assets",
+          "/tmp/pr225-assignment-runtime/final-control",
+          "--shots",
+          "/tmp/pr225-original-runtime/matched-shots.json",
+          "--shots-out",
+          "/tmp/pr225-original-runtime/mudcrab-captures/off-1",
+          "--hidden-window",
+          "--run-label",
+          "pr225-off-1",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 289,
+            "room_culling": {
+              "drawn": 2542,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 304,
+            "room_culling": {
+              "drawn": 1945,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 379,
+            "room_culling": {
+              "drawn": 149,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 394,
+            "room_culling": {
+              "drawn": 162,
+              "listed": 162
+            }
+          }
+        ]
+      },
+      {
+        "name": "on-1",
+        "command": [
+          "/tmp/pr225-original-runtime/mudcrab-engine",
+          "--assets",
+          "/tmp/pr225-assignment-runtime/assets",
+          "--shots",
+          "/tmp/pr225-original-runtime/matched-shots.json",
+          "--shots-out",
+          "/tmp/pr225-original-runtime/mudcrab-captures/on-1",
+          "--hidden-window",
+          "--run-label",
+          "pr225-on-1",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 136,
+            "room_culling": {
+              "drawn": 578,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 155,
+            "room_culling": {
+              "drawn": 571,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 231,
+            "room_culling": {
+              "drawn": 30,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 247,
+            "room_culling": {
+              "drawn": 58,
+              "listed": 162
+            }
+          }
+        ]
+      },
+      {
+        "name": "off-2",
+        "command": [
+          "/tmp/pr225-original-runtime/mudcrab-engine",
+          "--assets",
+          "/tmp/pr225-assignment-runtime/final-control",
+          "--shots",
+          "/tmp/pr225-original-runtime/matched-shots.json",
+          "--shots-out",
+          "/tmp/pr225-original-runtime/mudcrab-captures/off-2",
+          "--hidden-window",
+          "--run-label",
+          "pr225-off-2",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 90,
+            "room_culling": {
+              "drawn": 2542,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 106,
+            "room_culling": {
+              "drawn": 1945,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 176,
+            "room_culling": {
+              "drawn": 149,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 192,
+            "room_culling": {
+              "drawn": 162,
+              "listed": 162
+            }
+          }
+        ]
+      },
+      {
+        "name": "on-2",
+        "command": [
+          "/tmp/pr225-original-runtime/mudcrab-engine",
+          "--assets",
+          "/tmp/pr225-assignment-runtime/assets",
+          "--shots",
+          "/tmp/pr225-original-runtime/matched-shots.json",
+          "--shots-out",
+          "/tmp/pr225-original-runtime/mudcrab-captures/on-2",
+          "--hidden-window",
+          "--run-label",
+          "pr225-on-2",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 100,
+            "room_culling": {
+              "drawn": 578,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 119,
+            "room_culling": {
+              "drawn": 571,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 188,
+            "room_culling": {
+              "drawn": 30,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 203,
+            "room_culling": {
+              "drawn": 58,
+              "listed": 162
+            }
+          }
+        ]
+      },
+      {
+        "name": "off-3",
+        "command": [
+          "/tmp/pr225-original-runtime/mudcrab-engine",
+          "--assets",
+          "/tmp/pr225-assignment-runtime/final-control",
+          "--shots",
+          "/tmp/pr225-original-runtime/matched-shots.json",
+          "--shots-out",
+          "/tmp/pr225-original-runtime/mudcrab-captures/off-3",
+          "--hidden-window",
+          "--run-label",
+          "pr225-off-3",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 90,
+            "room_culling": {
+              "drawn": 2542,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 106,
+            "room_culling": {
+              "drawn": 1945,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 180,
+            "room_culling": {
+              "drawn": 149,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 196,
+            "room_culling": {
+              "drawn": 162,
+              "listed": 162
+            }
+          }
+        ]
+      },
+      {
+        "name": "on-3",
+        "command": [
+          "/tmp/pr225-original-runtime/mudcrab-engine",
+          "--assets",
+          "/tmp/pr225-assignment-runtime/assets",
+          "--shots",
+          "/tmp/pr225-original-runtime/matched-shots.json",
+          "--shots-out",
+          "/tmp/pr225-original-runtime/mudcrab-captures/on-3",
+          "--hidden-window",
+          "--run-label",
+          "pr225-on-3",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 94,
+            "room_culling": {
+              "drawn": 578,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 113,
+            "room_culling": {
+              "drawn": 571,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 179,
+            "room_culling": {
+              "drawn": 30,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 195,
+            "room_culling": {
+              "drawn": 58,
+              "listed": 162
+            }
+          }
+        ]
+      }
+    ],
+    "images": [
+      {
+        "pose": "BleakFallsBarrow01-room1-c",
+        "strict_changed_pixels": 318412,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "BleakFallsBarrow01-joined-slave-walk",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "GallowsRock01-outside-away",
+        "strict_changed_pixels": 354936,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "GallowsRock01-inside-out",
+        "strict_changed_pixels": 203863,
+        "size": [
+          1400,
+          1030
+        ]
+      }
+    ],
+    "all_images_match_at_threshold": false
+  },
+  "findings": [
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "observation": "The distant timber hall is absent in Skyrim and Mudcrab with culling, and present in the Mudcrab full-render control. Smaller geometry and effects differ; this is not an object-level parity pass."
+    },
+    {
+      "pose": "BleakFallsBarrow01-joined-slave-walk",
+      "observation": "The joined-room cave corridor and slanted stone support remain visible. Mudcrab culling and full rendering have no persistent pixel differences at this pose. Water and lighting differ from Skyrim."
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "observation": "Skyrim and culled Mudcrab omit the broad backside shell. Both retain the small arch at the right edge. Mudcrab retains extra plants and clutter."
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "observation": "Skyrim and culled Mudcrab retain the near overhead shell and right arch, while omitting the farther shell shown by the Mudcrab full-render control. Smaller objects and effects still differ."
+    }
+  ],
+  "image_manifest": [
+    {
+      "path": "mudcrab/off-1/BleakFallsBarrow01-joined-slave-walk.png",
+      "sha256": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-1/BleakFallsBarrow01-room1-c.png",
+      "sha256": "2a885cfbcce9c30f0f8f87d9455f0f9e8568d8182c631346f0f7a19cff0064ed",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-1/GallowsRock01-inside-out.png",
+      "sha256": "00da21eae3132c3f44f8f8e4e6be5bba3b5f55ef52d79efa8dc33f2bd64a4cd9",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-1/GallowsRock01-outside-away.png",
+      "sha256": "7ed71c0eb59b69ceced49159617e22cecd7fde86aef22385584d2b0f4f9ef2b4",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-2/BleakFallsBarrow01-joined-slave-walk.png",
+      "sha256": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-2/BleakFallsBarrow01-room1-c.png",
+      "sha256": "7c7782a56738807f4abde2f556be1f169f4d06fbdd957c043b8b902d35410099",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-2/GallowsRock01-inside-out.png",
+      "sha256": "52f4040915b652032c770c8ffa2d8d254e59fb9c92977497cccaef9b9dc98a6b",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-2/GallowsRock01-outside-away.png",
+      "sha256": "a29182743c7a3f1dc8607c702617ec88d8a0b8caab8363117ce7367c345d7990",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-3/BleakFallsBarrow01-joined-slave-walk.png",
+      "sha256": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-3/BleakFallsBarrow01-room1-c.png",
+      "sha256": "5ff15e8d90778dffd7289549ebbf3cf91f522e63ee4bb23fcbda5424a36db873",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-3/GallowsRock01-inside-out.png",
+      "sha256": "eaa8cf61febf7147a5e4799433bebdac60a3b5891fa301c95a004bc36cee6266",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/off-3/GallowsRock01-outside-away.png",
+      "sha256": "a29182743c7a3f1dc8607c702617ec88d8a0b8caab8363117ce7367c345d7990",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-1/BleakFallsBarrow01-joined-slave-walk.png",
+      "sha256": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-1/BleakFallsBarrow01-room1-c.png",
+      "sha256": "e5c4ca801b86cd17f69889e0e46575bd2f9970fa9328894250fa971bc7df62d6",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-1/GallowsRock01-inside-out.png",
+      "sha256": "51889804fd333b8fda9a50f26bae88ff7866374e90d84c86e026540c98f64cdb",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-1/GallowsRock01-outside-away.png",
+      "sha256": "2d6304229a3d156a4f3a8a701cac9c679fe8daa47314f684ea85f8069f3f86b4",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-2/BleakFallsBarrow01-joined-slave-walk.png",
+      "sha256": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-2/BleakFallsBarrow01-room1-c.png",
+      "sha256": "197b9437d3ba0107159955d67c1a52879b297aac341f4b3bd8dffb2950b6b1ee",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-2/GallowsRock01-inside-out.png",
+      "sha256": "17001409d681058c243211153d4a8ba4d9044ea408b0333540648ef76de072fa",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-2/GallowsRock01-outside-away.png",
+      "sha256": "114c3204b314560b526474f583dce30aea8b78965af2c4ae204f9ebe3f6216c1",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-3/BleakFallsBarrow01-joined-slave-walk.png",
+      "sha256": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-3/BleakFallsBarrow01-room1-c.png",
+      "sha256": "728c95a3acd024cc37c7a64f69ef1562f97a02ee7943a1992c80816ece7ddc21",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-3/GallowsRock01-inside-out.png",
+      "sha256": "60eba840677b6d5a512b3c93052caa08af9cdc4fd646d051f3bf3269154c9cc5",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "mudcrab/on-3/GallowsRock01-outside-away.png",
+      "sha256": "f8adde72fe965fd46377b49134f3d7d72da85e9e36fffc3293c2a4a4a8b0b8df",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-BleakFallsBarrow01-joined-slave-walk-1.png",
+      "sha256": "b81fc53192ed0de2ec158e667e78b324823b18ba677053174c5a028bf2a6a279",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-BleakFallsBarrow01-joined-slave-walk-2.png",
+      "sha256": "6e0918aea364954ce482dc259f3e64123fe0894053df798acbf3ff0a5acc08ea",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-BleakFallsBarrow01-joined-slave-walk-3.png",
+      "sha256": "76b02f060d0b9bebc879399fb308c38a47e63f1b6e363ff6cc0ccb6803884df4",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-BleakFallsBarrow01-room1-c-1.png",
+      "sha256": "acdf4537e79d28d17fc2c8340a3632423c50ccc04b0a669b844edf2592834a75",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-BleakFallsBarrow01-room1-c-2.png",
+      "sha256": "39578e6da6ea2c7a28d3161bb4eb361777ba493bd8228edb57eb2d5ae6766097",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-BleakFallsBarrow01-room1-c-3.png",
+      "sha256": "f266ccffaf32458311a48f182ca0ba44a0c38ca958a9a68505a8541c0a3c90aa",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-GallowsRock01-inside-out-1.png",
+      "sha256": "1a70ea70ff9c486762bd5ab06ee3b5c0fc1e36c3f94e2eacc96e73bd61db608e",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-GallowsRock01-inside-out-2.png",
+      "sha256": "0fa789de8dfb9b9339d19f7e218636c7d3ce8838ff800c1f288971123565a97a",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-GallowsRock01-inside-out-3.png",
+      "sha256": "695319ca9678138175b5367b228859867e12c7bd986646c322106c406e2c800c",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-GallowsRock01-outside-away-1.png",
+      "sha256": "3e380eebf5a0b18b577fe98117f88467d5b47754279b10a77f4e23d535470217",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-GallowsRock01-outside-away-2.png",
+      "sha256": "4ee36b23db0200ae7833ce7366ef54745a8419a066a40929fcb0a023bd699481",
+      "size": [
+        1400,
+        1030
+      ]
+    },
+    {
+      "path": "skyrim-GallowsRock01-outside-away-3.png",
+      "sha256": "75f469b62cc93eddc6617d02c8de2360d9943f5140810f1a3e27adc9a1543c65",
+      "size": [
+        1400,
+        1030
+      ]
+    }
+  ],
+  "evidence_directory": "skyrim-culling-20261115",
+  "limitations": [
+    "No functioning native multibound-off control: MBC is a no-op in the pinned build.",
+    "Different renderers, lighting, fog, materials, water, effects, and clip planes.",
+    "No native submitted-object lists or object-identity correspondence were captured.",
+    "Only four static poses in two interiors; no continuous motion, actors, shadows, or lights validation."
+  ],
+  "matched_mudcrab_camera_receipts_verified": 24
+}

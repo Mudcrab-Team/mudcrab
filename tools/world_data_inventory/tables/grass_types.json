@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "GRAS identity and model remain available with missing or short DATA. Complete scalars in a safely framed prefix are projected and unavailable scalars remain NULL. Field-level semantics remain deferred.",
+  "table": "grass_types"
+}

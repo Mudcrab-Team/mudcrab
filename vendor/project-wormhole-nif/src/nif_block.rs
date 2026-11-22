@@ -21,7 +21,7 @@ pub enum NifBlock {
     BSFrustumFOVController(BSFrustumFOVController),
     BSFurnitureMarkerNode(BSFurnitureMarkerNode),
     BSLagBoneController(BSLagBoneController),
-    BSLeafAnimNode(BSLeafAnimNode),
+    BSLeafAnimNode(NiNode),
     BSLODTriShape(BSLODTriShape),
     BSLightingShaderProperty(BSLightingShaderProperty),
     BSLightingShaderPropertyColorController(BSLightingShaderPropertyColorController),
@@ -324,6 +324,27 @@ impl NifBlock {
                 Ok((i, NifBlock::BSFadeNode(result)))
             }
 
+            "BSLeafAnimNode" => {
+                let (i, result) = NiNode::parse(i)?;
+                Ok((i, NifBlock::BSLeafAnimNode(result)))
+            }
+
+            "BSBlastNode" => {
+                let (i, node) = NiNode::parse(i)?;
+                let (i, minimum) = le_u8(i)?;
+                let (i, maximum) = le_u8(i)?;
+                let (i, current) = le_u8(i)?;
+                Ok((
+                    i,
+                    NifBlock::BSBlastNode(BSBlastNode {
+                        node,
+                        minimum,
+                        maximum,
+                        current,
+                    }),
+                ))
+            }
+
             "BSTriShape" => {
                 let (i, result) = BSTriShape::parse(i)?;
                 let i = take_lod_shape_trailing_word(i);
@@ -369,6 +390,20 @@ impl NifBlock {
                     warn!("{} bytes left over after parsing BSMultiBoundNode", i.len());
                 }
                 Ok((i, NifBlock::BSMultiBoundNode(result)))
+            }
+
+            "NiSwitchNode" => {
+                let (i, node) = NiNode::parse(i)?;
+                let (i, flags) = le_u16(i)?;
+                let (i, active_child) = le_i32(i)?;
+                Ok((
+                    i,
+                    NifBlock::NiSwitchNode(NiSwitchNode {
+                        node,
+                        flags,
+                        active_child,
+                    }),
+                ))
             }
 
             "BSOrderedNode" => {
@@ -640,11 +675,14 @@ impl NifBlock {
 
     pub fn as_node(&self) -> Result<&NiNode, String> {
         match self {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Ok(node),
+            NifBlock::NiNode(node)
+            | NifBlock::BSFadeNode(node)
+            | NifBlock::BSLeafAnimNode(node) => Ok(node),
             NifBlock::BSMultiBoundNode(block) => Ok(&block.node),
             NifBlock::BSOrderedNode(block) => Ok(&block.node),
             NifBlock::NiBillboardNode(block) => Ok(&block.node),
             NifBlock::BSValueNode(block) => Ok(&block.node),
+            NifBlock::NiSwitchNode(block) => Ok(&block.node),
             _ => Err("Block is not a NiNode".to_string()),
         }
     }
@@ -658,7 +696,10 @@ pub struct BSBehaviorGraphExtraData {
 }
 #[derive(Debug)]
 pub struct BSBlastNode {
-    // TODO
+    pub node: NiNode,
+    pub minimum: u8,
+    pub maximum: u8,
+    pub current: u8,
 }
 #[derive(Debug)]
 pub struct BSBoneLODExtraData {
@@ -784,10 +825,6 @@ pub struct BSFurnitureMarkerNode {
 }
 #[derive(Debug)]
 pub struct BSLagBoneController {
-    // TODO
-}
-#[derive(Debug)]
-pub struct BSLeafAnimNode {
     // TODO
 }
 #[derive(Debug, NomLE)]
@@ -1550,7 +1587,9 @@ pub struct NiStringsExtraData {
 }
 #[derive(Debug)]
 pub struct NiSwitchNode {
-    // TODO
+    pub node: NiNode,
+    pub flags: u16,
+    pub active_child: i32,
 }
 #[derive(Debug)]
 pub struct NiTransformController {
@@ -1996,6 +2035,10 @@ pub struct NiAVObjectFlags(u32);
 impl NiAVObjectFlags {
     pub fn hidden(&self) -> bool {
         self.0 & 0x0001 != 0
+    }
+
+    pub fn fixed_bound(&self) -> bool {
+        self.0 & 0x2000 != 0
     }
 
     pub fn mesh_collision(&self) -> bool {

@@ -71,7 +71,7 @@ pub(crate) fn extract_archive(
     provider: &str,
     scratch: &Path,
 ) -> std::result::Result<Vec<String>, String> {
-    let paths = match ArchiveExtractor::list_paths(archive) {
+    let paths = match ArchiveExtractor::list_runtime_paths(archive) {
         Ok(paths) => paths,
         Err(error) => {
             return Err(format!(
@@ -86,7 +86,7 @@ pub(crate) fn extract_archive(
             continue;
         }
         let selected = BTreeSet::from([path]);
-        match ArchiveExtractor::extract_paths(archive, scratch, &selected) {
+        match ArchiveExtractor::extract_runtime_paths(archive, scratch, &selected) {
             Ok(files) => record_archive(sources, provider, &files, scratch),
             Err(error) => warnings.push(format!(
                 "{provider}:{key}: control input extraction failed: {error:#}"

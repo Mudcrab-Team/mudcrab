@@ -10,14 +10,15 @@ use super::{
     exporter::{insert_reference, project_cell},
     extractors::SubrecordView,
     load_order::{LoadOrder, normalize_plugin_name},
+    projection_omissions::ProjectionOmissions,
     records::{
         RawRecord,
         achr::{SubrecordXESP, flags::INITIALLY_DISABLED},
     },
     reference_links, remap_record_form_ids,
     rooms::{
-        PORTAL_MARKER_BASE, ROOM_MARKER_BASE, RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL,
-        refresh_placement_cells,
+        NativeOccluderShape, OCCLUSION_MARKER_BASE, PORTAL_MARKER_BASE, ROOM_MARKER_BASE,
+        RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL, refresh_placement_cells, update_authored_subset,
     },
     types::ArchivedRecordData,
 };
@@ -65,9 +66,13 @@ pub enum PlacementSource<'a> {
 #[derive(Debug, Default)]
 pub struct PlacementEditReport {
     pub changed_references: usize,
+    /// Cells touched by placement edits or room graph invalidation.
     pub affected_cells: Vec<u32>,
     pub created_cells: Vec<u32>,
     pub certified_cells: Vec<u32>,
+    /// Counts and sampled reasons for admitted placements with occluder projection omissions.
+    /// Placements skipped during plugin admission produce a separate warning.
+    pub occluder_omissions: ProjectionOmissions,
 }
 
 /// Apply one source under the pack lock. Runtime placements, room projections and the retained
@@ -85,13 +90,16 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         current_schema,
         "placement edits require the current world database schema"
     );
-    let versioned: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)",
+    let (visibility_version, assignment_version): (Option<i64>, Option<i64>) = tx.query_row(
+        "SELECT (SELECT value FROM room_graph_stats WHERE name='visibility_version'),
+                (SELECT value FROM room_graph_stats WHERE name='assignment_version')",
         [],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    ensure!(versioned, "placement edits require a versioned room graph");
-
+    ensure!(
+        visibility_version == Some(2) && matches!(assignment_version, None | Some(1)),
+        "placement edits require a supported versioned room graph"
+    );
     let (path, is_plugin) = match source {
         PlacementSource::SkyrimPlugin(path) => (path, true),
         PlacementSource::NativeJson(path) => (path, false),
@@ -103,6 +111,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let checksum = hash_bytes(&bytes);
     tx.execute_batch(LAYER_TABLES)?;
+    reference_links::ensure_subset_sources(&tx)?;
     tx.execute_batch(reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     tx.execute_batch(reference_links::REFERENCE_LINK_TABLES_SQL)?;
 
@@ -140,13 +149,17 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
              as a master for its forms."
         );
     }
-    let (import, metadata) = if is_plugin {
+    // Add missing projection tables transactionally. Existing version rows continue
+    // to determine which ownership and occlusion evidence the runtime can trust.
+    tx.execute_batch(super::rooms::ROOM_TABLES_SQL)?;
+    super::rooms::migrate_room_metadata(&tx)?;
+    let (mut import, metadata) = if is_plugin {
         let metadata = plugin_metadata_from_bytes(&bytes)?;
         (plugin_edits(&tx, &name, &bytes, &metadata)?, Some(metadata))
     } else {
         let native = serde_json::from_slice::<NativePlacements>(&bytes)
             .wrap_err("invalid native placement JSON")?;
-        (native.into_import()?, None)
+        (native.into_import(assignment_version.is_none())?, None)
     };
     ensure!(
         !import.cells.is_empty() || !import.edits.is_empty() || !import.damage.is_empty(),
@@ -202,20 +215,12 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let mut available_link_targets = HashSet::new();
     let mut layouts = HashMap::new();
     let mut records = HashMap::new();
-    for mut edit in import.edits {
+    for (index, mut edit) in import.edits.into_iter().enumerate() {
         let id = edit.record.form_id;
         let in_fresh_cell = edit
             .record
             .cell_form_id
             .is_some_and(|cell| fresh_cells.contains(&cell));
-        if !edit.record.is_deleted() {
-            let view = SubrecordView::new(&edit.record.subrecords);
-            ensure!(
-                view.find_all(b"XPRM").count() <= 1
-                    && view.find(b"XPRM").is_none_or(|data| data.len() <= 32),
-                "placement {id:08X} has unsupported primitive data"
-            );
-        }
         ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
         let must_be_new = in_fresh_cell || (is_plugin && edit.owns_new_id);
         let was_link_target = reference_links::has_live_target(&tx, id)?;
@@ -228,6 +233,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             is_plugin,
         )
         .wrap_err_with(|| format!("placement {id:08X}"))?;
+        reference_links::forget_subset_source(&tx, id)?;
         match (was_link_target, reference_links::has_live_target(&tx, id)?) {
             (true, false) => unavailable_link_targets.push(id),
             (false, true) => {
@@ -242,15 +248,56 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         if let Some(layout) = edit.room_links {
             layouts.insert(id, layout);
         }
+        if import
+            .unreadable_refs
+            .get(&Some(id))
+            .is_some_and(|&next_edit| index >= next_edit)
+        {
+            import.unreadable_refs.remove(&Some(id));
+        }
         records.insert(id, edit.record);
     }
-    let mut certified_cells =
-        refresh_placement_cells(&tx, &cells, &fresh_cells, &records, &layouts, &name)?;
+    let mut omissions = ProjectionOmissions::default();
+    let occluder_update =
+        update_authored_subset(&tx, &records, &import.damaged_occluders, &mut omissions)?;
+    for (category, details) in &omissions.categories {
+        for sample in &details.samples {
+            let message = format!(
+                "occluder {:08X}: {category}: {}",
+                sample.form_id, sample.reason
+            );
+            ensure!(is_plugin, "{message}");
+            eprintln!(
+                "warning: {name}: {message} ({} omissions in category)",
+                details.count
+            );
+        }
+    }
+    let mut certified_cells = refresh_placement_cells(
+        &tx,
+        &cells,
+        &fresh_cells,
+        &changed,
+        &layouts,
+        std::slice::from_ref(&name),
+    )?;
     let incomplete = mark_incomplete(&tx, &import.damage)?;
+    if import.unknown_discarded_scope || !import.unreadable_refs.is_empty() {
+        tx.execute(
+            "UPDATE room_graph_stats SET value=0 WHERE name='occlusion_links_verified'",
+            [],
+        )?;
+    }
     certified_cells.retain(|cell| !incomplete.contains(cell));
     cells.extend(incomplete);
-    reference_links::refresh_incoming(&tx, &unavailable_link_targets, &available_link_targets)?;
+    cells.extend(occluder_update.invalidated_cells);
     super::doors::refresh_placement_links(&tx, &changed)?;
+    reference_links::refresh_incoming(
+        &tx,
+        &unavailable_link_targets,
+        &available_link_targets,
+        &changed.iter().copied().collect::<Vec<_>>(),
+    )?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
     affected_cells.sort_unstable();
@@ -261,6 +308,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         affected_cells,
         created_cells,
         certified_cells,
+        occluder_omissions: omissions,
     })
 }
 
@@ -268,6 +316,10 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
 struct Import {
     cells: Vec<CellCreation>,
     edits: Vec<Edit>,
+    damaged_occluders: HashSet<u32>,
+    /// Index of the first edit following the latest unreadable REFR for each identity.
+    unreadable_refs: HashMap<Option<u32>, usize>,
+    unknown_discarded_scope: bool,
     damage: HashSet<DiscardedFrameScope>,
 }
 
@@ -281,6 +333,7 @@ struct Edit {
     record: RawRecord,
     owns_new_id: bool,
     room_links: Option<RoomLinkLayout>,
+    inherit_room_master: bool,
 }
 
 struct PreviousPlacement {
@@ -326,6 +379,7 @@ fn plugin_edits(
         });
     }
     let priority = order.names.len();
+    let load_order = u32::try_from(priority)?;
     order.names.push(name.to_owned());
     order.metadata.push(metadata.clone());
     let order = LoadOrder::from_metadata(order.names, order.metadata)?;
@@ -358,11 +412,18 @@ fn plugin_edits(
         let mut record = match candidate {
             ParsedRecord::Usable(record) => record,
             ParsedRecord::DamagedRecord(record) => {
-                record_damage(&mut damage_after, &mut import, &record, priority, &order);
+                let id = record_damage(&mut damage_after, &mut import, &record, priority, &order);
+                if record.record_type == REFR {
+                    import.unreadable_refs.insert(id, import.edits.len());
+                }
                 continue;
             }
             ParsedRecord::TruncatedPlacement(placement) => {
-                if let Some(id) = placement.runtime_id(priority, &order) {
+                let id = placement.runtime_id(priority, &order);
+                if placement.could_be_reference() {
+                    import.unreadable_refs.insert(id, import.edits.len());
+                }
+                if let Some(id) = id {
                     damage_after.insert(id, import.edits.len());
                 } else {
                     import.damage.insert(DiscardedFrameScope::Unknown);
@@ -370,17 +431,31 @@ fn plugin_edits(
                 continue;
             }
             ParsedRecord::DiscardedFrame(scope) => {
-                import.damage.insert(scope.resolve(priority, &order));
+                let scope = scope.resolve(priority, &order);
+                import.damage.insert(scope);
+                import.unknown_discarded_scope |= scope == DiscardedFrameScope::Unknown;
                 continue;
             }
         };
         let source_id = record.form_id;
-        let remapped =
+        let Some(remapped) =
             source_identity::header_runtime_id(&record.record_type, source_id, priority, &order)
                 .filter(|&id| id != 0)
-                .ok_or_else(|| {
-                    color_eyre::eyre::eyre!("{name}: invalid record FormID {source_id:08X}")
-                })?;
+        else {
+            ensure!(
+                record.record_type == REFR,
+                "{name}: invalid record FormID {source_id:08X}"
+            );
+            eprintln!(
+                "warning: {name}: skipped placement {source_id:08X} with invalid record FormID"
+            );
+            let view = SubrecordView::new(&record.subrecords);
+            if !record.is_deleted() && may_link_occluder(&view, priority, &order) {
+                import.unreadable_refs.insert(None, import.edits.len());
+            }
+            record_damage(&mut damage_after, &mut import, &record, priority, &order);
+            continue;
+        };
         let owns_new_id = (source_id >> 24) as usize == metadata.masters.len();
         ensure!(
             !owns_new_id || source_id & 0x00ff_ffff != 0,
@@ -404,23 +479,43 @@ fn plugin_edits(
         );
         let view = SubrecordView::new(&record.subrecords);
         let base = view.unique_form_id(b"NAME");
+        let resolve_target = |id| {
+            source_identity::header_runtime_id(b"REFR", id, priority, &order)
+                .filter(|&runtime| runtime != 0)
+        };
+        let resolved_base = base.and_then(resolve_target);
+        let occluder = resolved_base == Some(super::rooms::OCCLUSION_MARKER_BASE);
         if !record.is_deleted() {
             let missing_parent = record
                 .cell_form_id
                 .is_some_and(|id| damaged_new_cells.contains(&id));
             let rejection = if missing_parent {
                 Some("because its new CELL is damaged")
+            } else if record.cell_form_id.is_some_and(|cell| {
+                DiscardedFrameScope::Cell(cell).resolve(priority, &order)
+                    == DiscardedFrameScope::Unknown
+            }) {
+                Some("with invalid parent CELL")
             } else {
-                validate_room_field_tags(&record.subrecords)?;
-                if base
-                    .and_then(|id| {
-                        source_identity::header_runtime_id(b"REFR", id, priority, &order)
-                    })
-                    .is_none_or(|id| id == 0)
-                {
+                let mut primitives = view.find_all(b"XPRM");
+                if resolved_base.is_none() {
                     Some("with malformed NAME")
+                } else if !occluder
+                    && primitives
+                        .next()
+                        .is_some_and(|bytes| bytes.len() > 32 || primitives.next().is_some())
+                {
+                    Some("with repeated or oversized XPRM")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
+                } else if view.find_all(b"XESP").enumerate().any(|(index, bytes)| {
+                    index != 0
+                        || bytes.len() != 8
+                        || SubrecordXESP::parse(bytes).is_none_or(|parent| {
+                            parent.parent_ref != 0 && resolve_target(parent.parent_ref).is_none()
+                        })
+                }) {
+                    Some("with malformed XESP")
                 } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
                     let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
                         return true;
@@ -431,11 +526,7 @@ fn plugin_edits(
                         || !super::valid_placement_transform(std::iter::once(
                             &arrival_and_flags[..24],
                         ))
-                        || (target != 0
-                            && source_identity::header_runtime_id(
-                                b"REFR", target, priority, &order,
-                            )
-                            .is_none_or(|id| id == 0))
+                        || (target != 0 && resolve_target(target).is_none())
                 }) {
                     Some("with malformed XTEL")
                 } else {
@@ -444,26 +535,52 @@ fn plugin_edits(
             };
             if let Some(reason) = rejection {
                 eprintln!("warning: {name}: skipped placement {source_id:08X} {reason}");
+                if may_link_occluder(&view, priority, &order) {
+                    import
+                        .unreadable_refs
+                        .insert(Some(remapped), import.edits.len());
+                }
                 record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
+            validate_room_field_tags(&record.subrecords)?;
         }
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
+        let unresolved_link = occluder
+            && view.find_all(b"XORD").any(|data| {
+                data.as_chunks::<4>().0.iter().any(|word| {
+                    let target = u32::from_le_bytes(*word);
+                    target != 0 && resolve_target(target).is_none()
+                })
+            });
+        let marker_warnings = RemapWarnings::default();
+        record.load_order = load_order;
         remap_record_form_ids(
             &mut record,
             name,
             &metadata.masters,
             &order.normal,
             &order.light,
-            &warnings,
+            if occluder {
+                &marker_warnings
+            } else {
+                &warnings
+            },
         )?;
+        if occluder {
+            let (warnings, notices) = marker_warnings.report();
+            if unresolved_link || !warnings.is_empty() || !notices.is_empty() {
+                import.damaged_occluders.insert(remapped);
+            }
+        }
         import.edits.push(Edit {
             source_id,
             record,
             room_links,
             owns_new_id,
+            inherit_room_master: false,
         });
     }
     warnings.report();
@@ -483,13 +600,18 @@ fn plugin_edits(
     Ok(import)
 }
 
+fn may_link_occluder(view: &SubrecordView<'_>, priority: usize, order: &LoadOrder) -> bool {
+    view.find_all(b"XORD").any(super::rooms::xord_may_link)
+        && super::rooms::may_name_occlusion_marker(view.find_all(b"NAME"), priority, order)
+}
+
 fn record_damage(
     damage_after: &mut HashMap<u32, usize>,
     import: &mut Import,
     record: &RawRecord,
     priority: usize,
     order: &LoadOrder,
-) {
+) -> Option<u32> {
     let scoped_cell = |cell: Option<u32>| DiscardedFrameScope::from(cell).resolve(priority, order);
     if record.record_type == CELL {
         let scope = scoped_cell(Some(record.form_id));
@@ -501,8 +623,10 @@ fn record_damage(
                 .filter(|&id| id != 0)
         {
             damage_after.insert(id, import.edits.len());
+            return Some(id);
         }
     }
+    None
 }
 
 fn mark_predecessor_damage(tx: &Transaction<'_>, import: &mut Import, id: u32) -> Result<()> {
@@ -604,6 +728,8 @@ fn require_unused_id(tx: &Transaction<'_>, id: u32, has_history: bool) -> Result
              UNION ALL SELECT 1 FROM worldspaces WHERE id=?1
              UNION ALL SELECT 1 FROM [references] WHERE id=?1
              UNION ALL SELECT 1 FROM room_bounds WHERE ref_id=?1
+             UNION ALL SELECT 1 FROM room_occluders WHERE ref_id=?1
+             UNION ALL SELECT 1 FROM room_occluder_links WHERE ref_id=?1
              UNION ALL SELECT 1 FROM room_portals WHERE ref_id=?1
              UNION ALL SELECT 1 FROM room_placement_edits WHERE form_id=?1
          )",
@@ -627,6 +753,7 @@ fn require_no_cell_data(tx: &Transaction<'_>, cell: u32) -> Result<()> {
              UNION ALL SELECT 1 FROM [references] WHERE cell_id=?1
              UNION ALL SELECT 1 FROM room_graph_cells WHERE cell_id=?1
              UNION ALL SELECT 1 FROM room_bounds WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM room_occluders WHERE cell_id=?1
              UNION ALL SELECT 1 FROM room_portals WHERE cell_id=?1
              UNION ALL SELECT 1 FROM cell_environment WHERE cell_id=?1
              UNION ALL SELECT 1 FROM cell_lighting WHERE cell_id=?1
@@ -706,11 +833,29 @@ fn apply_edit(
         (Some((kind, _, _)), _) if kind != "REFR" => bail!("FormID belongs to a {kind} record"),
         (_, Some(previous)) => (Some(previous.cell), Some(previous.data.as_slice())),
         (Some((_, cell, data)), None) if !previously_edited => (*cell, Some(data.as_slice())),
-        (_, None) => (None, None),
+        (_, None) => {
+            ensure!(
+                is_plugin || !previously_edited || record.is_deleted(),
+                "native replacement requires an existing runtime enable state"
+            );
+            (None, None)
+        }
     };
     if let Some(cell) = old_cell {
         require_interior(tx, cell)?;
         cells.insert(cell);
+    }
+    if old_data.is_none() && edit.owns_new_id && id > 0xff00_0000 {
+        let has_shapes: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='room_occluders')",[],|row|row.get(0))?;
+        ensure!(
+            !has_shapes
+                || !tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM room_occluders WHERE ref_id=?1)",
+                    [id],
+                    |row| row.get::<_, bool>(0)
+                )?,
+            "FormID belongs to an existing native occluder"
+        );
     }
     if let Some(data) = old_data {
         let old_record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(data)?;
@@ -726,7 +871,8 @@ fn apply_edit(
                     "native replacement requires an existing runtime enable state"
                 )
             })?;
-            let parent = SubrecordView::new(&subrecords)
+            let old_view = SubrecordView::new(&subrecords);
+            let parent = old_view
                 .find(b"XESP")
                 .and_then(SubrecordXESP::parse)
                 .map(|parent| (parent.parent_ref, parent.flags))
@@ -736,6 +882,25 @@ fn apply_edit(
                 "native replacement cannot preserve existing enable-parent data"
             );
             record.flags |= previous.flags & INITIALLY_DISABLED;
+            if edit.inherit_room_master
+                && old_view.unique_form_id(b"NAME") == Some(ROOM_MARKER_BASE)
+            {
+                let mut headers = old_view.find_all(b"XRMR");
+                if let Some([_, _, master, _]) = headers.next()
+                    && headers.next().is_none()
+                {
+                    let master_byte = record
+                        .subrecords
+                        .iter_mut()
+                        .find(|(tag, _)| tag == b"XRMR")
+                        .and_then(|(_, header)| header.get_mut(2))
+                        .ok_or_else(|| {
+                            color_eyre::eyre::eyre!("native room edit has no XRMR master byte")
+                        })?;
+                    *master_byte = *master;
+                    edit.room_links = Some(RoomLinkLayout::from_raw(record));
+                }
+            }
             record
                 .subrecords
                 .extend(subrecords.into_iter().filter(|(tag, _)| tag == b"XESP"));
@@ -748,8 +913,13 @@ fn apply_edit(
     if !must_be_new && old_data.is_none() && !previously_edited {
         require_unused_id(tx, id, has_history)?;
     }
-    // Drop the old memberships even when the reference moves to another cell.
+    // Each supported reference has only room and transform semantics. Its old memberships
+    // and assignment rule are discarded even when it moves out of the old cell.
     tx.execute("DELETE FROM reference_rooms WHERE reference_id=?1", [id])?;
+    tx.execute(
+        "DELETE FROM room_reference_rules WHERE reference_id=?1",
+        [id],
+    )?;
     if record.is_deleted() {
         tx.execute("DELETE FROM [references] WHERE id=?1", [id])?;
         return Ok(());
@@ -822,7 +992,18 @@ fn validate_room_fields(
         );
     }
     let mut is_door = false;
-    if !matches!(base, ROOM_MARKER_BASE | PORTAL_MARKER_BASE) {
+    if base == OCCLUSION_MARKER_BASE {
+        ensure!(tx.query_row(
+            "SELECT count(*)=2 FROM room_graph_stats WHERE name IN ('occlusion_version','occlusion_links_verified') AND value=1",
+            [], |row| row.get::<_, bool>(0))?, "occluder edits require a source-verified pack");
+        for tag in [b"XMBR", b"XSCL", b"XESP"] {
+            ensure!(
+                view.find_all(tag).nth(1).is_none(),
+                "ambiguous occluder field {}",
+                String::from_utf8_lossy(tag)
+            );
+        }
+    } else if !matches!(base, ROOM_MARKER_BASE | PORTAL_MARKER_BASE) {
         ensure!(
             view.find(b"XPRM").is_none(),
             "static primitives are outside the room placement format"
@@ -854,6 +1035,7 @@ fn validate_room_field_tags(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
                     | b"DATA"
                     | b"XSCL"
                     | b"XMBR"
+                    | b"XORD"
                     | b"XMBO"
                     | b"XPRM"
                     | b"XRMR"
@@ -881,7 +1063,7 @@ struct NativePlacements {
 }
 
 impl NativePlacements {
-    fn into_import(self) -> Result<Import> {
+    fn into_import(self, geometric_ownership: bool) -> Result<Import> {
         Ok(Import {
             cells: self
                 .cells
@@ -891,7 +1073,7 @@ impl NativePlacements {
             edits: self
                 .edits
                 .into_iter()
-                .map(NativeEdit::into_edit)
+                .map(|edit| edit.into_edit(geometric_ownership))
                 .collect::<Result<_>>()?,
             ..Import::default()
         })
@@ -953,6 +1135,8 @@ enum NativeEdit {
         #[serde(default)]
         rotation: [f32; 3],
         scale: Option<f32>,
+        shape: Option<NativeOccluderShape>,
+        links: Option<[u32; 4]>,
         #[serde(default)]
         ownership: NativeOwnership,
     },
@@ -963,6 +1147,7 @@ enum NativeEdit {
         #[serde(default)]
         rotation: [f32; 3],
         half_extents: [f32; 3],
+        master: Option<bool>,
         #[serde(default)]
         links: Vec<u32>,
     },
@@ -992,8 +1177,9 @@ enum NativeOwnership {
 }
 
 impl NativeEdit {
-    fn into_edit(self) -> Result<Edit> {
+    fn into_edit(self, geometric_ownership: bool) -> Result<Edit> {
         let mut room_links = None;
+        let mut inherit_room_master = false;
         let record = match self {
             Self::Put {
                 id,
@@ -1002,6 +1188,8 @@ impl NativeEdit {
                 position,
                 rotation,
                 scale,
+                shape,
+                links,
                 ownership,
             } => {
                 ensure!(
@@ -1009,6 +1197,24 @@ impl NativeEdit {
                     "native put requires a STAT base"
                 );
                 let mut record = native_reference(id, cell, base, position, rotation);
+                ensure!(
+                    (base == OCCLUSION_MARKER_BASE) == shape.is_some(),
+                    "PlaneMarker placements require a shape and other bases cannot supply one"
+                );
+                ensure!(
+                    links.is_none() || shape.is_some(),
+                    "only occluders accept XORD slots"
+                );
+                if let Some(shape) = shape {
+                    record
+                        .subrecords
+                        .push((b"XPRM".to_vec(), shape.primitive_bytes()?));
+                }
+                if let Some(slots) = links.filter(|slots| slots.iter().any(|&id| id != 0)) {
+                    record
+                        .subrecords
+                        .push((b"XORD".to_vec(), slots.map(u32::to_le_bytes).concat()));
+                }
                 if let Some(scale) = scale {
                     record
                         .subrecords
@@ -1022,7 +1228,11 @@ impl NativeEdit {
                         record
                             .subrecords
                             .push((b"XMBR".to_vec(), room.to_le_bytes().to_vec()));
-                        MULTIBOUND_REFERENCE_FLAG
+                        if geometric_ownership {
+                            MULTIBOUND_REFERENCE_FLAG
+                        } else {
+                            0
+                        }
                     }
                 };
                 record
@@ -1033,6 +1243,7 @@ impl NativeEdit {
                 position,
                 rotation,
                 half_extents,
+                master,
                 links,
             } => {
                 ensure!(
@@ -1046,8 +1257,12 @@ impl NativeEdit {
                     .subrecords
                     .push(native_primitive(half_extents, SHAPE_BOX));
                 ensure!(links.len() <= 0x3fff, "room has too many links");
-                let count = (links.len() as u32).to_le_bytes();
-                record.subrecords.push((b"XRMR".to_vec(), count.to_vec()));
+                inherit_room_master = master.is_none();
+                let [low, high] = u16::try_from(links.len())?.to_le_bytes();
+                record.subrecords.push((
+                    b"XRMR".to_vec(),
+                    vec![low, high, u8::from(master.unwrap_or(false)), 0],
+                ));
                 record.subrecords.extend(
                     links
                         .into_iter()
@@ -1094,6 +1309,7 @@ impl NativeEdit {
             record,
             room_links,
             owns_new_id: id >= NATIVE_FORM_START,
+            inherit_room_master,
         })
     }
 }

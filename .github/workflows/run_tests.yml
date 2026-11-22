@@ -69,7 +69,7 @@ jobs:
           if LC_ALL=C grep -zqE '^vendor/' "$changed_paths"; then
             echo "check_rust=true" >> "$GITHUB_OUTPUT"
           fi
-          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/(run_tests|pr_size)\.yml$)'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/(run_tests|pr_size|milestone)\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -169,6 +169,12 @@ jobs:
       - name: Test pull request size labeler
         run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
 
+      - name: Test branch sync conflict rules
+        run: python3 -B -m unittest discover -s scripts/tests -p test_sync_branch.py -v
+
+      - name: Test milestone assignment
+        run: python3 -B -m unittest discover -s scripts/tests -p test_assign_milestones.py -v
+
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
 
@@ -230,6 +236,9 @@ jobs:
 
       - name: Test cluster bounds audit lockfile parsing
         run: python3 -B -m unittest discover -s tools -p 'test_diagnose_cluster_bounds.py' -v
+
+      - name: Test the lossy-cast gate
+        run: python3 -B -m unittest discover -s tools/cast_ratchet -p 'test_*.py' -v
 
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
@@ -441,6 +450,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
+          # The gate needs its baseline commit: the merge commit's first parent for a pull
+          # request, the previous tip for a push, origin/main for a manual run. Full history
+          # provides all three.
+          fetch-depth: 0
 
       - name: Install Linux build dependencies
         run: |
@@ -464,8 +477,60 @@ jobs:
       - name: Setup kache compiler cache
         uses: kunobi-ninja/kache-action@v1
 
-      - name: Clippy check
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Clippy check and added-line cast gate
+        # One pass, so the job keeps the cost of the plain `cargo clippy` run. The pass cannot
+        # use `-D warnings`: the four gate lints are allow-by-default, but the later `-W` makes
+        # one a warning and `-D warnings` turns every warning into an error. A probe on `v as u8`
+        # with `-- -D warnings -W clippy::cast_possible_truncation` exits 101, and its note
+        # says the cast lint is implied by `-D warnings`. `--force-warn` also overrides
+        # `#[allow(..., reason = ...)]` exceptions. So the gate fails on every warning outside
+        # the four lints, and Clippy's exit code still gates hard errors. The workflow and the
+        # script must agree on the flag list, and the gate fails when they do not.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          lint_flags=(
+            -W clippy::cast_possible_truncation
+            -W clippy::cast_sign_loss
+            -W clippy::cast_possible_wrap
+            -W clippy::float_cmp
+          )
+          scripted_flags="$(python3 tools/cast_ratchet/cast_ratchet.py --lint-flags)"
+          if [[ "$scripted_flags" != "${lint_flags[*]}" ]]; then
+            echo "::error::tools/cast_ratchet/cast_ratchet.py --lint-flags and this step disagree"
+            echo "step:   ${lint_flags[*]}"
+            echo "script: $scripted_flags"
+            exit 2
+          fi
+          # A pull request runs on the merge commit, whose first parent is the branch it merges
+          # into, so the diff covers exactly the lines the pull request adds. That holds for
+          # `develop` and `release/**` too. A push compares with the previous tip of its branch.
+          # A manual run, or an event without a base, compares with origin/main.
+          clippy_status=0
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if ! base="$(git rev-parse HEAD^1)"; then
+              echo "::error::cannot read the first parent of the pull request merge commit"
+              exit 2
+            fi
+          else
+            base="$PUSH_BEFORE"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            base="origin/main"
+          fi
+          cargo clippy --workspace --all-targets --all-features --message-format=json \
+            -- "${lint_flags[@]}" > "$RUNNER_TEMP/clippy-casts.json" || clippy_status=$?
+          gate_status=0
+          python3 tools/cast_ratchet/cast_ratchet.py \
+            --clippy-json "$RUNNER_TEMP/clippy-casts.json" --base "$base" || gate_status=$?
+          # Run the gate even when Clippy failed, so its output and the rendered errors
+          # appear. A hard error keeps Clippy's status; the gate checks every warning.
+          if (( clippy_status != 0 )); then
+            exit "$clippy_status"
+          fi
+          exit "$gate_status"
 
   test_build:
     needs: [orchestrate]

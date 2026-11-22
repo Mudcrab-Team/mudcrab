@@ -256,20 +256,20 @@ fn discarded_prefix(
     if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
         return Some(ParsedRecord::TruncatedPlacement(placement));
     }
-    // A CELL's flags and source FormID are complete after 16 header bytes.
-    let (flags, rest) = bytes
-        .strip_prefix(b"CELL")?
-        .get(4..)?
-        .split_first_chunk::<4>()?;
-    Some(ParsedRecord::DamagedRecord(RawRecord {
-        record_type: *b"CELL",
-        flags: u32::from_le_bytes(*flags),
-        form_id: u32::from_le_bytes(*rest.first_chunk()?),
-        cell_form_id,
-        worldspace_form_id,
-        subrecords: Vec::new(),
-        load_order: 0,
-    }))
+    match DiscardedFrameScope::from_cell_prefix(bytes)? {
+        DiscardedFrameScope::Cell(form_id) => Some(ParsedRecord::DamagedRecord(RawRecord {
+            record_type: *b"CELL",
+            flags: u32::from_le_bytes(*bytes.get(8..)?.first_chunk()?),
+            form_id,
+            cell_form_id,
+            worldspace_form_id,
+            subrecords: Vec::new(),
+            load_order: 0,
+        })),
+        DiscardedFrameScope::Unknown => {
+            Some(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown))
+        }
+    }
 }
 
 fn parse_group_inner(
@@ -373,9 +373,6 @@ fn parse_group_inner(
                 curr = next;
                 decode_record_subrecords(&header, payload)
             } else {
-                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
-                    visit(candidate);
-                }
                 visit(ParsedRecord::DiscardedFrame(
                     DiscardedFrameScope::unread_tail(current_cell, rest.len()),
                 ));

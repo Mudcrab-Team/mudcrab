@@ -12,7 +12,7 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 | Profile | Pipeline |
 |---|---|
 | `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); shading and output still follow the `mudcrab` pipeline until P1c. |
+| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); shading and output still follow the `mudcrab` pipeline until P1c. |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.
@@ -38,6 +38,39 @@ saved `skyrim` profile can meet a mudcrab-only flag. `--image-space`, `--image-s
 
 Only launch options are checked. Grade and exposure values saved from the settings menu are not
 refused or hidden under `skyrim` until P1b.
+
+## Sky and fog source (#891)
+
+The exterior sky colours, fog colours and fog distances come from one weather record in the world
+database, `SkyrimClear` (`WTHR` 0x81A). The engine has no weather simulation, so that record is a
+fixed Mudcrab choice; retail picks the weather from the climate and region lists
+(`crates/engine/src/weather_sky.rs`).
+
+| | `skyrim` | `mudcrab` + `vivid` | `mudcrab` + `cool-gray` (default) |
+|---|---|---|---|
+| Sky and fog colours | the record's `NAM0`, mixed by time of day | the same | Mudcrab-only: the approved grey replaces them |
+| Fog near and far, power, max | the record's `FNAM`, mixed by time of day | the same | the same, with both distances divided by the density scale 0.25 (Mudcrab-only) |
+| Sun glow in the fog | none | Mudcrab-only warm glow | Mudcrab-only warm glow |
+
+- Retail facts and their tags come from
+  [skyrim_decomp#812](https://github.com/Mudcrab-Team/skyrim_decomp/pull/812) (static reading of
+  1.7.104.0, independently reviewed). Details and the unverified items are in [sky.md](sky.md#fog).
+- **Colours (verified).** The four colour weights (sunrise, day, sunset, night) follow the climate's
+  sunrise and sunset times and `fDaytimeColorExtension` (0.5 hours; RF-SUN-005). With `A`, `B`, `C`
+  and `D` as in sky.md, the colour goes night to sunrise over the first half of `A` to `B`, sunrise to
+  day over the second half, stays day from `B` to `C`, goes day to sunset over the first half of
+  `C` to `D`, sunset to night over the second half, and is night elsewhere. Channels mix as 8-bit
+  sRGB values and cap at 1.
+- **Fog distances (verified).** The record holds one day set and one night set of near, far, power
+  and max. One day weight mixes all four (sky.md#fog). The fog formula is a power ramp capped by max
+  (verified); how Mudcrab's per-pixel world distance differs from retail's projected distance is
+  unverified.
+- A record that lacks a `NAM0` colour cannot be used. `skyrim` then refuses to start and names the
+  colour. `mudcrab` warns and keeps its built-in preset sky. A record that lacks an `FNAM` field
+  keeps its colours, draws no exterior fog, and prints a warning that names the field. No
+  distance is ever filled in.
+- A run without a world database (a fixture) has no weather record and keeps the built-in
+  `SkyrimClear` day palette in both profiles.
 
 ## Receipts
 

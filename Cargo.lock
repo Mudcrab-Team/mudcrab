@@ -2360,6 +2360,7 @@ dependencies = [
  "rayon",
  "rkyv",
  "rusqlite",
+ "rustix 1.1.4",
  "ruzstd",
  "same-file",
  "serde",

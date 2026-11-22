@@ -508,6 +508,9 @@ async fn mo2_loose_failures_repair_only_current_winners_and_keep_valid_neighbors
 
     let repaired_loose = mod_root.join("scripts/repaired.pex");
     let removed_loose = mod_root.join("scripts/removed.pex");
+    let authoring_alias = mod_root.join("caliente%74ools/scripts/repaired.pex");
+    fs::create_dir_all(authoring_alias.parent().unwrap()).unwrap();
+    fs::write(&authoring_alias, b"authoring PEX").unwrap();
     fs::write(&repaired_loose, b"broken loose PEX").unwrap();
     fs::write(&removed_loose, b"broken loose PEX").unwrap();
     // Include both archive members so the removed loose winner still has archive bytes.
@@ -549,6 +552,17 @@ async fn mo2_loose_failures_repair_only_current_winners_and_keep_valid_neighbors
     let loose_bytes = dummy_content::pex::minimal("LooseRepaired").unwrap();
     fs::write(&repaired_loose, &loose_bytes).unwrap();
     fs::remove_file(&removed_loose).unwrap();
+
+    let duplicate = mod_root.join("Data/Scripts/repaired.pex");
+    fs::create_dir_all(duplicate.parent().unwrap()).unwrap();
+    fs::write(&duplicate, b"duplicate runtime PEX").unwrap();
+    let error = crate::repair::repair_failed(&settings, false).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("normalized loose-source collision")
+    );
+    fs::remove_file(duplicate).unwrap();
 
     let preview = crate::repair::repair_failed(&settings, false).unwrap();
     assert!(

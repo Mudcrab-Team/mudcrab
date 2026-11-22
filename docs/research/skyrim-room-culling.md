@@ -8,14 +8,18 @@ verifies its portal graph, the engine keeps the cell's entire main-camera mesh l
 This policy uses Skyrim's authored room and portal records, but does not claim exact replication
 of Skyrim's traversal.
 
+Portal order can change which meshes appear downstream even with a single starting room.
+Mudcrab can replay a measured load’s order. Ordinary packs use deterministic FormID order.
+See the [two retail renders and comparison procedure](skyrim-culling-rea-parity.md#portal-order-within-one-starting-room-changes-the-image).
+
 ## Evidence
 
 Research checked on 2026-11-15:
 
 - [The converter's record analysis](interior-room-graph-converter.md) describes the `RoomMarker`,
   `PortalMarker`, `XPOD` room pairs and `XLRM` links measured in the game data. Portals identify
-  apertures between rooms. Links connect rooms that must be seen together without an aperture.
-  Membership in our conversion uses the reference pivot, with additional bounds-overlap rows.
+  apertures between rooms. The original projection used pivot and bounds-overlap membership;
+  native research now identifies `XLRM` master/slave unions and source-sphere ownership.
 - [Native SkyrimSE culling research](skyrim-native-culling.md) now traces the installed
   1.7.104.0 executable. It establishes portal traversal with per-node compound frusta,
   object-bound tests within reached rooms, explicit unbounded-space traversal, shared-node
@@ -57,7 +61,8 @@ Research checked on 2026-11-15:
   connects it. It also warns about disappearing dropped objects, misplaced object pivots, and
   overlapping or separated room bounds. Its performance section attributes overhead to many
   visible portals and their frustum operations. The page recommends `MBC` to toggle multibound
-  culling and `TCL` to inspect geometry, but those commands were not exercised in Skyrim here.
+  culling and `TCL` to inspect geometry. The later 1.7.104.0 runtime experiment used `TCL`, but
+  found that this executable's `MBC` callback returns success without changing multibound state.
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
   additionally names a separate unbounded space connected through portals. That terminology and
   its exact traversal rules are not established by the supplied Skyrim pages. Skyrim's outside-
@@ -68,20 +73,24 @@ Skyrim's native compound-frustum interpreter evaluates unions and intersections 
 including occluder exclusions. Our runtime now retains unions of convex portal volumes and tests
 individual transformed mesh bounds against them. Separate paths retain their apertures rather
 than filling the screen rectangle between them. Versioned graphs also traverse unbounded space
-and test portal-shared geometry against both endpoint volumes. Occluder exclusions remain absent;
+and test portal-shared geometry against both endpoint volumes. Source-verified independent plane
+and box occluders now contribute path-local exclusions, tested with conservative enclosing spheres;
 unresolved connections still draw the whole cell.
 
-No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
-performed. The native trace now establishes how room volumes reach object culling and how
+No reconstruction source was copied into the engine. A later
+[four-pose original-game comparison](skyrim-original-comparison.md) supports the broad visibility
+decisions in three disputed shell views and retains the joined-room cave. It does not establish
+object-by-object or whole-engine parity. The native trace establishes how room volumes reach object culling and how
 unbounded space enters traversal. Exact clipping tolerances, path merging and revisits, full
-assignment policy, dynamic membership updates, lights, and shadows still need further tracing
+specialized assignment paths, actor updates, lights, and shadows still need further tracing
 or controlled Skyrim experiments.
 
 ## Differences established by the Skyrim tutorial
 
 The tutorial documents authored room grouping and portal connectivity, not the exact clipping
-algorithm. It supports pivot membership and explicit room links, while leaving our screen-space
-clipping and implicit overlap edges as implementation choices.
+algorithm. Its pivot description guided the original geometric projection. The later pinned SE
+trace identifies render-bound centers, authored master/slave grouping, and portal/sphere ownership;
+new authored graphs use those findings. Pivot/overlap rows and implicit edges remain legacy policies.
 
 The converter and runtime honor the placed-reference `Multibound` header flag (`0x80000000`).
 [xEdit's TES5 definitions at `3ccc9e7`](https://github.com/TES5Edit/TES5Edit/blob/3ccc9e7d733becfcc97940cf0c877fa3d6213c5b/Core/wbDefinitionsTES5.pas)
@@ -90,18 +99,11 @@ primitive marker. CommonLibSSE-NG independently declares `TESObjectREFR::RecordF
 as bit 31. `NONE` must not be inferred from an absent `XMBR` alone: ordinary automatic references
 also omit that field.
 
-The implementation keeps every flagged reference visible rather than assigning it to geometric
-room boxes. This preserves `NONE` and conservatively draws references with named authored targets
-too; exact named-target culling is not implemented. It does not interpret the unremapped `XMBR`
-FormID. Export omits these references from pivot membership, and overlap integration removes stale
-membership rows and excludes the references when rebuilding overlaps. Integration does this in
-one transaction and can be repeated.
-
-The database loader carries the already-exported header bit through `ReferenceRow` to the spawned
-root's `RoomCullExempt` component. Consequently existing conversions that retained `header_flags`
-are protected even while their `reference_rooms` table still contains old geometric membership.
-Databases predating header-flag export cannot recover information that was never stored and need
-reconversion to recover authored overrides. No world schema bump or enable flag is added.
+Legacy graphs keep all flagged references visible. The authored-assignment path instead records
+remapped named targets separately from `NONE`. Initial attachment honors a valid target directly;
+later supported reference movement rechecks geometric ownership. `NONE` remains visible. Export
+still omits flagged references from the legacy pivot/overlap rows, and integration removes stale
+rows transactionally. Databases predating header-flag export need reconversion to recover overrides.
 
 A read-only scan of the available converted Skyrim data found 220 flagged references: 215 with
 an `XMBR` target and five without one. Three untargeted references are static Katariah floor/mast
@@ -111,74 +113,90 @@ The flag/target distribution supports the `NONE` interpretation; it is not a con
 or a reconstruction of Skyrim's assignment code.
 
 The room-basics page describes Skyrim restricting views from outside room bounds to portals.
-Mudcrab keeps whole-cell rendering when the camera is outside every room, including in versioned
-graphs, because gaps between bounds are not verified outside space. From a containing room,
-versioned graphs can traverse an authored outside endpoint through its portal aperture. Legacy
-NULL endpoints cannot distinguish authored outside from invalid links. Unknown references remain
-drawn. This conservative camera-start policy differs from the traced native null-room traversal.
+Complete authored graphs start in unbounded space when no room contains the near-shifted lookup
+point. Both traversal directions use source-verified outside endpoints. Legacy NULL endpoints
+cannot distinguish outside space from invalid links, so legacy gaps retain full rendering.
+Unknown references remain drawn. The [Gallows Rock replay](skyrim-culling-rea-parity.md#gallows-rock-west-doorway)
+checks this rule against the stock interior.
 
 Its dropped-object warning also shows why a reference's original placement is insufficient for
-moving objects. Our actor and movable-object exemptions deliberately avoid culling by stale
-membership. The page does not establish how Skyrim updates membership as objects move or settle.
+moving objects. Actors and animated categories remain exempt. Supported loose objects now
+reclassify their source bound after their root transform changes; legacy graphs keep the exemption.
+The page alone does not establish native movement timing; the later assignment trace supplies
+separate initial-attachment and update paths.
 
 The tutorial recommends measuring performance and limiting long chains of visible portals. Its
 3–5-portal guidance is an authoring recommendation, not permission to truncate the renderer's walk.
 
 ## Runtime choices
 
-The camera's containing rooms start with the camera frustum. Each portal polygon is clipped
-against its incoming volume. The aperture edges and the plane behind the doorway constrain the
-next volume. Each room retains a union of these convex volumes. Explicit room links pass the
-incoming volume unchanged. Perspective views use converging rays and orthographic views use
-parallel rays.
+A perspective view starts from all containing authored room unions with the camera frustum. Portal polygons
+are clipped against incoming convex volumes; aperture edges and the doorway plane narrow the next
+volume. Separate paths remain a union. Orthographic views retain full rendering in interiors with rooms
+because their near plane can span multiple disconnected rooms. On a newly reached bounded room, an incoming
+program of 26 or more native operator records drops its inherited constraints after the exit passes its aperture test.
+The exit and the room’s own occluders still constrain its meshes. See the
+[retail threshold captures](skyrim-culling-rea-parity.md#the-26-operator-fallback-retains-local-constraints).
+Independent work limits can also widen a complex volume. Authored graphs allow at least one contribution per physical portal in the cell before applying that limit.
 
-Graphs marked `visibility_version = 2` have an explicit unbounded node. Room-to-outside traversal
-narrows its volume through the same aperture tests. A camera outside every room keeps full
-rendering: room boxes can have seams, so their complement is not verified outside-space coverage.
-This conservative start policy deliberately differs from the traced native null-room traversal. Only an endpoint verified as zero in the source `XPOD` names this node.
-Missing or invalid links remain unknown. The converter adds provenance columns with zero defaults
-and publishes verified flags atomically, so older or interrupted conversions retain safe behavior.
+Full source conversions publish `occlusion_version = 1` with authored plane and box geometry.
+Supported independent occluders add exclusions to their containing joined room or unbounded space.
+Exclusions propagate with each path; an alternative clear path retains the mesh. Rejection requires
+full containment of the mesh AABB's enclosing sphere. Budget widening retains local exclusions.
+An explicitly targeted plane can hide meshes when the converted source confirms its unique containing room as the target. The loader treats an isolated, source-verified pair of linked planes with the same owner as two independent occluders. Other overrides, complex links, stateful primitives, and ambiguous assignments remain inactive. Older exports
+retain their previous behavior until reconverted. See the [occluder implementation contract](skyrim-culling-rea-parity.md#independent-occluder-implementation).
 
-For static references with one containing room, each mesh's current AABB is transformed into
-cell-local space using its full affine transform. It stays drawn if it intersects any volume of
-its containing or overlapping rooms. The plane support test handles rotation, nonuniform and
-negative scale, and shear. A touching or straddling bound stays visible even if its center is
-outside the aperture. Missing or invalid bounds and `NoFrustumCulling` skip aperture filtering
-while retaining the prior unreached-room rule.
+An interior with no authored rooms can apply verified independent occluders directly to the full
+camera volume. In an interior with rooms, occluders do not establish portal coverage: older packs without authored assignment and complete endpoint data retain full rendering when the lookup point falls outside every room.
 
-In a roomed cell, a reference with no geometric membership stays eligible for ordinary view
-culling. A reference with overlap rows alone can use their volumes and the unbounded volume.
-If the aggregate model bounds intersect a doorway attached to a containing or overlapping room,
-each child mesh can use either endpoint's visible volume. A pivot outside all rooms can also
-share a doorway attached to the unbounded space.
-This adds visibility candidates without discarding existing overlap memberships. It filters each
-mesh once and does not duplicate render submissions. Missing aggregate bounds use the mesh bounds.
-The affine-box overlap test is conservative; it does not reproduce native sphere assignment,
-multi-portal ownership, or authored named overrides exactly.
+Graphs with `visibility_version = 2` have explicit unbounded space. Only endpoints verified as zero
+in source `XPOD` name it. Missing, invalid, or foreign-cell links remain unknown and trigger full
+rendering. Room-to-outside traversal narrows its volume through the same aperture tests. When the near-shifted camera point falls outside every authored room union in a complete graph, traversal starts in unbounded space and follows its authored portals. Older conversions retain their outside-camera fallback.
 
-The walk accepts up to 16 independent contributions per room and 64 planes per volume. Exceeding
-either budget widens that room to the camera frustum and propagates the wider result. These are
-conservative engine work limits, not Skyrim's native operator budget. Flagged multibound
-references, actors, doors, activators, and movable objects retain their exemptions. Shadows and
-lights retain their independent visibility.
+New conversions additionally publish `assignment_version = 1`, ordered `XLRM` links, per-reference
+rules, source NIF spheres, and per-cell completeness. `XRMR[2]` selects explicit masters. Slaves
+resolve direct masters before recursive links, in native list order, with reciprocal master links
+and cycle handling. A room is the union of its primary and joined boxes, not their enclosing AABB.
+Portals naming slaves redirect to masters. Distinct explicit masters stay distinct. Incomplete cells
+and unresolved/ambiguous master construction keep full rendering. The unique authored walk omits implicit
+overlap edges and the portal-less-room heuristic. Duplicate portal rows select the legacy walk,
+which keeps the portal-less-room fallback.
 
-Some shipped open halls have room boxes without any valid portal. Their geometry can expose a
-far room across space outside all the boxes. The earlier implementation drew the whole cell only
-when the camera started in such a room. That is insufficient: a portal-bearing start can reach an
-open corridor later, and then incorrectly hide a visible backdrop behind an off-screen portal.
-The default policy therefore draws the whole cell if **any reached room** lacks a valid portal
-between distinct known spaces. Any unknown portal endpoint also triggers the whole-cell fallback:
-it may conceal connectivity that conversion could not recover. Authored unbounded endpoints are
-known spaces and do not trigger this fallback. Regression fixtures cover these cases.
+Supported model bounds retain native source spheres and ordered child merges. They are not rebuilt
+from render AABBs. A reference's current cell-local transform places that sphere; its center selects
+containing master rooms. Initial named targets override geometric containment without requiring
+a source sphere. Later transform changes
+recompute ownership, including after a moving object returns to its spawn pose. Missing bounds remain visible during automatic assignment and updates. `NONE`, unknown
+targets, nonuniform or sheared assignment transforms, actors, and doors stay visible.
+Activators with supported source bounds now use authored assignment. The
+[geometry-mismatch investigation](skyrim-culling-mismatches.md) verifies the web and foliage fixes
+against live native bounds and matched camera captures.
+Native overlapping-room hash order cannot be reconstructed from persistent IDs, so possible owners
+are combined. Named-target neighbor priority and specialized native paths remain conservative limits.
 
-Touching or overlapping boxes still add conservative connectivity. Across an overlap edge, the walk carries
-the incoming visibility volume into the destination unchanged so overhanging meshes remain visible. This is an engine heuristic, not verified
-Skyrim behavior. A graph made entirely of portal-bearing rooms can still have coverage gaps;
-synthetic tests and sampled image comparisons do not prove all interiors safe. Authored joined
-bounds, exact assignment, and original-engine comparisons remain research work.
+The native sphere/portal test distinguishes no touched portal, one physical portal, and several
+portals. These select ordinary room/unbounded ownership, one portal's combined endpoint volumes, or
+the common multibound node respectively. Multiple `XPOD` rows of one marker remain one physical
+portal. Each child mesh tests its current transformed AABB against the selected owner volumes;
+no duplicate render submissions are inserted. AABBs support rotation, negative/nonuniform scale,
+and shear even though native assignment transforms require a uniform scale. Missing mesh bounds
+skip aperture filtering but retain the unreached-space test.
 
-Databases without room tables draw the cell normally. Legacy graphs also draw the whole cell when
-the camera is outside every room. Graph reads run asynchronously, and captures wait for them.
+With geometric membership, a mesh can use either endpoint’s visible volume when its reference
+bounds intersect a doorway attached to a containing or overlapping room.
+In roomed cells, empty geometric membership leaves the mesh eligible for ordinary view culling.
+Authored automatic assignment to unbounded space requires a usable model sphere.
+
+In the converted Bards College interior (cell `00016A0C`), static `000F717E` has no
+geometric membership or multibound override. The pack contains eight rooms and nine portals,
+all between rooms. The authored loader classifies the static as unbounded using the source
+sphere for `SMDAFloSol04` (center at the model origin, radius 181.02). This is a pack and
+loader check. Visibility of this floor piece at the same viewpoint in Skyrim remains unverified.
+
+Legacy graphs retain pivot/overlap candidates, conservative box/portal sharing, open links,
+touching-box edges that preserve the incoming visibility volume, and reached-portal-less-room fallbacks. Loose items and authored overrides retain
+legacy exemptions. The normal converter refreshes both room metadata and source-sphere GLBs; no
+feature flag or global database schema bump is added. Lights and shadow lists remain independent.
 
 ## Verification
 
@@ -229,6 +247,46 @@ but is not an image-equality pass or an original-game oracle. An earlier Shimmer
 looked through backfaces outside the cave shell; its differing image and two blank views remain
 recorded as exploratory results. No capture timed out or retained pending or failed graph reads.
 
+
+The authored-assignment update passed 1,436 engine, 1,177 converter, 91 shared, and 32
+plugin-reference tests (seven, 30, zero, and one ignored), plus workspace Clippy with warnings
+denied. The source-sphere conversion test distinguishes NIF spheres from render bounds and checks
+child transforms and the ignored placement root. Runtime tests cover disjoint joined bounds,
+slave portal redirection, named initial attachment versus later updates, `NONE`, moving loose
+references, and independently moving ancestors. Typed publication preserves master bytes, link
+order, and named/NONE/automatic rules. The native instruction probe checks 1,617 sampled cases,
+with 36 saved boundary cases also tested in Rust.
+
+[The authored-assignment validation record](room-authored-assignment-20261115.json) retains 78
+Mudcrab captures from November 15, before the later source-bounds fixes. That build used a
+private four-cell dataset with 989 converted models, 860 source-sphere GLBs, and 2,799 base
+records with source spheres. The main comparison has 72 captures at
+12 poses, three alternating repetitions per mode, and all nine cross-mode image pairings. Eight
+views have zero persistent differing pixels at threshold 8. Abandoned Prison has one sequence
+pixel; six additional fresh-process captures match at that pose, supporting a capture-history
+explanation while retaining the sequence result.
+
+Three shell-facing views do not match full rendering: the old tall-box-center Bleak Falls Barrow
+pose changes 320,661 pixels, Gallows Rock outside-away changes 366,348, and its box-inside/outward
+view changes 207,106. These historical equality failures were recorded before a retail oracle
+was available. The [2026-11-17 retail comparison](room-assignment-review-20261117.md) now shows
+that Skyrim also omits the large background shells at the Bleak Falls and inside-out Gallows
+poses. Fog, lighting, props, and material sampling still differ. At `b3a1793e`, the outside-away pose kept full rendering. With a complete reconverted graph,
+the camera now traverses unbounded space and retains the five meshes of the stair arch.
+See the [Gallows Rock seam replay](skyrim-culling-rea-parity.md#gallows-rock-west-doorway).
+The two new [joined-room views](../../crates/engine/tests/fixtures/room-assignment-shots.json),
+inside the master and slave cave geometry, match in every pairing while exercising culling.
+No final capture timed out or retained pending/failed room-graph reads. These results support the
+covered behavior, not a claim that every interior matches Skyrim.
+
+For an existing source-verified pack, the `room_assignment_validation` converter example refreshes
+the source meshes used by the selected cells and finalizes their bounds in an independent private
+copy. It requires both verified portal endpoints and authored room assignments. It retains the
+source graph for every cell, so later runs can expand the selection without losing rejected links
+or unknown assignments. The helper uses the installed official archives, requires Unix hard-link
+validation, and holds the asset directory's exclusive lock through finalization. Use the standard
+conversion pipeline to rebuild room metadata from plugins.
+
 ## Default-on review validation
 
 [The 2026-11-17 core review record](room-culling-review-20261117.md) contains the graphics toggle,
@@ -237,3 +295,6 @@ and their limits. The core remains a room-reachability foundation, not a complet
 
 [The boundary review record](room-gap-review-20261117.md) covers conservative camera starts,
 negative extents, legacy-pack handling, and the sampled out-and-back room-boundary sequence.
+
+[The authored-assignment review record](room-assignment-review-20261117.md) adds matched retail
+images for the disputed shells and a fresh named-target/NONE capture from Katariah.

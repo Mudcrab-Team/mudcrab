@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Placements with missing or short DATA cannot become portals. A subset update removes a stale portal for the reference and clears links to its removed room bounds. Field-level semantics remain deferred.",
+  "table": "room_portals"
+}

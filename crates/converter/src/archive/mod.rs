@@ -2,11 +2,13 @@ mod ba2;
 mod batched;
 mod bsa;
 mod bsa_name;
+mod source;
+mod staging;
 
 pub(crate) use batched::{prune_stale_reader_packs, sync_directory, sync_pack_file};
 
 use crate::{
-    asset_path::{AssetKind, canonical_asset_path},
+    asset_path::{AssetKind, canonical_asset_path, is_authoring_source_name},
     cache::{
         IngestedFile, IngestionCacheEntry, IngestionSelection, SpillCache, hash_bytes, hash_file,
         link_or_copy, link_or_copy_spilling, link_or_copy_spilling_with_copy_and_link,
@@ -15,18 +17,18 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, bail},
+    eyre::{ContextCompat, WrapErr, bail, ensure},
 };
-use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use source::ArchiveSource;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
@@ -456,6 +458,15 @@ pub(super) fn archive_reader_version(archive: &[u8]) -> u32 {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct StagingUnavailable;
+
+impl std::fmt::Display for StagingUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("archive staging is unavailable")
+    }
+}
+
 pub struct ArchiveExtractor;
 
 /// One versioned coverage contract for both cache manifests and sealed packs.
@@ -465,7 +476,7 @@ impl IngestionSelection {
     /// Versioned archive coverage; additive controls do not change these cache identities.
     pub fn recipe(self) -> &'static str {
         match self {
-            Self::All => "all-v1",
+            Self::All => "all-v2",
             Self::ConverterInputsV1 => "converter-inputs-v4",
             Self::RuntimeEnglishV1 => "runtime-english-v4",
         }
@@ -479,7 +490,7 @@ impl IngestionSelection {
     /// Accept coverage from current filtered recipes or an all-files inventory.
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
-            "" | "all-v1" => Self::All,
+            "" | "all-v1" | "all-v2" => Self::All,
             "converter-inputs-v4" => Self::ConverterInputsV1,
             "runtime-english-v4" => Self::RuntimeEnglishV1,
             _ => return false,
@@ -525,31 +536,29 @@ impl ExtractOptions {
 }
 
 impl ArchiveExtractor {
+    /// Recover interrupted extraction for an owned scratch root before removing it.
+    pub fn reclaim_abandoned(root: &Path) -> Result<()> {
+        staging::reclaim_abandoned(root)
+    }
+
     /// Inventories canonical paths without decompressing any payload.
     pub fn list_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
-        let file = File::open(archive_path)?;
-        // SAFETY: this is a read-only mapping, held only while the archive is open.
-        let bytes = unsafe { Mmap::map(&file) }?;
-        let seen = std::cell::RefCell::new(BTreeMap::new());
-        let paths = std::cell::RefCell::new(Vec::new());
-        let record = |name: &str| -> Result<bool> {
-            let path = safe_relative_path(name)?;
-            detect_archive_collision(&mut seen.borrow_mut(), &path, name)?;
-            paths.borrow_mut().push(path);
-            Ok(false)
-        };
-        match bytes.get(..4) {
-            Some(b"BSA\0") => {
-                for entry in bsa::iter_raw_entries(&bytes)? {
-                    record(&entry.name)?;
-                }
-            }
-            Some(b"BTDX") => {
-                ba2::read_entries_matching(&bytes, record)?;
-            }
-            _ => bail!("unsupported archive magic in {}", archive_path.display()),
-        }
-        let mut paths = paths.into_inner();
+        Self::list_paths_with_name_filter(archive_path, |_| true)
+    }
+
+    pub(crate) fn list_runtime_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
+        Self::list_paths_with_name_filter(archive_path, |name| !is_authoring_source_name(name))
+    }
+
+    fn list_paths_with_name_filter(
+        archive_path: &Path,
+        include_name: impl Fn(&str) -> bool,
+    ) -> Result<Vec<PathBuf>> {
+        let source = ArchiveSource::from_file(File::open(archive_path)?)?;
+        let mut paths = select_entries(&source, archive_path, include_name)?
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>();
         paths.sort();
         Ok(paths)
     }
@@ -719,7 +728,7 @@ impl ArchiveExtractor {
     }
 
     pub fn extract(archive_path: &Path, output_root: &Path) -> Result<Vec<ExtractedFile>> {
-        extract_reporting(archive_path, output_root, None, None)
+        Self::extract_matching(archive_path, output_root, |_| true)
     }
 
     /// Extracts only the compiled Papyrus scripts (`.pex`), the same inputs a normal
@@ -728,14 +737,14 @@ impl ArchiveExtractor {
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        extract_selected_reporting(archive_path, output_root, is_script_input, None, None)
+        Self::extract_runtime_matching(archive_path, output_root, is_script_input)
     }
 
     pub(crate) fn extract_lod_settings(
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        extract_selected_reporting(archive_path, output_root, is_lod_setting, None, None)
+        Self::extract_runtime_matching(archive_path, output_root, is_lod_setting)
     }
 
     /// Extracts only the archive entries named in `paths`, writing them under `output_root`
@@ -750,208 +759,167 @@ impl ArchiveExtractor {
         output_root: &Path,
         paths: &BTreeSet<PathBuf>,
     ) -> Result<Vec<ExtractedFile>> {
-        extract_selected_reporting(
+        Self::extract_matching(archive_path, output_root, |path| paths.contains(path))
+    }
+
+    pub(crate) fn extract_runtime_paths(
+        archive_path: &Path,
+        output_root: &Path,
+        paths: &BTreeSet<PathBuf>,
+    ) -> Result<Vec<ExtractedFile>> {
+        Self::extract_runtime_matching(archive_path, output_root, |path| paths.contains(path))
+    }
+
+    fn extract_runtime_matching(
+        archive_path: &Path,
+        output_root: &Path,
+        include: impl Fn(&Path) -> bool + Sync,
+    ) -> Result<Vec<ExtractedFile>> {
+        Self::extract_matching_with_name_filter(
             archive_path,
             output_root,
-            |path| paths.contains(path),
-            None,
-            None,
+            |name| !is_authoring_source_name(name),
+            include,
         )
     }
-}
 
-/// Extracts every entry of an archive, reporting progress as the archive's file table allows, and
-/// stopping before the next entry once `stop` says so.
-fn extract_reporting(
-    archive_path: &Path,
-    output_root: &Path,
-    progress: Option<ExtractionProgressCallback<'_>>,
-    stop: Option<StopCheck<'_>>,
-) -> Result<Vec<ExtractedFile>> {
-    extract_selected_reporting(archive_path, output_root, |_| true, progress, stop)
-}
-
-fn extract_selected_reporting(
-    archive_path: &Path,
-    output_root: &Path,
-    include: impl Fn(&Path) -> bool + Sync,
-    progress: Option<ExtractionProgressCallback<'_>>,
-    stop: Option<StopCheck<'_>>,
-) -> Result<Vec<ExtractedFile>> {
-    extract_selected_with_sync_reporting(
-        archive_path,
-        output_root,
-        include,
-        progress,
-        stop,
-        ExtractionWriteContext {
-            sync_mode: IngestionSync::PerFile,
-            sync: &SyncMeasurements::default(),
-            ingestion: None,
-        },
-    )
-}
-
-struct ExtractionWriteContext<'a, 'session> {
-    sync_mode: IngestionSync,
-    sync: &'a SyncMeasurements,
-    ingestion: Option<&'a FreshIngestion<'session>>,
-}
-
-fn extract_selected_with_sync_reporting(
-    archive_path: &Path,
-    output_root: &Path,
-    include: impl Fn(&Path) -> bool + Sync,
-    progress: Option<ExtractionProgressCallback<'_>>,
-    stop: Option<StopCheck<'_>>,
-    writes: ExtractionWriteContext<'_, '_>,
-) -> Result<Vec<ExtractedFile>> {
-    let ExtractionWriteContext {
-        sync_mode,
-        sync,
-        ingestion,
-    } = writes;
-    let file = File::open(archive_path)
-        .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
-    // SAFETY: the file remains open and the mapping is read-only for the duration
-    // of parsing. No process-local code mutates the archive while it is mapped.
-    let bytes = unsafe { Mmap::map(&file) }
-        .wrap_err_with(|| format!("failed to map archive {}", archive_path.display()))?;
-    let progress_lock = Mutex::new(());
-
-    match bytes.get(..4) {
-        Some(b"BSA\0") => {
-            let entries = bsa::iter_raw_entries(&bytes).wrap_err_with(|| {
-                format!("failed to parse BSA archive {}", archive_path.display())
-            })?;
-            let mut seen = BTreeMap::new();
-            let entries = entries
-                .into_iter()
-                .map(|entry| {
-                    let relative = safe_relative_path(&entry.name)?;
-                    detect_archive_collision(&mut seen, &relative, &entry.name)?;
-                    Ok((entry, relative))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let entries: Vec<_> = entries
-                .into_iter()
-                .filter(|(_, relative)| include(relative))
-                .collect();
-            // A BSA's file records and payloads are both in the mapping, so the bytes it will
-            // write are known before the first entry is decompressed.
-            let reporter = progress.map(|callback| {
-                ProgressReporter::new(
-                    callback,
-                    entries.len() as u64,
-                    entries
-                        .iter()
-                        .map(|(entry, _)| entry.payload.len() as u64)
-                        .sum(),
-                )
-            });
-            if let Some(reporter) = &reporter {
-                reporter.announce();
-            }
-            entries
-                .into_par_iter()
-                .map(|(entry, relative)| {
-                    check_stop(stop)?;
-                    let destination = output_root.join(&relative);
-                    if let Some(parent) = destination.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    let stored_bytes = entry.payload.len() as u64;
-                    let data = entry.decompress()?;
-                    let bytes_written = data.len() as u64;
-                    let sha256 = hash_bytes(&data);
-
-                    write_extracted_payload(
-                        &destination,
-                        &data,
-                        &sha256,
-                        sync_mode,
-                        sync,
-                        ingestion,
-                    )
-                    .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
-                    if let Some(reporter) = &reporter {
-                        let _guard = progress_lock.lock().unwrap();
-                        reporter.advance(stored_bytes);
-                    }
-
-                    Ok(ExtractedFile {
-                        path: relative,
-                        bytes_written,
-                        sha256,
-                    })
-                })
-                .collect()
-        }
-        Some(b"BTDX") => {
-            let all_names = std::cell::RefCell::new(BTreeMap::new());
-            let entries = ba2::read_entries_matching(&bytes, |name| {
-                let relative = safe_relative_path(name)?;
-                detect_archive_collision(&mut all_names.borrow_mut(), &relative, name)?;
-                Ok(include(&relative))
-            })?;
-            let mut seen = BTreeMap::new();
-            let entries = entries
-                .into_iter()
-                .map(|(name, data)| {
-                    let relative = safe_relative_path(&name)?;
-                    detect_archive_collision(&mut seen, &relative, &name)?;
-                    Ok((name, data, relative))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let entries: Vec<_> = entries
-                .into_iter()
-                .filter(|(_, _, relative)| include(relative))
-                .collect();
-            let reporter = progress.map(|callback| {
-                ProgressReporter::new(
-                    callback,
-                    entries.len() as u64,
-                    entries.iter().map(|(_, data, _)| data.len() as u64).sum(),
-                )
-            });
-            if let Some(reporter) = &reporter {
-                reporter.announce();
-            }
-            entries
-                .into_par_iter()
-                .map(|(_name, data, relative)| {
-                    check_stop(stop)?;
-                    let destination = output_root.join(&relative);
-                    if let Some(parent) = destination.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    let bytes_written = data.len() as u64;
-                    let sha256 = hash_bytes(&data);
-
-                    write_extracted_payload(
-                        &destination,
-                        &data,
-                        &sha256,
-                        sync_mode,
-                        sync,
-                        ingestion,
-                    )
-                    .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
-                    if let Some(reporter) = &reporter {
-                        let _guard = progress_lock.lock().unwrap();
-                        reporter.advance(bytes_written);
-                    }
-
-                    Ok(ExtractedFile {
-                        path: relative,
-                        bytes_written,
-                        sha256,
-                    })
-                })
-                .collect()
-        }
-        _ => bail!("unsupported archive magic in {}", archive_path.display()),
+    /// Selects canonical paths and extracts their payloads from the same open archive.
+    /// Replacing the archive path does not change the open source. Keep the archive contents
+    /// unchanged throughout extraction, including during the filter callbacks.
+    pub fn extract_matching(
+        archive_path: &Path,
+        output_root: &Path,
+        include: impl Fn(&Path) -> bool + Sync,
+    ) -> Result<Vec<ExtractedFile>> {
+        Self::extract_matching_with_name_filter(archive_path, output_root, |_| true, include)
     }
+
+    /// Filters original entry names before canonicalization and collision checks, then selects
+    /// canonical paths and extracts their payloads from the same open archive.
+    /// Replacing the archive path does not change the open source. Keep the archive contents
+    /// unchanged throughout extraction, including during the filter callbacks.
+    pub fn extract_matching_with_name_filter(
+        archive_path: &Path,
+        output_root: &Path,
+        include_name: impl Fn(&str) -> bool,
+        mut include: impl FnMut(&Path) -> bool,
+    ) -> Result<Vec<ExtractedFile>> {
+        let file = File::open(archive_path)
+            .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
+        let source = ArchiveSource::from_file(file)?;
+        let selected = select_entries(&source, archive_path, include_name)?
+            .into_iter()
+            .filter(|(path, _)| include(path))
+            .collect::<Vec<_>>();
+        staging::reclaim_abandoned(output_root).wrap_err(StagingUnavailable)?;
+        if selected.is_empty() {
+            return Ok(Vec::new());
+        }
+        let parents = selected
+            .iter()
+            .map(|(path, _)| path.parent().wrap_err("missing extraction directory"))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let staging = staging::Run::new(output_root, parents).wrap_err(StagingUnavailable)?;
+        let mut required = BTreeMap::<&Path, u64>::new();
+        for (path, entry) in &selected {
+            let bytes = match entry {
+                ArchiveEntry::Bsa(entry) => entry.decoded_size(&source)?,
+                ArchiveEntry::Ba2(entry) => entry.decoded_size(),
+            };
+            let parent = path.parent().wrap_err("missing extraction directory")?;
+            let total = required.entry(parent).or_default();
+            *total = total
+                .checked_add(u64::try_from(bytes)?)
+                .wrap_err("archive staging size overflow")?;
+        }
+        staging
+            .check_space(&required)
+            .wrap_err(StagingUnavailable)?;
+        let sync = SyncMeasurements::default();
+        let staged = selected
+            .into_par_iter()
+            .map(|(path, entry)| {
+                let bytes = match &entry {
+                    ArchiveEntry::Bsa(entry) => entry.staging_bytes(&source)?,
+                    ArchiveEntry::Ba2(entry) => entry.staging_bytes(),
+                };
+                let _permit = STAGING_MEMORY.reserve(bytes)?;
+                let data = match entry {
+                    ArchiveEntry::Bsa(entry) => entry.decompress(&source)?,
+                    ArchiveEntry::Ba2(entry) => entry.decompress(&source)?,
+                };
+                let parent = path.parent().wrap_err("missing extraction directory")?;
+                let mut temporary = staging.new_file(parent)?;
+                temporary.write_all(&data)?;
+                sync.flush(temporary.as_file())?;
+                let extracted = ExtractedFile {
+                    path,
+                    bytes_written: data.len() as u64,
+                    sha256: hash_bytes(&data),
+                };
+                Ok((temporary.into_temp_path(), extracted))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        staged
+            .into_iter()
+            .map(|(temporary, extracted)| {
+                let destination = output_root.join(&extracted.path);
+                temporary
+                    .persist(&destination)
+                    .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
+                Ok(extracted)
+            })
+            .collect()
+    }
+}
+
+const STAGING_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+// An oversize entry takes the entire permit. Work in other extractions uses the same pool.
+static STAGING_MEMORY: LazyLock<Arc<batched::ByteBudget>> =
+    LazyLock::new(|| Arc::new(batched::ByteBudget::new(STAGING_MEMORY_LIMIT)));
+
+// A growing Vec can hold its old and doubled allocations during reallocation.
+fn growing_buffer_bytes(len: usize) -> usize {
+    len.saturating_add(1).saturating_mul(3).max(8)
+}
+
+enum ArchiveEntry {
+    Bsa(bsa::BsaEntry),
+    Ba2(ba2::Ba2Entry),
+}
+
+fn select_entries(
+    source: &ArchiveSource<'_>,
+    archive_path: &Path,
+    include_name: impl Fn(&str) -> bool,
+) -> Result<Vec<(PathBuf, ArchiveEntry)>> {
+    let entries = match source.read(0, source.len().min(4))?.as_ref() {
+        b"BSA\0" => bsa::read_entries(source)
+            .wrap_err_with(|| format!("failed to parse BSA archive {}", archive_path.display()))?
+            .into_iter()
+            .map(ArchiveEntry::Bsa)
+            .collect::<Vec<_>>(),
+        b"BTDX" => ba2::read_entries_from(source)?
+            .into_iter()
+            .map(ArchiveEntry::Ba2)
+            .collect(),
+        _ => bail!("unsupported archive magic in {}", archive_path.display()),
+    };
+    let mut seen = BTreeMap::new();
+    let mut selected = Vec::new();
+    for entry in entries {
+        let name = match &entry {
+            ArchiveEntry::Bsa(entry) => &entry.name,
+            ArchiveEntry::Ba2(entry) => &entry.name,
+        };
+        if include_name(name) {
+            let path = safe_relative_path(name)?;
+            detect_archive_collision(&mut seen, &path, name)?;
+            selected.push((path, entry));
+        }
+    }
+    Ok(selected)
 }
 
 /// Keep authored Havok metadata beside its clips. RACE projects may live outside
@@ -968,6 +936,9 @@ pub(crate) fn is_animation_input(path: &Path) -> bool {
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
     if selection == IngestionSelection::All {
         return true;
+    }
+    if is_authoring_source_name(&path.to_string_lossy()) {
+        return false;
     }
     if is_animation_input(path) {
         return true;
@@ -1055,7 +1026,7 @@ fn restore_cached_files_with_io_limit(
     let mut seen_paths = BTreeMap::new();
     let mut blobs = BTreeMap::<&str, CachedRestoreBlob<'_>>::new();
     for (index, file) in entry.files.iter().enumerate() {
-        let relative = safe_relative_path(&file.path)?;
+        let relative = ingestion_relative_path(&file.path)?;
         detect_archive_collision(&mut seen_paths, &relative, &file.path)?;
         let blob = match blobs.entry(file.hash.as_str()) {
             std::collections::btree_map::Entry::Occupied(blob) => blob.into_mut(),
@@ -1198,20 +1169,6 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_extracted_payload(
-    destination: &Path,
-    data: &[u8],
-    hash: &str,
-    sync_mode: IngestionSync,
-    sync: &SyncMeasurements,
-    ingestion: Option<&FreshIngestion<'_>>,
-) -> Result<()> {
-    match ingestion {
-        Some(ingestion) => ingestion.materialize(destination, data, hash),
-        None => atomic_write(destination, data, sync_mode, sync),
-    }
-}
-
 fn write_raw_payload(
     destination: &Path,
     data: &[u8],
@@ -1255,35 +1212,18 @@ fn replace_raw_payload(
     Ok(())
 }
 
-/// Atomically writes data to a file, ensuring the destination is replaced atomically.
-fn atomic_write(
-    destination: &Path,
-    data: &[u8],
-    sync_mode: IngestionSync,
-    sync: &SyncMeasurements,
-) -> Result<()> {
-    let file_name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let temporary =
-        destination.with_file_name(format!(".{file_name}.{}.partial", std::process::id()));
-    let mut file = File::create(&temporary)?;
-    file.write_all(data)?;
-    if sync_mode == IngestionSync::PerFile {
-        sync.flush(&file)?;
-    }
-    drop(file);
-    if destination.exists() {
-        fs::remove_file(destination)?;
-    }
-    fs::rename(&temporary, destination)?;
-    Ok(())
-}
-
 /// Converts an archive-relative path to a safe, relative path, ensuring it does not contain
 /// absolute paths or drive letters.
 pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
+    normalize_archive_path(name, false)
+}
+
+/// Keep the original directory of authoring inputs in all-files inventories and caches.
+fn ingestion_relative_path(name: &str) -> Result<PathBuf> {
+    normalize_archive_path(name, is_authoring_source_name(name))
+}
+
+fn normalize_archive_path(name: &str, preserve_source_path: bool) -> Result<PathBuf> {
     let normalized = name.replace('\\', "/");
     let path = Path::new(&normalized);
     if path.is_absolute() || normalized.contains(':') {
@@ -1292,7 +1232,9 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
     let mut safe = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Normal(part) if !part.is_empty() => safe.push(part),
+            Component::Normal(part) if !part.is_empty() && !staging::reserved(part) => {
+                safe.push(part)
+            }
             Component::CurDir => {}
             _ => bail!("archive contains unsafe path: {name}"),
         }
@@ -1320,7 +1262,14 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
         }
     });
     if let (Some(kind), Some(extension)) = (kind, extension) {
-        return canonical_asset_path(name, kind, extension).map(PathBuf::from);
+        let path = PathBuf::from(canonical_asset_path(name, kind, extension)?);
+        ensure!(
+            !path.iter().any(staging::reserved),
+            "reserved archive staging path"
+        );
+        if !preserve_source_path {
+            return Ok(path);
+        }
     }
     Ok(safe)
 }
@@ -2179,6 +2128,75 @@ mod tests {
         archive
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn selected_payload_comes_from_the_archive_that_supplied_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        for extension in ["bsa", "ba2"] {
+            let archive = directory.path().join(format!("rigs.{extension}"));
+            let replacement = directory.path().join(format!("replacement.{extension}"));
+            let output = directory.path().join(extension);
+            let key = "meshes/actors/skeleton.nif";
+            write_archive(&archive, &[dummy_content::Entry::new(key, b"original")]);
+            write_archive(&replacement, &[dummy_content::Entry::new(key, b"replaced")]);
+
+            let extracted = ArchiveExtractor::extract_matching(&archive, &output, |path| {
+                assert_eq!(path, Path::new(key));
+                fs::rename(&replacement, &archive).unwrap();
+                true
+            })
+            .unwrap();
+            assert_eq!(extracted.len(), 1);
+            assert_eq!(fs::read(output.join(key)).unwrap(), b"original");
+            ArchiveExtractor::extract_paths(
+                &archive,
+                &output,
+                &BTreeSet::from([PathBuf::from(key)]),
+            )
+            .unwrap();
+            assert_eq!(fs::read(output.join(key)).unwrap(), b"replaced");
+        }
+    }
+
+    #[test]
+    fn extracts_large_stored_and_compressed_payloads_from_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut rng = dummy_content::rng::Rng::new(42);
+        let payload: Vec<_> = (0..12_289)
+            .flat_map(|_| rng.next_u64().to_le_bytes())
+            .collect();
+        let key = "meshes/test.nif";
+        let entries = [dummy_content::Entry::new(key, &payload)];
+        let cases = [
+            (
+                "stored.bsa",
+                dummy_content::bsa::v104(&entries, dummy_content::bsa::Compression::None),
+            ),
+            (
+                "compressed.bsa",
+                dummy_content::bsa::v104(&entries, dummy_content::bsa::Compression::Zlib),
+            ),
+            (
+                "stored.ba2",
+                dummy_content::ba2::general(&entries, dummy_content::ba2::Compression::None),
+            ),
+            (
+                "compressed.ba2",
+                dummy_content::ba2::general(&entries, dummy_content::ba2::Compression::Zlib),
+            ),
+        ];
+        for (name, archive) in cases {
+            let path = directory.path().join(name);
+            let output = directory.path().join(format!("{name}-out"));
+            fs::write(&path, archive.unwrap()).unwrap();
+            let extracted = ArchiveExtractor::extract_matching(&path, &output, |_| true).unwrap();
+            assert_eq!(extracted.len(), 1, "{name}");
+            assert_eq!(extracted[0].bytes_written, payload.len() as u64, "{name}");
+            assert_eq!(extracted[0].sha256, hash_bytes(&payload), "{name}");
+            assert_eq!(fs::read(output.join(key)).unwrap(), payload, "{name}");
+        }
+    }
+
     #[test]
     fn inventory_returns_canonical_sorted_paths_without_materializing_payloads() {
         let directory = tempfile::tempdir().unwrap();
@@ -2207,6 +2225,122 @@ mod tests {
             ArchiveExtractor::list_paths(&ba2).unwrap(),
             vec![PathBuf::from("meshes/a.hkx"), PathBuf::from("meshes/b.hkx")]
         );
+    }
+
+    #[test]
+    fn selected_ba2_decode_failure_keeps_previous_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.ba2");
+        let mut bytes = dummy_content::ba2::general(
+            &[
+                dummy_content::Entry::new("strings/a.strings", b"new"),
+                dummy_content::Entry::new("strings/b.strings", b"also new"),
+            ],
+            dummy_content::ba2::Compression::Zlib,
+        )
+        .unwrap();
+        // The last byte is part of the final payload's zlib checksum.
+        *bytes.last_mut().unwrap() ^= 0xff;
+        fs::write(&path, bytes).unwrap();
+        let root = dir.path().join("out");
+        fs::create_dir_all(root.join("strings")).unwrap();
+        let old = root.join("strings/a.strings");
+        fs::write(&old, b"old").unwrap();
+        let error = ArchiveExtractor::extract_matching(&path, &root, |_| true).unwrap_err();
+        assert!(error.to_string().contains("strings/b.strings"), "{error:#}");
+        assert_eq!(fs::read(old).unwrap(), b"old");
+        assert_eq!(fs::read_dir(root.join("strings")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn archive_selection_visits_each_canonical_path_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let directory = tempfile::tempdir().unwrap();
+        for extension in ["bsa", "ba2"] {
+            let key = "meshes/test.nif";
+            let archive = directory.path().join(format!("meshes.{extension}"));
+            let output = directory.path().join(extension);
+            write_archive(&archive, &[dummy_content::Entry::new(key, b"selected")]);
+            let calls = AtomicUsize::new(0);
+            let files = ArchiveExtractor::extract_matching(&archive, &output, |path| {
+                assert_eq!(path, Path::new(key));
+                calls.fetch_add(1, Ordering::Relaxed) == 0
+            })
+            .unwrap();
+            assert_eq!(calls.load(Ordering::Relaxed), 1, "{extension}");
+            assert_eq!(files.len(), 1);
+            assert_eq!(fs::read(output.join(key)).unwrap(), b"selected");
+        }
+    }
+
+    #[test]
+    fn original_name_filter_excludes_aliases_from_archive_collision_checks() {
+        use crate::asset_path::is_authoring_resource;
+        use dummy_content::Entry;
+
+        let directory = tempfile::tempdir().unwrap();
+        for extension in ["bsa", "ba2"] {
+            let archive = directory.path().join(format!("meshes.{extension}"));
+            let output = directory.path().join(extension);
+            write_archive(
+                &archive,
+                &[
+                    Entry::new("meshes/test.nif", b"runtime"),
+                    Entry::new("CalienteTools/Meshes/Test.NIF", b"authoring"),
+                ],
+            );
+            let error =
+                ArchiveExtractor::extract_matching(&archive, &output, |_| true).unwrap_err();
+            assert!(error.to_string().contains("normalized path collision"));
+            let files = ArchiveExtractor::extract_matching_with_name_filter(
+                &archive,
+                &output,
+                |name| !is_authoring_resource(name),
+                |_| true,
+            )
+            .unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(
+                fs::read(output.join("meshes/test.nif")).unwrap(),
+                b"runtime"
+            );
+        }
+    }
+
+    #[test]
+    fn lod_extraction_ignores_authoring_aliases_but_checks_runtime_collisions() {
+        use dummy_content::Entry;
+
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("archive.bsa");
+        let output = directory.path().join("out");
+        write_archive(
+            &archive,
+            &[
+                Entry::new("meshes/test.nif", b"runtime"),
+                Entry::new("%43alienteTools/Meshes/Test.NIF", b"authoring"),
+                Entry::new("lodsettings/tamriel.lod", b"lod"),
+            ],
+        );
+        let files = ArchiveExtractor::extract_lod_settings(&archive, &output).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            fs::read(output.join("lodsettings/tamriel.lod")).unwrap(),
+            b"lod"
+        );
+        assert!(!output.join("meshes").exists());
+
+        write_archive(
+            &archive,
+            &[
+                Entry::new("meshes/test.nif", b"runtime"),
+                Entry::new("Data/Meshes/Test.NIF", b"duplicate runtime"),
+            ],
+        );
+        let error = ArchiveExtractor::extract_lod_settings(&archive, &output).unwrap_err();
+        assert!(error.to_string().contains("normalized path collision"));
     }
 
     #[test]

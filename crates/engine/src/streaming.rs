@@ -57,6 +57,8 @@ use std::time::Instant;
 
 pub(crate) mod admission;
 pub(crate) mod control;
+#[cfg(test)]
+mod local_light_tests;
 pub(crate) mod lod;
 pub mod lod_objects;
 #[cfg(test)]
@@ -1832,11 +1834,29 @@ fn spawn_cell(
                     }
                     _ => None,
                 };
+                // The flow maps of the east, south and south-east neighbours, which the flow
+                // program's shifted taps read at this cell's edges (RF-WATER-063). A neighbour
+                // without a map in the pack stays unbound.
+                let flow_neighbours: [Option<Handle<Image>>; 3] =
+                    flow_neighbour_paths(flow.as_ref().map(|(grid, _)| *grid), |cell| {
+                        catalog.water_flow_map(cell.x, cell.y)
+                    })
+                    .map(|path| {
+                        path.map(|path| {
+                            asset_server
+                                .load_builder()
+                                .with_settings(|settings: &mut ImageLoaderSettings| {
+                                    settings.is_srgb = false;
+                                })
+                                .load::<Image>(path)
+                        })
+                    });
                 let water_material = water_materials.add(water_material(
                     water_colors,
                     reflection.0.clone(),
                     flow_normal.clone(),
                     flow.clone(),
+                    flow_neighbours.clone(),
                     noise.map(|noise| (noise, noise_textures.clone())),
                     matches!(payload.key, CellKey::Interior(_)),
                 ));
@@ -1855,6 +1875,7 @@ fn spawn_cell(
                         cell_id: terrain.cell_id,
                         flow_normal,
                         flow,
+                        flow_neighbours,
                         noise: noise_textures.into_iter().flatten().collect(),
                     },
                     RenderLayers::layer(WATER_LAYER),
@@ -1927,11 +1948,16 @@ fn spawn_cell(
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
-            // Authored multibound policies and movable references override stored room membership.
-            if reference.has_multibound_override
-                || crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
-            {
-                entity.insert(crate::room_culling::RoomCullExempt);
+            crate::room_culling::mark_reference_exemptions(
+                &mut entity,
+                reference.base_record_type.as_deref(),
+                reference.has_multibound_override,
+            );
+            if reference.named_room_target {
+                entity.insert(crate::room_culling::NamedRoomAssignment::Initial {
+                    root,
+                    placement: transform.compute_affine(),
+                });
             }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
@@ -2002,11 +2028,14 @@ fn spawn_cell(
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.
-            if let Some(light) = reference
+            let evaluated_light = reference
                 .light
                 .as_ref()
-                .and_then(|row| crate::lights::point_light(row, reference.light_radius_override))
-            {
+                .map(|row| crate::lights::evaluate_light(row, reference.light_radius_override));
+            if let Some(evaluation) = &evaluated_light {
+                entity.insert(evaluation.clone());
+            }
+            if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
@@ -2955,6 +2984,9 @@ struct PendingWaterProfile {
     /// The cell's grid coordinates and flow map. It is optional: one that fails to load leaves the
     /// water on its noise layers instead of hiding it.
     flow: Option<(IVec2, Handle<Image>)>,
+    /// The east, south and south-east neighbours' flow maps (`None` where the pack has none). They
+    /// are optional too: one that fails to load leaves the cell clamping to its own edge texels.
+    flow_neighbours: [Option<Handle<Image>>; 3],
     /// The noise normal maps. They are optional detail: one that fails to load leaves the water
     /// flat instead of hiding it.
     noise: Vec<Handle<Image>>,
@@ -4032,6 +4064,33 @@ fn track_surface_readiness(
                 }
                 SurfaceDependencyState::Ready => {}
             }
+            // The neighbours' flow maps: while they load the water waits, and one that fails
+            // leaves the cell clamping to its own edge texels.
+            let neighbours: Vec<_> = pending.flow_neighbours.iter().flatten().cloned().collect();
+            match validate_surface_dependencies(
+                &asset_server,
+                &images,
+                &neighbours,
+                SurfaceImageKind::Water,
+                profile.decodes_colour_srgb(),
+            ) {
+                SurfaceDependencyState::Pending => continue,
+                SurfaceDependencyState::Failed(reason) => {
+                    warn!(
+                        cell = format_args!("{:08X}", pending.cell_id),
+                        %reason,
+                        "water neighbour flow map failed; the flow clamps at the cell edge"
+                    );
+                    if let Some(mut material) = water_materials.get_mut(&material.0) {
+                        material.extension = material
+                            .extension
+                            .clone()
+                            .with_flow_neighbours([None, None, None]);
+                    }
+                    profiler.increment("water/flow_fallbacks", 1);
+                }
+                SurfaceDependencyState::Ready => {}
+            }
         }
         // The noise normal maps are optional detail: while they load the water waits, and one that
         // fails leaves the water flat instead of hiding it.
@@ -4719,41 +4778,7 @@ fn spawned_model_path(model_path: Option<String>, base_is_marker: bool) -> Optio
 }
 
 pub(crate) fn converted_model_path(path: String) -> Option<String> {
-    // Converted assets are published with lowercase canonical paths, so the
-    // lookup must lowercase too (matching world-inspect's resolver).
-    // The filename is no marker signal: forges and the Civil War map flags carry
-    // "marker" and must draw. Editor markers are excluded by the base record's
-    // `Is Marker` flag (`spawned_model_path`) and, inside a mesh, by the converter's
-    // `EditorMarker` shape rule; the folder rules below stay as path-convention guards.
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    if normalized.starts_with("meshes/sky/")
-        || normalized.starts_with("sky/")
-        || normalized.starts_with("meshes/markers/")
-        || normalized.starts_with("markers/")
-        || normalized.starts_with("meshes/effects/")
-        || normalized.starts_with("effects/")
-    {
-        return None;
-    }
-    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
-    if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
-        return None;
-    }
-    let mut converted = std::path::PathBuf::from("meshes").join(without_prefix);
-    converted.set_extension("glb");
-    Some(converted.to_string_lossy().replace('\\', "/"))
-}
-
-/// Rejects a database-supplied relative path that could escape the assets
-/// root once re-rooted under `meshes/` with `PathBuf::join`. A `..` segment
-/// walks back out of the base directory, and a rooted or drive-prefixed path
-/// makes `PathBuf::join` replace the base entirely instead of appending to it
-/// (see the `std::path::PathBuf::push` docs). Every component must therefore
-/// be a plain, non-empty path segment.
-fn is_safe_relative_asset_path(path: &str) -> bool {
-    std::path::Path::new(path)
-        .components()
-        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    shared::world_assets::streamed_model_path(&path)
 }
 
 /// Orders stored layers, supplying the configured implicit base for an unpainted quadrant.
@@ -5510,6 +5535,20 @@ impl TerrainCoverage {
     }
 }
 
+/// The flow-map files of the east, south and south-east neighbours of a water cell that runs the
+/// flow program at `grid` (RF-WATER-063), through `map`, which gives a cell's file when the pack
+/// has one. A cell that does not run the flow program (`grid` is `None`) reads no neighbour: a
+/// cell next to a flow cell, such as (38, 15) over (38, 14), never takes its map.
+fn flow_neighbour_paths(
+    grid: Option<IVec2>,
+    map: impl Fn(IVec2) -> Option<String>,
+) -> [Option<String>; 3] {
+    match grid {
+        Some(grid) => crate::render::water_flow_neighbour_cells(grid).map(map),
+        None => [None, None, None],
+    }
+}
+
 /// The material for a cell's water from its catalog row: the record's colours, reflectivity factors,
 /// opacity and above-water fog, with Skyrim's DefaultWater for whatever the database does not carry.
 fn water_material(
@@ -5517,6 +5556,7 @@ fn water_material(
     reflection: Handle<Image>,
     flow_normal: Option<Handle<Image>>,
     flow: Option<(IVec2, Handle<Image>)>,
+    flow_neighbours: [Option<Handle<Image>>; 3],
     noise: Option<(&WaterNoise, [Option<Handle<Image>>; 3])>,
     interior: bool,
 ) -> WaterMaterial {
@@ -5567,7 +5607,9 @@ fn water_material(
                 colors.and_then(|colors| colors.fog).unwrap_or_default(),
             );
     if let Some((grid, flow_map)) = flow {
-        extension = extension.with_flow(grid, Some(flow_map));
+        extension = extension
+            .with_flow(grid, Some(flow_map))
+            .with_flow_neighbours(flow_neighbours);
     }
     // A water whose record bytes give no noise layers stays flat.
     if let Some((noise, textures)) = noise {
@@ -5661,6 +5703,36 @@ mod tests {
         );
     }
 
+    /// A flow cell binds the maps of its east, south and south-east neighbours where the pack has
+    /// them; a cell that does not run the flow program binds none, even beside a flow cell. The Sea
+    /// of Ghosts cells have maps for (38,13), (38,14), (39,14) and (40,14) (RF-WATER-065); (38,15)
+    /// has no water record of its own, uses DefaultWater, and must not take (38,14)'s map.
+    #[test]
+    fn a_flow_cell_reads_its_neighbours_maps_and_a_noise_cell_reads_none() {
+        let maps = [(38, 13), (38, 14), (39, 14), (40, 14)];
+        let file = |cell: IVec2| {
+            maps.contains(&(cell.x, cell.y))
+                .then(|| format!("flow.{}.{}.ktx2", cell.x, cell.y))
+        };
+        // (38,14): east (39,14) and south (38,13) exist, south-east (39,13) does not.
+        assert_eq!(
+            flow_neighbour_paths(Some(IVec2::new(38, 14)), file),
+            [
+                Some("flow.39.14.ktx2".to_owned()),
+                Some("flow.38.13.ktx2".to_owned()),
+                None
+            ]
+        );
+        // (38,15) runs the non-flow program (no flow grid): it binds nothing, though the map of
+        // (38,14), the cell south of it, is in the pack.
+        assert_eq!(flow_neighbour_paths(None, file), [None, None, None]);
+        // (40,14) is the last map: its east (41,14) and south (40,13) are absent.
+        assert_eq!(
+            flow_neighbour_paths(Some(IVec2::new(40, 14)), file),
+            [None, None, None]
+        );
+    }
+
     #[test]
     fn a_waters_catalog_fog_reaches_its_material() {
         use crate::world::database::{WaterFog, water_fixtures::water_record_with_fog};
@@ -5706,6 +5778,7 @@ mod tests {
                 Handle::default(),
                 None,
                 None,
+                [None, None, None],
                 None,
                 false,
             )
@@ -5750,7 +5823,15 @@ mod tests {
             underwater_fog: None,
         };
         let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
-        let material = water_material(Some(colors), Handle::default(), None, None, None, false);
+        let material = water_material(
+            Some(colors),
+            Handle::default(),
+            None,
+            None,
+            [None, None, None],
+            None,
+            false,
+        );
         // The water is drawn in Bevy's transmissive phase so it can refract the scene copy
         // (RF-WATER-049): an opaque alpha mode and a material that reads the transmission texture.
         assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
@@ -5776,7 +5857,15 @@ mod tests {
             .to_linear();
         assert!((sun.x - sunlight.red).abs() < 1.0e-6);
         assert_eq!(interior, 0.0);
-        let indoors = water_material(Some(colors), Handle::default(), None, None, None, true);
+        let indoors = water_material(
+            Some(colors),
+            Handle::default(),
+            None,
+            None,
+            [None, None, None],
+            None,
+            true,
+        );
         assert_eq!(indoors.extension.colours().3, 1.0);
     }
 
@@ -7027,7 +7116,25 @@ mod tests {
             converted_model_path("Markers/CivilWarMarkers/CWAttSpawn02.nif".into()),
             None
         );
-        assert_eq!(converted_model_path("Effects/FXRapids.nif".into()), None);
+        for path in [
+            r"Effects\FXcobwebRoundWall01.nif",
+            "Effects/./FXcobwebRoundWall01.nif",
+            "./Meshes/Effects/./FXcobwebRoundWall01.nif",
+            "meshes/effects/fxcobwebroundwall01.nif",
+        ] {
+            assert_eq!(
+                spawned_model_path(Some(path.into()), false).as_deref(),
+                Some("meshes/effects/fxcobwebroundwall01.glb")
+            );
+            assert!(spawned_model_path(Some(path.into()), true).is_none());
+        }
+        for path in [
+            "Effects/FXRapids.nif",
+            "Effects/./FXRapids.nif",
+            "Effects/../Effects/FXcobwebRoundWall01.nif",
+        ] {
+            assert_eq!(converted_model_path(path.into()), None);
+        }
     }
 
     #[test]
@@ -9397,6 +9504,7 @@ mod tests {
                     form_id: 0x00F9907,
                     initially_enabled: true,
                     has_multibound_override: false,
+                    named_room_target: false,
                     starts_dead: false,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
@@ -10426,6 +10534,11 @@ mod tests {
             radius,
             color,
             flags,
+            fade: None,
+            fade_status: None,
+            falloff: None,
+            reference_data: None,
+            radius_status: None,
         }
     }
 
@@ -10441,6 +10554,7 @@ mod tests {
             form_id,
             initially_enabled: true,
             has_multibound_override: false,
+            named_room_target: false,
             starts_dead: false,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
@@ -10482,6 +10596,9 @@ mod tests {
         mut water_materials: ResMut<Assets<WaterMaterial>>,
         mut profiler: ResMut<ProfilingState>,
     ) {
+        if root.0.is_some() {
+            return;
+        }
         root.0 = Some(
             spawn_cell(
                 &mut commands,
@@ -10526,7 +10643,7 @@ mod tests {
 
     /// An app that spawns one interior cell holding `references` through the real [`spawn_cell`],
     /// with the engine's lights flag set as `lights`.
-    fn spawn_reference_cell_app(references: Vec<ReferenceRow>, lights: bool) -> App {
+    pub(super) fn spawn_reference_cell_app(references: Vec<ReferenceRow>, lights: bool) -> App {
         spawn_reference_cell_app_with_catalog(references, lights, ActorCatalog::default())
     }
 
@@ -10589,6 +10706,9 @@ mod tests {
             false,
         );
         app.insert_resource(AssetCatalog::open(&path).unwrap());
+        // `spawn_queued_references` spawns one cell and then stops; clear the root so the
+        // update below spawns the references again against the catalogue with the swap rows.
+        app.insert_resource(SpawnedCellRoot::default());
         app.update();
         let mut query = app.world_mut().query::<(
             &FormId,
@@ -11362,7 +11482,7 @@ mod tests {
     }
 
     /// Every reference the cell spawned, by the form id it was placed with.
-    fn reference_entity(app: &App, form_id: u32) -> Entity {
+    pub(super) fn reference_entity(app: &App, form_id: u32) -> Entity {
         let root = app
             .world()
             .resource::<SpawnedCellRoot>()
@@ -11469,6 +11589,38 @@ mod tests {
             &vec![meshes[0], meshes[2]],
             "NONE and unknown bounds stay visible while the bounded automatic static is culled"
         );
+    }
+
+    #[test]
+    fn only_named_room_targets_track_the_streamed_placement() {
+        use crate::room_culling::{NamedRoomAssignment, RoomCullExempt, RoomCullLegacyExempt};
+
+        let mut named = lit_reference(1, None, None);
+        named.base_record_type = Some("ACTI".to_owned());
+        named.named_room_target = true;
+        let mut unrestricted = lit_reference(2, None, None);
+        unrestricted.has_multibound_override = true;
+        let automatic = lit_reference(3, None, None);
+        let app = spawn_reference_cell_app(vec![named, unrestricted, automatic], false);
+        let world = app.world();
+        let reference = reference_entity(&app, 1);
+        assert!(world.get::<RoomCullLegacyExempt>(reference).is_some());
+        assert!(world.get::<RoomCullExempt>(reference).is_none());
+        let Some(NamedRoomAssignment::Initial { root, placement }) = world.get(reference) else {
+            panic!("streamed named target did not retain its original placement");
+        };
+        assert_eq!(*root, world.resource::<SpawnedCellRoot>().0.unwrap());
+        assert_eq!(
+            *placement,
+            world.get::<Transform>(reference).unwrap().compute_affine()
+        );
+        for id in [2, 3] {
+            assert!(
+                world
+                    .get::<NamedRoomAssignment>(reference_entity(&app, id))
+                    .is_none()
+            );
+        }
     }
 
     #[test]
@@ -12130,13 +12282,10 @@ mod tests {
         let (light_entity, light, marker) = lights[0];
         assert_eq!(marker.form_id, 0x100);
         assert_eq!(marker.cell_id, 99);
-        assert_eq!(
-            light.range, 850.8,
-            "the reference's XRDS radius wins over the record's 256"
-        );
+        assert_eq!(light.range, 1106.8, "signed XRDS adds to the record radius");
         assert_eq!(light.color, Color::srgb_u8(255, 200, 120));
         assert!(
-            (light.intensity - crate::lights::intensity_for_radius(850.8)).abs() < 1.0e3,
+            (light.intensity - crate::lights::intensity_for_radius(1106.8)).abs() < 1.0e3,
             "{}",
             light.intensity
         );

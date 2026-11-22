@@ -18,6 +18,8 @@ A line that says `non-retail`, `not vanilla` or `Mudcrab-only` still needs a rea
 
 The accepted reason words are `because`, `since`, `so that`, `to avoid`, `to keep`, `to prevent`, `to match` and `due to`. Naming what Mudcrab does instead also counts (`Mudcrab uses ...`).
 
+The check also reads added rows of the retail-facts registry. A row may carry `kind: rule`, `kind: quirk` or `kind: defect`, and a row without the field is a rule. A row with another kind value fails. A row that says quirk or defect in its text without a `kind:` field also fails. See [ADR-0015](../adr/0015-retail-rule-quirk-defect.md).
+
 Run it locally with `python3 scripts/check_retail_claims.py --base origin/main`. CI runs it in the `scripts` job and prints the file and line for each finding. The gate is required: a finding fails the `scripts` job.
 
 ## Voice
@@ -92,6 +94,12 @@ The fixture fills 27 of the 66 tables. These important paths are empty, so the s
 ## Draft PRs
 
 Open a draft for anything that isn't ready for review yet: work in progress, or code that works while something is still undecided or unmeasured (a design choice for the maintainers, or a measurement you couldn't do). End **For reviewers** with **Still open (why this is a draft):** what is missing, and what would make it ready. Mark it ready for review once that is done.
+
+## Milestones
+
+Every issue and pull request carries a milestone from [the milestone list](https://github.com/Mudcrab-Team/mudcrab/milestones), so nothing stays uncategorized. Contributors cannot set one: a maintainer assigns it within one working day, and you open the item as usual.
+
+A pull request inherits the milestone of the issues it links with `Closes #N`, `Part of #N` or `Related to #N`, but only when every linked issue that has a milestone agrees. Otherwise it gets the `needs milestone` label and one comment that says what to do. The rule and the daily check are in [workflow.md](workflow.md#milestones).
 
 ## Issues
 

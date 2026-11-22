@@ -42,6 +42,8 @@ pub struct ReferenceRow {
     /// The placed reference carries the Multibound flag. Its authored policy, including `NONE`,
     /// must not be replaced with geometric room membership from an older conversion.
     pub has_multibound_override: bool,
+    /// A versioned interior room rule initially attaches this reference to a named room.
+    pub named_room_target: bool,
     /// The winning `ACHR` header's `Starts Dead` flag (`0x200`). Only actor references read it;
     /// other record types assign that bit another meaning. The engine has no death pose or
     /// ragdoll, so a corpse keeps its bind pose instead of playing a standing idle.
@@ -64,7 +66,7 @@ pub struct ReferenceRow {
     /// a `LIGH`. `None` for every other reference, and for every reference in a database converted
     /// before lights were exported.
     pub light: Option<LightRow>,
-    /// The reference's own light radius (`XRDS`), which wins over [`LightRow::radius`]. `None` when
+    /// The reference's signed light-radius offset (`XRDS`), added to [`LightRow::radius`]. `None` when
     /// the reference carries no override, and in a database converted before the column existed.
     pub light_radius_override: Option<f32>,
     /// The 8-bit sRGB colour the reference's `XEMI` light or region lends its model's
@@ -105,6 +107,26 @@ pub struct LightRow {
     pub color: [u8; 3],
     /// `DATA`'s flags, uninterpreted; see the flag bits in [`crate::lights`].
     pub flags: u32,
+    /// Authored FNAM; absent/invalid values use a labelled compatibility fallback.
+    pub fade: Option<f32>,
+    /// 0 absent, 1 valid (including zero), 2 invalid; None for older projections.
+    pub fade_status: Option<u8>,
+    /// Authored DATA falloff, retained even where the backend cannot evaluate it.
+    pub falloff: Option<f32>,
+    /// The placing reference's XLIG projection, absent in older packages.
+    pub reference_data: Option<ReferenceLightRow>,
+    /// Placing reference's XRDS state: 0 absent, 1 valid signed offset, 2 malformed.
+    pub radius_status: Option<u8>,
+}
+
+/// Raw XLIG inputs, not effective multipliers. NULL fields retain malformed/non-finite status.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceLightRow {
+    pub data_size: u32,
+    pub fov_offset: Option<f32>,
+    pub fade_offset: Option<f32>,
+    pub end_distance_cap: Option<f32>,
+    pub shadow_depth_bias: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -1431,7 +1453,7 @@ const LIGHT_COLUMNS: &str = "l.radius,l.color_r,l.color_g,l.color_b,l.flags";
 /// reads as unlit, with the column order unchanged.
 const ABSENT_LIGHT_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL";
 
-/// The reference's own `XRDS` light radius, which wins over the record's. The column arrived with
+/// The reference's signed XRDS radius offset, added to the base radius. The column arrived with
 /// the `lights` table in conversion schema 4; a database from before it has no such column.
 const RADIUS_OVERRIDE_COLUMN: &str = "r.radius_override";
 const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
@@ -1550,6 +1572,7 @@ struct ReferenceQuery {
     columns: String,
     joins: String,
     parent_sql: String,
+    has_named_room_targets: bool,
     enable_states: EnableStateResolver,
     enable_errors: HashSet<EnableStateError>,
 }
@@ -1633,14 +1656,65 @@ impl ReferenceQuery {
             0 => "0,NULL,0",
             _ => "r.header_flags,r.enable_parent_id,r.enable_parent_flags",
         };
+        let optional_light_column = |name: &str| -> Result<String> {
+            let present: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('lights') WHERE name=?1)",
+                [name],
+                |row| row.get(0),
+            )?;
+            Ok(if present {
+                format!("l.{name}")
+            } else {
+                "NULL".into()
+            })
+        };
+        let has_radius_status: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('references') WHERE name='radius_status')",
+            [], |row| row.get(0),
+        )?;
+        let radius_status_column = if has_radius_status {
+            "r.radius_status"
+        } else {
+            "NULL"
+        };
+        let fade_column = optional_light_column("fade")?;
+        let falloff_column = optional_light_column("falloff")?;
+        let fade_status_column = optional_light_column("fade_status")?;
+        let light_data_count: usize = connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('reference_light_data') WHERE name IN \
+             ('reference_id','data_size','fov_offset','fade_offset','end_distance_cap','shadow_depth_bias')",
+            [], |row| row.get(0),
+        )?;
+        let reference_light_columns = if light_data_count == 6 {
+            joins.push_str(" LEFT JOIN reference_light_data rl ON rl.reference_id=r.id");
+            "rl.data_size,rl.fov_offset,rl.fade_offset,rl.end_distance_cap,rl.shadow_depth_bias"
+        } else {
+            "NULL,NULL,NULL,NULL,NULL"
+        };
+        let has_assignment_columns: bool = connection.query_row(
+            "SELECT (SELECT count(*) FROM pragma_table_info('room_graph_stats')
+                         WHERE name IN ('name','value'))=2
+                AND (SELECT count(*) FROM pragma_table_info('room_reference_rules')
+                         WHERE name IN ('reference_id','cell_id','assignment','target_ref'))=4",
+            [],
+            |row| row.get(0),
+        )?;
+        let has_named_room_targets = has_assignment_columns
+            && connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)
+                    AND EXISTS(SELECT 1 FROM room_graph_stats WHERE name='assignment_version' AND value=1)",
+                [],
+                |row| row.get(0),
+            )?;
         Ok(Self {
             columns: format!(
                 "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
                  {door_columns},{emittance_columns},{reference_enable_columns},\
-                 {STATIC_FLAGS_COLUMN}"
+                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
+            has_named_room_targets,
             enable_states: EnableStateResolver::default(),
             enable_errors: HashSet::new(),
         })
@@ -1690,8 +1764,22 @@ fn load_cell(
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
     };
+    let named_room_targets = if matches!(key, CellKey::Interior(_)) && query.has_named_room_targets
+    {
+        connection
+            .prepare_cached(
+                "SELECT r.id FROM room_reference_rules p
+                 JOIN \"references\" r ON r.id=p.reference_id AND r.cell_id=p.cell_id
+                 WHERE p.cell_id=?1 AND p.assignment='target' AND p.target_ref IS NOT NULL",
+            )?
+            .query_map([cell_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<HashSet<u32>>>()?
+    } else {
+        HashSet::new()
+    };
     let mut references = Vec::with_capacity(rows.len());
     for (mut reference, inputs) in rows {
+        reference.named_room_target = named_room_targets.contains(&reference.form_id);
         let state = query
             .enable_states
             .resolve(reference.form_id, inputs, |parent| {
@@ -1754,6 +1842,22 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             radius,
             color: [row.get(20)?, row.get(21)?, row.get(22)?],
             flags: row.get(23)?,
+            radius_status: row.get(STATIC_FLAGS_INDEX + 9)?,
+            fade: row.get(STATIC_FLAGS_INDEX + 1)?,
+            fade_status: row.get(STATIC_FLAGS_INDEX + 8)?,
+            falloff: row.get(STATIC_FLAGS_INDEX + 2)?,
+            reference_data: row
+                .get::<_, Option<u32>>(STATIC_FLAGS_INDEX + 3)?
+                .map(|data_size| {
+                    Ok::<_, rusqlite::Error>(ReferenceLightRow {
+                        data_size,
+                        fov_offset: row.get(STATIC_FLAGS_INDEX + 4)?,
+                        fade_offset: row.get(STATIC_FLAGS_INDEX + 5)?,
+                        end_distance_cap: row.get(STATIC_FLAGS_INDEX + 6)?,
+                        shadow_depth_bias: row.get(STATIC_FLAGS_INDEX + 7)?,
+                    })
+                })
+                .transpose()?,
         }),
         None => None,
     };
@@ -1798,6 +1902,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             has_multibound_override: enable_inputs.header_flags
                 & shared::records::MULTIBOUND_REFERENCE_FLAG
                 != 0,
+            named_room_target: false,
             starts_dead: enable_inputs.header_flags & ACTOR_STARTS_DEAD != 0,
             cell_id: row.get(1)?,
             base_form_id: row.get(2)?,
@@ -2312,6 +2417,43 @@ mod tests {
         assert!(unrestricted.references[0].has_multibound_override);
         let automatic = load_cell(&connection, 1, CellKey::Interior(10)).unwrap();
         assert!(!automatic.references[0].has_multibound_override);
+    }
+
+    #[test]
+    fn versioned_named_room_targets_are_identified_before_streaming() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection.execute_batch(
+            "CREATE TABLE room_graph_stats(name TEXT PRIMARY KEY, value INTEGER);
+             INSERT INTO room_graph_stats VALUES('visibility_version',2),('assignment_version',1);
+             CREATE TABLE room_reference_rules(reference_id INTEGER PRIMARY KEY,cell_id INTEGER,assignment TEXT,target_ref INTEGER);
+             INSERT INTO room_reference_rules VALUES(30,10,'target',1),(31,99,'target',1);
+             INSERT INTO \"references\" VALUES(32,99,20,0,0,0,0,0,0,1),(33,99,20,0,0,0,0,0,0,1);
+             INSERT INTO room_reference_rules VALUES(32,99,'none',NULL),(33,99,'auto',NULL);",
+        ).unwrap();
+        let interior = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        let targets: Vec<_> = interior
+            .references
+            .iter()
+            .filter(|row| row.named_room_target)
+            .map(|row| row.form_id)
+            .collect();
+        assert_eq!(targets, [31]);
+        assert!(
+            exterior_payload(&connection)
+                .references
+                .iter()
+                .all(|row| !row.named_room_target)
+        );
+
+        connection
+            .execute(
+                "DELETE FROM room_graph_stats WHERE name='assignment_version'",
+                [],
+            )
+            .unwrap();
+        let legacy = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert!(legacy.references.iter().all(|row| !row.named_room_target));
     }
 
     #[test]
@@ -3799,6 +3941,11 @@ mod tests {
                 radius: 256.0,
                 color: [255, 150, 80],
                 flags: 8,
+                fade: None,
+                fade_status: None,
+                falloff: None,
+                reference_data: None,
+                radius_status: None,
             })
         );
         assert_eq!(

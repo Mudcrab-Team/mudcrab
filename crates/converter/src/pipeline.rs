@@ -7,7 +7,10 @@ use crate::{
         ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
         RawIngestionSession, prune_stale_reader_packs,
     },
-    asset_path::{AssetKind, canonical_asset_path, normalize_separators, resolve_asset_uri},
+    asset_path::{
+        AssetKind, canonical_asset_path, is_authoring_source_name, normalize_separators,
+        resolve_asset_uri,
+    },
     cache::{
         BODY_COMPOSE_CONTEXT, BODY_COMPOSE_RECIPE, CONVERTER_SCHEMA_VERSION, CacheEntry,
         ConversionManifest, DEFAULT_GAIT_RECIPE, DerivedOutput, IngestionJournal,
@@ -1072,7 +1075,7 @@ impl AssetPipeline {
 
         if config.mo2.is_none() {
             mask_undiscovered_inputs(&config.data_dir, &vfs_dir, &undiscovered)?;
-            overlay_loose_assets_with_recovery(
+            let authoring_inputs = overlay_loose_assets_with_recovery(
                 &config.data_dir,
                 &vfs_dir,
                 &files,
@@ -1085,6 +1088,12 @@ impl AssetPipeline {
                     Ok(())
                 },
             )?;
+            for relative in authoring_inputs {
+                manifest.excluded_inputs.insert(
+                    relative,
+                    "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
+                );
+            }
         }
         if config.mo2.is_some() {
             for (relative, source) in &resolved_files {
@@ -1366,7 +1375,7 @@ impl AssetPipeline {
         let mut loose_keys = BTreeSet::new();
         let mut skipped_mo2_lod_inputs = BTreeSet::new();
         for (relative, source) in &resolved_files {
-            if crate::asset_path::is_authoring_resource(relative) {
+            if crate::asset_path::is_authoring_source_name(relative) {
                 manifest.excluded_inputs.insert(
                     relative.clone(),
                     "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
@@ -1406,7 +1415,7 @@ impl AssetPipeline {
                 .unwrap_or(path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if crate::asset_path::is_authoring_resource(&relative) {
+            if is_authoring_source_name(&relative) {
                 manifest.excluded_inputs.insert(
                     relative,
                     "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
@@ -2013,6 +2022,10 @@ fn reusable_manifest(
                             settings.schemas()?.as_ref(),
                             &settings.language,
                         ),
+                        crate::cache::inhouse_adapter14_reader_identity(
+                            settings.schemas()?.as_ref(),
+                            &settings.language,
+                        ),
                     ]
                     .into_iter()
                     .flatten()
@@ -2265,8 +2278,7 @@ impl ConversionBatch<'_> {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        // Parsing every skeleton once per run keeps the per-mesh resolution
-        // cheap; only the directory-union cache inside needs a lock.
+        // One rig snapshot is shared by all NIF workers, including cache-hit checks.
         let skeleton_index =
             (source_kind == "nif").then(|| crate::mesh::SkeletonIndex::from_sources(&mesh_sources));
         let source_textures = texture_source_keys(self.staging, files);
@@ -2434,9 +2446,18 @@ impl ConversionBatch<'_> {
                         let target = staging_root.join(&target_rel);
 
                         // Dependencies come from the merged winners below, not physical neighbors.
-                        let source_hash = hash_file(&source);
-                        let mut hash = match source_hash {
-                            Ok(h) => h,
+                        let snapshot = skeleton_index
+                            .as_ref()
+                            .map(|skeletons| skeletons.input_snapshot(&relative, &source))
+                            .transpose();
+                        let (nif, mut hash) = match snapshot.and_then(|nif| {
+                            let hash = match &nif {
+                                Some(nif) => nif.hash().to_owned(),
+                                None => hash_file(&source)?,
+                            };
+                            Ok((nif, hash))
+                        }) {
+                            Ok(input) => input,
                             Err(err) => {
                                 let (err, fatal) = match remove_invalid_staged_output(&target) {
                                     Ok(()) => (err, false),
@@ -2471,20 +2492,41 @@ impl ConversionBatch<'_> {
                         }
 
                         let mut unresolved_skin = None;
-                        let skeleton = if source_kind == "nif" {
-                            let resolution = crate::mesh::resolve_skeleton_with_index(
-                                &relative,
-                                &mesh_sources,
-                                skeleton_index
-                                    .as_ref()
-                                    .expect("a nif batch always builds a skeleton index"),
+                        let skeleton = if let Some(nif) = &nif {
+                            let skeletons = skeleton_index
+                                .as_ref()
+                                .expect("a nif batch always builds a skeleton index");
+                            let resolution = crate::mesh::resolve_skeleton_from_snapshot(
+                                &relative, nif, skeletons,
                             );
                             match resolution {
-                                crate::mesh::SkeletonResolution::Skeleton(key) => skeleton_index
-                                    .as_ref()
-                                    .and_then(|index| index.source_for(&key))
-                                    .map(Path::to_path_buf)
-                                    .or(Some(key)),
+                                crate::mesh::SkeletonResolution::Skeleton(entry) => {
+                                    match entry.snapshot() {
+                                        Ok(dependency) => {
+                                            hash.push(':');
+                                            hash.push_str(dependency.hash());
+                                            Some(dependency)
+                                        }
+                                        Err(err) => {
+                                            let (err, fatal) =
+                                                match remove_invalid_staged_output(&target) {
+                                                    Ok(()) => (err, false),
+                                                    Err(remove_error) => (remove_error, true),
+                                                };
+                                            let _ = outcome_tx.send((
+                                                index,
+                                                key,
+                                                hash,
+                                                target_rel,
+                                                relative.clone(),
+                                                Err(err),
+                                                target,
+                                                fatal,
+                                            ));
+                                            return;
+                                        }
+                                    }
+                                }
                                 crate::mesh::SkeletonResolution::SelfContained => None,
                                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
                                     hash.push_str(crate::mesh::UNRESOLVED_SKIN_HASH_SUFFIX);
@@ -2499,34 +2541,6 @@ impl ConversionBatch<'_> {
                         } else {
                             None
                         };
-                        if source_kind == "nif"
-                            && let Some(dependency) = &skeleton
-                        {
-                            match hash_file(dependency) {
-                                Ok(dep_hash) => {
-                                    hash.push(':');
-                                    hash.push_str(&dep_hash);
-                                }
-                                Err(err) => {
-                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
-                                        Ok(()) => (err, false),
-                                        Err(remove_error) => (remove_error, true),
-                                    };
-                                    let _ = outcome_tx.send((
-                                        index,
-                                        key,
-                                        hash,
-                                        target_rel,
-                                        relative.clone(),
-                                        Err(err),
-                                        target,
-                                        fatal,
-                                    ));
-                                    return;
-                                }
-                            }
-                        }
-
                         if source_kind == "nif"
                             && let Some(suffix) =
                                 crate::mesh::volcanic_normal_cache_suffix(&key, &source_textures)
@@ -2656,8 +2670,8 @@ impl ConversionBatch<'_> {
                             match remove_invalid_staged_output(&target) {
                                 Err(error) => (Err(error), true),
                                 Ok(()) => {
-                                    let conversion = match source_kind.as_str() {
-                                        "dds" => {
+                                    let conversion = match (source_kind.as_str(), nif.as_ref()) {
+                                        ("dds", None) => {
                                             TextureConverter::convert_dds_to_ktx2_with_options(
                                                 &source,
                                                 &target,
@@ -2669,18 +2683,21 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => {
-                                            MeshConverter::convert_nif_to_glb_with_skin_resolution(
-                                                &source,
+                                        ("nif", Some(snapshot)) => {
+                                            MeshConverter::convert_nif_snapshot(
+                                                snapshot,
                                                 &target,
                                                 skeleton.as_deref(),
                                                 unresolved_skin.as_deref(),
                                             )
                                         }
-                                        "pex" => {
+                                        ("pex", None) => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
-                                        _ => unreachable!(),
+                                        _ => Err(eyre!(
+                                            "invalid conversion input for {}",
+                                            source.display()
+                                        )),
                                     };
                                     remove_partial_output_after_failure(&target, conversion)
                                 }
@@ -3063,6 +3080,24 @@ fn compose_default_bodies(
     report: &mut PipelineReport,
     manifest: &mut ConversionManifest,
 ) -> Result<()> {
+    compose_default_bodies_with_writer(
+        staging,
+        sources,
+        fail_fast,
+        report,
+        manifest,
+        compose::write_composed_body,
+    )
+}
+
+fn compose_default_bodies_with_writer(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+    write_body: impl Fn(&compose::ComposedBody, &Path) -> Result<bool>,
+) -> Result<()> {
     const PARTS: [(&str, BodyPartKind); 3] = [
         ("body_1.nif", BodyPartKind::Body),
         ("hands_1.nif", BodyPartKind::Hands),
@@ -3155,7 +3190,7 @@ fn compose_default_bodies(
                 BODY_COMPOSE_CONTEXT.into(),
                 body_compose_context_hash(&parts, &thin_paths, &skins)?,
             );
-            compose::write_composed_body(&model, &output)?;
+            write_body(&model, &output)?;
             let proof = derived_output_proof(BODY_COMPOSE_RECIPE, inputs, &output)?;
             Ok(Some((parts.len(), proof)))
         };
@@ -3946,6 +3981,9 @@ fn mask_undiscovered_inputs(data: &Path, vfs: &Path, blocked: &[PathBuf]) -> Res
             !relative.as_os_str().is_empty(),
             "cannot mask undiscovered inputs at the data root"
         );
+        if is_authoring_source_name(&relative.to_string_lossy()) {
+            continue;
+        }
         prefixes.insert(PathBuf::from(
             normalize_separators(relative).to_ascii_lowercase(),
         ));
@@ -4149,7 +4187,7 @@ pub(crate) fn validate_artifact(
 }
 
 pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()> {
-    overlay_loose_assets_with_recovery(data, vfs, files, |_, _, error| Err(error))
+    overlay_loose_assets_with_recovery(data, vfs, files, |_, _, error| Err(error)).map(|_| ())
 }
 
 fn overlay_loose_assets_with_recovery(
@@ -4157,13 +4195,19 @@ fn overlay_loose_assets_with_recovery(
     vfs: &Path,
     files: &[PathBuf],
     mut failed: impl FnMut(&Path, Option<&Path>, color_eyre::Report) -> Result<()>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let mut seen = BTreeMap::<String, PathBuf>::new();
+    let mut authoring_inputs = Vec::new();
     for source in files
         .iter()
         .filter(|path| extension(path, &["dds", "nif", "pex", "lod", "hkx"]))
     {
         let relative = source.strip_prefix(data)?;
+        let name = relative.to_string_lossy();
+        if is_authoring_source_name(&name) {
+            authoring_inputs.push(normalize_separators(relative));
+            continue;
+        }
         let (kind, extension) = if extension(source, &["dds"]) {
             (AssetKind::Texture, "dds")
         } else if extension(source, &["nif"]) {
@@ -4178,7 +4222,7 @@ fn overlay_loose_assets_with_recovery(
         } else {
             (AssetKind::LodSettings, "lod")
         };
-        let canonical = match canonical_asset_path(&relative.to_string_lossy(), kind, extension) {
+        let canonical = match canonical_asset_path(&name, kind, extension) {
             Ok(canonical) => canonical,
             Err(error) => {
                 failed(source, None, error)?;
@@ -4218,7 +4262,7 @@ fn overlay_loose_assets_with_recovery(
             failed(source, Some(Path::new(&canonical)), error)?;
         }
     }
-    Ok(())
+    Ok(authoring_inputs)
 }
 
 /// Select explicit plugins or direct Data children, warning about nested-only discovery.
@@ -4358,7 +4402,7 @@ fn stage_mo2_lod_inputs(
     skipped: &BTreeSet<String>,
 ) -> Result<()> {
     for (relative, source) in sources {
-        if crate::asset_path::is_authoring_resource(relative) || skipped.contains(relative) {
+        if crate::asset_path::is_authoring_source_name(relative) || skipped.contains(relative) {
             continue;
         }
         let relative = if extension(source, &["dds"]) {
@@ -4379,7 +4423,7 @@ fn stage_mo2_lod_inputs(
 /// them beside the archive-extracted copies they override.
 fn stage_mo2_animation_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Result<()> {
     for (relative, source) in sources {
-        if crate::asset_path::is_authoring_resource(relative)
+        if crate::asset_path::is_authoring_source_name(relative)
             || !crate::archive::is_animation_input(Path::new(relative))
         {
             continue;
@@ -4517,6 +4561,15 @@ pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String
         .is_none_or(|(_, active)| *active)
 }
 
+/// Lists active BSAs from the same recursive Data discovery used by non-MO2 conversion.
+pub fn active_data_bsa_paths(data: &Path, plugins: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = discover(data)?;
+    let owners = installed_archive_owners(data, &files, plugins);
+    files.retain(|path| extension(path, &["bsa"]) && non_mo2_archive_is_active(path, &owners));
+    sort_archives_by_load_order(&mut files, plugins);
+    Ok(files)
+}
+
 /// Match an exact normalized stem or an owner followed by a space, dash or underscore.
 /// Ownership, MO2 activity and priority share this companion-name boundary.
 fn archive_stem_matches_plugin(stem: &str, plugin: &str) -> bool {
@@ -4544,6 +4597,7 @@ pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool
 /// Sort archives by their longest matching active stem's load order, then lowercase stem.
 /// Priority retains the legacy space/dash/underscore suffixes; unmatched archives sort last
 /// and same-stem plugins retain the first owner's priority.
+/// Ties follow normalized path order, with the raw path deciding normalized collisions.
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     archives.sort_by_cached_key(|archive| {
         (
@@ -4551,6 +4605,8 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
             crate::esm::load_order::normalize_plugin_name(
                 &archive.file_stem().unwrap_or_default().to_string_lossy(),
             ),
+            normalize_separators(archive).to_ascii_lowercase(),
+            archive.clone(),
         )
     });
 }
@@ -7231,6 +7287,7 @@ mod tests {
         for (reader, prior) in [
             (crate::config::RecordReader::Inhouse, 12),
             (crate::config::RecordReader::Inhouse, 13),
+            (crate::config::RecordReader::Inhouse, 14),
             (crate::config::RecordReader::Legacy, 4),
             (crate::config::RecordReader::Legacy, 5),
         ] {
@@ -10012,11 +10069,11 @@ mod tests {
         );
     }
 
-    fn block_male_composed_output(staging: &Path) {
-        let output = staging.join(crate::compose::composed_body_path("default", "male"));
-        fs::create_dir_all(output.parent().unwrap()).unwrap();
-        let partial = output.with_extension(format!("glb.{}.partial", std::process::id()));
-        fs::write(partial, b"stale partial output").unwrap();
+    fn fail_male_body_write(body: &compose::ComposedBody, output: &Path) -> Result<bool> {
+        if output.ends_with("male/body.glb") {
+            return Err(std::io::Error::other("injected GLB write failure").into());
+        }
+        compose::write_composed_body(body, output)
     }
 
     #[test]
@@ -10026,7 +10083,6 @@ mod tests {
         stage_default_actor_parts(staging);
         compose_staged_bodies(staging, false);
         write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
-        block_male_composed_output(staging);
         let key = "meshes/actors/character/composed/default/male/body.glb";
         let mut report = PipelineReport::default();
         let mut manifest = ConversionManifest::default();
@@ -10034,12 +10090,13 @@ mod tests {
             .failures
             .insert(key.into(), "old derived failure".into());
 
-        compose_default_bodies(
+        compose_default_bodies_with_writer(
             staging,
             &staged_sources(staging),
             false,
             &mut report,
             &mut manifest,
+            fail_male_body_write,
         )
         .unwrap();
 
@@ -10050,7 +10107,7 @@ mod tests {
         assert!(!manifest.failures.contains_key(key));
         assert!(report.notices.iter().any(|notice| {
             notice.contains("failed to compose default male")
-                && notice.contains("stale temporary GLB")
+                && notice.contains("injected GLB write failure")
         }));
         assert!(
             staging
@@ -10091,22 +10148,22 @@ mod tests {
         stage_default_actor_parts(staging);
         compose_staged_bodies(staging, false);
         write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
-        block_male_composed_output(staging);
         let mut report = PipelineReport::default();
         let mut manifest = ConversionManifest::default();
 
-        let error = compose_default_bodies(
+        let error = compose_default_bodies_with_writer(
             staging,
             &staged_sources(staging),
             true,
             &mut report,
             &mut manifest,
+            fail_male_body_write,
         )
         .unwrap_err();
 
         let error = format!("{error:#}");
         assert!(error.contains("failed to compose default male"), "{error}");
-        assert!(error.contains("stale temporary GLB"), "{error}");
+        assert!(error.contains("injected GLB write failure"), "{error}");
         assert!(
             !staging
                 .join(crate::compose::composed_body_path("default", "male"))
@@ -11327,6 +11384,35 @@ mod tests {
     }
 
     #[test]
+    fn loose_asset_overlay_keeps_runtime_precedence_with_authoring_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let vfs = directory.path().join("vfs");
+        let archived = vfs.join("meshes/test.nif");
+        let runtime = data.join("meshes/test.nif");
+        let authoring = data.join("%43alienteTools/Meshes/Test.NIF");
+        let duplicate = data.join("Data/Meshes/Test.NIF");
+        for (path, bytes) in [
+            (&archived, b"archive".as_slice()),
+            (&runtime, b"loose runtime".as_slice()),
+            (&authoring, b"authoring".as_slice()),
+            (&duplicate, b"duplicate runtime".as_slice()),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+
+        overlay_loose_assets(&data, &vfs, std::slice::from_ref(&authoring)).unwrap();
+        assert_eq!(fs::read(&archived).unwrap(), b"archive");
+        overlay_loose_assets(&data, &vfs, &[authoring, runtime.clone()]).unwrap();
+        assert_eq!(fs::read(&archived).unwrap(), b"loose runtime");
+        mask_undiscovered_inputs(&data, &vfs, &[data.join("%43alienteTools/Meshes")]).unwrap();
+        assert_eq!(fs::read(&archived).unwrap(), b"loose runtime");
+        let error = overlay_loose_assets(&data, &vfs, &[runtime, duplicate]).unwrap_err();
+        assert!(error.to_string().contains("normalized path collision"));
+    }
+
+    #[test]
     fn loose_asset_override_does_not_write_through_a_linked_vfs_entry() {
         let directory = tempfile::tempdir().unwrap();
         let previous = directory.path().join("previous");
@@ -11410,7 +11496,8 @@ mod tests {
         let mut archives = vec![
             PathBuf::from("Example - Textures.bsa"),
             PathBuf::from("Skyrim - Textures.bsa"),
-            PathBuf::from("Update.bsa"),
+            PathBuf::from("b/update.bsa"),
+            PathBuf::from("A/Update.bsa"),
             PathBuf::from("Skyrim - Meshes.bsa"),
         ];
         sort_archives_by_load_order(&mut archives, &plugins);
@@ -11419,8 +11506,28 @@ mod tests {
             vec![
                 PathBuf::from("Skyrim - Meshes.bsa"),
                 PathBuf::from("Skyrim - Textures.bsa"),
-                PathBuf::from("Update.bsa"),
+                PathBuf::from("A/Update.bsa"),
+                PathBuf::from("b/update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
+            ]
+        );
+    }
+
+    #[test]
+    fn equal_priority_and_stem_archives_sort_by_normalized_data_path_then_raw_path() {
+        let plugins = [PathBuf::from("Update.esm")];
+        let mut archives = [
+            PathBuf::from("Data/Z/update.bsa"),
+            PathBuf::from("Data/a/update.bsa"),
+            PathBuf::from("Data/A/Update.bsa"),
+        ];
+        sort_archives_by_load_order(&mut archives, &plugins);
+        assert_eq!(
+            archives,
+            [
+                PathBuf::from("Data/A/Update.bsa"),
+                PathBuf::from("Data/a/update.bsa"),
+                PathBuf::from("Data/Z/update.bsa"),
             ]
         );
     }
@@ -11701,6 +11808,39 @@ mod tests {
                     .schema_version,
                 crate::cache::CONVERTER_SCHEMA_VERSION
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn all_files_retains_authoring_mesh_without_replacing_runtime_mesh() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        let output = dir.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let mesh = static_shape(&actor_skeleton_shape("Runtime")).unwrap();
+        let runtime = "meshes/test.nif";
+        let authoring = "%43alienteTools/meshes/test.nif";
+        let archive = dummy_content::ba2::general(
+            &[
+                dummy_content::Entry::new(runtime, &mesh),
+                dummy_content::Entry::new(authoring, b"authoring bytes"),
+            ],
+            dummy_content::ba2::Compression::None,
+        )
+        .unwrap();
+        fs::write(data.join("assets.ba2"), archive).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.extract_all_archive_files = true;
+        for _ in 0..2 {
+            let report = run_without_progress(config.clone()).await;
+            assert!(report.complete, "{:?}", report.warnings);
+            let manifest = published_manifest(&output);
+            assert_eq!(manifest.entries[runtime].source_hash, hash_bytes(&mesh));
+            assert!(manifest.excluded_inputs.contains_key(authoring));
+            assert!(manifest.archives["assets.ba2"].files.iter().any(|file| {
+                file.path == authoring && file.hash == hash_bytes(b"authoring bytes")
+            }));
+            assert!(output.join("meshes/test.glb").is_file());
         }
     }
 

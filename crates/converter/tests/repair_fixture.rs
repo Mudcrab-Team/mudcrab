@@ -33,18 +33,16 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
 
     let bounds = || {
         let connection = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
-        connection
-            .query_row(
-                "SELECT CASE WHEN bounds_valid=1 THEN bounds_min_x END
-             FROM statics WHERE model_path='meshes/generated.nif'",
-                [],
-                |row| row.get::<_, Option<f32>>(0),
-            )
-            .unwrap()
+        connection.query_row(
+            "SELECT CASE WHEN bounds_valid=1 THEN bounds_min_x END,center_x,radius
+             FROM statics LEFT JOIN room_model_bounds ON base_form_id=id WHERE model_path='meshes/generated.nif'",
+            [],
+            |row| Ok((row.get::<_, Option<f32>>(0)?, row.get::<_, Option<f32>>(1)?, row.get::<_, Option<f32>>(2)?)),
+        ).unwrap()
     };
     assert!(!run_fixture(&config).await.complete);
     let original = bounds();
-    assert!(original.is_some());
+    assert!(original.0.is_some() && original.1.is_some() && original.2.is_some());
 
     let replacement = dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
         name: "Replacement",
@@ -69,7 +67,15 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
     )
     .unwrap();
     assert!(repair_failed(&config, true).unwrap().published);
-    assert_eq!(bounds(), Some(256.0));
+    let repaired = bounds();
+    assert_eq!(repaired.0, Some(256.0));
+    assert!((repaired.1.unwrap() - 272.0).abs() < 1.0e-4);
+    assert!(
+        repaired
+            .2
+            .is_some_and(|radius| (radius - 64.0 / 3.0).abs() < 1.0e-4)
+    );
+    assert_ne!(repaired.2, original.2);
 
     fs::remove_file(winner).unwrap();
     let fallback = run_fixture(&config).await;
@@ -80,7 +86,7 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
     let removed = run_fixture(&config).await;
     assert!(removed.complete && removed.database_cache_hit);
     assert!(!output.join("meshes/generated.glb").exists());
-    assert_eq!(bounds(), None);
+    assert_eq!(bounds(), (None, None, None));
 }
 
 fn published_bytes(output: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -221,6 +227,81 @@ async fn repaired_archive_respects_per_kind_reuse_and_later_failure_drops_old_as
     assert!(output.join("scripts/generated.luau").is_file());
 }
 
+#[tokio::test]
+async fn repair_rejects_a_flattened_authoring_path_in_an_all_files_inventory() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    let output = root.path().join("pack");
+    fs::create_dir_all(&data).unwrap();
+    dummy_content::layout::generate(
+        &data,
+        dummy_content::layout::DEFAULT_SEED,
+        dummy_content::layout::Formats::parse("esm").unwrap(),
+    )
+    .unwrap();
+    let runtime = "scripts/shared.pex";
+    let authoring = "%43alienteTools/Scripts/Shared.PEX";
+    let script = dummy_content::pex::minimal("RuntimeScript").unwrap();
+    let alias = dummy_content::pex::minimal("AuthoringScript").unwrap();
+    fs::write(
+        data.join("A.ba2"),
+        dummy_content::ba2::general(
+            &[dummy_content::Entry::new(runtime, &script)],
+            dummy_content::ba2::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        data.join("Z.bsa"),
+        dummy_content::bsa::v105(
+            &[dummy_content::Entry::new(authoring, &alias)],
+            dummy_content::bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.no_lod = true;
+    config.extract_all_archive_files = true;
+    assert!(run_fixture(&config).await.complete);
+    let manifest_path = output.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&manifest_path).unwrap();
+    let runtime_hash = converter::cache::hash_bytes(&script);
+    assert_eq!(manifest.entries[runtime].source_hash, runtime_hash);
+    manifest.complete = false;
+    manifest
+        .failures
+        .insert(runtime.into(), "failed script conversion".into());
+    manifest.archives.get_mut("a.ba2").unwrap().recipe.clear();
+    let mut legacy = manifest.clone();
+    // The old all-files writer discarded the authoring prefix but kept the blob hash.
+    let old_inventory = legacy.archives.get_mut("z.bsa").unwrap();
+    old_inventory.recipe = "all-v1".into();
+    let file = &mut old_inventory.files[0];
+    assert_eq!(file.hash, converter::cache::hash_bytes(&alias));
+    file.path = runtime.into();
+    legacy.save(&manifest_path).unwrap();
+    let before = published_bytes(&output);
+    let outcome = repair_failed(&config, true);
+    assert_eq!(
+        ConversionManifest::load(&manifest_path).unwrap().entries[runtime].source_hash,
+        runtime_hash,
+        "repair published the authoring script"
+    );
+    let err = outcome.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("run a normal conversion before repair"),
+        "{err:#}"
+    );
+    assert_eq!(published_bytes(&output), before);
+
+    manifest.save(&manifest_path).unwrap();
+    assert!(repair_failed(&config, true).unwrap().published);
+    let repaired = ConversionManifest::load(&manifest_path).unwrap();
+    assert_eq!(repaired.entries[runtime].source_hash, runtime_hash);
+}
+
 /// Repair must reject old BSA paths, while retaining current BSA and BA2 cache reuse.
 #[tokio::test]
 async fn repair_fails_closed_on_stale_bsa_reader_entry() {
@@ -253,10 +334,10 @@ async fn repair_fails_closed_on_stale_bsa_reader_entry() {
     fs::write(
         data.join("Textures.ba2"),
         dummy_content::ba2::general(
-            &[dummy_content::Entry::new(
-                "textures/archive.dds",
-                &archive_dds,
-            )],
+            &[
+                dummy_content::Entry::new("textures/archive.dds", &archive_dds),
+                dummy_content::Entry::new("%43alienteTools/textures/archive.dds", b"authoring"),
+            ],
             dummy_content::ba2::Compression::None,
         )
         .unwrap(),
@@ -266,6 +347,7 @@ async fn repair_fails_closed_on_stale_bsa_reader_entry() {
     let output = root.path().join("pack");
     let mut config = PipelineConfig::new(&data, &output);
     config.no_lod = true;
+    config.extract_all_archive_files = true;
     config.texture_encoder = converter::config::TextureEncoder::Cpu;
     config.lod_texture_encoder = converter::config::TextureEncoder::Cpu;
     config.cpu_jobs = 2;

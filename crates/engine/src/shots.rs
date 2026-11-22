@@ -522,11 +522,13 @@ impl SettleCounts {
         }
     }
 
-    /// Adds room culling's graph reads when the world has its startup resources.
+    /// Only culled shots depend on room graph reads for settling and capture receipts.
     pub fn with_room_graphs(
         self,
         room_culling: Option<&crate::room_culling::RoomCullingState>,
+        no_room_culling: bool,
     ) -> Self {
+        let room_culling = room_culling.filter(|_| !no_room_culling);
         Self {
             pending_room_graphs: room_culling.map_or(0, |state| state.pending_reads()),
             failed_room_graphs: room_culling.map_or(0, |state| state.failed_reads()),
@@ -1152,7 +1154,8 @@ fn run_shots(
             counts.pending_specializations = *retries.0.lock().unwrap();
             counts.pending_render_transfers = *transfers.0.lock().unwrap();
             counts.read_grass(config.grass, grass.as_deref(), grass_renderer.as_deref());
-            let counts = counts.with_room_graphs(room_culling.as_deref());
+            let counts =
+                counts.with_room_graphs(room_culling.as_deref(), config.shots_no_room_culling);
             // The window is counted in before it is read, so a view that has been quiet for
             // `SETTLE_QUIET_FRAMES` frames running is photographed on that very frame: the log's
             // `frames=` is then the constant, not one more (the count read here is the previous

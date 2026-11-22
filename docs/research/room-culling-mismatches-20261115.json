@@ -1,0 +1,989 @@
+{
+  "scope": "Confirmed web and foliage room-culling fixes; not whole-engine or ragdoll parity",
+  "base_commit": "29b34fe628c5a7bc2a2a504d7c9d92bbc0f314e1",
+  "source_sha256": {
+    "crates/converter/src/cache.rs": "671643039d31cbf066dec6758336ad0992b7d89ac54f1fb99bf1fd8d13d8d931",
+    "crates/converter/src/collision.rs": "56ffc7f365fe7a9bd549bd6a2dd1a23313f3e6650e7726162de6c87f34d97dea",
+    "crates/converter/src/mesh.rs": "2a0bd98da7118c33b33c7b4ae00cfc682fa95b6a786760de9587af99e45c1914",
+    "crates/converter/src/mesh/room_bounds.rs": "5055ae1d2bbab095dc57a3f92221b6bdfbb4bdff48521d2afcf07304e6f11cdf",
+    "crates/engine/src/room_culling.rs": "dcfbe7facf2617279e1203966d4f68a76527c7d0cf5f48962361b02eadf99008",
+    "vendor/project-wormhole-nif/src/nif_block.rs": "a1117b6eebed3e1a6b18839eabaa50dc0cf858682a50e783639f6beeeea66ace"
+  },
+  "engine_sha256": "b4926d4b6e29448c30c4ac1322f3b1039ea908fe3a03bb43e2bcc9a58c1c9dd6",
+  "native_executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "native_verified_fern_bounds": [
+    {
+      "form_id": "00042184",
+      "source": [
+        6.923315048217773,
+        42.89595031738281,
+        -19.239225387573242,
+        84.61396026611328
+      ],
+      "native": [
+        2765.194091796875,
+        -2352.24609375,
+        37.317447662353516,
+        66.84502410888672
+      ],
+      "expected": [
+        2765.1941000009188,
+        -2352.246051458047,
+        37.31744607556134,
+        66.84502538246306
+      ],
+      "max_error": 4.229195292282384e-05
+    },
+    {
+      "form_id": "00042185",
+      "source": [
+        6.923315048217773,
+        42.89595031738281,
+        -19.239225387573242,
+        84.61396026611328
+      ],
+      "native": [
+        2623.58447265625,
+        -2431.441162109375,
+        34.65242004394531,
+        66.84502410888672
+      ],
+      "expected": [
+        2623.584519425149,
+        -2431.441195652546,
+        34.65242014632353,
+        66.84502538246306
+      ],
+      "max_error": 4.676889921029215e-05
+    },
+    {
+      "form_id": "00042179",
+      "source": [
+        -22.518043518066406,
+        26.022113800048828,
+        -1.7500114440917969,
+        121.37849426269531
+      ],
+      "native": [
+        2390.197998046875,
+        -2713.9072265625,
+        95.9590072631836,
+        82.5373764038086
+      ],
+      "expected": [
+        2390.1979624463956,
+        -2713.907320488679,
+        95.95900417063123,
+        82.53737696679946
+      ],
+      "max_error": 9.392617903358769e-05
+    },
+    {
+      "form_id": "00042152",
+      "source": [
+        6.923315048217773,
+        42.89595031738281,
+        -19.239225387573242,
+        84.61396026611328
+      ],
+      "native": [
+        3707.68017578125,
+        -3430.63818359375,
+        329.48590087890625,
+        103.22903442382812
+      ],
+      "expected": [
+        3707.680138038339,
+        -3430.6380607377505,
+        329.4859072051216,
+        103.22903394548302
+      ],
+      "max_error": 0.00012285599950700998
+    }
+  ],
+  "native_verified_static_skin_bounds": [
+    {
+      "form_id": "0001FC43",
+      "model": "Furniture\\FXspiderWebKitDoorSpecial.nif",
+      "source": [
+        14.14422607421875,
+        8.378857612609863,
+        127.29122924804688,
+        241.2295684814453
+      ],
+      "native": [
+        3909.90380859375,
+        -3300.033935546875,
+        -1651.59912109375,
+        241.2295684814453
+      ],
+      "expected": [
+        3909.9038597041954,
+        -3300.0339951170254,
+        -1651.5991516113281,
+        241.2295684814453
+      ],
+      "max_error": 5.957015036983648e-05,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSPortalSharedNode@@",
+        ".?AVNiNode@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "00037281",
+      "model": "Effects\\FXcobwebRoundWall01.nif",
+      "source": [
+        0.2406080992823506,
+        0.6637268487099015,
+        106.6455192565918,
+        155.97311401367188
+      ],
+      "native": [
+        -1494.719970703125,
+        1019.6392822265625,
+        140.79727172851562,
+        285.4307861328125
+      ],
+      "expected": [
+        -1494.7199502684925,
+        1019.6392769342348,
+        140.79727843128057,
+        285.4307867452153
+      ],
+      "max_error": 2.0434632460819557e-05,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSMultiBoundRoom@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "0001FC55",
+      "model": "Effects\\FXcobwebRoundWall01.nif",
+      "source": [
+        0.2406080992823506,
+        0.6637268487099015,
+        106.6455192565918,
+        155.97311401367188
+      ],
+      "native": [
+        4117.67041015625,
+        -3343.91064453125,
+        -1668.54931640625,
+        176.24961853027344
+      ],
+      "expected": [
+        4117.670421468358,
+        -3343.9105590916097,
+        -1668.5494016392017,
+        176.24961809171145
+      ],
+      "max_error": 8.543964031559881e-05,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSPortalSharedNode@@",
+        ".?AVNiNode@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "0001FC49",
+      "model": "Effects\\FXcobwebRoundWall01.nif",
+      "source": [
+        0.2406080992823506,
+        0.6637268487099015,
+        106.6455192565918,
+        155.97311401367188
+      ],
+      "native": [
+        4222.33056640625,
+        -3327.723388671875,
+        -1686.3890380859375,
+        179.36907958984375
+      ],
+      "expected": [
+        4222.330464188188,
+        -3327.7233005581047,
+        -1686.3890274678593,
+        179.36907739703383
+      ],
+      "max_error": 0.00010221806223853491,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSMultiBoundRoom@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "0003758C",
+      "model": "Effects\\FXcobwebRoundWall01.nif",
+      "source": [
+        0.2406080992823506,
+        0.6637268487099015,
+        106.6455192565918,
+        155.97311401367188
+      ],
+      "native": [
+        -2019.299560546875,
+        1104.2354736328125,
+        291.59356689453125,
+        285.4307861328125
+      ],
+      "expected": [
+        -2019.2995401122425,
+        1104.2354683404849,
+        291.5935430797181,
+        285.4307867452153
+      ],
+      "max_error": 2.381481317570433e-05,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSMultiBoundRoom@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "0003758D",
+      "model": "Effects\\FXcobwebRoundWall01.nif",
+      "source": [
+        0.2406080992823506,
+        0.6637268487099015,
+        106.6455192565918,
+        155.97311401367188
+      ],
+      "native": [
+        -1778.2939453125,
+        1128.92529296875,
+        218.8135986328125,
+        291.66973876953125
+      ],
+      "expected": [
+        -1778.29390397905,
+        1128.9252669904115,
+        218.8135916125872,
+        291.66972394930417
+      ],
+      "max_error": 4.1333450099045876e-05,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSMultiBoundRoom@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "0003BA20",
+      "model": "Effects\\FXcobwebRoundWall01.nif",
+      "source": [
+        0.2406080992823506,
+        0.6637268487099015,
+        106.6455192565918,
+        155.97311401367188
+      ],
+      "native": [
+        3184.6533203125,
+        -2050.1884765625,
+        -1615.9661865234375,
+        274.5126647949219
+      ],
+      "expected": [
+        3184.6532666322537,
+        -2050.1883629326912,
+        -1615.9662406410744,
+        274.51267917658697
+      ],
+      "max_error": 0.00011362980876583606,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSMultiBoundRoom@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "000800D5",
+      "model": "Furniture\\FXspiderWebKitDoorSpecial.nif",
+      "source": [
+        14.14422607421875,
+        8.378857612609863,
+        127.29122924804688,
+        241.2295684814453
+      ],
+      "native": [
+        1657.1405029296875,
+        -2154.98193359375,
+        -1677.2139892578125,
+        241.2295684814453
+      ],
+      "expected": [
+        1657.1405337082556,
+        -2154.9819900397515,
+        -1677.2139522850964,
+        241.2295684814453
+      ],
+      "max_error": 5.644600150844781e-05,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSMultiBoundRoom@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    },
+    {
+      "form_id": "000AA83F",
+      "model": "Furniture\\FXspiderWebKitDoorSpecial.nif",
+      "source": [
+        14.14422607421875,
+        8.378857612609863,
+        127.29122924804688,
+        241.2295684814453
+      ],
+      "native": [
+        2315.4599609375,
+        -2767.323486328125,
+        -1658.79638671875,
+        224.343505859375
+      ],
+      "expected": [
+        2315.460038553316,
+        -2767.3236291572175,
+        -1658.7964019826086,
+        224.34350041315247
+      ],
+      "max_error": 0.00014282909251051024,
+      "parent_types": [
+        ".?AVBSFadeNode@@",
+        ".?AVBSPortalSharedNode@@",
+        ".?AVNiNode@@",
+        ".?AVNiNode@@",
+        ".?AVBSMultiBoundNode@@",
+        ".?AVNiNode@@",
+        ".?AVShadowSceneNode@@",
+        ".?AVSceneGraph@@"
+      ]
+    }
+  ],
+  "native_bound_error_max": 0.00014282909251051024,
+  "before_after": [
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "persistent_before_after": {
+        "on": 14099,
+        "off": 1
+      }
+    },
+    {
+      "pose": "BleakFallsBarrow01-joined-slave-walk",
+      "persistent_before_after": {
+        "on": 0,
+        "off": 0
+      }
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "persistent_before_after": {
+        "on": 11410,
+        "off": 0
+      }
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "persistent_before_after": {
+        "on": 10764,
+        "off": 0
+      }
+    }
+  ],
+  "captures": {
+    "scope": "rendered correctness and mesh-list counts; no timing claim",
+    "engine": "/tmp/pr225-culling-mismatch/engine",
+    "poses": "/tmp/pr225-culling-mismatch/shots.json",
+    "repeats": 3,
+    "threshold_per_channel": 8,
+    "runs": [
+      {
+        "name": "off-1",
+        "command": [
+          "/tmp/pr225-culling-mismatch/engine",
+          "--assets",
+          "/tmp/pr225-culling-mismatch/control",
+          "--shots",
+          "/tmp/pr225-culling-mismatch/shots.json",
+          "--shots-out",
+          "/tmp/pr225-culling-mismatch/captures/off-1",
+          "--hidden-window",
+          "--run-label",
+          "pr225-off-1",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 111,
+            "room_culling": {
+              "drawn": 2542,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 126,
+            "room_culling": {
+              "drawn": 1945,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 189,
+            "room_culling": {
+              "drawn": 149,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 205,
+            "room_culling": {
+              "drawn": 162,
+              "listed": 162
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-web-visible",
+            "main_frame": 288,
+            "room_culling": {
+              "drawn": 657,
+              "listed": 657
+            }
+          },
+          {
+            "pose": "GallowsRock01-fern-visible",
+            "main_frame": 351,
+            "room_culling": {
+              "drawn": 564,
+              "listed": 564
+            }
+          }
+        ]
+      },
+      {
+        "name": "on-1",
+        "command": [
+          "/tmp/pr225-culling-mismatch/engine",
+          "--assets",
+          "/tmp/pr225-culling-mismatch/assets",
+          "--shots",
+          "/tmp/pr225-culling-mismatch/shots.json",
+          "--shots-out",
+          "/tmp/pr225-culling-mismatch/captures/on-1",
+          "--hidden-window",
+          "--run-label",
+          "pr225-on-1",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 86,
+            "room_culling": {
+              "drawn": 428,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 105,
+            "room_culling": {
+              "drawn": 521,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 168,
+            "room_culling": {
+              "drawn": 27,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 183,
+            "room_culling": {
+              "drawn": 55,
+              "listed": 162
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-web-visible",
+            "main_frame": 270,
+            "room_culling": {
+              "drawn": 138,
+              "listed": 657
+            }
+          },
+          {
+            "pose": "GallowsRock01-fern-visible",
+            "main_frame": 354,
+            "room_culling": {
+              "drawn": 101,
+              "listed": 564
+            }
+          }
+        ]
+      },
+      {
+        "name": "off-2",
+        "command": [
+          "/tmp/pr225-culling-mismatch/engine",
+          "--assets",
+          "/tmp/pr225-culling-mismatch/control",
+          "--shots",
+          "/tmp/pr225-culling-mismatch/shots.json",
+          "--shots-out",
+          "/tmp/pr225-culling-mismatch/captures/off-2",
+          "--hidden-window",
+          "--run-label",
+          "pr225-off-2",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 90,
+            "room_culling": {
+              "drawn": 2542,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 106,
+            "room_culling": {
+              "drawn": 1945,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 183,
+            "room_culling": {
+              "drawn": 149,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 198,
+            "room_culling": {
+              "drawn": 162,
+              "listed": 162
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-web-visible",
+            "main_frame": 289,
+            "room_culling": {
+              "drawn": 657,
+              "listed": 657
+            }
+          },
+          {
+            "pose": "GallowsRock01-fern-visible",
+            "main_frame": 351,
+            "room_culling": {
+              "drawn": 564,
+              "listed": 564
+            }
+          }
+        ]
+      },
+      {
+        "name": "on-2",
+        "command": [
+          "/tmp/pr225-culling-mismatch/engine",
+          "--assets",
+          "/tmp/pr225-culling-mismatch/assets",
+          "--shots",
+          "/tmp/pr225-culling-mismatch/shots.json",
+          "--shots-out",
+          "/tmp/pr225-culling-mismatch/captures/on-2",
+          "--hidden-window",
+          "--run-label",
+          "pr225-on-2",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 92,
+            "room_culling": {
+              "drawn": 428,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 111,
+            "room_culling": {
+              "drawn": 521,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 212,
+            "room_culling": {
+              "drawn": 27,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 228,
+            "room_culling": {
+              "drawn": 55,
+              "listed": 162
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-web-visible",
+            "main_frame": 319,
+            "room_culling": {
+              "drawn": 138,
+              "listed": 657
+            }
+          },
+          {
+            "pose": "GallowsRock01-fern-visible",
+            "main_frame": 381,
+            "room_culling": {
+              "drawn": 101,
+              "listed": 564
+            }
+          }
+        ]
+      },
+      {
+        "name": "off-3",
+        "command": [
+          "/tmp/pr225-culling-mismatch/engine",
+          "--assets",
+          "/tmp/pr225-culling-mismatch/control",
+          "--shots",
+          "/tmp/pr225-culling-mismatch/shots.json",
+          "--shots-out",
+          "/tmp/pr225-culling-mismatch/captures/off-3",
+          "--hidden-window",
+          "--run-label",
+          "pr225-off-3",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 87,
+            "room_culling": {
+              "drawn": 2542,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 103,
+            "room_culling": {
+              "drawn": 1945,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 168,
+            "room_culling": {
+              "drawn": 149,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 184,
+            "room_culling": {
+              "drawn": 162,
+              "listed": 162
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-web-visible",
+            "main_frame": 268,
+            "room_culling": {
+              "drawn": 657,
+              "listed": 657
+            }
+          },
+          {
+            "pose": "GallowsRock01-fern-visible",
+            "main_frame": 333,
+            "room_culling": {
+              "drawn": 564,
+              "listed": 564
+            }
+          }
+        ]
+      },
+      {
+        "name": "on-3",
+        "command": [
+          "/tmp/pr225-culling-mismatch/engine",
+          "--assets",
+          "/tmp/pr225-culling-mismatch/assets",
+          "--shots",
+          "/tmp/pr225-culling-mismatch/shots.json",
+          "--shots-out",
+          "/tmp/pr225-culling-mismatch/captures/on-3",
+          "--hidden-window",
+          "--run-label",
+          "pr225-on-3",
+          "--shots-settle-timeout",
+          "180"
+        ],
+        "captures": [
+          {
+            "pose": "BleakFallsBarrow01-room1-c",
+            "main_frame": 84,
+            "room_culling": {
+              "drawn": 428,
+              "listed": 2542
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-joined-slave-walk",
+            "main_frame": 102,
+            "room_culling": {
+              "drawn": 521,
+              "listed": 1945
+            }
+          },
+          {
+            "pose": "GallowsRock01-outside-away",
+            "main_frame": 170,
+            "room_culling": {
+              "drawn": 27,
+              "listed": 149
+            }
+          },
+          {
+            "pose": "GallowsRock01-inside-out",
+            "main_frame": 185,
+            "room_culling": {
+              "drawn": 55,
+              "listed": 162
+            }
+          },
+          {
+            "pose": "BleakFallsBarrow01-web-visible",
+            "main_frame": 270,
+            "room_culling": {
+              "drawn": 138,
+              "listed": 657
+            }
+          },
+          {
+            "pose": "GallowsRock01-fern-visible",
+            "main_frame": 335,
+            "room_culling": {
+              "drawn": 101,
+              "listed": 564
+            }
+          }
+        ]
+      }
+    ],
+    "images": [
+      {
+        "pose": "BleakFallsBarrow01-room1-c",
+        "strict_changed_pixels": 322172,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "BleakFallsBarrow01-joined-slave-walk",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "GallowsRock01-outside-away",
+        "strict_changed_pixels": 359811,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "GallowsRock01-inside-out",
+        "strict_changed_pixels": 208435,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "BleakFallsBarrow01-web-visible",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1030
+        ]
+      },
+      {
+        "pose": "GallowsRock01-fern-visible",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1030
+        ]
+      }
+    ],
+    "all_images_match_at_threshold": false
+  },
+  "final_asset_recheck": {
+    "models_verified": 989,
+    "changed": []
+  },
+  "checks": {
+    "engine": {
+      "passed": 1453,
+      "ignored": 8
+    },
+    "converter": {
+      "passed": 1206,
+      "ignored": 30
+    },
+    "skin_export": {
+      "passed": 14,
+      "ignored": 5
+    },
+    "archive": {
+      "passed": 7
+    },
+    "snapshots": {
+      "passed": 4
+    },
+    "clippy": "passed for engine and converter, all targets/features, -D warnings",
+    "format": "passed"
+  },
+  "asset_bounds": {
+    "before": 2799,
+    "after": 2842,
+    "models_reconverted": 989
+  },
+  "limitations": [
+    "Corpse bind poses and simulated native ragdoll poses differ; their source bounds remain unknown.",
+    "External/unresolved rigs, moving skin bodies, nonempty damage ranges, unknown source nodes retain the conservative fallback.",
+    "Different lighting, fog, water and materials; no cross-renderer RGB equality claim."
+  ],
+  "evidence_directory": "skyrim-culling-mismatches-20261115",
+  "image_sha256": {
+    "before/on-1/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "before/on-1/BleakFallsBarrow01-room1-c.png": "e5c4ca801b86cd17f69889e0e46575bd2f9970fa9328894250fa971bc7df62d6",
+    "before/on-1/GallowsRock01-inside-out.png": "51889804fd333b8fda9a50f26bae88ff7866374e90d84c86e026540c98f64cdb",
+    "before/on-1/GallowsRock01-outside-away.png": "2d6304229a3d156a4f3a8a701cac9c679fe8daa47314f684ea85f8069f3f86b4",
+    "before/on-2/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "before/on-2/BleakFallsBarrow01-room1-c.png": "197b9437d3ba0107159955d67c1a52879b297aac341f4b3bd8dffb2950b6b1ee",
+    "before/on-2/GallowsRock01-inside-out.png": "17001409d681058c243211153d4a8ba4d9044ea408b0333540648ef76de072fa",
+    "before/on-2/GallowsRock01-outside-away.png": "114c3204b314560b526474f583dce30aea8b78965af2c4ae204f9ebe3f6216c1",
+    "before/on-3/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "before/on-3/BleakFallsBarrow01-room1-c.png": "728c95a3acd024cc37c7a64f69ef1562f97a02ee7943a1992c80816ece7ddc21",
+    "before/on-3/GallowsRock01-inside-out.png": "60eba840677b6d5a512b3c93052caa08af9cdc4fd646d051f3bf3269154c9cc5",
+    "before/on-3/GallowsRock01-outside-away.png": "f8adde72fe965fd46377b49134f3d7d72da85e9e36fffc3293c2a4a4a8b0b8df",
+    "bleak-web-visible-native.png": "d1006b5276a1133a6ed0a80bff176bc1bf7d362279d9208b9b21513ccb765afc",
+    "captures/BleakFallsBarrow01-joined-slave-walk-strict-diff.png": "583cc2c2234117157e0ccf15c1df2dfa84d5c3a88a1c62a9e4c1431a1921d890",
+    "captures/BleakFallsBarrow01-room1-c-strict-diff.png": "38286f9e975458f141112f5c8a4fae86f5fc918c66214b860bafd63e1d0c860a",
+    "captures/BleakFallsBarrow01-web-visible-strict-diff.png": "583cc2c2234117157e0ccf15c1df2dfa84d5c3a88a1c62a9e4c1431a1921d890",
+    "captures/GallowsRock01-fern-visible-strict-diff.png": "583cc2c2234117157e0ccf15c1df2dfa84d5c3a88a1c62a9e4c1431a1921d890",
+    "captures/GallowsRock01-inside-out-strict-diff.png": "919cce27d4ff358720c6429b9726ca5c6bedf35cb650fd5854cddf128624327e",
+    "captures/GallowsRock01-outside-away-strict-diff.png": "d1ac9d180460850be1f5d95949bf20e09114710a8cf4251e903d8e93be5ed592",
+    "captures/off-1/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "captures/off-1/BleakFallsBarrow01-room1-c.png": "91b019ff471ebceeab5444787dc1232b56cf9d8efe871980a8dc5eb11a1d2ac2",
+    "captures/off-1/BleakFallsBarrow01-web-visible.png": "979e77b50af8e565fca1081b1f8069d5417d34ca4ec0882ea60b28e41c50e473",
+    "captures/off-1/GallowsRock01-fern-visible.png": "3e13c402350fa01f43c026ff39ffa84a366b3e95984b4fc251a4cd52f88b5174",
+    "captures/off-1/GallowsRock01-inside-out.png": "52595d874907fcd3a7b07376daf768b4a1caddf19db4f094cdc6db0c01f7b9e5",
+    "captures/off-1/GallowsRock01-outside-away.png": "de8e9686f05832fe197f47cec877da876d5d17ea248d9f929ba1687b70f2b430",
+    "captures/off-2/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "captures/off-2/BleakFallsBarrow01-room1-c.png": "c1677a24cb965d9d5c58bb728ffc0d79c14fb5e354c795f75832de6214349b0e",
+    "captures/off-2/BleakFallsBarrow01-web-visible.png": "979e77b50af8e565fca1081b1f8069d5417d34ca4ec0882ea60b28e41c50e473",
+    "captures/off-2/GallowsRock01-fern-visible.png": "50e26e233af42491e2d13fafe89db8a3cfa29eb0626317d73aef0d99910e893b",
+    "captures/off-2/GallowsRock01-inside-out.png": "4c003b73f7768848ab03a8f625e601104380af96accd5babc826913887557682",
+    "captures/off-2/GallowsRock01-outside-away.png": "7ed71c0eb59b69ceced49159617e22cecd7fde86aef22385584d2b0f4f9ef2b4",
+    "captures/off-3/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "captures/off-3/BleakFallsBarrow01-room1-c.png": "0fd486a96b1b480313bd15abcc249c74c0d0628a921925b7d9c1f852b3396bda",
+    "captures/off-3/BleakFallsBarrow01-web-visible.png": "979e77b50af8e565fca1081b1f8069d5417d34ca4ec0882ea60b28e41c50e473",
+    "captures/off-3/GallowsRock01-fern-visible.png": "891aa6cc95f1ac61ef2156a267a9d4e1201e8b23e5f22e5aa851b5606385416e",
+    "captures/off-3/GallowsRock01-inside-out.png": "0189486b6b4408efe3d0d36c50a1bc2667673a7d032ed6b3e711a635cf030d4b",
+    "captures/off-3/GallowsRock01-outside-away.png": "ed74ed62a401162dd8e360552db5da5c8c90a8e72a77050a2fbcd8a9652106c0",
+    "captures/on-1/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "captures/on-1/BleakFallsBarrow01-room1-c.png": "f3fe3b6f27dcdfc6814292799f078350901a43c8ffe894655a1ce3cb93535a9d",
+    "captures/on-1/BleakFallsBarrow01-web-visible.png": "979e77b50af8e565fca1081b1f8069d5417d34ca4ec0882ea60b28e41c50e473",
+    "captures/on-1/GallowsRock01-fern-visible.png": "50e26e233af42491e2d13fafe89db8a3cfa29eb0626317d73aef0d99910e893b",
+    "captures/on-1/GallowsRock01-inside-out.png": "9ae08dc9a6cf486eaad142f888e80f9f7753cd9e8120dad70f63621781772030",
+    "captures/on-1/GallowsRock01-outside-away.png": "26cf70afb250bf6255ee5f2c016cf37a574922989729bb2029321a09d7e83f79",
+    "captures/on-2/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "captures/on-2/BleakFallsBarrow01-room1-c.png": "2e5a4636ffa591753da9df209212946e053bdb6a6bd5ebc54242e42e37dbba0c",
+    "captures/on-2/BleakFallsBarrow01-web-visible.png": "979e77b50af8e565fca1081b1f8069d5417d34ca4ec0882ea60b28e41c50e473",
+    "captures/on-2/GallowsRock01-fern-visible.png": "3e13c402350fa01f43c026ff39ffa84a366b3e95984b4fc251a4cd52f88b5174",
+    "captures/on-2/GallowsRock01-inside-out.png": "347d0940b5f552c81d12c3a7ebba56b7de8631bc101a09165d153d7b69483412",
+    "captures/on-2/GallowsRock01-outside-away.png": "ad4d501036e0b89e242041238b924c58eff9a7337994770781fcbabe5e7337ea",
+    "captures/on-3/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
+    "captures/on-3/BleakFallsBarrow01-room1-c.png": "a097c43fed6ba667193fd294fe5e8751662793176483771b8695daadc323858f",
+    "captures/on-3/BleakFallsBarrow01-web-visible.png": "979e77b50af8e565fca1081b1f8069d5417d34ca4ec0882ea60b28e41c50e473",
+    "captures/on-3/GallowsRock01-fern-visible.png": "3e13c402350fa01f43c026ff39ffa84a366b3e95984b4fc251a4cd52f88b5174",
+    "captures/on-3/GallowsRock01-inside-out.png": "cce5fe2edb50a6f6fda814634ca088af963c4217fe2aea2f17626cef7ca9da40",
+    "captures/on-3/GallowsRock01-outside-away.png": "1920a8bb09e4fb90157b7142b4e91e405ac95ea254e2d4bebe8949c4c759b8ef",
+    "gallows-fern-visible-native.png": "cf098cf8d6939147ecb82cbf623da88126c93067f5b3bfe184824bd35a45bcf3",
+    "skyrim-BleakFallsBarrow01-joined-slave-walk-1.png": "b81fc53192ed0de2ec158e667e78b324823b18ba677053174c5a028bf2a6a279",
+    "skyrim-BleakFallsBarrow01-room1-c-1.png": "acdf4537e79d28d17fc2c8340a3632423c50ccc04b0a669b844edf2592834a75",
+    "skyrim-GallowsRock01-inside-out-1.png": "1a70ea70ff9c486762bd5ab06ee3b5c0fc1e36c3f94e2eacc96e73bd61db608e",
+    "skyrim-GallowsRock01-outside-away-1.png": "3e380eebf5a0b18b577fe98117f88467d5b47754279b10a77f4e23d535470217"
+  }
+}

@@ -365,8 +365,47 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let terrain_merge = runtime_data
         .is_some()
         .then(|| crate::terrain_merge::TerrainMerge::open(&config.assets_dir));
-    let grade_source =
+    let mut grade_source =
         SceneGradeSource::load(&config, runtime_data.is_some() && !config.streaming_fixture)?;
+    // The sky and fog come from the active weather record (#891). A fixture run has no world
+    // database and keeps the built-in `SkyrimClear` palette.
+    let weather_note = match environment
+        .as_ref()
+        .filter(|_| runtime_data.is_some() && !config.streaming_fixture)
+    {
+        Some(catalog) => {
+            match crate::weather_sky::WeatherSky::default_for_world(catalog, config.worldspace_id) {
+                Ok(weather) => {
+                    if !weather.fog_omissions.is_empty() {
+                        eprintln!(
+                            "warning: weather {}: the record has no {}; the exterior draws no fog",
+                            weather.label(),
+                            weather.fog_omissions.join(", ")
+                        );
+                    }
+                    let note = format!("weather {}: sky and fog from the record", weather.label());
+                    grade_source.weather = Some(weather);
+                    note
+                }
+                // `skyrim` takes sky and fog from weather records, so it cannot start without one.
+                Err(error)
+                    if config.visual_profile == crate::visual_profile::VisualProfile::Skyrim =>
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "--visual-profile skyrim takes its sky and fog from a weather record: {error}"
+                    ));
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: weather: {error}; the {} look's built-in sky and fog stand in",
+                        config.visual_preset.name()
+                    );
+                    "no weather record: built-in preset sky and fog".to_owned()
+                }
+            }
+        }
+        None => "no world database: built-in preset sky and fog".to_owned(),
+    };
     let mut tone_map_source = SceneToneMapSource::load(&config, &grade_source)?;
     if let Some((settings, _)) = preferences.as_mut() {
         tone_map_source.bevy_tonemapping = crate::settings::TONE_MAPS[settings.tone_map];
@@ -383,7 +422,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             settings.show_resolved_grade(resolved.grade, resolved.post.pivot);
         }
     }
-    let sky_palette = grade_source.sky_palette(config.visual_preset);
+    let sky_palette = grade_source.sky_palette(config.visual_preset, config.game_hour);
     let movement_tuning = (interactive_world_physics
         && runtime_data.is_some()
         && !config.streaming_fixture)
@@ -585,6 +624,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         },
         "visual profile active; changing it requires a restart"
     );
+    info!(weather = %weather_note, "exterior sky and fog source");
     if app
         .world()
         .resource::<EngineConfig>()
@@ -633,6 +673,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
             app.add_plugins((WorldPlayerPlugin, crate::door_crossing::DoorCrossingPlugin));
+            if app.world().resource::<EngineConfig>().papyrus_scripts {
+                app.add_plugins(crate::papyrus_plugin::PapyrusScriptsPlugin);
+            }
             // `coc`/`coe` move the player, so they come with it, as `tcl` does: a run without a
             // player (a benchmark, `--shots`, headless) lists neither in Help.
             crate::cell_commands::register_cell_commands(&mut app);
@@ -705,8 +748,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
 /// Process exit code for a run that ended because the GPU device was lost.
 ///
 /// Distinct from 1 (any other failed run) and 2 (an unusable command line), so a benchmark or
-/// acceptance script can record a lost device apart from other failures. It does not clear the
-/// engine: a GPU fault or a command buffer the driver times out also loses the device.
+/// acceptance script can record a lost device apart from other failures. The run exits with this
+/// code only when Bevy reports `ErrorType::DeviceLost`. A failed Metal command buffer does not lose
+/// the device on wgpu 29: the device stays alive and the engine does not notice the failure, so
+/// this code does not cover it.
 pub const EXIT_DEVICE_LOST: u8 = 3;
 
 /// The run ended because the GPU device was lost.
@@ -2625,6 +2670,7 @@ fn setup_world(
         Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
+        crate::room_culling::RoomCullingNear::SKYRIM,
         IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
@@ -2688,6 +2734,12 @@ fn setup_world(
         target = ?target,
         "Mudcrab runtime initialized"
     );
+}
+
+#[cfg(test)]
+pub(crate) fn add_test_world_camera(app: &mut App) {
+    app.insert_resource(EngineConfig::default())
+        .add_systems(Startup, setup_world);
 }
 
 fn initial_camera_ground_height(

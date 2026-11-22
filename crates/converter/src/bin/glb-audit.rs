@@ -23,8 +23,8 @@ fn main() -> Result<()> {
         {
             continue;
         }
-        match MeshConverter::glb_bounds(path) {
-            Ok(bounds) => {
+        match MeshConverter::drawable_bounds(path) {
+            Ok(Some(bounds)) => {
                 let extent = bounds
                     .min
                     .into_iter()
@@ -33,6 +33,7 @@ fn main() -> Result<()> {
                     .fold(0.0_f32, f32::max);
                 entries.push((extent, path.to_owned(), Some(bounds), None));
             }
+            Ok(None) => entries.push((0.0, path.to_owned(), None, None)),
             Err(error) => entries.push((
                 f32::INFINITY,
                 path.to_owned(),
@@ -52,7 +53,7 @@ fn main() -> Result<()> {
                 relative.display()
             ),
             (_, Some(error)) => println!("extent=ERROR path={} error={error}", relative.display()),
-            _ => {}
+            (None, None) => println!("extent=NONE path={}", relative.display()),
         }
     }
     Ok(())

@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#762)",
+  "reason": "A subset records a deleted placement whose low FormID has no stored identity so later edits keep incoming links unresolved. A live replacement clears the deletion.",
+  "table": "subset_placement_deletions"
+}
