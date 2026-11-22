@@ -157,6 +157,15 @@ impl Plugin for StreamingPlugin {
             .add_observer(lod::mark_lod_world_instance_ready)
             .add_systems(
                 Update,
+                (
+                    lod_objects::tag_object_cells,
+                    lod_objects::hide_loaded_object_cells,
+                )
+                    .chain()
+                    .after(lod_objects::update_lod_objects),
+            )
+            .add_systems(
+                Update,
                 lod_objects::update_lod_objects
                     .after(lod::plan_lod_chunks)
                     .after(collect_cells)

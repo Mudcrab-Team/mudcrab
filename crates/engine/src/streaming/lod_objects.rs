@@ -7,13 +7,25 @@
 //! per file, before any chunk is drawn. A damaged row, a missing file or a wrong hash logs one
 //! error, draws no object LOD for that pack and is recorded in [`LodObjects::failure`], never
 //! skipped chunk by chunk. The failure belongs to the pack: it stays through worldspace changes
-//! and is cleared only when the pack changes. Rows of tiers that do not draw are not read.
+//! and is cleared only when the pack changes.
 //!
 //! Which chunks draw follows the retail object rule (RF-LOD-004): a chunk of tier `t` draws when
-//! [`TerrainLodDistances::object_tier`] picks `t` for its cells. **Only tier 16 draws in this
-//! slice.** A tier-16 chunk draws between `fBlockLevel1Distance` and `fBlockMaximumDistance` from
-//! the camera, where it never meets the loaded grid. Tier 8 and tier 4 rows are ignored, because
-//! object chunks do not hand off to full detail yet and tier 4 would overlap the loaded cells.
+//! [`TerrainLodDistances::object_tier`] picks `t` for its cells. With the High defaults tier 4
+//! draws out to `fBlockLevel0Distance` (35,000), tier 8 from there to `fBlockLevel1Distance`
+//! (70,000) and tier 16 from there to `fBlockMaximumDistance` (250,000), by the distance from the
+//! camera cell's centre to the block rectangle (strict comparisons; retail measures from the
+//! player, a known difference).
+//!
+//! **Hand-over.** A chunk that stops being wanted is kept until every chunk that is wanted has
+//! attached (its scene has spawned), so incoming geometry is there before outgoing geometry
+//! detaches (retail fact, skyrim_decomp#675). Retail's fade and any hysteresis are unverified and
+//! not invented here.
+//!
+//! **Loaded cells.** A tier-4 chunk splits its geometry into one piece per cell
+//! (`object_cell_<x>_<y>_<n>` nodes). A piece is hidden while its cell is inside the loaded grid
+//! (the camera cell plus or minus the stream radius), where full-detail objects draw, as retail
+//! filters cell-local segments of the near grid (C3, C4). Large-reference takeover of the cells
+//! beyond the loaded grid is not implemented.
 //!
 //! The system runs before `update_render_origin`, so a root spawned in the frame the origin shifts
 //! is rebased in that frame. Spawns follow the streaming controls and the commit budget that
@@ -38,7 +50,7 @@ use bevy::{
     tasks::{IoTaskPool, Task, block_on},
     world_serialization::{WorldAsset, WorldAssetRoot},
 };
-use shared::lod::{ChunkKey, LodTier};
+use shared::lod::ChunkKey;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -72,6 +84,8 @@ pub struct LodObjects {
     /// Every listed chunk, after all checks passed. Object LOD draws only from this.
     chunks: Vec<LodChunkMetadata>,
     roots: HashMap<ChunkKey, Entity>,
+    /// Roots that are no longer wanted but stay until the wanted ones have attached.
+    retiring: HashMap<ChunkKey, Entity>,
     /// The pack (assets folder) the state above belongs to.
     pack: Option<PathBuf>,
     /// The camera cell and distances the current selection was made for.
@@ -91,9 +105,25 @@ impl LodObjects {
         &self.chunks
     }
 
-    /// Chunks currently spawned.
+    /// Chunks currently spawned and wanted.
     pub fn resident(&self) -> usize {
         self.roots.len()
+    }
+
+    /// Chunks that are no longer wanted and wait for the wanted ones to attach.
+    pub fn retiring(&self) -> usize {
+        self.retiring.len()
+    }
+
+    /// Despawns the retiring roots once every wanted root has attached (has children). Until then
+    /// they keep drawing, so the incoming geometry is in place before the outgoing one goes.
+    fn finish_retirement(&mut self, commands: &mut Commands, attached: &Query<(), With<Children>>) {
+        if self.retiring.is_empty() || !self.roots.values().all(|root| attached.contains(*root)) {
+            return;
+        }
+        for (_, root) in self.retiring.drain() {
+            commands.entity(root).try_despawn();
+        }
     }
 
     /// A new worldspace: forget everything, including the verified rows.
@@ -118,7 +148,7 @@ impl LodObjects {
     /// No exterior to draw in (an interior, or LOD off): drop the roots and the selection but keep
     /// the rows and their verified state, so coming back does not read or hash them again.
     fn suspend(&mut self, commands: &mut Commands) {
-        for (_, root) in self.roots.drain() {
+        for (_, root) in self.roots.drain().chain(self.retiring.drain()) {
             commands.entity(root).try_despawn();
         }
         self.last_center = None;
@@ -149,12 +179,11 @@ impl LodObjects {
         true
     }
 
-    /// Starts one payload check per tier-16 row, the only rows that can draw in this slice.
+    /// Starts one payload check per row of every tier.
     fn start_checks(&mut self, chunks: Vec<LodChunkMetadata>, assets: &std::path::Path) {
         self.checked.clear();
         self.checking = chunks
             .into_iter()
-            .filter(|chunk| chunk.key.tier == LodTier::Tier16)
             .map(|chunk| {
                 let assets = assets.to_owned();
                 let listed = chunk.clone();
@@ -228,10 +257,8 @@ fn object_root_bundle(
     )
 }
 
-/// The chunks that draw from the camera cell `camera`: tier-16 chunks whose cells fall in the tier
-/// the object rule picks for them. All cells of a chunk share its box, so the first cell decides.
-/// Tier 8 and tier 4 chunks are never selected in this slice: they would draw over the loaded
-/// grid with no hand-off to full detail.
+/// The chunks that draw from the camera cell `camera`: chunks whose cells fall in the tier the
+/// object rule picks for them. All cells of a chunk share its box, so the first cell decides.
 pub fn wanted_object_chunks(
     chunks: &[LodChunkMetadata],
     camera: IVec2,
@@ -240,7 +267,6 @@ pub fn wanted_object_chunks(
 ) -> Vec<ChunkKey> {
     chunks
         .iter()
-        .filter(|chunk| chunk.key.tier == LodTier::Tier16)
         .filter(|chunk| {
             let (x, y) = chunk_min_grid(chunk.key, chunk.origin);
             let cell = IVec2::new(x as i32, y as i32);
@@ -263,6 +289,7 @@ pub(super) fn update_lod_objects(
     runtime: Option<Res<StreamingRuntime>>,
     mut budget: ResMut<StreamingCommitBudget>,
     mut objects: ResMut<LodObjects>,
+    attached: Query<(), With<Children>>,
 ) {
     let Ok(camera) = camera.single() else {
         return;
@@ -306,6 +333,7 @@ pub(super) fn update_lod_objects(
         return;
     }
 
+    objects.finish_retirement(&mut commands, &attached);
     let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
     if !objects.selection_changed(center, &config.terrain_lod) {
         return;
@@ -324,9 +352,16 @@ pub(super) fn update_lod_objects(
         .filter(|key| !wanted.contains(key))
         .copied()
         .collect();
+    // A root that is not wanted any more keeps drawing until the wanted ones have attached.
     for key in stale {
         if let Some(root) = objects.roots.remove(&key) {
-            commands.entity(root).try_despawn();
+            objects.retiring.insert(key, root);
+        }
+    }
+    // A retiring root that is wanted again simply stays.
+    for key in &wanted {
+        if let Some(root) = objects.retiring.remove(key) {
+            objects.roots.insert(*key, root);
         }
     }
     let to_spawn: Vec<LodChunkMetadata> = objects
@@ -358,6 +393,66 @@ pub(super) fn update_lod_objects(
     }
     if deferred {
         objects.last_center = None;
+    }
+}
+
+/// The cell of an `object_cell_<x>_<y>_<n>` node name of a level-4 chunk.
+pub fn object_cell_of_name(name: &str) -> Option<IVec2> {
+    let rest = name.strip_prefix("object_cell_")?;
+    let mut parts = rest.split('_');
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    parts.next().is_none().then_some(IVec2::new(x, y))
+}
+
+/// The cell a level-4 piece covers, on the node of a spawned object LOD scene.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LodObjectCell(pub IVec2);
+
+/// Whether the piece of `cell` is hidden: its cell is inside the loaded grid, the camera cell plus
+/// or minus `radius` on both axes, where the full-detail objects draw.
+pub fn object_cell_hidden(cell: IVec2, center: IVec2, radius: i32) -> bool {
+    (cell.x - center.x).abs() <= radius && (cell.y - center.y).abs() <= radius
+}
+
+/// Tags the cell pieces of newly spawned object LOD scenes with their cell.
+pub(super) fn tag_object_cells(mut commands: Commands, named: Query<(Entity, &Name), Added<Name>>) {
+    for (entity, name) in &named {
+        if let Some(cell) = object_cell_of_name(name.as_str()) {
+            commands.entity(entity).insert(LodObjectCell(cell));
+        }
+    }
+}
+
+/// Hides the cell pieces whose cell is loaded in full detail, and shows the others. It runs when
+/// the camera cell or the stream radius changes and when new pieces appear.
+pub(super) fn hide_loaded_object_cells(
+    config: Res<EngineConfig>,
+    origin: Res<RenderOrigin>,
+    camera: Query<&Transform, With<StreamingCamera>>,
+    mut pieces: Query<(&LodObjectCell, &mut Visibility)>,
+    added: Query<(), Added<LodObjectCell>>,
+    mut last: Local<Option<(IVec2, i32)>>,
+) {
+    let Ok(camera) = camera.single() else {
+        return;
+    };
+    let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
+    let now = Some((center, config.stream_radius));
+    if *last == now && added.is_empty() {
+        return;
+    }
+    *last = now;
+    for (cell, mut visibility) in &mut pieces {
+        let wanted = if object_cell_hidden(cell.0, center, config.stream_radius) {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
     }
 }
 
@@ -547,11 +642,11 @@ mod tests {
     }
 
     #[test]
-    fn only_tier_16_rows_are_selected_in_this_slice() {
+    fn every_tier_is_selected_by_the_object_rule() {
         let distances = TerrainLodDistances::default();
         let camera = IVec2::new(5, -12);
         // The object rule picks tier 8 for cell (24, -16) and tier 4 for cell (8, -12) from this
-        // camera, so these rows would draw if tiers were not filtered.
+        // camera, and tier 16 for the block of chunk (4, 4).
         let tier8 = chunk_of(LodTier::Tier8, 15, 10);
         let tier4 = chunk_of(LodTier::Tier4, 26, 21);
         for (row, tier, cell) in [
@@ -560,8 +655,7 @@ mod tests {
         ] {
             assert_eq!(
                 distances.object_tier(camera, cell, IVec2::new(-96, -96), 1.0),
-                Some(tier),
-                "the rule alone would draw this row"
+                Some(tier)
             );
             assert_eq!(
                 chunk_min_grid(row.key, row.origin),
@@ -570,11 +664,70 @@ mod tests {
         }
         let rows = [tier8, tier4, chunk(4, 4)];
         let wanted = wanted_object_chunks(&rows, camera, &distances, OBJECT_LOD_NAMA);
+        assert_eq!(wanted, rows.iter().map(|row| row.key).collect::<Vec<_>>());
+        // A tier-8 chunk beside the camera is not wanted: the rule picks tier 4 there.
+        let near8 = chunk_of(LodTier::Tier8, 13, 10);
+        assert!(wanted_object_chunks(&[near8], camera, &distances, OBJECT_LOD_NAMA).is_empty());
+    }
+
+    #[test]
+    fn level_4_pieces_are_hidden_only_inside_the_loaded_grid() {
         assert_eq!(
-            wanted,
-            vec![rows[2].key],
-            "only the tier-16 row is selected"
+            object_cell_of_name("object_cell_5_-12_3"),
+            Some(IVec2::new(5, -12))
         );
+        assert_eq!(object_cell_of_name("object_batch_3"), None);
+        assert_eq!(object_cell_of_name("object_cell_5_x_3"), None);
+        assert_eq!(object_cell_of_name("object_cell_5_-12"), None);
+        let center = IVec2::new(5, -12);
+        // The loaded grid is the camera cell plus or minus the stream radius, both ends included.
+        assert!(object_cell_hidden(IVec2::new(5, -12), center, 2));
+        assert!(object_cell_hidden(IVec2::new(7, -10), center, 2));
+        assert!(object_cell_hidden(IVec2::new(3, -14), center, 2));
+        assert!(!object_cell_hidden(IVec2::new(8, -12), center, 2));
+        assert!(!object_cell_hidden(IVec2::new(5, -9), center, 2));
+        assert!(object_cell_hidden(IVec2::new(8, -12), center, 3));
+    }
+
+    #[test]
+    fn the_systems_tag_and_hide_level_4_pieces_and_follow_the_camera() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .add_systems(Update, (tag_object_cells, hide_loaded_object_cells).chain());
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::from_translation(RIVERWOOD)))
+            .id();
+        let piece = |app: &mut App, name: &str| {
+            app.world_mut()
+                .spawn((Name::new(name.to_owned()), Visibility::Inherited))
+                .id()
+        };
+        let inside = piece(&mut app, "object_cell_5_-12_0");
+        let edge = piece(&mut app, "object_cell_7_-10_1");
+        let outside = piece(&mut app, "object_cell_8_-12_2");
+        let plain = piece(&mut app, "object_batch_3");
+        app.update();
+        // The tags are inserted by commands, so the first frame tags and the next one hides.
+        app.update();
+        let visibility =
+            |app: &App, entity: Entity| *app.world().entity(entity).get::<Visibility>().unwrap();
+        assert_eq!(visibility(&app, inside), Visibility::Hidden);
+        assert_eq!(visibility(&app, edge), Visibility::Hidden);
+        assert_eq!(visibility(&app, outside), Visibility::Inherited);
+        assert_eq!(visibility(&app, plain), Visibility::Inherited);
+        assert!(app.world().entity(plain).get::<LodObjectCell>().is_none());
+        // The camera walks 3 cells east: the cell that was inside is now outside the loaded grid.
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation
+            .x += 3.0 * CELL_SIZE;
+        app.update();
+        assert_eq!(visibility(&app, inside), Visibility::Inherited);
+        assert_eq!(visibility(&app, outside), Visibility::Hidden);
     }
 
     // ---- The real `update_lod_objects` system -------------------------------------------------
@@ -789,21 +942,15 @@ mod tests {
     }
 
     #[test]
-    fn rows_of_tiers_that_do_not_draw_are_not_read() {
+    fn rows_of_every_tier_are_checked_and_a_damaged_one_fails_the_pack() {
         let mut rig = rig(false);
         let mut drawable = chunk(4, 4);
         rig.write_payload(&mut drawable, b"glb");
-        // A tier-8 row whose file is missing: it can never draw in this slice, so it is not
-        // checked and does not turn object LOD off.
-        let ignored = chunk_of(LodTier::Tier8, 15, 10);
-        rig.answer(vec![drawable, ignored], 0);
-        rig.run_until("the root", |rig| rig.objects().resident() == 1);
-        assert!(rig.objects().failure().is_none());
-        assert_eq!(
-            rig.objects().chunks().len(),
-            1,
-            "only the tier-16 row is kept"
-        );
+        // A tier-8 row whose file is missing: every tier is checked, so object LOD goes off.
+        let missing = chunk_of(LodTier::Tier8, 15, 10);
+        rig.answer(vec![drawable, missing], 0);
+        rig.run_until("the failure", |rig| rig.objects().failure().is_some());
+        assert_eq!(rig.root_count(), 0);
     }
 
     #[test]
@@ -861,9 +1008,43 @@ mod tests {
         rig.move_camera(INSIDE_CHUNK_4_4);
         rig.app.update();
         assert_eq!(rig.objects().resident(), 0);
+        // Nothing replaces it, so it retires on the next frame.
+        rig.app.update();
         assert_eq!(rig.root_count(), 0, "the entity is despawned");
         rig.move_camera(RIVERWOOD);
         rig.app.update();
+        assert_eq!(rig.root_count(), 1);
+    }
+
+    #[test]
+    fn an_outgoing_chunk_stays_until_the_incoming_one_has_attached() {
+        let mut rig = rig(false);
+        let mut outgoing = chunk(4, 4);
+        let mut incoming = chunk(6, 5);
+        rig.write_payload(&mut outgoing, b"glb a");
+        rig.write_payload(&mut incoming, b"glb b");
+        let (outgoing_key, incoming_key) = (outgoing.key, incoming.key);
+        rig.answer(vec![outgoing, incoming], 0);
+        rig.run_until("the outgoing root", |rig| rig.objects().resident() == 1);
+        assert!(rig.objects().roots.contains_key(&outgoing_key));
+        // From inside chunk (4, 4) the rule wants chunk (6, 5) and no longer chunk (4, 4).
+        rig.move_camera(INSIDE_CHUNK_4_4);
+        rig.app.update();
+        assert!(rig.objects().roots.contains_key(&incoming_key));
+        assert_eq!(rig.objects().retiring(), 1);
+        for _ in 0..3 {
+            rig.app.update();
+        }
+        assert_eq!(
+            rig.root_count(),
+            2,
+            "both draw: the incoming one has not attached"
+        );
+        // The incoming scene spawns its children: the outgoing root detaches at the next frame.
+        let incoming_root = rig.objects().roots[&incoming_key];
+        rig.app.world_mut().spawn(ChildOf(incoming_root));
+        rig.app.update();
+        assert_eq!(rig.objects().retiring(), 0);
         assert_eq!(rig.root_count(), 1);
     }
 

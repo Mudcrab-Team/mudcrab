@@ -101,7 +101,7 @@ The query and keep radius of a tier is its parent's split distance plus the
 parent's cells: 17 / 33 / 92 cells at the defaults
 (`TerrainLodDistances::reach_cells`).
 
-### Object LOD at run time (first slice)
+### Object LOD at run time
 
 The converter publishes object chunks (retail `.bto` imports) as separate files listed in the
 additive table `lod_object_chunks`, with its own R-tree and the same row contract as terrain
@@ -113,14 +113,24 @@ object path (`streaming/lod_objects.rs`) works as follows.
   block splits under `fBlockLevel1Distance` x sqrt(NAMA) and a level-8 block under
   `fBlockLevel0Distance` x sqrt(NAMA). NAMA is 1.0 for every worldspace until the pack carries
   the WRLD value (retail uses 0.25 for Whiterun, Markarth, Windhelm and Alftand).
-- **Tier 16 only.** Only tier-16 chunks are selected, which draw between 70,000 and 250,000
-  units at the defaults and never meet the loaded grid. Tier 8 and tier 4 rows are ignored until
-  object chunks hand off to full detail.
+- **Tiers.** Chunks of every tier are selected by the rule: tier 4 draws out to
+  `fBlockLevel0Distance` (35,000), tier 8 from there to `fBlockLevel1Distance` (70,000) and tier 16
+  from there to `fBlockMaximumDistance` (250,000) at the defaults, by the distance from the camera
+  cell's centre to the block rectangle. **Known difference:** retail measures from the player's
+  position; the engine refreshes the selection when the camera crosses a cell and uses the cell
+  centre (an error of up to about 2,900 units in the plane). The terrain rule shares this function,
+  so changing it is not a small fix.
+- **Hand-over.** A chunk that is no longer wanted stays until every wanted chunk has attached (its
+  scene has spawned), so incoming geometry is there before outgoing geometry detaches (retail
+  fact, skyrim_decomp#675). Retail's fade and any hysteresis are unverified and not implemented.
+- **Loaded cells.** A tier-4 chunk carries one piece per cell (`object_cell_<x>_<y>_<n>` nodes,
+  tagged `LodObjectCell`). A piece is hidden while its cell is inside the loaded grid (camera cell
+  plus or minus the stream radius), where full-detail objects draw. Large-reference takeover of
+  cells beyond the loaded grid is not implemented.
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
-  every tier-16 file is hash-checked, one IO-pool task per file; rows of tiers that do not draw
-  are not read. A bad row, a missing file or a wrong hash logs one error and turns object LOD off
-  for the pack. No chunk is skipped on its own, and the failure stays through worldspace changes
-  until the pack changes.
+  every file of every tier is hash-checked, one IO-pool task per file. A bad row, a missing file
+  or a wrong hash logs one error and turns object LOD off for the pack. No chunk is skipped on its
+  own, and the failure stays through worldspace changes until the pack changes.
 - **Order and limits.** The system runs inside the commit window: after `plan_lod_chunks`,
   `collect_cells` and `collect_lod_chunks`, before
   `finish_streaming_commit_budget` and before `update_render_origin`, so a root spawned in the
@@ -130,8 +140,8 @@ object path (`streaming/lod_objects.rs`) works as follows.
   controls: an object chunk is one asset-server load, bounded by the commit budget.
 - **Doors.** The verified rows are kept while the worldspace is unchanged, so an interior visit
   drops the roots but does not read or hash the rows again.
-- **Not yet.** No hand-off to full detail, no scene-name validation of object chunk GLBs, and no
-  tier 8 or tier 4 drawing.
+- **Not yet.** No fade, no scene-name validation of object chunk GLBs, and no large-reference
+  takeover.
 
 Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 70000 and 250000 with a multiplier of 1.5
