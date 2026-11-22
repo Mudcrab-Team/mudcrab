@@ -314,9 +314,16 @@ fn convert_first_mip(
     axes: Option<NormalAxes>,
 ) -> Result<Vec<u8>> {
     let dds = ddsfile::Dds::read(std::io::Cursor::new(dds_bytes)).wrap_err("invalid DDS")?;
-    let image = image_dds::image_from_dds(&dds, 0).wrap_err("the first mip cannot be decoded")?;
-    let (width, height) = (image.width(), image.height());
-    let mut rgba = image.into_raw();
+    // Packed layouts (the colour maps are 32-bit X8R8G8B8) are read by the texture stage's own
+    // decoder; compressed layouts (the normal maps are BC3) by `image_dds`.
+    let (width, height, mut rgba) = match crate::texture::decode_packed_rgba8_mips(&dds) {
+        Ok(mut levels) if !levels.is_empty() => levels.swap_remove(0),
+        _ => {
+            let image =
+                image_dds::image_from_dds(&dds, 0).wrap_err("the first mip cannot be decoded")?;
+            (image.width(), image.height(), image.into_raw())
+        }
+    };
     if let Some(axes) = axes {
         remap_normal_rgba(&mut rgba, axes);
     }
@@ -1130,6 +1137,20 @@ mod tests {
         assert!((chunk.bounds_min[0] - (-72.0 * 4096.0)).abs() < 1.0);
         assert!((chunk.bounds_max[0] - (-72.0 * 4096.0 + 16384.0)).abs() < 1.0);
         crate::lod::terrain::validate_terrain_glb(&chunk.glb).unwrap();
+    }
+
+    #[test]
+    fn a_colour_map_without_an_alpha_channel_converts() {
+        // The retail colour maps are X8R8G8B8: 32 bits with no alpha mask.
+        let mut dds = bgra_dds([10, 20, 30, 0]);
+        dds[4 + 19 * 4..4 + 20 * 4].copy_from_slice(&0x40u32.to_le_bytes()); // rgb only
+        dds[4 + 25 * 4..4 + 26 * 4].copy_from_slice(&0u32.to_le_bytes()); // no alpha mask
+        let ktx2 = convert_first_mip(&dds, TextureEncoding::ColorSrgb, None).unwrap();
+        let reader = ktx2::Reader::new(&ktx2).unwrap();
+        assert_eq!(
+            (reader.header().pixel_width, reader.levels().count()),
+            (256, 1)
+        );
     }
 
     #[test]
