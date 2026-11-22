@@ -20,12 +20,11 @@ def load(path):
     return module
 
 
-class Crash(BaseException):
-    """A process stop bypasses the production handlers for recoverable OS errors."""
+class SimulatedProcessStop(BaseException):
+    pass
 
 
-def run_prefix(operation, cut):
-    """Cut 0 stops before the call. Cut N stops just after successful mutation N."""
+def run_prefix(operation, stop_after_mutations):
     steps = []
 
     def interruptible(name):
@@ -34,21 +33,21 @@ def run_prefix(operation, cut):
         def call(path, *args, **kwargs):
             result = original(path, *args, **kwargs)
             steps.append(f"{name} {Path(path).name}")
-            if len(steps) == cut:
-                raise Crash
+            if len(steps) == stop_after_mutations:
+                raise SimulatedProcessStop
             return result
         return call
 
-    if cut != 0:
+    if stop_after_mutations != 0:
         with ExitStack() as stack:
             for name in ("replace", "rename", "unlink", "rmdir"):
                 stack.enter_context(patch.object(os, name, interruptible(name)))
             try:
                 operation()
-            except Crash:
+            except SimulatedProcessStop:
                 pass
-    if cut is not None and len(steps) != cut:
-        raise AssertionError(f"scheduled cut {cut} was never reached: {steps}")
+    if stop_after_mutations is not None and len(steps) != stop_after_mutations:
+        raise AssertionError(f"scheduled cut {stop_after_mutations} was never reached: {steps}")
     return steps
 
 
@@ -104,7 +103,6 @@ def schedule(module, repo, kind, cleanup_cut, recovery_cut):
                     payload.write_bytes(b"new output")
                     expected[payload] = b"new output"
 
-            # Give another profile the real trim's stamp. Only the renamed profiles qualify.
             if kind == "trim":
                 for receipt in (ws.root / "evidence").glob("trimmed-slot-0-*.json"):
                     stamp = receipt.stem[len("trimmed-slot-0-"):]
@@ -144,7 +142,6 @@ def verify(module, repo):
 
 
 def check_history(repo):
-    # Each old version must delete the personal file. An import error or a held build fails CI.
     for revision, cut in (("2bddabdabfde22c0db0c19bd1cfae5184a5738ff", 0),
                           ("8eb68b1539e2fff4aa31ab81f60eedcd8b9988aa", None)):
         with tempfile.TemporaryDirectory() as temp:

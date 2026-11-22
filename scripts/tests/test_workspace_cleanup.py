@@ -452,6 +452,38 @@ class CrashDuringDelete(CleanupCase):
         self.assertIn("open", statuses[opened.name])
         self.assertEqual(statuses[nested.name], "held: scan errors or symlinks")
 
+    def test_recovery_needs_a_build_marker_or_a_receipt_for_a_leftover(self):
+        lookalike = self.builds / f".retiring-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-1"
+        lookalike.mkdir()
+        (lookalike / "data").write_text("a person made this")
+        with patch.object(workspace.shutil, "which", return_value="lsof"), \
+                patch.object(workspace.subprocess, "run", return_value=IDLE):
+            rows = self.ws.recover_interrupted()
+            self.assertEqual([row["status"] for row in rows],
+                             ["held: no build.json or receipt shows that the tool made it"])
+            self.assertTrue((lookalike / "data").exists())
+            workspace.write_json(self.store / "evidence" / f"retired-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-99.json", {})
+            rows = self.ws.recover_interrupted()
+        self.assertEqual([row["status"] for row in rows],
+                         ["held: no build.json or receipt shows that the tool made it"])
+        self.assertEqual((lookalike / "data").read_text(), "a person made this")
+
+    def test_recovery_leaves_a_trim_leftover_without_a_receipt(self):
+        slot = self.make_build("slot-0")
+        leftover = slot / "target" / "debug" / ".trim-incremental-5"
+        leftover.mkdir(parents=True)
+        (leftover / "data").write_text("x")
+        with patch.object(workspace.shutil, "which", return_value="lsof"), \
+                patch.object(workspace.subprocess, "run", return_value=IDLE):
+            rows = self.ws.recover_interrupted()
+            self.assertEqual([row["status"] for row in rows],
+                             ["held: no build.json or receipt shows that the tool made it"])
+            workspace.write_json(self.store / "evidence" / "trimmed-slot-0-7.json", {})
+            rows = self.ws.recover_interrupted()
+        self.assertEqual([row["status"] for row in rows],
+                         ["held: no build.json or receipt shows that the tool made it"])
+        self.assertEqual((leftover / "data").read_text(), "x")
+
     def test_old_unreadable_or_symlinked_receipt_cannot_authorize_recovery(self):
         leftover = self.builds / ".retiring-slot-0-1"
         leftover.mkdir()

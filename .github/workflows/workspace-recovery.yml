@@ -24,7 +24,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The negative controls load the merged #797 and #800 versions with git show.
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v5
