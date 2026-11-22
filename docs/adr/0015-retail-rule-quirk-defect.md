@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-21
+- **Amended:** 2026-11-22. Add that an unfinishable quest is a defect. See
+  [Unfinishable quest](#unfinishable-quest).
 
 ## Context
 
@@ -61,6 +63,27 @@ Content may depend on the behaviour of a defect. An exploit or a timing trick is
 an example. A fix of such a defect needs evidence of which content touches it. Decide
 each case on its own. Until the evidence exists, record the defect as unverified
 for content impact and keep the fix local to what the evidence allows.
+
+### Unfinishable quest
+
+A quest that a player cannot finish because of a script or data fault is a defect.
+A stage setter with a missing guard is an example. Stages set out of order are
+another. The evidence must show the intended outcome. The quest has a reachable
+ending in its data. No content relies on the stall.
+
+The fix ships as a content overlay: a plugin override and a converted script,
+with provenance. It never changes an immutable pack. The fix must change no state
+in a play-through where retail already works.
+
+Each fix states one intent invariant and cites its evidence. A reviewer signs off
+on the intent.
+
+Without intent evidence, the behaviour stays a quirk. Mudcrab copies it in the
+`skyrim` profile. Any fix is off by default.
+
+Example (facts only): the Windhelm quest MS11 ("Blood on the Ice") has trigger and
+stage guards that can stall it. It is a candidate for a fix. Reproduction in
+retail is unverified.
 
 ### Worked examples
 
