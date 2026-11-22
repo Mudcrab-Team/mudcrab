@@ -2234,6 +2234,7 @@ mod tests {
         ("sync_branch.py", "--no-edit"),
         ("sync_branch.py", "--no-fetch"),
         ("sync_branch.py", "--no-ff"),
+        ("sync_branch.py", "--no-messages"),
         ("sync_branch.py", "--repo"),
         ("sync_branch.py", "--review-sources"),
         ("sync_branch.py", "--show-toplevel"),
