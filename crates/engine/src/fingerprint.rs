@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(graphics["split_distance_mult"], serde_json::json!(1.25));
         assert_eq!(graphics["lights"], serde_json::json!(true));
         assert_eq!(graphics["present_mode"], serde_json::Value::Null);
-        assert_eq!(graphics["visual_profile"], serde_json::json!("mudcrab"));
+        assert_eq!(graphics["visual_profile"], serde_json::json!("skyrim"));
     }
 
     /// The renderer half carries the adapter, driver and capability names a report is compared on.

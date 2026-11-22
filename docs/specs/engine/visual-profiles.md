@@ -11,11 +11,13 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 
 | Profile | Pipeline |
 |---|---|
-| `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); shading and output still follow the `mudcrab` pipeline until P1c. |
+| `skyrim` (default) | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); shading and output still follow the `mudcrab` pipeline until P1c. |
+| `mudcrab` | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.
+- The default is `skyrim`. A saved settings file keeps the profile it stores, so a file that saved
+  `mudcrab` stays `mudcrab` after the default changed.
 - The profile is read once at startup. Changing it requires a restart, as Community Shaders requires
   for Linear Lighting; nothing in the engine rebuilds a running pipeline for another profile.
 - Startup logs `visual profile active` with the profile name and the colour-texture decode
@@ -175,7 +177,7 @@ checks it lands on the pixel listed below. Capture it, then compare two receipts
 tolerance:
 
 ```bash
-engine --assets <pack> --worldspace 0x3c --visual-profile <profile> \
+engine --assets <pack> --worldspace 0x3c --visual-profile mudcrab \
   --game-hour 12 --shots crates/engine/tests/fixtures/visual-profile-v1-shots.json --shots-out <dir>
 scripts/compare_stage_receipts.py <reference>.stages.json <candidate>.stages.json
 ```

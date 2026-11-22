@@ -6,8 +6,9 @@ Mudcrab setup, the fixed Skyrim screenshot, and the current capture. Use
 variants from one camera and INI. The runner updates a self-contained HTML
 comparison after each validated stage.
 
-The approved look remains the engine default. Experimental record grading and
-tone-map changes are separate variants. A successful capture validates the
+The approved look remains the `mudcrab` profile's look, and the runner pins that
+profile. Experimental record grading and tone-map changes are separate variants.
+A successful capture validates the
 Mudcrab scene and its receipts; it does not establish Skyrim fidelity. The
 reference screenshot's effective weather, exposure, modifiers, adapted luminance,
 and GPU constants have not been observed.

@@ -42,3 +42,6 @@ class Phase1CaptureTests(unittest.TestCase):
 
     def test_worktree_local_target_default(self):
         self.assertIn("CARGO_TARGET_DIR:-$repo/target", SOURCE)
+
+    def test_capture_pins_the_mudcrab_profile(self):
+        self.assertIn("--visual-profile mudcrab", SOURCE)

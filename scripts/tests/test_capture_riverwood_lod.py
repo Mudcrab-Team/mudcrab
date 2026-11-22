@@ -393,6 +393,9 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
         report = json.loads((output / "capture-report.json").read_text())
         self.assertIn("riverwood-radius0: pending_lod_queries=None", report["errors"])
 
+    def test_capture_pins_the_mudcrab_profile(self):
+        self.assertIn("--visual-profile mudcrab", SCRIPT.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

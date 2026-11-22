@@ -29,6 +29,7 @@ POSE_KEYS = (
 # screenshot path, INI, automated session, or capture-readiness policy.
 RESERVED = {
     "--assets", "--shots", "--shots-out", "--ini", "--start-shot", "--worldspace",
+    "--visual-profile",
     "--hidden-window", "--matched-route", "--headless",
     "--acceptance-screenshot", "--benchmark-only", "--shots-settle-timeout",
     "--benchmark-frames", "--benchmark-duration", "--streaming-fixture",
@@ -583,6 +584,8 @@ def capture(config_path, engine, assets, output, grass_tuning_files=None):
         command = [str(engine), *grass_default, "--assets", str(assets), "--shots", inputs["camera"]["path"],
                    "--ini", inputs["ini"]["path"], "--shots-out", str(directory / "capture"),
                    "--hidden-window", "--shots-settle-timeout", str(settle_timeout),
+                   # The frozen references and every variant are the approved Mudcrab look.
+                   "--visual-profile", "mudcrab",
                    *arguments]
         run = {
             "name": variant["name"], "label": variant.get("label", variant["name"]),

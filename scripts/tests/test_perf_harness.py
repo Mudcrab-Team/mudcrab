@@ -1464,6 +1464,7 @@ class WindowModeTest(unittest.TestCase):
                                           warmup_frames=None, window=mode, commit="c", run_id="r",
                                           frame_budget_ms=6.25)
             flags[mode] = {a for a in args if a in ("--hidden-window", "--background-window")}
+            self.assertEqual(args[args.index("--visual-profile") + 1], "mudcrab")
         self.assertEqual(flags, {"hidden": {"--hidden-window"}, "background": {"--background-window"},
                                  "visible": set()})
         with self.assertRaises(perf.HarnessError):

@@ -45,6 +45,7 @@ def main():
         command = [
             str(engine), "--no-grass", "--assets", str(assets), "--shots", str(shots),
             "--shots-out", str(directory), "--hidden-window", "--lights",
+            "--visual-profile", "mudcrab",
             "--stream-radius", "2", "--color-grade", mode,
             "--visual-preset", VISUAL_PRESET,
             # The native Riverwood reference was captured after `set gamehour to 12`

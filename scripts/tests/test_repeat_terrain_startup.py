@@ -41,7 +41,9 @@ def png(width=2, height=1, compressed=None, color=2, depth=8):
 class ValidationTests(unittest.TestCase):
     def test_command_pins_grass_off(self):
         args = RUNNER.parse_args(["--engine", "engine", "--assets", "assets", "--output", "output"])
-        self.assertIn("--no-grass", RUNNER.engine_command(args, Path("output"), 16, "test"))
+        command = RUNNER.engine_command(args, Path("output"), 16, "test")
+        self.assertIn("--no-grass", command)
+        self.assertEqual(command[command.index("--visual-profile") + 1], "mudcrab")
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

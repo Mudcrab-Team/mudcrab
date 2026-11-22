@@ -191,6 +191,9 @@ def build_engine_args(name, scenario, *, assets, out_dir, duration, warmup_frame
     out_dir = Path(out_dir)
     warmup = warmup_frames if warmup_frames is not None else scenario.get("warmup_frames")
     args = [
+        # Stored baselines measured the approved pipeline; keep it fixed as the
+        # engine default moves to `skyrim`.
+        "--visual-profile", "mudcrab",
         "--benchmark-duration", fmt_number(effective_duration(scenario, duration)),
         "--benchmark-output", str(out_dir / "report.json"),
         "--profile-output", str(out_dir / "bundle"),
@@ -1425,7 +1428,8 @@ def capture_shots(engine, shots_file, assets, out_dir, *, worldspace="0x3c", tim
     prepare_output_dir(out_dir)
     names = read_shot_names(shots_file)
     command = [str(engine), "--assets", str(assets), "--allow-incomplete-assets", "--worldspace", worldspace,
-               "--shots", str(shots_file), "--shots-out", str(out_dir)]
+               "--shots", str(shots_file), "--shots-out", str(out_dir),
+               "--visual-profile", "mudcrab"]
     command += {"hidden": [HIDDEN_FLAG], "background": [BACKGROUND_FLAG]}.get(window, [])
     command += list(extra_args)
 

@@ -13,9 +13,9 @@ pub const VISUAL_PROFILE_VALUES: &str = "mudcrab or skyrim";
 #[serde(rename_all = "kebab-case")]
 pub enum VisualProfile {
     /// Bevy PBR with the approved TonyMcMapface look and grade.
-    #[default]
     Mudcrab,
     /// Retail Skyrim SE's color pipeline evaluated on raw authored values.
+    #[default]
     Skyrim,
 }
 
@@ -60,8 +60,8 @@ impl VisualProfile {
         }
     }
 
-    /// Stable persisted index; `mudcrab` is 0 so settings files written before profiles existed
-    /// keep the approved look.
+    /// Stable persisted index: `mudcrab` stays 0 and `skyrim` stays 1, so a saved settings file
+    /// keeps its profile after the default changed. Never renumber.
     pub fn index(self) -> usize {
         match self {
             Self::Mudcrab => 0,
@@ -119,8 +119,9 @@ mod tests {
         assert_eq!(VisualProfile::parse("SKYRIM"), Some(VisualProfile::Skyrim));
         assert_eq!(VisualProfile::parse("vanilla"), None);
         assert_eq!(VisualProfile::from_index(2), None);
-        assert_eq!(VisualProfile::default(), VisualProfile::Mudcrab);
+        assert_eq!(VisualProfile::default(), VisualProfile::Skyrim);
         assert_eq!(VisualProfile::Mudcrab.index(), 0);
+        assert_eq!(VisualProfile::Skyrim.index(), 1);
     }
 
     #[test]

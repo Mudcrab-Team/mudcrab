@@ -156,6 +156,8 @@ function Get-ScenarioArguments {
     )
     $arguments = @(
         "--no-grass",
+        # Baselines and regressions were measured on the approved pipeline.
+        "--visual-profile", "mudcrab",
         "--benchmark-duration", $(if ($Name -eq "stability") { "$StabilitySeconds" } else { "$DurationSeconds" }),
         "--benchmark-output", (Join-Path $RunDirectory "acceptance.json"),
         "--profile-output", $RunDirectory,

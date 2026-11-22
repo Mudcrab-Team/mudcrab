@@ -163,6 +163,7 @@ class CaptureEvidenceTests(unittest.TestCase):
         config = {"common_args": ["--sun-position", "180,45"], "variants": [{"name": "test", "args": []}]}
         TUNING.validate_variants(config)
         for arguments in (["--shots", "other.json"], ["--ini=other.ini"],
+                          ["--visual-profile", "skyrim"],
                           ["--sun-position", "0,0"], ["--shots-out", "elsewhere"]):
             with self.subTest(args=arguments), self.assertRaises(ValueError):
                 TUNING.validate_variants({**config, "variants": [{"name": "test", "args": arguments}]})
