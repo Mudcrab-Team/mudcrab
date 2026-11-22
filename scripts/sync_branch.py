@@ -205,6 +205,15 @@ def delete_generated(root, path):
 
 
 def resolve_inventory(root, path, inventory_command):
+    check_surface_columns(root, path)
+    git(root, "checkout", "--theirs", "--", path)
+    run_tool(root, inventory_command + ["--review-sources"], "inventory --review-sources")
+    run_tool(root, inventory_command + ["--check"], "inventory --check")
+    git(root, "add", "--", path)
+
+
+def check_surface_columns(root, path):
+    """Refuse a surface conflict whose reviewed columns differ on the two sides."""
     stages = unmerged_stages(root, path)
     if 2 not in stages or 3 not in stages:
         raise SyncError(f"cannot regenerate {path}: it is not a two-sided text conflict")
@@ -215,10 +224,6 @@ def resolve_inventory(root, path, inventory_command):
             f"{path}: reviewed columns differ on each side. Resolve the source conflicts, then run "
             "inventory.py --review-sources --extraction <extraction.json> and --check; "
             "taking main's copy would drop the branch's columns.")
-    git(root, "checkout", "--theirs", "--", path)
-    run_tool(root, inventory_command + ["--review-sources"], "inventory --review-sources")
-    run_tool(root, inventory_command + ["--check"], "inventory --check")
-    git(root, "add", "--", path)
 
 
 def surface_columns(root, path, stage):
@@ -575,6 +580,7 @@ def resolve(root, base, inventory_command):
             # Regenerate only after every source conflict is resolved. The inventory tool scans
             # the working tree, and a reader source with conflict markers would produce a wrong
             # surface that its own --check cannot detect.
+            check_surface_columns(root, path)
             deferred.append(path)
             continue
         if path in REGISTRIES:

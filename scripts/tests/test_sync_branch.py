@@ -331,6 +331,36 @@ class SyncBranchTests(unittest.TestCase):
             self.assertIn("<<<<<<<", repo.read(surface))
             self.assertFalse((repo.work / "sync-inventory-log.txt").exists())
 
+    def test_refuses_different_columns_before_deferring(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            surface = "tools/world_data_inventory/reviewed-surface.json"
+            repo.write(
+                surface,
+                json.dumps({"format_version": 1, "readers": {"reader": "branch"},
+                            "columns": ["branch"]}, indent=2) + "\n",
+            )
+            repo.write("crates/engine/src/lib.rs", "pub fn value() -> u32 { 2 }\n")
+            repo.commit("fixture: branch changes a reader, column and source")
+            repo.advance_main(
+                {
+                    surface: json.dumps(
+                        {"format_version": 1, "readers": {"reader": "main"},
+                         "columns": ["main"]},
+                        indent=2,
+                    )
+                    + "\n",
+                    "crates/engine/src/lib.rs": "pub fn value() -> u32 { 3 }\n",
+                }
+            )
+
+            done = repo.sync()
+
+            self.assertEqual(done.returncode, 2, done.stdout)
+            self.assertIn("reviewed columns differ on each side", done.stdout)
+            self.assertIn("<<<<<<<", repo.read(surface))
+            self.assertFalse((repo.work / "sync-inventory-log.txt").exists())
+
     def test_does_not_readd_a_registry_member_removed_on_one_side(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = self.repo(directory)
