@@ -6,6 +6,19 @@ use std::path::Path;
 
 /// Converts a stored model path to the GLB requested by world streaming.
 pub fn streamed_model_path(path: &str) -> Option<String> {
+    // silent-ok: ordinary streaming uses the presence of a drawable path.
+    classify_streamed_model_path(path).ok()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamedModelExclusion {
+    Effects,
+    Sky,
+    Other,
+}
+
+/// Reports the path exclusions that large-reference promotion can identify.
+pub fn classify_streamed_model_path(path: &str) -> Result<String, StreamedModelExclusion> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
     // The filename is no marker signal: forges and the Civil War map flags carry
@@ -19,7 +32,7 @@ pub fn streamed_model_path(path: &str) -> Option<String> {
         .unwrap_or(normalized)
         .trim_start_matches("./");
     if !is_safe_relative_asset_path(without_prefix) {
-        return None;
+        return Err(StreamedModelExclusion::Other);
     }
     let relative = without_prefix
         .split('/')
@@ -27,17 +40,21 @@ pub fn streamed_model_path(path: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join("/");
     let relative = std::path::Path::new(&relative);
-    if relative.as_os_str().is_empty()
-        || relative.starts_with("sky")
-        || relative.starts_with("markers")
-        || (relative.starts_with("effects")
-            && relative != std::path::Path::new("effects/fxcobwebroundwall01.nif"))
+    if relative.as_os_str().is_empty() || relative.starts_with("markers") {
+        return Err(StreamedModelExclusion::Other);
+    }
+    // STAND-IN(#916): The ordinary streamer skips these models. Promotion uses the same filter.
+    if relative.starts_with("sky") {
+        return Err(StreamedModelExclusion::Sky);
+    }
+    if relative.starts_with("effects")
+        && relative != std::path::Path::new("effects/fxcobwebroundwall01.nif")
     {
-        return None;
+        return Err(StreamedModelExclusion::Effects);
     }
     let mut converted = std::path::PathBuf::from("meshes").join(relative);
     converted.set_extension("glb");
-    Some(converted.to_string_lossy().replace('\\', "/"))
+    Ok(converted.to_string_lossy().replace('\\', "/"))
 }
 
 /// Rejects a database-supplied relative path that could escape the assets

@@ -1740,6 +1740,7 @@ fn spawn_cell(
             payload.key,
             members,
             &payload.references,
+            actor_catalog,
         ));
     }
     let root = root_commands.id();

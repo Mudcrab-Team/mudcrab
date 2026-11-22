@@ -361,6 +361,7 @@ impl EsmParser {
         let mut large_references = large_references::LargeReferences::default();
         let mut placement_candidates = BTreeMap::new();
         let mut deleted_ids = crate::records::DeletedBases::default();
+        let mut unproven_deletions = HashSet::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -542,6 +543,19 @@ impl EsmParser {
                     room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
+                    // Legacy remapping can admit a compatibility alias that is too weak to
+                    // establish a confirmed removal for RNAM.
+                    if crate::records::source_identity::header_runtime_id(
+                        &record.record_type,
+                        source_id,
+                        priority,
+                        order,
+                    ) == Some(id)
+                    {
+                        unproven_deletions.remove(&id);
+                    } else {
+                        unproven_deletions.insert(id);
+                    }
                     let prior_kind = settle_legacy_predecessor(
                         id,
                         placement_candidates.get(&id),
@@ -614,6 +628,14 @@ impl EsmParser {
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         damaged_placements.unknown_scope |= unknown_discarded_scope;
+        large_references.confirm_removed(|id| {
+            !merged.contains_key(&id)
+                && !unproven_deletions.contains(&id)
+                && !damaged_placements
+                    .cells_by_reference
+                    .contains_key(&Some(id))
+                && deleted_ids.is_unrestored_reference(id)
+        });
         damaged_cells.extend(damaged_placements.affected_cells(&merged));
         Ok(LegacyPluginMerge {
             large_references,

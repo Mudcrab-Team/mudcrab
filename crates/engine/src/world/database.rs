@@ -1939,9 +1939,22 @@ fn large_reference_index(connection: &Connection) -> Result<LargeReferenceIndex>
             }
         }
     }
-    let mut omissions = connection.prepare(
-        "SELECT worldspace_id,grid_x,grid_y,omitted_count FROM large_reference_omissions",
+    let has_removals: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('large_reference_omissions')
+          WHERE name='confirmed_removed_count')",
+        [],
+        |row| row.get(0),
     )?;
+    let mut omissions = if has_removals {
+        connection.prepare(
+            "SELECT worldspace_id,grid_x,grid_y,omitted_count,confirmed_removed_count
+             FROM large_reference_omissions",
+        )?
+    } else {
+        connection.prepare(
+            "SELECT worldspace_id,grid_x,grid_y,omitted_count,0 FROM large_reference_omissions",
+        )?
+    };
     let mut rows = omissions.query([])?;
     while let Some(row) = rows.next()? {
         let Ok(worldspace_id) = row.get::<_, u32>(0) else {
@@ -1958,14 +1971,16 @@ fn large_reference_index(connection: &Connection) -> Result<LargeReferenceIndex>
                 continue;
             }
         };
-        let count = match row.get::<_, usize>(3) {
-            Ok(count) if count > 0 => count,
-            _ => {
-                malformed += 1;
-                1
+        match (row.get::<_, usize>(3), row.get::<_, usize>(4)) {
+            (Ok(0), Ok(removed)) if removed > 0 && key.is_some() => {}
+            (Ok(omitted), Ok(removed)) if omitted > 0 && (removed == 0 || key.is_some()) => {
+                index.omit(worldspace_id, key, omitted);
             }
-        };
-        index.omit(worldspace_id, key, count);
+            (omitted, _) => {
+                malformed += 1;
+                index.omit(worldspace_id, key, omitted.unwrap_or(0).max(1));
+            }
+        }
     }
     for &worldspace_id in &unknown_flags {
         index.omit(worldspace_id, None, 1);
@@ -2551,6 +2566,29 @@ mod tests {
                 .references
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn confirmed_removals_do_not_count_as_large_reference_omissions() {
+        let connection = Connection::open_in_memory().unwrap();
+        let key = large_reference_fixture(&connection);
+        connection
+            .execute_batch(
+                "ALTER TABLE large_reference_omissions ADD COLUMN confirmed_removed_count;
+             INSERT INTO large_reference_omissions
+             VALUES(60,2,-3,0,1),(60,3,-3,2,1),(60,4,-3,0,'bad'),(60,5,-3,0,0);",
+            )
+            .unwrap();
+        let index = large_reference_index(&connection).unwrap();
+        assert_eq!(index.members[&key], HashSet::from([31]));
+        assert_eq!(index.omissions(key), 0);
+        assert_eq!(index.omissions(rnam_cell(60, 3, -3)), 2);
+        assert_eq!(index.omissions(rnam_cell(60, 4, -3)), 1);
+        assert_eq!(index.omissions(rnam_cell(60, 5, -3)), 1);
+        assert_eq!(
+            large_reference_rows(&connection, key).references[0].form_id,
+            31
         );
     }
 

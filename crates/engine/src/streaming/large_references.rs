@@ -5,13 +5,14 @@ use super::{
     ActiveSpace, CellStatus, PendingAssetProfile, PendingModel, RenderOrigin, StreamingMetrics,
     StreamingWorld, cell_order_key, cell_translation,
     lod_objects::{LargeReferenceLod, LargeReferencePiece, LodObjectCell, LodObjects},
-    requests, spawned_model_path,
+    requests,
 };
 use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
     render::PLACED_OBJECT_RENDER_LAYERS,
     world::{
+        actor_catalog::ActorCatalog,
         components::{CellRef, ExteriorCellGrid, FormId, MeshHandle, WorldTransform},
         database::{
             AssetCatalog, CellKey, DatabaseRequest, LargeReferenceRows, ReferenceRow,
@@ -21,6 +22,7 @@ use crate::{
 };
 use bevy::{app::Propagate, gltf::GltfAssetLabel, prelude::*};
 use crossbeam_channel::{Receiver, TryRecvError, bounded};
+use shared::world_assets::{StreamedModelExclusion, classify_streamed_model_path};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -80,10 +82,76 @@ pub(super) struct OrdinaryLargeReferences {
     expected: Option<usize>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum MemberModel {
+    Draw(String),
+    Disabled,
+    EditorMarker,
+    Effects,
+    Sky,
+    Unknown,
+}
+
+fn member_model(row: &ReferenceRow) -> MemberModel {
+    if row.enable_state_unresolved {
+        return MemberModel::Unknown;
+    }
+    if !row.initially_enabled {
+        return MemberModel::Disabled;
+    }
+    match row.model_path.as_deref() {
+        None if row.base_is_marker => MemberModel::EditorMarker,
+        Some(path) if !row.base_is_marker => match classify_streamed_model_path(path) {
+            Ok(model) => MemberModel::Draw(model),
+            Err(StreamedModelExclusion::Effects) => MemberModel::Effects,
+            Err(StreamedModelExclusion::Sky) => MemberModel::Sky,
+            Err(StreamedModelExclusion::Other) => MemberModel::Unknown,
+        },
+        _ => MemberModel::Unknown,
+    }
+}
+
+#[derive(Default)]
+struct KnownSkips {
+    editor_markers: usize,
+    effects: usize,
+    sky: usize,
+}
+
+impl KnownSkips {
+    fn record(&mut self, model: &MemberModel) {
+        match model {
+            MemberModel::EditorMarker => self.editor_markers += 1,
+            MemberModel::Effects => self.effects += 1,
+            MemberModel::Sky => self.sky += 1,
+            _ => {}
+        }
+    }
+
+    fn log(&self, key: CellKey, representation: &str) {
+        let Self {
+            editor_markers,
+            effects,
+            sky,
+        } = *self;
+        if editor_markers + effects + sky > 0 {
+            info!(
+                ?key,
+                representation,
+                editor_markers,
+                effects,
+                sky,
+                "large-reference known non-drawing placements"
+            );
+        }
+    }
+}
+
 pub(super) fn ordinary_members(
     key: CellKey,
     members: &HashSet<u32>,
     rows: &[ReferenceRow],
+    actors: &ActorCatalog,
 ) -> OrdinaryLargeReferences {
     let CellKey::Exterior { grid_x, grid_y, .. } = key else {
         warn!(
@@ -93,12 +161,24 @@ pub(super) fn ordinary_members(
         return OrdinaryLargeReferences { expected: None };
     };
     let (mut resolved, mut enabled) = (0, 0);
+    let mut skips = KnownSkips::default();
     for row in rows.iter().filter(|row| members.contains(&row.form_id)) {
         if !row.enable_state_unresolved && large_reference_in_bucket(row, grid_x, grid_y) {
             resolved += 1;
-            enabled += usize::from(row.initially_enabled);
+            if !row.initially_enabled {
+                continue;
+            }
+            // The ordinary actor path can draw a composed body without the reference's mesh.
+            if actors.get(row.base_form_id).is_some() {
+                enabled += 1;
+                continue;
+            }
+            let model = member_model(row);
+            skips.record(&model);
+            enabled += usize::from(matches!(model, MemberModel::Draw(_) | MemberModel::Unknown));
         }
     }
+    skips.log(key, "ordinary");
     let missing = members.len().saturating_sub(resolved);
     if missing != 0 {
         warn!(?key, missing, "ordinary large-reference placements omitted");
@@ -352,15 +432,15 @@ fn spawn_cell(
     };
     let mut missing = rows.missing;
     let mut placements = Vec::new();
-    for mut reference in rows.references {
-        if !reference.initially_enabled {
-            continue;
-        }
-        match spawned_model_path(reference.model_path.take(), reference.base_is_marker) {
-            Some(path) => placements.push((reference, path)),
-            None => missing += 1,
+    let mut skips = KnownSkips::default();
+    for reference in rows.references {
+        match member_model(&reference) {
+            MemberModel::Draw(path) => placements.push((reference, path)),
+            MemberModel::Unknown => missing += 1,
+            model => skips.record(&model),
         }
     }
+    skips.log(key, "promoted");
     if missing != 0 {
         warn!(
             ?key,
@@ -736,6 +816,7 @@ mod tests {
             .insert_resource(EngineConfig {
                 worldspace_id: 60,
                 stream_radius: 2,
+                max_scene_loads: 1,
                 ..default()
             })
             .insert_resource(StreamingWorld {
@@ -749,6 +830,117 @@ mod tests {
             .init_resource::<ProfilingState>()
             .add_systems(Update, update);
         (app, inbox)
+    }
+
+    fn placement(id: u32, model: Option<&str>, marker: bool) -> ReferenceRow {
+        ReferenceRow {
+            form_id: id,
+            initially_enabled: true,
+            enable_state_unresolved: false,
+            has_multibound_override: false,
+            named_room_target: false,
+            starts_dead: false,
+            cell_id: 1,
+            base_form_id: 2,
+            base_record_type: Some("STAT".into()),
+            base_is_marker: marker,
+            model_path: model.map(str::to_owned),
+            position: [3.0 * crate::world::components::CELL_SIZE, 0.0, 0.0],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            bounds_min: [0.0; 3],
+            bounds_max: [0.0; 3],
+            bounds_valid: false,
+            light: None,
+            light_radius_override: None,
+            emittance: None,
+            door: None,
+        }
+    }
+
+    #[test]
+    fn known_filtered_members_allow_both_representations_to_plan_drawable_models() {
+        let cell = key(3, 0);
+        let rows = vec![
+            placement(7, Some("Landscape/Rock01.nif"), false),
+            placement(8, None, true),
+            placement(9, Some("Meshes\\Effects\\FXRapids01.nif"), false),
+            placement(10, Some("SKY/Clouds.nif"), false),
+            placement(11, Some("Effects/FXCobwebRoundWall01.nif"), false),
+        ];
+        assert_eq!(member_model(&rows[1]), MemberModel::EditorMarker);
+        assert_eq!(member_model(&rows[2]), MemberModel::Effects);
+        assert_eq!(member_model(&rows[3]), MemberModel::Sky);
+        for row in &rows {
+            let actual =
+                super::super::spawned_model_path(row.model_path.clone(), row.base_is_marker);
+            let expected = match member_model(row) {
+                MemberModel::Draw(path) => Some(path),
+                _ => None,
+            };
+            assert_eq!(actual, expected);
+        }
+        let members = rows.iter().map(|row| row.form_id).collect();
+        assert_eq!(
+            ordinary_members(cell, &members, &rows, &ActorCatalog::default()).expected,
+            Some(2)
+        );
+        let mut catalog = AssetCatalog::default();
+        catalog.large_references.members.insert(cell, members);
+        let (mut app, inbox) = streaming_fixture(catalog);
+        app.update();
+        let DatabaseRequest::LoadLargeReferences { reply, .. } = inbox.try_recv().unwrap() else {
+            panic!("expected a large-reference request");
+        };
+        reply
+            .send(Ok(LargeReferenceRows {
+                references: rows,
+                missing: 0,
+            }))
+            .unwrap();
+        app.update();
+        assert!(matches!(
+            app.world().resource::<LargeReferences>().cells[&cell],
+            Cell::Promoted { models: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn unknown_filtered_members_and_enable_state_still_require_lod() {
+        let cell = key(3, 0);
+        let mut unresolved = placement(8, Some("Effects/FXRapids01.nif"), false);
+        unresolved.initially_enabled = false;
+        unresolved.enable_state_unresolved = true;
+        for unknown in [
+            placement(8, None, false),
+            placement(8, Some("Markers/Marker.nif"), true),
+            placement(8, Some("Effects/../Unverified.nif"), false),
+            unresolved,
+        ] {
+            assert_eq!(member_model(&unknown), MemberModel::Unknown);
+            let mut catalog = AssetCatalog::default();
+            catalog
+                .large_references
+                .members
+                .insert(cell, HashSet::from([7, 8]));
+            let (mut app, inbox) = streaming_fixture(catalog);
+            app.update();
+            let DatabaseRequest::LoadLargeReferences { reply, .. } = inbox.try_recv().unwrap()
+            else {
+                panic!("expected a large-reference request");
+            };
+            reply
+                .send(Ok(LargeReferenceRows {
+                    references: vec![placement(7, Some("Landscape/Rock01.nif"), false), unknown],
+                    missing: 0,
+                }))
+                .unwrap();
+            app.update();
+            assert!(matches!(
+                app.world().resource::<LargeReferences>().cells[&cell],
+                Cell::Failed
+            ));
+        }
     }
 
     #[test]

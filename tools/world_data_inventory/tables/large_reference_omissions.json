@@ -2,6 +2,6 @@
   "classification": "deferred",
   "format_version": 1,
   "owner": "Mudcrab maintainers (#899)",
-  "reason": "The engine keeps object LOD when RNAM membership or its placement projection is incomplete (#913).",
+  "reason": "The engine keeps object LOD when RNAM membership or its placement projection is incomplete (#913). The separate count for winning deleted REFRs does not block promotion.",
   "table": "large_reference_omissions"
 }

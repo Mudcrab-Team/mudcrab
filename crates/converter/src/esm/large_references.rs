@@ -17,7 +17,10 @@ pub(super) const TABLE_SQL: &str = "
         worldspace_id INTEGER NOT NULL,
         grid_x INTEGER,
         grid_y INTEGER,
-        omitted_count INTEGER NOT NULL CHECK(omitted_count > 0),
+        omitted_count INTEGER NOT NULL CHECK(omitted_count >= 0),
+        confirmed_removed_count INTEGER NOT NULL CHECK(confirmed_removed_count >= 0),
+        CHECK(omitted_count > 0 OR confirmed_removed_count > 0),
+        CHECK(confirmed_removed_count = 0 OR grid_x IS NOT NULL),
         CHECK((grid_x IS NULL) = (grid_y IS NULL))
     )";
 
@@ -27,6 +30,7 @@ type OmissionScope = (u32, Option<(i32, i32)>);
 #[derive(Debug, Default)]
 pub(crate) struct LargeReferences {
     members: BTreeSet<(u32, Member)>,
+    removed: BTreeSet<u32>,
     omissions: BTreeMap<OmissionScope, usize>,
     malformed: usize,
     unresolved: usize,
@@ -62,6 +66,15 @@ fn members(bytes: &[u8]) -> Option<impl Iterator<Item = Member> + '_> {
 }
 
 impl LargeReferences {
+    pub(crate) fn confirm_removed(&mut self, mut is_removed: impl FnMut(u32) -> bool) {
+        self.removed.extend(
+            self.members
+                .iter()
+                .map(|&(_, (_, _, id))| id)
+                .filter(|&id| is_removed(id)),
+        );
+    }
+
     pub(crate) fn collect(
         &mut self,
         record: &RawRecord,
@@ -119,24 +132,39 @@ impl LargeReferences {
                AND EXISTS (SELECT 1 FROM \"references\" WHERE id=?4)",
         )?;
         let mut missing = 0;
-        let mut omissions = self.omissions.clone();
+        let mut counts: BTreeMap<_, _> = self
+            .omissions
+            .iter()
+            .map(|(&scope, &omitted)| (scope, (omitted, 0)))
+            .collect();
+        let mut removed = 0;
         for &(world, (x, y, id)) in &self.members {
-            if insert.execute(params![world, x, y, id])? == 0 {
+            if self.removed.contains(&id) {
+                removed += 1;
+                counts.entry((world, Some((x, y)))).or_default().1 += 1;
+            } else if insert.execute(params![world, x, y, id])? == 0 {
                 missing += 1;
-                *omissions.entry((world, Some((x, y)))).or_default() += 1;
+                counts.entry((world, Some((x, y)))).or_default().0 += 1;
             }
         }
         let mut insert_omission = conn.prepare_cached(
-            "INSERT INTO large_reference_omissions(worldspace_id,grid_x,grid_y,omitted_count)
-             VALUES (?1,?2,?3,?4)",
+            "INSERT INTO large_reference_omissions
+                (worldspace_id,grid_x,grid_y,omitted_count,confirmed_removed_count)
+             VALUES (?1,?2,?3,?4,?5)",
         )?;
-        for ((world, cell), count) in omissions {
+        for ((world, cell), (omitted, confirmed_removed)) in counts {
             insert_omission.execute(params![
                 world,
                 cell.map(|(x, _)| x),
                 cell.map(|(_, y)| y),
-                count
+                omitted,
+                confirmed_removed,
             ])?;
+        }
+        if removed > 0 {
+            eprintln!(
+                "large references: {removed} memberships confirmed removed by winning deleted REFRs"
+            );
         }
         if self.malformed + self.unresolved + self.overrides + missing > 0 {
             eprintln!(
@@ -257,5 +285,59 @@ mod tests {
                 (record.form_id, Some(0), Some(0), 4)
             ]
         );
+    }
+
+    #[test]
+    fn winning_deleted_references_are_removed_without_hiding_unknown_members() {
+        let mut projection = LargeReferences {
+            members: [
+                (60, (1, 0, 7)),
+                (60, (1, 0, 8)),
+                (60, (2, 0, 9)),
+                (60, (3, 0, 10)),
+                (60, (3, 0, 11)),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let mut deleted = crate::records::DeletedBases::default();
+        deleted.record(7, 1, *b"REFR", Some(*b"REFR"));
+        deleted.restored(7, 2);
+        deleted.record(8, 1, *b"REFR", Some(*b"REFR"));
+        deleted.record(9, 1, *b"REFR", Some(*b"REFR"));
+        deleted.record(10, 1, *b"REFR", None);
+        deleted.record(10, 2, *b"STAT", None);
+        projection.confirm_removed(|id| deleted.is_unrestored_reference(id));
+
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            r#"CREATE TABLE worldspaces(id INTEGER PRIMARY KEY);
+               INSERT INTO worldspaces VALUES(60);
+               CREATE TABLE "references"(id INTEGER PRIMARY KEY);
+               INSERT INTO "references" VALUES(7);"#,
+        )
+        .unwrap();
+        db.execute_batch(TABLE_SQL).unwrap();
+        projection.write(&db).unwrap();
+        assert_eq!(
+            db.query_row("SELECT reference_id FROM large_references", [], |row| row
+                .get::<_, u32>(
+                0
+            ))
+            .unwrap(),
+            7
+        );
+        let mut counts = db
+            .prepare(
+                "SELECT grid_x,omitted_count,confirmed_removed_count
+             FROM large_reference_omissions ORDER BY grid_x",
+            )
+            .unwrap();
+        let counts = counts
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(counts, [(1_i32, 0_i32, 1_i32), (2, 0, 1), (3, 2, 0)]);
     }
 }

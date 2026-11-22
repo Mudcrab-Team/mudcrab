@@ -1344,6 +1344,11 @@ fn read_plugins_with_prepared(
             || !linked_marker_candidates.is_empty()
             || !unresolved_linked_markers.is_empty();
     }
+    result.large_references.confirm_removed(|id| {
+        !result.records.contains_key(&id)
+            && !unreadable_refs.contains_key(&Some(id))
+            && recovery.deleted.is_unrestored_reference(id)
+    });
     if unknown_cell_scope {
         result.damaged_cell_groups.extend(
             result

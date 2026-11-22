@@ -966,13 +966,18 @@ reference has a placement in the matching exterior worldspace and bucket.
 `large_reference_omissions` records incomplete input. A row covers one bucket when both
 coordinates are present, or the whole worldspace when both are NULL. The count covers rejected
 RNAM subrecords, unresolved FormIDs, and members without a projected reference or worldspace.
+The separate `confirmed_removed_count` records membership entries with a winning deleted REFR.
+These entries have a known outcome and do not make their bucket incomplete.
 
 ```sql
 CREATE TABLE IF NOT EXISTS large_reference_omissions (
     worldspace_id INTEGER NOT NULL,
     grid_x INTEGER,
     grid_y INTEGER,
-    omitted_count INTEGER NOT NULL CHECK(omitted_count > 0),
+    omitted_count INTEGER NOT NULL CHECK(omitted_count >= 0),
+    confirmed_removed_count INTEGER NOT NULL CHECK(confirmed_removed_count >= 0),
+    CHECK(omitted_count > 0 OR confirmed_removed_count > 0),
+    CHECK(confirmed_removed_count = 0 OR grid_x IS NOT NULL),
     CHECK((grid_x IS NULL) = (grid_y IS NULL))
 );
 ```

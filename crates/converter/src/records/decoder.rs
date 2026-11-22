@@ -3014,6 +3014,7 @@ pub(crate) struct DeletedBases(HashMap<u32, Vec<BaseDeletion>>);
 #[derive(Clone)]
 struct BaseDeletion {
     priority: u32,
+    kind: [u8; 4],
     prior_kind: Option<[u8; 4]>,
     restored: Option<u32>,
 }
@@ -3041,6 +3042,13 @@ impl DeletedBases {
             .is_some_and(|event| event.restored.is_none())
     }
 
+    pub(crate) fn is_unrestored_reference(&self, id: u32) -> bool {
+        self.0
+            .get(&id)
+            .and_then(|events| events.last())
+            .is_some_and(|event| event.kind == *b"REFR" && event.restored.is_none())
+    }
+
     pub(crate) fn record(
         &mut self,
         id: u32,
@@ -3053,11 +3061,13 @@ impl DeletedBases {
             && previous.is_none()
         {
             // An unusable tentative restoration doesn't interrupt an existing deletion.
+            last.kind = kind;
             last.restored = None;
             return;
         }
         events.push(BaseDeletion {
             priority,
+            kind,
             prior_kind: previous.filter(|&prior| prior == kind),
             restored: None,
         });
