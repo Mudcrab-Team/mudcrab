@@ -20,7 +20,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Every stand-in marker names an open, assigned issue
+      - name: Every stand-in marker names an open issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -B scripts/check_retail_claims.py --check-issues
