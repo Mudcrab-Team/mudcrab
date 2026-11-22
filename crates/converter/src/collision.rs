@@ -10,7 +10,7 @@ use color_eyre::{
 };
 use nom_derive::Parse;
 use project_wormhole_nif::{
-    nif_block::{NiAVObject, NiTimeController, NifBlock},
+    nif_block::{NiAVObject, NiNode, NiTimeController, NifBlock},
     nif_file::NifFile,
 };
 use project_wormhole_shared::glam::{Mat3, Mat4, Quat, Vec3};
@@ -48,8 +48,7 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
     };
     let mut target_names: HashSet<_> = motion_targets
         .iter()
-        // silent-ok: Only node blocks contribute names to the skin hierarchy.
-        .filter_map(|&index| blocks.get(index as usize)?.as_node().ok())
+        .filter_map(|&index| skin_node(blocks.get(index as usize)?))
         .filter_map(|node| string(node.av.object.name))
         .collect();
     for block in blocks {
@@ -129,10 +128,18 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
     Ok(true)
 }
 
+fn skin_node(block: &NifBlock) -> Option<&NiNode> {
+    match block {
+        NifBlock::BSBlastNode(blast) => Some(&blast.node),
+        // silent-ok: Only node blocks contribute names to the skin hierarchy.
+        _ => block.as_node().ok(),
+    }
+}
+
 fn skin_motion_targets(blocks: &[NifBlock]) -> Result<HashSet<u32>> {
     let mut parents = vec![None; blocks.len()];
     for (index, block) in blocks.iter().enumerate() {
-        if let Ok(node) = block.as_node() {
+        if let Some(node) = skin_node(block) {
             for &child in &node.children {
                 if let Some(parent) = parents.get_mut(child as usize) {
                     // Mesh-local joint binding also uses the first parent in block order.

@@ -1,0 +1,267 @@
+{
+  "retail_capture": {
+    "executable_version": "1.7.104.0",
+    "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "cell_id": "000BBB2F",
+    "position_creation": [-768.0, 1536.0, 748.0],
+    "rotation_matrix": [
+      -4.371138473402425e-08, -7.571034643660823e-08, -1.0,
+      -0.5, -0.8660253882408142, 8.742277657347586e-08,
+      -0.8660253882408142, 0.5, 0.0
+    ],
+    "yaw_degrees": 180.00000500895572,
+    "pitch_degrees_down": 59.99999955470786,
+    "horizontal_fov_degrees": 74.99999733483311,
+    "vertical_fov_degrees": 59.84044418874903,
+    "near_plane_creation_units": 15.0,
+    "viewport_left_right_top_bottom": [0.0, 1.0, 1.0, 0.0],
+    "dimensions_pixels": [1400, 1050],
+    "load_order": [
+      "Skyrim.esm",
+      "Update.esm",
+      "Dawnguard.esm",
+      "HearthFires.esm",
+      "Dragonborn.esm",
+      "PortalFixtures.esp"
+    ],
+    "patch_xyxy_half_open": [1320, 50, 1360, 90]
+  },
+  "retail": {
+    "base1": {
+      "changed": 0,
+      "mean_abs_rgb": 0.0,
+      "luma_correlation": 1.0,
+      "luma_stddev": 13.829,
+      "colors": 995,
+      "image_sha256": "ba006c4d2253a5248ecc425a84b0d1ab03e432bc82374a018f9c19ebf959b690"
+    },
+    "scale-down": {
+      "changed": 1600,
+      "mean_abs_rgb": 32.4558,
+      "luma_correlation": -0.15549,
+      "luma_stddev": 0.2,
+      "colors": 5,
+      "image_sha256": "04691fbbef78759e8b16969cc20809d3cf572840a35ca23c0c6885418295eb84"
+    },
+    "scale-back": {
+      "changed": 1485,
+      "mean_abs_rgb": 1.0604,
+      "luma_correlation": 0.99506,
+      "luma_stddev": 13.684,
+      "colors": 1023,
+      "image_sha256": "3fc1eda6255d41de16f7061f05e9f5cfe3592c2cd60edf4dbdf17dd64823ba25"
+    },
+    "scale-down-000c4a50": {
+      "changed": 1468,
+      "mean_abs_rgb": 1.1098,
+      "luma_correlation": 0.99418,
+      "luma_stddev": 13.625,
+      "colors": 1002,
+      "image_sha256": "d616701be8504baddffa39564d5a00ddc8451a8a2b7b8689b3874ba1d9ad6dca"
+    },
+    "scale-back-000c4a50": {
+      "changed": 1490,
+      "mean_abs_rgb": 1.1454,
+      "luma_correlation": 0.99401,
+      "luma_stddev": 13.557,
+      "colors": 1001,
+      "image_sha256": "e15b76a5ed20549d44c8ddb9068009fb8f708e009b5b03af61398a500b7d399f"
+    },
+    "scale-down-000c4a65": {
+      "changed": 1600,
+      "mean_abs_rgb": 32.4565,
+      "luma_correlation": -0.17044,
+      "luma_stddev": 0.199,
+      "colors": 5,
+      "image_sha256": "0c2b7c4773027528311b84ed0e6a578ab6a62b46ef52be9b35acda57183a2654"
+    },
+    "scale-back-000c4a65": {
+      "changed": 1468,
+      "mean_abs_rgb": 1.0327,
+      "luma_correlation": 0.99555,
+      "luma_stddev": 13.798,
+      "colors": 1031,
+      "image_sha256": "389c360175add7a5b4370078e59cf8593c9e308bdf9ff6822716d14c4c7a9026"
+    }
+  },
+  "main_view_readback": {
+    "launches": [
+      {
+        "source": "owners1.json",
+        "sha256": "d2b0ee33304fc3519f1a10d56df667affca2cca68fb0a61e2e790f085d4eb4b5",
+        "camera": {
+          "cell_id": "000BBB2F",
+          "position_creation": [-768.0, 1536.0, 748.0],
+          "player_position_creation": [-768.0, 1536.0, 627.5],
+          "camera_state_id": 3,
+          "use_multibounds": true
+        },
+        "accumulated_rooms": ["0006EE50", "0006EDCA", "0006EE1E"],
+        "unbounded": 0,
+        "wall_parent_mapped": {"000C4A65": true, "000C4A50": false},
+        "root": "0006EE50",
+        "mapped_rooms": [
+          "0006EE1E",
+          "0006EDCA",
+          "0006EE50"
+        ],
+        "wall_room": {
+          "000C4A65": "0006EE1E",
+          "000C4A50": "0006EE4F"
+        }
+      },
+      {
+        "source": "owners-active.json",
+        "sha256": "9f70e7d685be6d60190237c3cc34db0b3b9e90643440964c865da37ccd1f6f9e",
+        "camera": {
+          "cell_id": "000BBB2F",
+          "position_creation": [-768.0, 1536.0, 748.0],
+          "player_position_creation": [-768.0, 1536.0, 627.5],
+          "camera_state_id": 3,
+          "use_multibounds": true
+        },
+        "accumulated_rooms": ["0006EE50", "0006EE1E", "0006EDCA"],
+        "unbounded": 0,
+        "wall_parent_mapped": {"000C4A65": true, "000C4A50": false},
+        "root": "0006EE50",
+        "mapped_rooms": [
+          "0006EE50",
+          "0006EDCA",
+          "0006EE1E"
+        ],
+        "wall_room": {
+          "000C4A65": "0006EE1E",
+          "000C4A50": "0006EE4F"
+        }
+      }
+    ],
+    "wall_room_plane_reads": {
+      "source": "native-planes.json",
+      "sha256": "1a12f02926e6c93e93b85a1e5477820933f923a5dbc86d699bcb8249b4b8f307",
+      "agreeing_samples": 3,
+      "room": "0006EE1E",
+      "view_position": [
+        -768.0,
+        1536.0,
+        748.0
+      ],
+      "mask": 63,
+      "equations": [
+        [
+          0.0,
+          -1.0,
+          0.0,
+          -1408.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.5314911007881165,
+          0.8470638990402222,
+          0.0,
+          892.905029296875
+        ],
+        [
+          -0.3754327595233917,
+          -0.9268496036529541,
+          0.0,
+          -1135.3087158203125
+        ],
+        [
+          -0.0,
+          -0.15437687933444977,
+          -0.9880120158195496,
+          -976.1558837890625
+        ],
+        [
+          0.0,
+          -0.7563632130622864,
+          0.6541519165039062,
+          -672.4682006835938
+        ]
+      ],
+      "convention": "Creation coordinates, signed distance = dot(normal, position) - fourth component"
+    }
+  },
+  "live_shape": [
+    -772.0,
+    1405.0,
+    736.0,
+    181.0576629638672
+  ],
+  "min_sphere_margin": 67.96628201007843,
+  "mesh_box_margin": -41.90541830078183,
+  "mudcrab_drawable_sphere_replay": {
+    "rebuilt_model": "meshes/dungeons/ship/katariah/shipkatariahwoodwall01.glb",
+    "source_nif_sha256": "1b10a14a5c713fe8ac34ea315d2967ceea1e467fbba1cbbb99112311f7a8e0d8",
+    "original_glb_sha256": "85058ec03f214a0422dc0ec718ea3de9b2c1de330708e68830bba7204e88ee75",
+    "rebuilt_glb_sha256": "8c7afc187cdbf698caa480d66a9faa154ea62dad61d4d7941bd4c2c5cc8309bc",
+    "lighting_args": ["--lights", "--color-grade", "off"],
+    "placement_control_delta_creation": [50000, 0, 0],
+    "Katariah-NONE-floor_all_runs": {
+      "drawn": 58,
+      "listed": 153,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    "Katariah-named-floor": {
+      "original_glb": {
+        "drawn": 39,
+        "listed": 255,
+        "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1"
+      },
+      "rebuilt_glb": {
+        "drawn": 42,
+        "listed": 255,
+        "sha256": "3977ddd69719ba9f647f21e210071745dcec6ae9b73c516f3a737d0b24a643b3"
+      },
+      "rebuilt_glb_with_000C4A50_displaced": {
+        "drawn": 42,
+        "listed": 254,
+        "sha256": "3977ddd69719ba9f647f21e210071745dcec6ae9b73c516f3a737d0b24a643b3"
+      },
+      "rebuilt_glb_with_000C4A65_displaced": {
+        "drawn": 41,
+        "listed": 254,
+        "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1"
+      }
+    }
+  },
+  "mudcrab": {
+    "baseline": [
+      {
+        "pose": "Katariah-NONE-floor",
+        "mode": "on",
+        "drawn": 58,
+        "listed": 153,
+        "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+      },
+      {
+        "pose": "Katariah-named-floor",
+        "mode": "on",
+        "drawn": 39,
+        "listed": 255,
+        "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1"
+      }
+    ],
+    "intervention": [
+      {
+        "pose": "Katariah-NONE-floor",
+        "mode": "on",
+        "drawn": 58,
+        "listed": 153,
+        "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+      },
+      {
+        "pose": "Katariah-named-floor",
+        "mode": "on",
+        "drawn": 40,
+        "listed": 255,
+        "sha256": "3977ddd69719ba9f647f21e210071745dcec6ae9b73c516f3a737d0b24a643b3"
+      }
+    ]
+  }
+}
