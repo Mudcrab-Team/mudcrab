@@ -130,7 +130,7 @@ fn part(mask: u32) -> OutfitPart {
         armo_id: 0x5b69f,
         armature_id: 0x5b6a2,
         biped_mask: mask,
-        armature_race_id: 25,
+        armature_race_id: Some(25),
         scene: "meshes/clothes/blacksmith/m/torso_1.glb".into(),
     }
 }

@@ -1100,9 +1100,16 @@ fn export_records(
             }
             "WRLD" => {
                 let view = SubrecordView::new(&record.subrecords);
-                let editor_id = view
-                    .get_string(b"EDID")
-                    .unwrap_or_else(|| format!("WRLD_{form_id:08X}"));
+                // The editor id is the worldspace's identity. A record without one gets no
+                // row: the converter does not invent a label for it (#811 F6).
+                let Some(editor_id) = view.get_string(b"EDID") else {
+                    omissions.record(
+                        OmissionCategory::WorldspaceMissingEditorId,
+                        form_id,
+                        "WRLD has no EDID; no worldspace row".to_owned(),
+                    );
+                    continue;
+                };
                 tx.prepare_cached(
                     "INSERT OR REPLACE INTO worldspaces(id, editor_id, parent_world, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
                     params![form_id, editor_id, view.get_form_id(b"WNAM"), record.flags, view.get_string(b"FULL")],
@@ -1115,9 +1122,12 @@ fn export_records(
                 )?;
             }
             _ if super::is_placed_record_type(&record.record_type) => {
-                let cell_id = record.cell_form_id.unwrap_or(0);
-                let mut cell = cells.get(&cell_id).copied();
-                if subset_placement && cell.is_none() {
+                let cell_id = record.cell_form_id;
+                let mut cell = cell_id.and_then(|id| cells.get(&id).copied());
+                if subset_placement
+                    && cell.is_none()
+                    && let Some(cell_id) = cell_id
+                {
                     cell = tx
                         .prepare_cached(
                             "SELECT grid_x,grid_y,worldspace_id FROM cells WHERE id=?1",
@@ -1125,7 +1135,7 @@ fn export_records(
                         .query_row([cell_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                         .optional()?;
                 }
-                let inserted = insert_reference_with_canonical_data(
+                let omission = insert_reference_with_canonical_data(
                     &tx,
                     form_id,
                     cell_id,
@@ -1137,19 +1147,15 @@ fn export_records(
                         .and_then(|rejected| rejected.get(&form_id))
                         .is_some_and(|rejected| rejected.xrds),
                 )?;
-                if !inserted {
+                if let Some(omission) = omission {
                     if subset_placement {
                         unavailable_link_targets.push(form_id);
                         super::reference_links::forget_subset_source(&tx, form_id)?;
                     }
                     omissions.record(
-                        OmissionCategory::ReferenceUnusableData,
+                        omission.category(),
                         form_id,
-                        format!(
-                            "{} DATA is {} in the runtime projection; expected at least 24 bytes; no placement or spatial row",
-                            type_str,
-                            view.find(b"DATA").map_or_else(|| "unavailable".to_owned(), |data| format!("{} bytes", data.len())),
-                        ),
+                        format!("{type_str} {}", omission.describe(&view)),
                     );
                     continue;
                 }
@@ -1181,8 +1187,21 @@ fn export_records(
                 if terrain_winners.get(&cell_id) != Some(&form_id) {
                     continue;
                 }
-                let (heightmap, vtex, vclr, normals) = extract_land_data(&record.subrecords);
-                tx.prepare_cached("INSERT OR REPLACE INTO land(cell_id, heightmap, vtex, vclr, normals) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute( params![cell_id, heightmap, vtex, vclr, normals])?;
+                let land = extract_land_data(&record.subrecords);
+                // `land.heightmap` is NOT NULL. Without a VHGT there is no row: no empty blob,
+                // no zero heights (#811 F7). A subset update also drops the stale row.
+                let Some(heightmap) = land.vhgt.filter(|bytes| !bytes.is_empty()) else {
+                    tx.prepare_cached("DELETE FROM land WHERE cell_id=?1")?
+                        .execute([cell_id])?;
+                    omissions.record(
+                        OmissionCategory::LandMissingHeights,
+                        form_id,
+                        "LAND has no VHGT height field; no land row".to_owned(),
+                    );
+                    continue;
+                };
+                // VTEX, VCLR and VNML are nullable. An absent field is NULL.
+                tx.prepare_cached("INSERT OR REPLACE INTO land(cell_id, heightmap, vtex, vclr, normals) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute( params![cell_id, heightmap, land.vtex, land.vclr, land.vnml])?;
             }
             "LIGH" => {
                 let view = SubrecordView::new(&record.subrecords);
@@ -1542,6 +1561,9 @@ fn insert_actor_models_and_race_authoring(
             row.weight
         ])?;
     }
+    // An armature without a readable RNAM matched through an additional race. Its part rows
+    // store NULL, never race 0. Report each armature once, however many NPCs wear it.
+    let mut raceless_armatures = std::collections::BTreeSet::new();
     for part in &catalog.parts {
         insert_part.execute(params![
             part.npc_id,
@@ -1550,6 +1572,16 @@ fn insert_actor_models_and_race_authoring(
             part.armature_race_id,
             part.skin_texture_set_id
         ])?;
+        if part.armature_race_id.is_none() {
+            raceless_armatures.insert(part.armature_id);
+        }
+    }
+    for armature_id in raceless_armatures {
+        omissions.record(
+            OmissionCategory::ArmatureMissingRace,
+            armature_id,
+            "ARMA has no readable RNAM; actor_model_parts.armature_race_id is NULL".to_owned(),
+        );
     }
     report_actor_model_diagnostics(&catalog.diagnostics);
     for (id, error) in catalog.race_authoring_errors {
@@ -1943,10 +1975,10 @@ pub fn insert_reference(
     header_flags: u32,
     subs: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<()> {
-    if !insert_reference_with_canonical_data(
+    if let Some(omission) = insert_reference_with_canonical_data(
         tx,
         form_id,
-        cell_id,
+        Some(cell_id),
         cell,
         header_flags,
         subs,
@@ -1954,10 +1986,60 @@ pub fn insert_reference(
         false,
     )? {
         eprintln!(
-            "warning: placed record {form_id:08X} has missing or short DATA; no placement row"
+            "warning: placed record {form_id:08X}: {}; no placement row",
+            omission.describe(&SubrecordView::new(subs))
         );
     }
     Ok(())
+}
+
+/// Why a placed record got no placement row. Every case removes any stale placement, keeps the
+/// canonical `records` row and is reported; none stores a default (#811 F1-F3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceOmission {
+    /// `DATA` is missing or shorter than the 24-byte transform.
+    Data,
+    /// `NAME` (the base form) is missing or shorter than four bytes.
+    MissingBase,
+    /// `XSCL` is present but shorter than four bytes. An absent `XSCL` is authored scale 1.0.
+    ShortScale,
+    /// The record has no parent cell.
+    MissingCell,
+}
+
+impl ReferenceOmission {
+    fn category(self) -> OmissionCategory {
+        match self {
+            Self::Data => OmissionCategory::ReferenceUnusableData,
+            Self::MissingBase => OmissionCategory::ReferenceMissingBase,
+            Self::ShortScale => OmissionCategory::ReferenceShortScale,
+            Self::MissingCell => OmissionCategory::ReferenceMissingCell,
+        }
+    }
+
+    fn describe(self, view: &SubrecordView<'_>) -> String {
+        let width = |tag: &[u8; 4]| {
+            view.find(tag).map_or_else(
+                || "unavailable".to_owned(),
+                |data| format!("{} bytes", data.len()),
+            )
+        };
+        match self {
+            Self::Data => format!(
+                "DATA is {} in the runtime projection; expected at least 24 bytes; no placement or spatial row",
+                width(b"DATA")
+            ),
+            Self::MissingBase => format!(
+                "NAME is {}; expected a four-byte base form; no placement or spatial row",
+                width(b"NAME")
+            ),
+            Self::ShortScale => format!(
+                "XSCL is {}; expected four bytes when present; no placement or spatial row",
+                width(b"XSCL")
+            ),
+            Self::MissingCell => "no parent cell; no placement or spatial row".to_owned(),
+        }
+    }
 }
 
 /// Remove the previous script projection before a placed record is replaced or deleted.
@@ -2006,25 +2088,46 @@ fn clear_reference_placement(tx: &Transaction<'_>, form_id: u32) -> Result<()> {
 }
 
 /// Extract runtime columns from projected fields and preserve the canonical data mirror.
-/// Returns false after removing a placement whose required 24-byte DATA cannot be read.
+/// Returns the omission after removing a placement that lacks a required field: a 24-byte `DATA`,
+/// a four-byte `NAME`, a well-formed `XSCL` when one is present, or a parent cell. Returns `None`
+/// when the placement row was written.
 /// xEdit xedit-4.1.5f Core/wbDefinitionsTES5.pas:5320-5323 uses wbDATAPosRot for 3D data.
 #[allow(clippy::too_many_arguments)]
 fn insert_reference_with_canonical_data(
     tx: &Transaction<'_>,
     form_id: u32,
-    cell_id: u32,
+    cell_id: Option<u32>,
     cell: Option<CellMetadata>,
     header_flags: u32,
     projected_subrecords: &[(Vec<u8>, Vec<u8>)],
     canonical_subrecords: &[(Vec<u8>, Vec<u8>)],
     xrds_rejected: bool,
-) -> Result<bool> {
+) -> Result<Option<ReferenceOmission>> {
     let view = SubrecordView::new(projected_subrecords);
-    let Some(transform) = view.find(b"DATA").and_then(|data| data.first_chunk::<24>()) else {
+    let transform = view.find(b"DATA").and_then(|data| data.first_chunk::<24>());
+    let base_form_id = view.get_form_id(b"NAME");
+    // An absent XSCL is authored scale 1.0 (the engine's rule). A present but short one is
+    // unreadable, and no scale is invented for it.
+    let scale = match view.find(b"XSCL") {
+        None => Some(1.0),
+        Some(data) => data
+            .first_chunk::<4>()
+            .map(|bytes| f32::from_le_bytes(*bytes)),
+    };
+    let omission = match (transform, base_form_id, scale, cell_id) {
+        (None, ..) => Some(ReferenceOmission::Data),
+        (_, None, ..) => Some(ReferenceOmission::MissingBase),
+        (_, _, None, _) => Some(ReferenceOmission::ShortScale),
+        (_, _, _, None) => Some(ReferenceOmission::MissingCell),
+        _ => None,
+    };
+    let (Some(transform), Some(base_form_id), Some(scale), Some(cell_id)) =
+        (transform, base_form_id, scale, cell_id)
+    else {
         // A subset update must also clear a formerly usable placement. The complete export
         // already replaced its snapshot; either route keeps records.data for inspection.
         clear_reference_placement(tx, form_id)?;
-        return Ok(false);
+        return Ok(omission);
     };
     let component = |offset| {
         f32::from_le_bytes([
@@ -2036,12 +2139,6 @@ fn insert_reference_with_canonical_data(
     };
     let pos = [component(0), component(4), component(8)];
     let rot = [component(12), component(16), component(20)];
-    let scale = view
-        .find(b"XSCL")
-        .filter(|data| data.len() >= 4)
-        .map(|data| f32::from_le_bytes(data[..4].try_into().unwrap()))
-        .unwrap_or(1.0);
-    let base_form_id = view.get_form_id(b"NAME").unwrap_or(0);
     let (grid_x, grid_y, worldspace_id) = cell.unwrap_or((None, None, None));
     let is_exterior = worldspace_id.is_some() || (grid_x.is_some() && grid_y.is_some());
     // Exterior persistent references are owned by the worldspace's persistent
@@ -2096,7 +2193,7 @@ fn insert_reference_with_canonical_data(
     if is_exterior {
         tx.prepare_cached("INSERT OR REPLACE INTO exterior_spatial(id, minX, maxX, minY, maxY, minZ, maxZ, cell_id, worldspace_id) VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?4, ?5, ?6)")?.execute( params![form_id, pos[0], pos[1], pos[2], cell_id, worldspace_id])?;
     }
-    Ok(true)
+    Ok(None)
 }
 
 pub(super) fn project_cell(
@@ -2750,7 +2847,10 @@ mod tests {
             1,
             Some((None, None, Some(0x3C))),
             0,
-            &[(b"DATA".to_vec(), data)],
+            &[
+                (b"NAME".to_vec(), 0x900u32.to_le_bytes().to_vec()),
+                (b"DATA".to_vec(), data),
+            ],
         )
         .unwrap();
         let (x, y, local_x, local_y): (f32, f32, f32, f32) = tx
@@ -3294,6 +3394,249 @@ mod tests {
 
     /// Every light and emittance branch that writes no row is counted under its own category,
     /// next to healthy rows that are still written (#297).
+    /// A one-plugin load order: full exports persist omissions only with ownership known.
+    fn one_plugin_order() -> LoadOrder {
+        LoadOrder::from_metadata(
+            vec!["Synthetic.esp".into()],
+            vec![crate::esm::binary::PluginMetadata {
+                masters: vec![],
+                flags: 0,
+            }],
+        )
+        .unwrap()
+    }
+
+    /// #811 F1-F3: a missing `NAME`, a short `XSCL` or a missing parent cell gets no placement
+    /// row, no default (base 0, scale 1.0, cell 0) and a named omission. Present values and an
+    /// absent `XSCL` (authored scale 1.0) pass through unchanged.
+    #[test]
+    fn placed_records_missing_required_fields_are_omitted_not_defaulted() {
+        let with = |id: u32, name: Option<u32>, scale: Option<Vec<u8>>, cell: Option<u32>| {
+            let mut placed = reference(id, 0x100, 0x900, [1.0, 2.0, 3.0], [0.0; 3]);
+            placed.cell_form_id = cell;
+            if name.is_none() {
+                placed.subrecords.retain(|(tag, _)| tag != b"NAME");
+            }
+            if let Some(scale) = scale {
+                placed.subrecords.push((b"XSCL".to_vec(), scale));
+            }
+            placed
+        };
+        let master: HashMap<u32, RawRecord> = [
+            interior_cell(0x100),
+            with(0x1000, Some(0x900), None, Some(0x100)),
+            with(
+                0x1001,
+                Some(0x900),
+                Some(2.5f32.to_le_bytes().to_vec()),
+                Some(0x100),
+            ),
+            with(0x1002, None, None, Some(0x100)),
+            with(0x1003, Some(0x900), Some(vec![0, 0]), Some(0x100)),
+            with(0x1004, Some(0x900), None, None),
+        ]
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db_with_load_order(&conn, &master, &one_plugin_order()).unwrap();
+
+        let rows: Vec<(u32, u32, u32, f32)> = conn
+            .prepare("SELECT id, cell_id, base_form_id, scale FROM \"references\" ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [(0x1000, 0x100, 0x900, 1.0), (0x1001, 0x100, 0x900, 2.5)],
+            "only complete placements are published"
+        );
+        let spatial: i64 = conn
+            .query_row("SELECT COUNT(*) FROM exterior_spatial", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(spatial, 0);
+        assert_eq!(
+            omission_ids(&conn),
+            [
+                ("reference_missing_base".to_owned(), 1, vec![0x1002]),
+                ("reference_missing_cell".to_owned(), 1, vec![0x1004]),
+                ("reference_short_scale".to_owned(), 1, vec![0x1003]),
+            ]
+        );
+        let reason: String = conn
+            .query_row(
+                "SELECT reason FROM projection_omission_samples WHERE form_id=?1",
+                [0x1003u32],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(reason.starts_with("REFR XSCL is 2 bytes"), "{reason}");
+        // The canonical record survives for inspection.
+        let kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE form_id IN (4098, 4099, 4100)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 3);
+    }
+
+    /// #811 F6: a `WRLD` without `EDID` gets no row and no `WRLD_<id>` label.
+    #[test]
+    fn worldspace_without_editor_id_is_omitted_not_labelled() {
+        let named = record(
+            0x3C,
+            b"WRLD",
+            None,
+            None,
+            vec![(b"EDID".to_vec(), cstr("Tamriel"))],
+        );
+        let unnamed = record(0x3D, b"WRLD", None, None, Vec::new());
+        let master: HashMap<u32, RawRecord> = [named, unnamed]
+            .into_iter()
+            .map(|record| (record.form_id, record))
+            .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db_with_load_order(&conn, &master, &one_plugin_order()).unwrap();
+        let rows: Vec<(u32, String)> = conn
+            .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, [(0x3C, "Tamriel".to_owned())]);
+        assert_eq!(
+            omission_ids(&conn),
+            [("worldspace_missing_editor_id".to_owned(), 1, vec![0x3D])]
+        );
+    }
+
+    /// #811 F7: a LAND without `VHGT` gets no `land` row (no empty blob); absent optional fields
+    /// are NULL. A complete LAND passes through unchanged.
+    #[test]
+    fn land_without_heights_is_omitted_and_absent_fields_are_null() {
+        let land = |id: u32, cell: u32, fields: &[(&[u8; 4], Vec<u8>)]| {
+            record(
+                id,
+                b"LAND",
+                Some(cell),
+                None,
+                fields
+                    .iter()
+                    .map(|(tag, data)| (tag.to_vec(), data.clone()))
+                    .collect(),
+            )
+        };
+        let heights = vec![7u8; 4 + 33 * 33 + 3];
+        let master: HashMap<u32, RawRecord> = [
+            land(
+                0x2000,
+                0x100,
+                &[(b"VHGT", heights.clone()), (b"VNML", vec![9; 33 * 33 * 3])],
+            ),
+            land(0x2001, 0x101, &[(b"VNML", vec![9; 33 * 33 * 3])]),
+            land(0x2002, 0x102, &[(b"VHGT", Vec::new())]),
+        ]
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db_with_load_order(&conn, &master, &one_plugin_order()).unwrap();
+        type LandRow = (
+            u32,
+            Vec<u8>,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+        );
+        let rows: Vec<LandRow> = conn
+            .prepare("SELECT cell_id, heightmap, vtex, vclr, normals FROM land ORDER BY cell_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [(0x100, heights, None, None, Some(vec![9; 33 * 33 * 3]))]
+        );
+        assert_eq!(
+            omission_ids(&conn),
+            [("land_missing_heights".to_owned(), 2, vec![0x2001, 0x2002])]
+        );
+    }
+
+    /// #811 F5: an unreadable `XRMR` header gives no `room_bounds` row and no flags 0. A valid
+    /// header passes through, and an absent header authors no flags.
+    #[test]
+    fn room_marker_with_unreadable_xrmr_gets_no_row_and_is_reported() {
+        let master: HashMap<u32, RawRecord> = vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(
+                0x1002,
+                0x100,
+                [50.0; 3],
+                [0.0; 3],
+                [10.0; 3],
+                vec![(b"XRMR", vec![0, 0, 1, 0])],
+            ),
+            room(
+                0x1003,
+                0x100,
+                [90.0; 3],
+                [0.0; 3],
+                [10.0; 3],
+                vec![(b"XRMR", vec![0, 0])],
+            ),
+        ]
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db_with_load_order(&conn, &master, &one_plugin_order()).unwrap();
+        let flags: Vec<(u32, i64)> = conn
+            .prepare("SELECT ref_id, flags FROM room_bounds ORDER BY ref_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(flags, [(0x1001, 0), (0x1002, 256)]);
+        let complete: bool = conn
+            .query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=0x100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!complete);
+        assert_eq!(
+            omission_ids(&conn),
+            [("room_marker_unreadable_flags".to_owned(), 1, vec![0x1003])]
+        );
+    }
+
     #[test]
     fn records_light_and_emittance_omissions_beside_healthy_rows() {
         use crate::esm::projection_omissions::Severity;

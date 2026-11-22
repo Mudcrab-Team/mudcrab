@@ -50,23 +50,29 @@ pub fn extract_subrecords(data: &[u8]) -> color_eyre::Result<Vec<(Vec<u8>, Vec<u
     Ok(subs)
 }
 
-pub fn extract_land_data(subs: &[(Vec<u8>, Vec<u8>)]) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let mut vhgt = Vec::new();
-    let mut vtex = Vec::new();
-    let mut vclr = Vec::new();
-    let mut vnml = Vec::new();
+/// The raw LAND fields of one record. A field the record does not carry is `None`: the caller
+/// stores NULL (or omits the row), never an empty blob that reads as authored data.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LandData {
+    pub vhgt: Option<Vec<u8>>,
+    pub vtex: Option<Vec<u8>>,
+    pub vclr: Option<Vec<u8>>,
+    pub vnml: Option<Vec<u8>>,
+}
 
+pub fn extract_land_data(subs: &[(Vec<u8>, Vec<u8>)]) -> LandData {
+    let mut land = LandData::default();
     for (tag, data) in subs {
-        match from_utf8(tag).unwrap_or("") {
-            "VHGT" => vhgt = data.clone(),
-            "VTEX" => vtex = data.clone(),
-            "VCLR" => vclr = data.clone(),
-            "VNML" => vnml = data.clone(),
-            _ => {}
-        }
+        let slot = match from_utf8(tag).unwrap_or("") {
+            "VHGT" => &mut land.vhgt,
+            "VTEX" => &mut land.vtex,
+            "VCLR" => &mut land.vclr,
+            "VNML" => &mut land.vnml,
+            _ => continue,
+        };
+        *slot = Some(data.clone());
     }
-
-    (vhgt, vtex, vclr, vnml)
+    land
 }
 
 pub fn extract_cell_info(

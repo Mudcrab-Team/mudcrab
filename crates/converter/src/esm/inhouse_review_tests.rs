@@ -466,9 +466,10 @@ fn invariant_fixture(speed_count: usize) -> Fixture {
         0x8a0,
         &native_record(b"LAND", TERRAIN, 0, &terrain),
     ));
-    // A genuine heightless record also exercises native-null removal, implicit base
+    // A record with a flat authored height field (no height deltas) also exercises native-null removal, implicit base
     // insertion and capacity normalization; every source opacity remains valid.
-    let mut heightless = sub(b"BTXT", &layer(0, 2, 0));
+    let mut heightless = sub(b"VHGT", &heights(0.0));
+    heightless.extend(sub(b"BTXT", &layer(0, 2, 0)));
     for slot in 1..=8 {
         heightless.extend(sub(b"ATXT", &layer(0x0100_0a20, 2, slot)));
         heightless.extend(sub(b"VTXT", &weights(slot * 3, f32::from(slot) / 16.0)));

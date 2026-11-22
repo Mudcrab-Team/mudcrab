@@ -154,7 +154,7 @@ impl TerrainOptions {
 /// same texture on both sides of the LOD switch distance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerrainDefaultDiffuse {
-    /// The generated white diffuse, explicitly selected or used as a fallback.
+    /// The generated white diffuse, selected explicitly with `--terrain-default white`.
     GeneratedWhite,
     /// The DDS a `skyrim-ini` conversion selected, as a canonical Bethesda path relative to the
     /// converted output root: `vfs/<path>` holds the source.
@@ -162,25 +162,19 @@ pub(crate) enum TerrainDefaultDiffuse {
 }
 
 impl TerrainDefaultDiffuse {
-    /// The default `options` select. `Err` is a configured Skyrim.ini that cannot be read (named
-    /// in the error, as the merged stage reports it). A selected diffuse that cannot be a texture
-    /// path falls back to the generated white one with its reason, which entry 0 does too.
+    /// The default `options` select. `Err` is a configured Skyrim.ini that cannot be read, or a
+    /// selected diffuse that cannot be a texture path (named in the error, as the merged stage
+    /// reports it). No generated white texture replaces an unusable default (#811, SI-23);
+    /// white comes only from the explicit `white` option. The second value is kept for callers
+    /// and is always `None`.
     pub(crate) fn resolve(options: &TerrainOptions) -> Result<(Self, Option<String>)> {
         if options.default_texture == TerrainDefaultTexture::White {
             return Ok((Self::GeneratedWhite, None));
         }
         let defaults = landscape_defaults(options.terrain_ini.as_deref())?;
-        Ok(
-            match canonical_asset_path(&defaults.diffuse, AssetKind::Texture, "dds") {
-                Ok(diffuse) => (Self::Image(diffuse), None),
-                Err(error) => (
-                    Self::GeneratedWhite,
-                    Some(format!(
-                        "the default land texture cannot be resolved: {error:#}"
-                    )),
-                ),
-            },
-        )
+        let diffuse = canonical_asset_path(&defaults.diffuse, AssetKind::Texture, "dds")
+            .wrap_err("the default land texture cannot be resolved")?;
+        Ok((Self::Image(diffuse), None))
     }
 }
 
@@ -239,9 +233,9 @@ pub(crate) fn publish_default_land(
             &mut crate::lod::albedo::TerrainTextureCache::default(),
         );
         if let Some(error) = error {
-            report
-                .notices
-                .push(format!("default land falls back to white: {error}"));
+            bail!(
+                "the default land texture {path} cannot be used and no white texture replaces it: {error}"
+            );
         } else {
             let convert = |source: &str, output: &str, encoding| -> Result<()> {
                 let destination = staging.join(output);
@@ -287,9 +281,9 @@ pub(crate) fn publish_default_land(
                             .push(format!("default land normal omitted: {error:#}")),
                     }
                 }
-                Err(error) => report
-                    .notices
-                    .push(format!("default land falls back to white: {error:#}")),
+                Err(error) => bail!(
+                    "the default land texture {path} cannot be converted and no white texture replaces it: {error:#}"
+                ),
             }
         }
     }
@@ -351,8 +345,9 @@ pub enum DefaultTextureSource {
         diffuse: String,
         normal: Option<String>,
     },
-    /// The `skyrim-ini` defaults were selected, but the diffuse could not be converted, so entry
-    /// 0 is the generated white texture: the ini, the DDS paths it named, and why.
+    /// Legacy: reports written before #811 may hold it. The `skyrim-ini` defaults were selected,
+    /// but the diffuse could not be converted, so entry 0 was the generated white texture. The
+    /// converter no longer produces this state; it fails the stage instead.
     SkyrimIniFallback {
         ini: Option<PathBuf>,
         diffuse: String,
@@ -558,7 +553,7 @@ pub fn build_merged_terrain(
         skipped.source = relative_path(staging, Path::new(&skipped.source));
     }
     // The source was chosen before the arrays were built; say what survived building them.
-    let default_texture_source = reconcile_default_source(default_texture_source, &array_report);
+    let default_texture_source = reconcile_default_source(default_texture_source, &array_report)?;
     // The arrays were built before the outcome was known, so the table is rewritten with the
     // settings it was built from: a stored table then says which default texture it holds.
     table.settings = Some(land_texture_settings(
@@ -903,11 +898,9 @@ fn converted_texture_path(path: &str, usage: &str) -> std::result::Result<String
     })
 }
 
-/// Entry 0's source for the resolved `skyrim-ini` defaults — `None` for the array builder's
-/// generated white one — with what was actually resolved, for the report. A default that cannot
-/// be resolved is named in `skipped` and leaves entry 0 the white texture, as the array builder
-/// does with a default it cannot read at planning time; the report says so rather than naming a
-/// source this run did not use.
+/// Entry 0's source for the resolved `skyrim-ini` defaults — `None` for the labelled generated
+/// white one, selected only by `--terrain-default white` — with what was actually resolved, for
+/// the report. A default that cannot be resolved fails the stage; no white texture replaces it.
 fn default_source(
     staging: &Path,
     merged: &HashMap<u32, RawRecord>,
@@ -920,22 +913,9 @@ fn default_source(
     let diffuse = match converted_texture_path(&defaults.diffuse, "default diffuse") {
         Ok(diffuse) => diffuse,
         Err(reason) => {
-            let reason = format!("the default land texture cannot be resolved: {reason}");
-            skipped.push(SkippedTerrainTexture {
-                ltex_form_id: DEFAULT_LAND_TEXTURE_FORM_ID,
-                source: Some(defaults.diffuse.clone()),
-                reason: reason.clone(),
-            });
-            let normal = (!defaults.normal.trim().is_empty()).then(|| defaults.normal.clone());
-            return Ok((
-                None,
-                DefaultTextureSource::SkyrimIniFallback {
-                    ini: defaults.ini.clone(),
-                    diffuse: defaults.diffuse.clone(),
-                    normal,
-                    reason,
-                },
-            ));
+            // A `skyrim-ini` request whose default cannot be used fails. No generated white
+            // texture takes its place (#811, SI-23); `--terrain-default white` selects white.
+            bail!("the default land texture cannot be resolved: {reason}");
         }
     };
     let mut normal = if defaults.normal.trim().is_empty() {
@@ -982,17 +962,19 @@ fn default_source(
 fn reconcile_default_source(
     source: DefaultTextureSource,
     report: &crate::terrain_arrays::ArrayReport,
-) -> DefaultTextureSource {
+) -> Result<DefaultTextureSource> {
     let DefaultTextureSource::SkyrimIni {
         ini,
         diffuse,
         normal,
     } = source
     else {
-        return source;
+        return Ok(source);
     };
     let skipped_for = |path: &str| report.skipped.iter().find(|skipped| skipped.source == path);
     if matches!(report.default_texture, DefaultTexture::White) {
+        // The array builder fails a requested default it cannot use, so this is unreachable
+        // today. If it ever happens, fail rather than report a white texture as the ini default.
         let reason = skipped_for(&diffuse).map_or_else(
             || "the converted default land texture could not be used".to_owned(),
             |skipped| {
@@ -1002,19 +984,14 @@ fn reconcile_default_source(
                 )
             },
         );
-        return DefaultTextureSource::SkyrimIniFallback {
-            ini,
-            diffuse,
-            normal,
-            reason,
-        };
+        bail!("{reason}; no white texture replaces it");
     }
     let normal = normal.filter(|normal| skipped_for(normal).is_none());
-    DefaultTextureSource::SkyrimIni {
+    Ok(DefaultTextureSource::SkyrimIni {
         ini,
         diffuse,
         normal,
-    }
+    })
 }
 
 /// The settings a merged-terrain build's land texture table records: what was requested, what entry
@@ -1247,14 +1224,14 @@ mod tests {
             rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
         )
         .unwrap();
-        super::publish_default_land(root.path(), &config, &mut report).unwrap();
-        assert_eq!(
-            report.notices.len(),
-            1,
-            "a used missing default still produces an advisory"
+        // A used default that is missing fails the stage: no white row replaces it (#811, SI-23).
+        let error = super::publish_default_land(root.path(), &config, &mut report)
+            .expect_err("a used missing default is an error");
+        assert!(
+            format!("{error:#}").contains("no white texture replaces it"),
+            "{error:#}"
         );
         assert!(report.warnings.is_empty());
-        assert!(crate::pipeline::conversion_is_complete(&report));
     }
 
     /// Generated defaults and their database row follow the effective choice on repeated runs.
@@ -1335,16 +1312,13 @@ mod tests {
             b"bad optional diffuse",
         )
         .unwrap();
-        super::publish_default_land(staging, &config, &mut report).unwrap();
-        assert_eq!(read(), (None, None, None));
+        // A damaged default fails the stage (#811, SI-23). No white row replaces it.
+        let error = super::publish_default_land(staging, &config, &mut report)
+            .expect_err("a damaged default land diffuse is an error");
         assert!(
-            report
-                .notices
-                .iter()
-                .any(|notice| notice.contains("falls back to white"))
+            format!("{error:#}").contains("no white texture replaces it"),
+            "{error:#}"
         );
-        assert!(report.warnings.is_empty());
-        assert!(crate::pipeline::conversion_is_complete(&report));
         fs::write(staging.join("vfs/textures/custom.dds"), bytes).unwrap();
         super::publish_default_land(staging, &config, &mut report).unwrap();
         assert_eq!(
@@ -1374,14 +1348,11 @@ mod tests {
         )
         .unwrap();
         config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
-        super::publish_default_land(staging, &config, &mut report).unwrap();
+        // An unresolvable default path is an error; the previous white row is left alone.
+        let error = super::publish_default_land(staging, &config, &mut report)
+            .expect_err("an unresolvable default path is an error");
+        assert!(format!("{error:#}").contains("../escape.dds"), "{error:#}");
         assert_eq!(read(), (None, None, None));
-        assert!(
-            report
-                .notices
-                .iter()
-                .any(|notice| notice.contains("cannot be resolved"))
-        );
         assert!(report.warnings.is_empty());
         assert!(crate::pipeline::conversion_is_complete(&report));
         assert_eq!(
@@ -1608,6 +1579,14 @@ mod tests {
         assert!(terrain_records(unrelated).is_empty());
     }
 
+    /// The labelled `--terrain-default white` option: these tests have no converted default texture.
+    fn white_options() -> TerrainOptions {
+        TerrainOptions {
+            default_texture: TerrainDefaultTexture::White,
+            ..TerrainOptions::default()
+        }
+    }
+
     /// Two plugins add a LAND to one exterior cell: the stage builds one mesh, from the later
     /// plugin's LAND, and reports the dropped one — the same choice the cell cache makes.
     #[test]
@@ -1631,7 +1610,7 @@ mod tests {
                 &records,
                 &masters,
                 &HashMap::new(),
-                &TerrainOptions::default(),
+                &white_options(),
             )
             .unwrap();
             assert_eq!(report.cells_written, 1, "one mesh for the cell");
@@ -1805,8 +1784,7 @@ mod tests {
             Some("textures/landscape/rock_n.ktx2")
         );
 
-        // A builder that drops the diffuse makes the outcome a fallback: reconciliation sees the
-        // arrays' own report, and the settings then persist no texture path at all.
+        // A builder that drops the diffuse is an error, never a white fallback.
         let dropped = crate::terrain_arrays::ArrayReport {
             default_texture: DefaultTexture::White,
             arrays: Vec::new(),
@@ -1818,25 +1796,17 @@ mod tests {
                 reason: "unreadable".into(),
             }],
         };
-        let reconciled = reconcile_default_source(source, &dropped);
-        assert!(matches!(
-            reconciled,
-            DefaultTextureSource::SkyrimIniFallback { .. }
-        ));
-        let settings = land_texture_settings(&reconciled, &options, defaults.ini_sha256.clone());
-        assert_eq!(settings.default, LandTextureDefault::SkyrimIniFallbackWhite);
-        assert_eq!(settings.default_diffuse, None);
-        assert_eq!(settings.default_normal, None);
-        assert_eq!(
-            settings.terrain_ini_sha256.as_deref(),
-            Some(recorded.as_str())
+        let error = reconcile_default_source(source, &dropped)
+            .expect_err("a dropped default diffuse is an error");
+        assert!(
+            format!("{error:#}").contains("no white texture replaces it"),
+            "{error:#}"
         );
     }
 
     /// The default both painters read: entry 0 under `white` is the generated texture (no file to
     /// read), under `skyrim-ini` it is the DDS the ini names — or the built-in Dirt02 when it names
-    /// none — and a diffuse that cannot be a texture path falls back to the generated white one
-    /// with its reason instead of stopping the run.
+    /// none — and a diffuse that cannot be a texture path is an error, not a white fallback.
     #[test]
     fn the_default_diffuse_is_resolved_from_the_conversion_settings() {
         let white = TerrainOptions {
@@ -1881,16 +1851,15 @@ mod tests {
             )
         );
 
-        // A path that cannot be a texture path leaves entry 0 the generated white texture.
+        // A path that cannot be a texture path is an error. No white texture replaces it.
         fs::write(
             &ini,
             "[Landscape]\nsDefaultLandDiffuseTexture=../outside.dds\n",
         )
         .unwrap();
-        let (resolved, reason) = TerrainDefaultDiffuse::resolve(&configured).unwrap();
-        assert_eq!(resolved, TerrainDefaultDiffuse::GeneratedWhite);
-        let reason = reason.expect("the fallback is named");
-        assert!(reason.contains("../outside.dds"), "{reason}");
+        let error = TerrainDefaultDiffuse::resolve(&configured)
+            .expect_err("an unusable default diffuse is an error");
+        assert!(format!("{error:#}").contains("../outside.dds"), "{error:#}");
 
         // A configured ini that cannot be read is a configuration error, not a silent fallback.
         fs::remove_file(&ini).unwrap();
@@ -1927,7 +1896,7 @@ mod tests {
             &records,
             &masters(0, &["Skyrim.esm"]),
             &HashMap::new(),
-            &TerrainOptions::default(),
+            &white_options(),
         )
         .unwrap_err()
         .to_string();
@@ -1987,24 +1956,16 @@ mod tests {
             diffuse: "../outside.dds".to_string(),
             ..defaults
         };
-        let (source, reported) = default_source(
+        // An unusable requested default fails: no white texture stands in (#811, SI-23).
+        let error = default_source(
             directory.path(),
             &HashMap::new(),
             Some(&unusable),
             &mut skipped,
         )
-        .unwrap();
-        assert!(source.is_none(), "the white texture stands in");
-        assert_eq!(skipped.len(), 1, "the fallback is reported as skipped too");
-        match reported {
-            DefaultTextureSource::SkyrimIniFallback {
-                diffuse, reason, ..
-            } => {
-                assert_eq!(diffuse, "../outside.dds");
-                assert!(reason.contains("../outside.dds"), "{reason}");
-            }
-            other => panic!("expected the fallback, got {other:?}"),
-        }
+        .expect_err("an unusable default is an error");
+        assert!(format!("{error:#}").contains("../outside.dds"), "{error:#}");
+        assert!(skipped.is_empty());
     }
 
     #[test]
@@ -2260,13 +2221,13 @@ mod tests {
     fn a_default_the_builder_used_keeps_its_skyrim_ini_source() {
         let report = report_with(DefaultTexture::Provided { ltex_form_id: 0 }, Vec::new());
         assert_eq!(
-            reconcile_default_source(skyrim_ini_source(), &report),
+            reconcile_default_source(skyrim_ini_source(), &report).unwrap(),
             skyrim_ini_source()
         );
     }
 
     #[test]
-    fn a_default_diffuse_the_builder_dropped_is_reported_as_the_white_fallback() {
+    fn a_default_diffuse_the_builder_dropped_is_an_error_not_a_white_fallback() {
         use shared::terrain_mesh::LandTextureUsage;
         let report = report_with(
             DefaultTexture::White,
@@ -2275,15 +2236,14 @@ mod tests {
                 LandTextureUsage::DiffuseSrgb,
             )],
         );
-        match reconcile_default_source(skyrim_ini_source(), &report) {
-            DefaultTextureSource::SkyrimIniFallback {
-                reason, diffuse, ..
-            } => {
-                assert!(reason.contains("unreadable"), "{reason}");
-                assert_eq!(diffuse, "textures/landscape/dirt02.ktx2");
-            }
-            other => panic!("expected the white fallback, got {other:?}"),
-        }
+        let error = reconcile_default_source(skyrim_ini_source(), &report)
+            .expect_err("a dropped default diffuse is an error");
+        let message = format!("{error:#}");
+        assert!(message.contains("unreadable"), "{message}");
+        assert!(
+            message.contains("no white texture replaces it"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -2297,7 +2257,7 @@ mod tests {
             )],
         );
         assert_eq!(
-            reconcile_default_source(skyrim_ini_source(), &report),
+            reconcile_default_source(skyrim_ini_source(), &report).unwrap(),
             DefaultTextureSource::SkyrimIni {
                 ini: None,
                 diffuse: "textures/landscape/dirt02.ktx2".to_owned(),
@@ -2310,7 +2270,7 @@ mod tests {
     fn a_white_default_source_needs_no_reconciling() {
         let report = report_with(DefaultTexture::White, Vec::new());
         assert_eq!(
-            reconcile_default_source(DefaultTextureSource::White, &report),
+            reconcile_default_source(DefaultTextureSource::White, &report).unwrap(),
             DefaultTextureSource::White
         );
     }
