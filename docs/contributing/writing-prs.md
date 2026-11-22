@@ -24,7 +24,7 @@ Run it locally with `python3 scripts/check_retail_claims.py --base origin/main`.
 
 ## Stand-ins for retail data
 
-A stand-in is a value or an asset that Mudcrab makes where retail ships one. A baked LOD mesh where retail ships `.btr` files is an example. So is a fixed light unit where retail reads a record. A stand-in must be labelled and linked to an issue with an owner, so a reader can find who owns the replacement.
+A stand-in is a value or an asset that Mudcrab makes where retail ships one. A baked LOD mesh where retail ships `.btr` files is an example. So is a fixed light unit where retail reads a record. A stand-in must be labelled and linked to an issue. An owner can be added, so a reader can find who owns the replacement.
 
 Put this marker in the same `//` comment block as the code, or in the same Markdown section:
 

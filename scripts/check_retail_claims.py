@@ -845,8 +845,8 @@ def run_audit(repo, baseline, write):
             print(f"{path}: stand-in count rose from {limit} to {count}",
                   file=sys.stderr)
         print(f"\n{len(risen)} file(s) hold more stand-ins than the baseline "
-              f"({baseline}, revision {revision}). Add a marker with an issue and "
-              "an owner, or raise the baseline in a reviewed change.",
+              f"({baseline}, revision {revision}). Add a marker with an open "
+              "issue, or raise the baseline in a reviewed change.",
               file=sys.stderr)
         return 1
     print(f"Stand-in count is at or below the baseline ({baseline}, "

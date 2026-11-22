@@ -720,6 +720,15 @@ class StandInTests(unittest.TestCase):
         self.assertEqual(written["revision"], 1)
         self.assertIn("Wrote", out)
 
+    def test_audit_missing_baseline_fails_closed(self):
+        self.repo.write("crates/engine/src/x.rs", "// placeholder one\nfn x() {}\n")
+        self.repo.commit("one stand-in")
+        code, _, err = self.check(
+            self.repo.run("--audit", "--baseline", str(self.repo.root / "missing.json"))
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read baseline", err)
+
     def gh_stub(self, state, assignees=None):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -780,6 +789,23 @@ class StandInTests(unittest.TestCase):
         ))
         self.assertEqual(code, 2)
         self.assertIn("gh is not installed", err)
+
+    def test_check_issues_gh_error_exits_two(self):
+        self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
+        self.repo.commit("marker with a failing gh client")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        script = Path(directory.name) / "gh"
+        script.write_text(
+            "#!/bin/sh\necho network down >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        code, _, err = self.check(self.repo.run(
+            "--check-issues", env=self.check_issues_env(directory.name)
+        ))
+        self.assertEqual(code, 2)
+        self.assertIn("network down", err)
 
     def test_workflow_runs_the_stand_in_baseline(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
