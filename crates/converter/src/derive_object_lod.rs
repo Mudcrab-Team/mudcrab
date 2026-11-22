@@ -20,7 +20,9 @@ use crate::{
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes, hash_file},
     lod::{
         object_stage::{LevelCounts, compile_candidates, level_counts, read_retail},
-        objects::{OBJECT_COMPILER_VERSION, ObjectChunk, publish_object_chunk},
+        objects::{
+            OBJECT_COMPILER_VERSION, ObjectChunk, publish_object_atlas, publish_object_chunk,
+        },
         reuse::LodManifest,
     },
     pack_clone::check_clone,
@@ -31,7 +33,7 @@ use color_eyre::{
     eyre::{WrapErr, bail, ensure},
 };
 use rusqlite::Connection;
-use shared::lod::{LodOrigin, object_chunk_payload_path};
+use shared::lod::{LodOrigin, object_atlas_path, object_chunk_payload_path};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -88,6 +90,9 @@ pub struct CoreReport {
     pub chunks: Vec<(ObjectChunk, String)>,
     pub skipped: Vec<SkippedBlock>,
     pub atlas_ktx2_bytes: usize,
+    /// The shared atlas file and its SHA-256.
+    pub atlas_path: Option<String>,
+    pub atlas_file_sha256: Option<String>,
     pub atlas_width: u32,
     pub atlas_height: u32,
     pub atlas_levels: u32,
@@ -210,6 +215,8 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         "atlas": {
             "retail_dds_sha256": atlas_sha256,
             "ktx2_bytes": core.atlas_ktx2_bytes,
+            "shared_file": core.atlas_path,
+            "shared_file_sha256": core.atlas_file_sha256,
             "width": core.atlas_width,
             "height": core.atlas_height,
             "mip_levels": core.atlas_levels,
@@ -254,7 +261,6 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
             "Vertex alpha is written as stored; whether retail multiplies it into the cutout is not verified.",
             "Level-4 segment i covers cell (x + i / 4, y + i % 4): a measured fit (6,706 of 6,708 segments), not decoded from retail code.",
             "Large-reference data (levels 8 and 4) is kept undecoded and not applied.",
-            "The atlas is embedded in every chunk; a shared texture is a later optimisation.",
         ],
         "elapsed_ms": elapsed_ms,
     });
@@ -277,7 +283,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         vertices,
         skipped,
         skipped_by_class,
-        bytes_added: chunk_bytes + text.len() as u64,
+        bytes_added: chunk_bytes + core.atlas_ktx2_bytes as u64 + text.len() as u64,
         atlas_ktx2_bytes: core.atlas_ktx2_bytes,
         elapsed_ms,
     })
@@ -369,11 +375,11 @@ pub fn derive_into(
     atlas_sha256: &str,
     force: bool,
 ) -> Result<CoreReport> {
-    // The existing texture stage turns the retail DDS into the KTX2 every chunk embeds.
+    // The existing texture stage turns the retail DDS into the KTX2 atlas the chunks share.
     let atlas = TextureConverter::convert(atlas_dds, TextureEncoding::ColorSrgb)
         .wrap_err("the object atlas could not be converted to KTX2")?;
     let metadata = inspect_ktx2(&atlas, TextureEncoding::ColorSrgb)?;
-    let (chunks, skipped) = compile_candidates(world, candidates, &atlas, atlas_sha256)?;
+    let (chunks, skipped) = compile_candidates(world, candidates, atlas_sha256)?;
     ensure!(
         !chunks.is_empty(),
         "refused: no block compiled ({} skipped); nothing was written. First reason: {}",
@@ -405,6 +411,7 @@ pub fn derive_into(
     );
 
     let mut written: Vec<String> = Vec::new();
+    let mut atlas_entry: Option<(String, String)> = None;
     let publish = (|| -> Result<()> {
         connection.execute_batch("BEGIN IMMEDIATE")?;
         if force && had_table {
@@ -417,6 +424,9 @@ pub fn derive_into(
                 [world.id],
             )?;
         }
+        // The atlas is written once for the world and every chunk references it.
+        written.push(object_atlas_path(world.id));
+        atlas_entry = Some(publish_object_atlas(&connection, target, world.id, &atlas)?);
         for (chunk, _) in &chunks {
             written.push(object_chunk_payload_path(chunk.key));
             publish_object_chunk(&connection, target, chunk)?;
@@ -443,6 +453,12 @@ pub fn derive_into(
     let total: i64 = connection.query_row("SELECT count(*) FROM lod_object_chunks", [], |row| {
         row.get(0)
     })?;
+    manifest
+        .object_atlases
+        .retain(|path, _| !path.starts_with(&world_prefix));
+    if let Some((path, hash)) = &atlas_entry {
+        manifest.object_atlases.insert(path.clone(), hash.clone());
+    }
     manifest.object_chunks = u64::try_from(total).wrap_err("object chunk count")?;
     manifest.objects_compiler_version = OBJECT_COMPILER_VERSION;
     let finish = (|| -> Result<()> {
@@ -469,9 +485,13 @@ pub fn derive_into(
                     "DELETE FROM lod_object_chunks_spatial WHERE worldspace_id = ?1",
                     [world.id],
                 )?;
+                connection.execute(
+                    "DELETE FROM lod_object_atlases WHERE worldspace_id = ?1",
+                    [world.id],
+                )?;
             } else {
                 connection.execute_batch(
-                    "DROP TABLE IF EXISTS lod_object_chunks_spatial; DROP TABLE IF EXISTS lod_object_chunks;",
+                    "DROP TABLE IF EXISTS lod_object_chunks_spatial; DROP TABLE IF EXISTS lod_object_chunks; DROP TABLE IF EXISTS lod_object_atlases;",
                 )?;
             }
             Ok(())
@@ -496,6 +516,8 @@ pub fn derive_into(
         chunks,
         skipped,
         atlas_ktx2_bytes: atlas.len(),
+        atlas_path: atlas_entry.as_ref().map(|(path, _)| path.clone()),
+        atlas_file_sha256: atlas_entry.map(|(_, hash)| hash),
         atlas_width: metadata.width,
         atlas_height: metadata.height,
         atlas_levels: metadata.levels,
@@ -622,6 +644,7 @@ mod tests {
                 object_chunks: 0,
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
+                object_atlases: BTreeMap::new(),
             })
             .unwrap(),
         )

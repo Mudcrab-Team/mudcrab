@@ -34,11 +34,15 @@ use color_eyre::{
     eyre::{WrapErr, ensure},
 };
 use rusqlite::{Connection, params};
-use shared::lod::{ChunkKey, LodOrigin, LodTier, nodes, object_chunk_payload_path};
+use shared::lod::{
+    ChunkKey, LodOrigin, LodTier, OBJECT_ATLAS_URI, nodes, object_atlas_path,
+    object_chunk_payload_path,
+};
 use std::path::Path;
 
 /// Explicit producer revision of the object chunk compiler. Terrain chunk reuse is unaffected.
-pub const OBJECT_COMPILER_VERSION: u32 = 2;
+/// Version 3: chunks reference one shared atlas file per worldspace instead of embedding it.
+pub const OBJECT_COMPILER_VERSION: u32 = 3;
 
 /// Alpha-test reference of the retail object LOD material: 128 of 255, discard strictly below.
 pub const ALPHA_CUTOFF: f64 = 128.0 / 255.0;
@@ -183,16 +187,45 @@ pub fn compile_object_chunk(
     atlas_ktx2: &[u8],
 ) -> Result<ObjectChunk> {
     ensure!(
+        !atlas_ktx2.is_empty(),
+        "object chunk {key:?}: the atlas texture is empty"
+    );
+    compile_with_atlas(key, origin, block, AtlasSource::Embedded(atlas_ktx2))
+}
+
+/// Compiles a chunk that references the worldspace's shared atlas file ([`OBJECT_ATLAS_URI`])
+/// instead of embedding the texture. The atlas itself is published once per worldspace with
+/// [`publish_object_atlas`].
+pub fn compile_object_chunk_shared_atlas(
+    key: ChunkKey,
+    origin: LodOrigin,
+    block: &ObjectLodFile,
+) -> Result<ObjectChunk> {
+    compile_with_atlas(key, origin, block, AtlasSource::Shared)
+}
+
+/// Where a chunk's base-colour atlas lives.
+#[derive(Clone, Copy)]
+enum AtlasSource<'a> {
+    /// The KTX2 bytes, embedded in the chunk (format 2 and the compiler tests).
+    Embedded(&'a [u8]),
+    /// The worldspace's atlas file, by relative URI (format 3).
+    Shared,
+}
+
+fn compile_with_atlas(
+    key: ChunkKey,
+    origin: LodOrigin,
+    block: &ObjectLodFile,
+    atlas: AtlasSource<'_>,
+) -> Result<ObjectChunk> {
+    ensure!(
         !block.shapes.is_empty(),
         "object chunk {key:?}: the retail block has no geometry"
     );
     ensure!(
         key.tier != LodTier::Tier16 || block.large_ref_blocks.is_empty(),
         "object chunk {key:?}: a level-16 block carries large-reference markers, which are not read"
-    );
-    ensure!(
-        !atlas_ktx2.is_empty(),
-        "object chunk {key:?}: the atlas texture is empty"
     );
     let (cell_x, cell_y) = chunk_origin_cell(key, origin);
     let block_origin = [cell_to_units(cell_x), cell_to_units(cell_y), 0.0];
@@ -290,7 +323,7 @@ pub fn compile_object_chunk(
     }
 
     let cell_pieces = pieces.iter().filter(|piece| piece.cell.is_some()).count();
-    let glb = emit_object_glb(key, &streams, &pieces, atlas_ktx2, block)?;
+    let glb = emit_object_glb(key, &streams, &pieces, atlas, block)?;
     let side = key.tier.side_cells();
     let cells = (0..side)
         .flat_map(|dy| (0..side).map(move |dx| (cell_x + dx, cell_y + dy)))
@@ -312,7 +345,7 @@ fn emit_object_glb(
     key: ChunkKey,
     streams: &Streams,
     pieces: &[Piece],
-    atlas: &[u8],
+    atlas: AtlasSource<'_>,
     block: &ObjectLodFile,
 ) -> Result<Vec<u8>> {
     let mut binary: Vec<u8> = Vec::new();
@@ -330,8 +363,10 @@ fn emit_object_glb(
     }
     pad_to_4(&mut binary);
     let atlas_offset = binary.len();
-    binary.extend_from_slice(atlas);
-    pad_to_4(&mut binary);
+    if let AtlasSource::Embedded(atlas) = atlas {
+        binary.extend_from_slice(atlas);
+        pad_to_4(&mut binary);
+    }
 
     let chunk_name = format!(
         "objects_chunk_{}_{}_{}",
@@ -424,7 +459,19 @@ fn emit_object_glb(
             }],
         }));
     }
-    let json = serde_json::json!({
+    let mut buffer_views = Vec::new();
+    let image_json = match atlas {
+        AtlasSource::Embedded(atlas) => {
+            buffer_views.push(
+                serde_json::json!({ "buffer": 0, "byteOffset": atlas_offset, "byteLength": atlas.len() }),
+            );
+            serde_json::json!({ "bufferView": 5, "mimeType": "image/ktx2" })
+        }
+        AtlasSource::Shared => {
+            serde_json::json!({ "uri": OBJECT_ATLAS_URI, "mimeType": "image/ktx2" })
+        }
+    };
+    let mut json = serde_json::json!({
         "asset": { "version": "2.0", "generator": "OpenSky LOD object compiler" },
         "extensionsUsed": ["KHR_texture_basisu"],
         "scene": 0,
@@ -438,10 +485,9 @@ fn emit_object_glb(
             { "buffer": 0, "byteOffset": uv_offset, "byteLength": streams.uvs.len() * 4, "target": 34962 },
             { "buffer": 0, "byteOffset": color_offset, "byteLength": streams.colors.len() * 4, "target": 34962 },
             { "buffer": 0, "byteOffset": index_offset, "byteLength": streams.indices.len() * 4, "target": 34963 },
-            { "buffer": 0, "byteOffset": atlas_offset, "byteLength": atlas.len() },
         ],
         "buffers": [{ "byteLength": binary.len() }],
-        "images": [{ "bufferView": 5, "mimeType": "image/ktx2" }],
+        "images": [image_json],
         "samplers": [{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }],
         "textures": [{ "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } }],
         "materials": [
@@ -449,6 +495,9 @@ fn emit_object_glb(
             object_material("lod_objects_double_sided", true),
         ],
     });
+    if let Some(views) = json["bufferViews"].as_array_mut() {
+        views.extend(buffer_views);
+    }
     assemble_glb(&json, &binary)
 }
 
@@ -493,6 +542,10 @@ pub fn create_object_chunk_tables(connection: &Connection) -> Result<()> {
              );
              CREATE VIRTUAL TABLE IF NOT EXISTS lod_object_chunks_spatial USING rtree(
                  id, minX, maxX, minY, maxY, +worldspace_id, +tier, +anchor_x, +anchor_y
+             );
+             CREATE TABLE IF NOT EXISTS lod_object_atlases (
+                 worldspace_id INTEGER PRIMARY KEY,
+                 payload_path TEXT NOT NULL, content_hash TEXT NOT NULL
              );",
         )
         .wrap_err("failed to create the object LOD tables")
@@ -744,6 +797,15 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         images[0]["mimeType"] == "image/ktx2",
         "the atlas image is not KTX2"
     );
+    if let Some(uri) = images[0].get("uri") {
+        // Format 3: the shared atlas file. Its own checks are the package's (the file, its row and
+        // its hash), because a chunk cannot see it.
+        ensure!(
+            uri == OBJECT_ATLAS_URI && images[0].get("bufferView").is_none(),
+            "an object chunk references the atlas by `{OBJECT_ATLAS_URI}` only, found {uri}"
+        );
+        return Ok(());
+    }
     let (atlas_offset, atlas_length) = *views
         .get(json_usize(&images[0]["bufferView"], "image bufferView")?)
         .ok_or_else(|| color_eyre::eyre::eyre!("the atlas image has no bufferView"))?;
@@ -755,6 +817,54 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         "the embedded atlas is not a 2D texture"
     );
     Ok(())
+}
+
+/// Whether a chunk GLB references the shared atlas file (format 3) instead of embedding the atlas
+/// (format 2).
+pub fn chunk_uses_shared_atlas(bytes: &[u8]) -> Result<bool> {
+    let document = crate::mesh::glb_json_from_bytes(bytes)?;
+    Ok(document["images"][0].get("uri").is_some())
+}
+
+/// Checks a KTX2 atlas file: a valid sRGB 2D texture.
+pub fn validate_atlas_ktx2(bytes: &[u8]) -> Result<()> {
+    let metadata = crate::texture::inspect_ktx2(bytes, crate::texture::TextureEncoding::ColorSrgb)
+        .wrap_err("the object atlas is not a valid sRGB KTX2")?;
+    ensure!(
+        metadata.layers <= 1 && metadata.faces == 1 && metadata.depth <= 1,
+        "the object atlas is not a 2D texture"
+    );
+    Ok(())
+}
+
+/// Writes the worldspace's shared atlas, validates what was written and records its row in
+/// `lod_object_atlases`. Returns the payload path and the SHA-256 of the file.
+pub fn publish_object_atlas(
+    connection: &Connection,
+    staging_root: &Path,
+    worldspace_id: u32,
+    ktx2: &[u8],
+) -> Result<(String, String)> {
+    validate_atlas_ktx2(ktx2)?;
+    let relative = object_atlas_path(worldspace_id);
+    let path = staging_root.join(&relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, ktx2)?;
+    let written = std::fs::read(&path)?;
+    validate_atlas_ktx2(&written).wrap_err_with(|| format!("invalid object atlas {relative}"))?;
+    let hash = crate::cache::hash_bytes(&written);
+    ensure!(
+        hash == crate::cache::hash_bytes(ktx2),
+        "object atlas changed while being written: {relative}"
+    );
+    create_object_chunk_tables(connection)?;
+    connection.execute(
+        "INSERT OR REPLACE INTO lod_object_atlases(worldspace_id, payload_path, content_hash) VALUES (?1, ?2, ?3)",
+        params![worldspace_id, relative, hash],
+    )?;
+    Ok((relative, hash))
 }
 
 /// Identity of the inputs of one object chunk, recorded as `object_chunk_inputs` in
@@ -875,6 +985,7 @@ pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut shared_atlas_worlds = std::collections::BTreeSet::new();
     for (worldspace, tier, anchor_x, anchor_y, path, hash) in listed_rows {
         let tier = LodTier::from_side_cells(tier)
             .ok_or_else(|| color_eyre::eyre::eyre!("object chunk row {path} has tier {tier}"))?;
@@ -899,6 +1010,71 @@ pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
         );
         validate_object_glb(&bytes)
             .wrap_err_with(|| format!("listed object chunk {path} is damaged"))?;
+        if chunk_uses_shared_atlas(&bytes)? {
+            shared_atlas_worlds.insert(worldspace);
+        }
+    }
+    validate_object_atlases(root, &connection, manifest.as_ref(), &shared_atlas_worlds)
+}
+
+/// Checks the shared atlas files: every worldspace whose chunks reference the shared atlas has a
+/// row, a file with the recorded SHA-256 that is a valid sRGB KTX2, and a manifest entry; and no
+/// atlas row or manifest entry stands without chunks that use it.
+fn validate_object_atlases(
+    root: &Path,
+    connection: &Connection,
+    manifest: Option<&serde_json::Value>,
+    needed: &std::collections::BTreeSet<u32>,
+) -> Result<()> {
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_atlases')",
+        [],
+        |row| row.get(0),
+    )?;
+    let rows: Vec<(u32, String, String)> = if has_table {
+        connection
+            .prepare("SELECT worldspace_id, payload_path, content_hash FROM lod_object_atlases ORDER BY worldspace_id")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<std::result::Result<_, _>>()?
+    } else {
+        Vec::new()
+    };
+    let listed = manifest
+        .and_then(|manifest| manifest["object_atlases"].as_object())
+        .map_or_else(serde_json::Map::new, Clone::clone);
+    for world in needed {
+        ensure!(
+            rows.iter().any(|(id, _, _)| id == world),
+            "object chunks of worldspace {world:08x} reference the shared atlas but the database has no atlas row for it"
+        );
+    }
+    ensure!(
+        rows.len() == listed.len(),
+        "object LOD disagrees: lod-manifest.json lists {} atlases, the database has {}",
+        listed.len(),
+        rows.len()
+    );
+    for (world, path, hash) in rows {
+        ensure!(
+            needed.contains(&world),
+            "the shared atlas of worldspace {world:08x} has no chunk that uses it"
+        );
+        ensure!(
+            path == object_atlas_path(world),
+            "atlas row {path} is not the canonical path of worldspace {world:08x}"
+        );
+        ensure!(
+            listed.get(&path).and_then(serde_json::Value::as_str) == Some(hash.as_str()),
+            "atlas {path} is not listed in lod-manifest.json with its SHA-256"
+        );
+        let bytes = std::fs::read(root.join(&path))
+            .wrap_err_with(|| format!("listed object atlas {path} is missing or unreadable"))?;
+        ensure!(
+            crate::cache::hash_bytes(&bytes) == hash,
+            "listed object atlas {path} does not match its recorded SHA-256"
+        );
+        validate_atlas_ktx2(&bytes)
+            .wrap_err_with(|| format!("listed object atlas {path} is damaged"))?;
     }
     Ok(())
 }
@@ -1469,5 +1645,105 @@ mod tests {
             base,
             object_chunk_input_hash(key(), LodOrigin::new(-95, -96), "a", "b").unwrap()
         );
+    }
+
+    #[test]
+    fn a_shared_atlas_chunk_references_the_atlas_file_and_embeds_nothing() {
+        let block = block(vec![shape(1, [0.0; 3])]);
+        let embedded = compile_object_chunk(key(), ORIGIN, &block, &atlas()).unwrap();
+        let shared = compile_object_chunk_shared_atlas(key(), ORIGIN, &block).unwrap();
+        validate_object_glb(&shared.glb).unwrap();
+        assert!(chunk_uses_shared_atlas(&shared.glb).unwrap());
+        assert!(!chunk_uses_shared_atlas(&embedded.glb).unwrap());
+        assert!(shared.glb.len() + atlas().len() / 2 < embedded.glb.len() + 1);
+        let document = json_of(&shared.glb);
+        assert_eq!(
+            document["images"],
+            serde_json::json!([{ "uri": OBJECT_ATLAS_URI, "mimeType": "image/ktx2" }])
+        );
+        assert_eq!(document["bufferViews"].as_array().unwrap().len(), 5);
+        // Any other URI is refused.
+        assert!(
+            validate_object_glb(&patch(
+                &shared.glb,
+                OBJECT_ATLAS_URI,
+                "../objects_atlaz.ktx2"
+            ))
+            .is_err()
+        );
+    }
+
+    /// A pack root with a shared atlas, one chunk that references it, and a manifest that lists both.
+    fn shared_pack(root: &Path) -> (String, String) {
+        let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+        let (atlas_path, atlas_hash) =
+            publish_object_atlas(&connection, root, 60, &atlas()).unwrap();
+        let chunk =
+            compile_object_chunk_shared_atlas(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]))
+                .unwrap();
+        publish_object_chunk(&connection, root, &chunk).unwrap();
+        let chunk_path = object_chunk_payload_path(chunk.key);
+        let manifest = serde_json::json!({
+            "object_chunks": 1,
+            "objects_compiler_version": OBJECT_COMPILER_VERSION,
+            "object_chunk_inputs": { chunk_path.clone(): "proof" },
+            "object_atlases": { atlas_path.clone(): atlas_hash },
+        });
+        std::fs::write(root.join("lod-manifest.json"), manifest.to_string()).unwrap();
+        (atlas_path, chunk_path)
+    }
+
+    #[test]
+    fn the_package_check_covers_the_shared_atlas() {
+        let root = tempfile::tempdir().unwrap();
+        let (atlas_path, _) = shared_pack(root.path());
+        assert_eq!(atlas_path, object_atlas_path(60));
+        validate_object_lod_package(root.path()).unwrap();
+        let file = root.path().join(&atlas_path);
+        let original = std::fs::read(&file).unwrap();
+        // Damaged: the hash no longer matches.
+        let mut damaged = original.clone();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 0xff;
+        std::fs::write(&file, &damaged).unwrap();
+        let message = format!(
+            "{:#}",
+            validate_object_lod_package(root.path()).unwrap_err()
+        );
+        assert!(
+            message.contains("SHA-256") && message.contains("atlas"),
+            "{message}"
+        );
+        // Missing.
+        std::fs::remove_file(&file).unwrap();
+        let message = format!(
+            "{:#}",
+            validate_object_lod_package(root.path()).unwrap_err()
+        );
+        assert!(
+            message.contains("atlas") && message.contains("missing"),
+            "{message}"
+        );
+        std::fs::write(&file, &original).unwrap();
+        validate_object_lod_package(root.path()).unwrap();
+        // The manifest does not list the atlas.
+        let manifest_path = root.path().join("lod-manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["object_atlases"] = serde_json::json!({});
+        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+        assert!(validate_object_lod_package(root.path()).is_err());
+        // A chunk that references the atlas has no atlas row.
+        let connection = Connection::open(root.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute("DELETE FROM lod_object_atlases", [])
+            .unwrap();
+        manifest["object_atlases"] = serde_json::json!({});
+        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+        let message = format!(
+            "{:#}",
+            validate_object_lod_package(root.path()).unwrap_err()
+        );
+        assert!(message.contains("no atlas row"), "{message}");
     }
 }

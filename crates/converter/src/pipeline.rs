@@ -4144,6 +4144,11 @@ pub(crate) fn validate_artifact(
                 path.display()
             );
         }
+        // The shared object LOD atlas (an sRGB base-colour texture, not a converted source texture).
+        Some("ktx2") if relative.starts_with("lod") => {
+            crate::lod::objects::validate_atlas_ktx2(&fs::read(&path)?)
+                .wrap_err_with(|| format!("invalid object LOD atlas {}", path.display()))?;
+        }
         Some("ktx2") => {
             let bytes = fs::read(&path)?;
             let key = source_texture_key(&canonical_asset_path(
@@ -5773,6 +5778,9 @@ async fn compile_lod_chunks_inline(
         report
             .artifacts
             .extend(stage.chunks.iter().map(|(path, _)| PathBuf::from(path)));
+        report
+            .artifacts
+            .extend(stage.atlases.iter().map(|(path, _)| PathBuf::from(path)));
         stage
     } else {
         crate::lod::object_stage::ObjectLodStage::default()
@@ -5795,6 +5803,7 @@ async fn compile_lod_chunks_inline(
                 crate::lod::objects::OBJECT_COMPILER_VERSION
             },
             object_chunk_inputs: object_lod.chunks.iter().cloned().collect(),
+            object_atlases: object_lod.atlases.iter().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -7681,6 +7690,7 @@ mod tests {
                 object_chunks: 0,
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
+                object_atlases: BTreeMap::new(),
             };
             Proof {
                 identity,
@@ -8517,6 +8527,10 @@ mod tests {
                 serde_json::from_slice(&fs::read(root.join("lod-manifest.json")).unwrap()).unwrap();
             assert_eq!(manifest.object_chunks, 1);
             assert_eq!(manifest.object_chunk_inputs.len(), 1);
+            // One shared atlas file per world, listed with its hash and written once.
+            assert_eq!(manifest.object_atlases.len(), 1);
+            let (atlas_path, atlas_hash) = manifest.object_atlases.iter().next().unwrap();
+            assert_eq!(&hash_file(&root.join(atlas_path)).unwrap(), atlas_hash);
             assert_eq!(
                 manifest.objects_compiler_version,
                 crate::lod::objects::OBJECT_COMPILER_VERSION

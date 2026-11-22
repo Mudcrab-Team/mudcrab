@@ -40,6 +40,9 @@ pub(crate) struct LodManifest {
     /// Input proof of each object chunk, by payload path (see `object_chunk_input_hash`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub object_chunk_inputs: BTreeMap<String, String>,
+    /// SHA-256 of each shared object atlas file, by payload path (one per worldspace).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub object_atlases: BTreeMap<String, String>,
 }
 
 fn is_zero(value: &u64) -> bool {

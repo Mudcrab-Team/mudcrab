@@ -12,8 +12,8 @@ use crate::{
     config::PipelineConfig,
     lod::{
         objects::{
-            ObjectChunk, chunk_key_for_block, compile_object_chunk, object_chunk_input_hash,
-            publish_object_chunk,
+            ObjectChunk, chunk_key_for_block, compile_object_chunk_shared_atlas,
+            object_chunk_input_hash, publish_object_atlas, publish_object_chunk,
         },
         retail::{
             atlas::read_dds_info,
@@ -352,16 +352,15 @@ pub(crate) fn read_retail(
 /// Chunks (each with its input proof) and skipped blocks of one world.
 pub(crate) type Compiled = (Vec<(ObjectChunk, String)>, Vec<SkippedBlock>);
 
-/// Compiles the candidates of one world into object chunks with the shared atlas. A block that
+/// Compiles the candidates of one world into object chunks that reference the worldspace's shared
+/// atlas file. A block that
 /// cannot be read, is off the LOD grid, or that the compiler refuses is skipped with its class and
 /// reason. The caller decides whether skipped blocks or an empty result are errors.
 pub(crate) fn compile_candidates(
     world: WorldFacts,
     candidates: Vec<BlockCandidate>,
-    atlas_ktx2: &[u8],
     atlas_sha256: &str,
 ) -> Result<Compiled> {
-    let atlas = atlas_ktx2;
     let mut skipped = Vec::new();
     let mut chunks: Vec<(ObjectChunk, String)> = Vec::new();
     for candidate in candidates {
@@ -395,7 +394,7 @@ pub(crate) fn compile_candidates(
                 continue;
             }
         };
-        match compile_object_chunk(key, world.origin, block, atlas) {
+        match compile_object_chunk_shared_atlas(key, world.origin, block) {
             Ok(chunk) => {
                 let input =
                     object_chunk_input_hash(key, world.origin, &candidate.sha256, atlas_sha256)?;
@@ -446,6 +445,8 @@ pub fn level_counts(chunks: &[(ObjectChunk, String)]) -> BTreeMap<u32, LevelCoun
 pub(crate) struct ObjectLodStage {
     /// Payload path and input proof of each published chunk.
     pub chunks: Vec<(String, String)>,
+    /// Payload path and SHA-256 of each shared atlas file (one per worldspace with chunks).
+    pub atlases: Vec<(String, String)>,
     pub triangles: usize,
     /// Counts per block level.
     pub levels: BTreeMap<u32, LevelCounts>,
@@ -530,7 +531,7 @@ pub(crate) fn build_object_lod(
         .wrap_err_with(|| format!("the object atlas of {editor_id} could not be converted"))?;
         crate::texture::inspect_ktx2(&atlas, crate::texture::TextureEncoding::ColorSrgb)
             .wrap_err_with(|| format!("the object atlas of {editor_id} is not a valid KTX2"))?;
-        let (chunks, skipped) = compile_candidates(world, retail.blocks, &atlas, &atlas_sha256)?;
+        let (chunks, skipped) = compile_candidates(world, retail.blocks, &atlas_sha256)?;
         for block in retail.skipped.iter().chain(&skipped) {
             stage.warnings.push(format!(
                 "object LOD {editor_id}: skipped block ({}, {}): {}: {}",
@@ -558,6 +559,11 @@ pub(crate) fn build_object_lod(
             total.large_ref_chunks += counts.large_ref_chunks;
             total.bytes += counts.bytes;
         }
+        // The atlas is written once for the world; every chunk references it.
+        stage.atlases.push(
+            publish_object_atlas(connection, staging, id, &atlas)
+                .wrap_err_with(|| format!("failed to publish the object atlas of {editor_id}"))?,
+        );
         for (chunk, input) in &chunks {
             publish_object_chunk(connection, staging, chunk)
                 .wrap_err_with(|| format!("failed to publish an object chunk of {editor_id}"))?;

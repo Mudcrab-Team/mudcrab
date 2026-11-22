@@ -231,9 +231,33 @@ pub fn object_chunk_payload_path(key: ChunkKey) -> String {
     )
 }
 
+/// Path of a worldspace's shared object LOD atlas (KTX2) inside the published asset set:
+/// `lod/<world-hex>/objects_atlas.ktx2`. One file per worldspace, listed in the additive table
+/// `lod_object_atlases`, referenced by every object chunk of that worldspace.
+pub fn object_atlas_path(worldspace_id: u32) -> String {
+    format!("lod/{worldspace_id:08x}/objects_atlas.ktx2")
+}
+
+/// The image URI an object chunk GLB uses for the shared atlas. It is relative to the chunk file,
+/// `lod/<world-hex>/<tier>/objects_<x>_<y>.glb`, so it resolves to [`object_atlas_path`] for every
+/// tier of the worldspace.
+pub const OBJECT_ATLAS_URI: &str = "../objects_atlas.ktx2";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shared_atlas_uri_resolves_to_the_atlas_path_from_every_tier_directory() {
+        for tier in LodTier::ALL {
+            let key = ChunkKey::new(60, tier, ChunkAnchor::new(1, 2));
+            let chunk = object_chunk_payload_path(key);
+            let directory = chunk.rsplit_once('/').unwrap().0;
+            let resolved = format!("{directory}/{OBJECT_ATLAS_URI}")
+                .replace(&format!("/{}/../", tier.side_cells()), "/");
+            assert_eq!(resolved, object_atlas_path(60));
+        }
+    }
 
     #[test]
     fn tiers_order_nearest_to_farthest() {
