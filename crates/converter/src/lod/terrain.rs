@@ -611,7 +611,14 @@ fn emit_chunk_glb(
             "doubleSided": true,
         }],
     });
-    let mut json_bytes = serde_json::to_vec(&json)?;
+    assemble_glb(&json, &binary)
+}
+
+/// Wraps a glTF JSON document and its single binary buffer into a GLB container: the 12-byte
+/// header, the JSON chunk padded with spaces to four bytes, then the binary chunk. Shared by the
+/// terrain and object LOD compilers so both write the same container.
+pub(super) fn assemble_glb(json: &serde_json::Value, binary: &[u8]) -> Result<Vec<u8>> {
+    let mut json_bytes = serde_json::to_vec(json)?;
     while !json_bytes.len().is_multiple_of(4) {
         json_bytes.push(b' ');
     }
@@ -625,7 +632,7 @@ fn emit_chunk_glb(
     glb.extend_from_slice(&json_bytes);
     glb.extend_from_slice(&(binary.len() as u32).to_le_bytes());
     glb.extend_from_slice(b"BIN\x00");
-    glb.extend_from_slice(&binary);
+    glb.extend_from_slice(binary);
     Ok(glb)
 }
 

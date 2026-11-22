@@ -5,6 +5,8 @@
 //! the same chunk files beneath per-cell `objects` groups.
 
 pub mod albedo;
+pub mod object_stage;
+pub mod objects;
 pub mod retail;
 pub mod retail_terrain;
 pub(crate) mod retail_terrain_import;

@@ -712,6 +712,9 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS worldspaces;
         DROP TABLE IF EXISTS records;
         DROP TABLE IF EXISTS formid_map;
+        DROP TABLE IF EXISTS lod_object_atlases;
+        DROP TABLE IF EXISTS lod_object_chunks_spatial;
+        DROP TABLE IF EXISTS lod_object_chunks;
         DROP TABLE IF EXISTS subset_placement_deletions;
         DROP TABLE IF EXISTS reference_link_subset_sources;
         DROP TABLE IF EXISTS reference_authored_targets;

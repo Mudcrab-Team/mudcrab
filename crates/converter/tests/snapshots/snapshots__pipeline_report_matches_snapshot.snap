@@ -156,8 +156,11 @@ expression: report
   "lod_gpu_chunks": 0,
   "lod_warnings": [],
   "notices": [
-    "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"
+    "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks",
+    "Object LOD: 1 worldspace(s) with terrain LOD have no level 16, 8 or 4 object blocks in the game data"
   ],
+  "object_lod_chunks": 0,
+  "object_lod_elapsed_ms": "[object_lod_elapsed_ms]",
   "phase_elapsed_ms": {
     "archive_ingestion_and_loose_overlay": "[elapsed_ms]",
     "artifact_validation": "[elapsed_ms]",

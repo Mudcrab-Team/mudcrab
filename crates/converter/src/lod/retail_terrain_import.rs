@@ -11,7 +11,7 @@ use super::{
     retail_terrain_source::{BlockId, RetailTerrainFiles, Skipped},
     terrain::publish_chunk,
 };
-use crate::cache::hash_bytes;
+use crate::{cache::hash_bytes, pack_clone::require_private_output};
 use color_eyre::{
     Result,
     eyre::{ContextCompat, WrapErr, bail, ensure},
@@ -158,33 +158,15 @@ pub(crate) fn import_world(
     let mut moved = Vec::new();
     let publish = (|| {
         for relative in affected {
+            require_private_output(target, Path::new(relative))?;
             let destination = target.join(relative);
             let parent = destination
                 .parent()
                 .wrap_err("missing LOD payload parent")?;
-            let parent_relative = parent.strip_prefix(target)?;
-            let mut directory = target.to_owned();
-            for part in parent_relative.components() {
-                directory.push(part);
-                match fs::symlink_metadata(&directory) {
-                    Ok(metadata) => ensure!(
-                        metadata.is_dir(),
-                        "LOD directory is not a real directory: {}",
-                        directory.display()
-                    ),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        fs::create_dir(&directory)?
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
+            fs::create_dir_all(parent)?;
             let backup = staged.path().join(format!("old-{}", moved.len()));
             let backed_up = match fs::symlink_metadata(&destination) {
-                Ok(metadata) => {
-                    ensure!(
-                        metadata.is_file(),
-                        "LOD payload is not a regular file: {relative}"
-                    );
+                Ok(_) => {
                     fs::rename(&destination, &backup)?;
                     Some(backup)
                 }

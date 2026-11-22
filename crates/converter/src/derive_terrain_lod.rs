@@ -16,21 +16,27 @@
 
 use crate::{
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes, hash_file},
+    integration::open_private_world_database,
     lod::{
         retail_terrain::{IMPORT_VERSION, RETAIL_NORMAL_AXES},
         retail_terrain_import::{LodWorld, WorldReport, import_world},
         retail_terrain_source::{self as source, BlockId},
         reuse::{LodManifest, TERRAIN_SOURCE_RETAIL},
     },
+    pack_clone::{check_clone, lock_for_derive, require_private_output},
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, bail, ensure},
+    eyre::{WrapErr, ensure},
 };
 use rusqlite::Connection;
-use serde::Deserialize;
 use shared::lod::LodOrigin;
-use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 /// Name of the receipt written into the clone.
 pub const RECEIPT_FILE: &str = "terrain-lod-receipt.json";
@@ -67,22 +73,16 @@ pub struct DeriveTerrainLodReport {
     pub elapsed_ms: u128,
 }
 
-#[derive(Debug, Deserialize)]
-struct RegisteredPack {
-    path: PathBuf,
-    #[serde(default)]
-    manifests: BTreeMap<String, String>,
-}
-
-struct CloneFacts {
-    manifests: BTreeMap<String, String>,
-}
-
 /// Derive terrain LOD into `options.target`. See the module documentation for the rules.
 pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> {
     let started = Instant::now();
-    let clone = check_clone(options)?;
-    let target = fs::canonicalize(&options.target)?;
+    let clone = check_clone(&options.registry, &options.clone_of, &options.target)?;
+    let target = clone.target;
+    let _lock = lock_for_derive(&target)?;
+    for file in ["lod-manifest.json", RECEIPT_FILE] {
+        require_private_output(&target, Path::new(file))?;
+    }
+    let connection = open_private_world_database(&target)?;
     let conversion = ConversionManifest::load(&target.join("conversion-manifest.json"))
         .wrap_err("refused: the target conversion manifest cannot be read")?;
     ensure!(
@@ -103,7 +103,6 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
         "refused: the target already has retail terrain LOD; pass --force to import again"
     );
 
-    let connection = crate::integration::open_private_world_database(&target)?;
     let worlds = lod_worlds(&connection)?;
     ensure!(
         !worlds.is_empty(),
@@ -321,97 +320,12 @@ fn lod_worlds(connection: &Connection) -> Result<Vec<LodWorld>> {
     .collect()
 }
 
-/// Refuses anything that is not an exact APFS clone of a registered pack.
-fn check_clone(options: &DeriveTerrainLodOptions) -> Result<CloneFacts> {
-    let registry: BTreeMap<String, RegisteredPack> =
-        serde_json::from_slice(&fs::read(&options.registry).wrap_err_with(|| {
-            format!("cannot read pack registry {}", options.registry.display())
-        })?)
-        .wrap_err_with(|| format!("pack registry {} is not valid", options.registry.display()))?;
-    let Some(source) = registry.get(&options.clone_of) else {
-        bail!(
-            "refused: `{}` is not a registered pack in {}",
-            options.clone_of,
-            options.registry.display()
-        );
-    };
-    let metadata = fs::symlink_metadata(&options.target).wrap_err_with(|| {
-        format!(
-            "refused: target {} does not exist",
-            options.target.display()
-        )
-    })?;
-    ensure!(
-        metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "refused: target {} must be a real directory, not a file or a symlink",
-        options.target.display()
-    );
-    let target = fs::canonicalize(&options.target)?;
-    for (name, registered) in &registry {
-        let Ok(path) = fs::canonicalize(&registered.path) else {
-            continue;
-        };
-        ensure!(
-            target != path && !target.starts_with(&path) && !path.starts_with(&target),
-            "refused: target {} is, is inside, or contains the registered pack `{name}` ({}); derive into an APFS clone, never into a registered pack",
-            target.display(),
-            path.display()
-        );
-    }
-    let database = target.join("skyrim_world.db");
-    crate::integration::check_private_world_database(&database)?;
-    ensure!(
-        !same_file::is_same_file(&database, source.path.join("skyrim_world.db"))?,
-        "refused: target world database is shared with the registered pack"
-    );
-    for sidecar in [
-        "skyrim_world.db-wal",
-        "skyrim_world.db-shm",
-        "skyrim_world.db-journal",
-    ] {
-        match fs::symlink_metadata(target.join(sidecar)) {
-            Ok(_) => crate::integration::check_private_world_database(&target.join(sidecar))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    ensure!(
-        !source.manifests.is_empty(),
-        "refused: the registry records no manifest hashes for `{}`, so the clone cannot be proven",
-        options.clone_of
-    );
-    for (file, expected) in &source.manifests {
-        let candidate = target.join(file);
-        ensure!(
-            candidate.is_file(),
-            "refused: target has no {file}, so it is not a clone of `{}`",
-            options.clone_of
-        );
-        let actual = hash_file(&candidate)?;
-        ensure!(
-            &actual == expected,
-            "refused: target {file} hash {actual} differs from the registered `{}` hash {expected}; the target is not an exact clone",
-            options.clone_of
-        );
-        let original = source.path.join(file);
-        if original.is_file() {
-            ensure!(
-                !same_file::is_same_file(&candidate, &original)?,
-                "refused: target {file} is the same file as the registered pack's; use `cp -c -R` (an APFS clone) to make the target"
-            );
-        }
-    }
-    Ok(CloneFacts {
-        manifests: source.manifests.clone(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn check_clone_rejects_a_hard_link_to_the_registered_database() {
+    fn terrain_derive_rejects_a_hard_link_to_the_registered_database() {
         let directory = tempfile::tempdir().unwrap();
         let registered = directory.path().join("registered");
         let target = directory.path().join("clone");
@@ -446,14 +360,8 @@ mod tests {
             command: Vec::new(),
         };
 
-        let error = check_clone(&options).err().unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("private copy of skyrim_world.db")
-        );
-        fs::remove_file(target.join("skyrim_world.db")).unwrap();
-        fs::copy(database, target.join("skyrim_world.db")).unwrap();
-        assert!(check_clone(&options).is_ok());
+        let error = run(&options).unwrap_err().to_string();
+        assert!(error.contains("skyrim_world.db") && error.contains("needs a private copy"));
+        assert_eq!(fs::read(database).unwrap(), b"database");
     }
 }

@@ -739,6 +739,7 @@ async fn pipeline_report_matches_snapshot() {
         // Wall-clock time.
         ".elapsed_ms" => "[elapsed_ms]",
         ".lod_elapsed_ms" => "[lod_elapsed_ms]",
+        ".object_lod_elapsed_ms" => "[object_lod_elapsed_ms]",
         ".publication_elapsed_ms" => "[publication_elapsed_ms]",
         ".archive_timings.*.source_hash_seconds" => "[seconds]",
         ".archive_timings.*.extraction_seconds" => "[seconds]",

@@ -470,7 +470,7 @@ fn read_shader(nif: &NifFile, reference: u32, label: &Path) -> Result<TerrainLod
     clippy::float_cmp,
     reason = "test builders write small counts and compare exact stored values"
 )]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn push_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -631,6 +631,11 @@ mod tests {
     ];
     // Half floats: 0.0 is 0x0000, 1.0 is 0x3C00.
     const UVS: [[u16; 2]; 3] = [[0x0000, 0x3C00], [0x3C00, 0x3C00], [0x0000, 0x0000]];
+
+    pub(crate) fn land_block() -> Vec<u8> {
+        let land = shape_block(0, 16.0, &TRIANGLE, Some(&UVS), &[[0, 1, 2]], None, true);
+        nif_bytes(&["Land"], &[("BSTriShape", land)])
+    }
 
     #[test]
     fn a_land_shape_and_its_water_child_are_told_apart_by_name_and_parent() {

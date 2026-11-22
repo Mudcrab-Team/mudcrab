@@ -64,23 +64,22 @@ pub struct NativeModelBoundsRefresh {
     pub unbounded_models: BTreeMap<String, String>,
 }
 
-/// Both offline pack editors require a private world database before starting a write transaction.
-pub(crate) fn check_private_world_database(database: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(database)?;
+/// Refuse symlinks and files whose inode is shared with another path.
+pub(crate) fn require_private_file(path: &Path, metadata: &fs::Metadata) -> Result<()> {
     ensure!(
         metadata.is_file(),
         "{} is not a regular file",
-        database.display()
+        path.display()
     );
     #[cfg(unix)]
-    let links = std::os::unix::fs::MetadataExt::nlink(&metadata);
+    let links = std::os::unix::fs::MetadataExt::nlink(metadata);
     #[cfg(windows)]
     let links = {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
         };
-        let file = fs::File::open(database)?;
+        let file = fs::File::open(path)?;
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: the file owns a live handle and info is writable for the duration of the call.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
@@ -92,16 +91,37 @@ pub(crate) fn check_private_world_database(database: &Path) -> Result<()> {
     #[cfg(any(unix, windows))]
     ensure!(
         links == 1,
-        "the pack needs a private copy of skyrim_world.db"
+        "{} needs a private copy (found {links} links)",
+        path.display()
     );
+    #[cfg(not(any(unix, windows)))]
+    color_eyre::eyre::bail!("cannot verify the link count of {}", path.display());
+    #[cfg(any(unix, windows))]
     Ok(())
 }
 
+/// Offline pack editors require a private database and private SQLite sidecar files.
 pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
-    let database = root.join(crate::check::WORLD_DATABASE_FILE_NAME);
-    check_private_world_database(&database)?;
-    Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .wrap_err_with(|| format!("failed to open {}", database.display()))
+    let database = root
+        .canonicalize()?
+        .join(crate::check::WORLD_DATABASE_FILE_NAME);
+    require_private_file(&database, &fs::symlink_metadata(&database)?)?;
+    for extension in ["db-journal", "db-wal", "db-shm"] {
+        let sidecar = database.with_extension(extension);
+        match fs::symlink_metadata(&sidecar) {
+            Ok(metadata) => require_private_file(&sidecar, &metadata)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("cannot inspect {}", sidecar.display()));
+            }
+        }
+    }
+    Connection::open_with_flags(
+        &database,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .wrap_err_with(|| format!("failed to open {}", database.display()))
 }
 
 /// Refreshes model projections in a private, offline runtime pack after installing or
