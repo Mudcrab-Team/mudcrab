@@ -24,6 +24,7 @@ const RENDER_PREPROCESSING: &str = "src/batching/gpu_preprocessing.rs";
 const MARKER_26504: &str = "mudcrab: bevyengine/bevy#26504";
 const MARKER_26095: &str = "mudcrab: bevyengine/bevy#26095";
 const MARKER_26588: &str = "mudcrab: bevyengine/bevy#26588";
+const MARKER_POWER_RAMP: &str = "mudcrab: ";
 
 fn vendor(crate_name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -191,6 +192,27 @@ fn check_patches(pbr: &Path, render: &Path) {
         "{PBR_CLUSTER} has the write-only metadata_staging_pending_buffers list again \
          (bevy#26588): GPU clustering leaks a buffer handle per view per frame"
     );
+
+    // Mudcrab's own fog falloff, not a Bevy change (#891): the weather's exterior fog is drawn by
+    // `FogFalloff::PowerRamp`. Without it the engine's fog would not build, or would draw nothing.
+    for (file, needed) in [
+        ("src/fog.rs", "PowerRamp {"),
+        ("src/render/fog.rs", "GPU_FOG_MODE_POWER_RAMP"),
+        ("src/render/mesh_view_types.wgsl", "FOG_MODE_POWER_RAMP"),
+        ("src/render/fog.wgsl", "fn power_ramp_fog("),
+        ("src/render/pbr_functions.wgsl", "power_ramp_fog("),
+    ] {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(needed),
+            "{file} lost the power ramp fog (`{needed}` or its `{MARKER_POWER_RAMP}` marker)"
+        );
+    }
+    assert!(
+        code(&required_source(pbr, "src/render/fog.wgsl"))
+            .contains("min(exp2(log2(s) * power), far_color.a)"),
+        "the power ramp fog shader no longer computes min(s^power, max)"
+    );
 }
 
 #[test]
@@ -277,6 +299,11 @@ fn vendored_copy_with_endings(
         ("bevy_pbr", PBR_MESH),
         ("bevy_pbr", PBR_PREPROCESS),
         ("bevy_pbr", PBR_CLUSTER),
+        ("bevy_pbr", "src/fog.rs"),
+        ("bevy_pbr", "src/render/fog.rs"),
+        ("bevy_pbr", "src/render/mesh_view_types.wgsl"),
+        ("bevy_pbr", "src/render/fog.wgsl"),
+        ("bevy_pbr", "src/render/pbr_functions.wgsl"),
         ("bevy_render", RENDER_PREPROCESSING),
     ] {
         let destination = copy.path().join(crate_name).join(relative);
@@ -293,6 +320,22 @@ fn check_copy(copy: &tempfile::TempDir) {
         &copy.path().join("bevy_pbr"),
         &copy.path().join("bevy_render"),
     );
+}
+
+#[test]
+#[should_panic(expected = "lost the power ramp fog")]
+fn dropping_the_power_ramp_shader_branch_fails() {
+    check_copy(&vendored_copy("src/render/pbr_functions.wgsl", |text| {
+        text.replace("power_ramp_fog(", "linear_fog(")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "no longer computes")]
+fn changing_the_power_ramp_formula_fails() {
+    check_copy(&vendored_copy("src/render/fog.wgsl", |text| {
+        text.replace("exp2(log2(s) * power)", "s")
+    }));
 }
 
 #[test]

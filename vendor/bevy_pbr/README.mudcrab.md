@@ -30,6 +30,7 @@ so a still actor also keeps the base shape.
 | `prev_weight_at` falls back to the current weight when its offset or index is outside `prev_morph_weights` | **Mudcrab's own addition, not in the PR.** The no-previous-weights offset is `!0`; weight 0 would read index `u32::MAX`. Reached only with motion vectors. | `src/render/morph.wgsl`, comment in `src/render/morph.rs` |
 | Clear the bin-unpacking bind groups at the start of `prepare_preprocess_bind_groups` | `bevyengine/bevy#26095` (bevy_render half: see `../bevy_render/README.mudcrab.md`), ported by hand to 0.19.0's `BinUnpackingBindGroups` | `src/render/gpu_preprocess.rs` |
 | Remove the write-only `metadata_staging_pending_buffers` list (a GPU clustering leak) | `bevyengine/bevy#26588`, applied unchanged. Mudcrab turns GPU clustering off on Metal, so it matters on Vulkan and DX12 only | `src/cluster/gpu.rs` |
+| Add `FogFalloff::PowerRamp` (fog mode 5): `s = saturate((d - start) / (end - start))`, intensity `min(s^power, max)` with max in the fog colour's alpha, and a fog colour that runs from a near colour (`bi`) to the far colour by the intensity. It draws the weather record's exterior fog (#891) | **Mudcrab's own addition, not a Bevy change** | `src/fog.rs`, `src/render/fog.rs`, `src/render/fog.wgsl`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_functions.wgsl` |
 
 Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists the touched spots.
 
@@ -37,6 +38,6 @@ Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists
 
 Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` when a Bevy release
 that Mudcrab uses contains `bevyengine/bevy#26504`, `#26095` and `#26588`, or equivalent fixes (each can go on its own). If Bevy lands a different
-change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read.
+change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read. The power ramp fog is Mudcrab's own addition: keep it, since no Bevy release replaces it.
 After any change run `cargo test --locked -p engine` and the Metal shader-validation run in
 `vendor/BEVY_PATCHES.md`, and confirm it reports 0 out-of-bounds reads.
