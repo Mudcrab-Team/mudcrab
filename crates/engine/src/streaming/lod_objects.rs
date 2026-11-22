@@ -396,13 +396,21 @@ pub(super) fn update_lod_objects(
     }
 }
 
+/// A number in a node name, or `None` for a name that is not an object cell piece.
+fn parse_number<T: std::str::FromStr>(text: &str) -> Option<T> {
+    match text.parse() {
+        Ok(value) => Some(value),
+        Err(_) => None,
+    }
+}
+
 /// The cell of an `object_cell_<x>_<y>_<n>` node name of a level-4 chunk.
 pub fn object_cell_of_name(name: &str) -> Option<IVec2> {
     let rest = name.strip_prefix("object_cell_")?;
     let mut parts = rest.split('_');
-    let x = parts.next()?.parse().ok()?;
-    let y = parts.next()?.parse().ok()?;
-    parts.next()?.parse::<u32>().ok()?;
+    let x = parse_number::<i32>(parts.next()?)?;
+    let y = parse_number::<i32>(parts.next()?)?;
+    parse_number::<u32>(parts.next()?)?;
     parts.next().is_none().then_some(IVec2::new(x, y))
 }
 

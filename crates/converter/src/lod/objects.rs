@@ -156,8 +156,10 @@ struct Piece {
 /// y-major order, 3,268 times). Unverified against the retail routine (the reviewed research names
 /// only the packed cell key of its lookup). Shapes with one segment carry no cell.
 fn segment_cell(block: (i32, i32), segment: usize) -> Option<(i32, i32)> {
-    let column = i32::try_from(segment / 4).ok()?;
-    let row = i32::try_from(segment % 4).ok()?;
+    let (column, row) = match (i32::try_from(segment / 4), i32::try_from(segment % 4)) {
+        (Ok(column), Ok(row)) => (column, row),
+        _ => return None,
+    };
     (column < 4).then_some((block.0 + column, block.1 + row))
 }
 
