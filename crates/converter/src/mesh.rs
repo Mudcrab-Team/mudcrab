@@ -1096,39 +1096,62 @@ fn rebuild_glb_with_document(original: &[u8], document: &serde_json::Value) -> R
     Ok(glb)
 }
 
+/// The index of the one node named `target`, or `None` when no node or more than one node has
+/// that name. A repeated name cannot say which node the body was authored against.
+fn unique_node_index(node_names: &[String], target: &str) -> Option<usize> {
+    let mut matches = node_names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_str() == target);
+    let (index, _) = matches.next()?;
+    matches.next().is_none().then_some(index)
+}
+
 /// Keeps only the bodies whose `node` index names, in the exported GLB, the NIF node the body
 /// targets. The collision reader derives the index from the NIF alone; this checks it against
 /// what the exporter really wrote, and moves a body it cannot place to `skipped`. Its shapes
 /// remain as fixed collision.
 ///
-/// A body is accepted only when its target name is non-empty and sits at the predicted index
-/// in the node names of the GLB that is actually written, so a reordered export cannot attach
-/// a body to the wrong node. With `require_unique_name` (annotate, or a GLB whose node order
-/// differs from the NIF's static scene) the name must also appear exactly once.
+/// A body is accepted only when its target name is non-empty and the written GLB can place it:
+/// at the predicted index when that node carries the name, otherwise at the index of the name
+/// that appears exactly once, so a reordered or shifted export cannot attach a body to the
+/// wrong node. With `require_unique_name` (annotate, or a GLB whose node order differs from
+/// the NIF's static scene) the predicted index is not trusted even when it matches, and the
+/// name must appear exactly once; its index is then the node's real index, so the body is
+/// rebound to it instead of being skipped. The shapes already carry the baked node and body
+/// transforms, so this index only binds the body to its node name.
 fn retain_bodies_with_nodes(
     collision: &mut CollisionAsset,
     node_names: &[String],
     require_unique_name: bool,
 ) {
     let bodies = std::mem::take(&mut collision.bodies);
-    for body in bodies {
-        let unambiguous = !require_unique_name
-            || node_names
-                .iter()
-                .filter(|name| **name == body.target)
-                .count()
-                == 1;
-        if !body.target.is_empty()
-            && unambiguous
-            && node_names.get(body.node as usize) == Some(&body.target)
-        {
-            collision.bodies.push(body);
+    for mut body in bodies {
+        let index = if body.target.is_empty() {
+            None
+        } else if require_unique_name {
+            unique_node_index(node_names, &body.target)
+        } else if node_names.get(body.node as usize) == Some(&body.target) {
+            Some(body.node as usize)
         } else {
+            unique_node_index(node_names, &body.target)
+        };
+        let Some(index) = index else {
             collision.skipped.push(format!(
                 "rigid body targeting {:?}: no matching glTF node at index {}",
                 body.target, body.node
             ));
-        }
+            continue;
+        };
+        let Ok(node) = u32::try_from(index) else {
+            collision.skipped.push(format!(
+                "rigid body targeting {:?}: glTF node index {} is out of range",
+                body.target, index
+            ));
+            continue;
+        };
+        body.node = node;
+        collision.bodies.push(body);
     }
 }
 
@@ -4307,23 +4330,47 @@ mod tests {
         let names = ["Root", "Shape", "Crate"];
         for unique in [false, true] {
             assert_eq!(retained("Crate", 2, &names, unique), (1, 0));
-            // the name at the predicted index differs, or the index is out of range
-            assert_eq!(retained("Crate", 1, &names, unique), (0, 1));
-            assert_eq!(retained("Crate", 9, &names, unique), (0, 1));
             // an empty name never identifies a node
             assert_eq!(retained("", 2, &["Root", "Shape", ""], unique), (0, 1));
         }
+        // In static-scene order a matching predicted index is kept. A unique name found at
+        // another index is still rebound, because a mixed skinned and static export can shift
+        // the index the NIF predicted.
+        assert_eq!(retained("Crate", 1, &names, false), (1, 0));
+        assert_eq!(retained("Crate", 9, &names, false), (1, 0));
+        // A GLB that did not keep the static-scene order trusts only a unique name.
+        assert_eq!(retained("Crate", 1, &names, true), (1, 0));
+        assert_eq!(retained("Crate", 9, &names, true), (1, 0));
         // A reused name: the conversion path (GLB built from this NIF) trusts the index;
         // the annotate path (GLB from elsewhere) needs the name to be unique.
         let reused = ["Potato", "Shape", "Potato"];
         assert_eq!(retained("Potato", 2, &reused, false), (1, 0));
+        assert_eq!(retained("Potato", 1, &reused, false), (0, 1));
         assert_eq!(retained("Potato", 2, &reused, true), (0, 1));
+    }
+
+    fn retained_in_glb(
+        node: u32,
+        target: &str,
+        glb: &[u8],
+        order: Option<&[String]>,
+    ) -> CollisionAsset {
+        let mut collision = CollisionAsset {
+            version: 2,
+            authored: true,
+            shapes: Vec::new(),
+            skipped: Vec::new(),
+            bodies: vec![body_at(node, target)],
+        };
+        retain_bodies_for_written_glb(&mut collision, glb, order).unwrap();
+        collision
     }
 
     #[test]
     fn bodies_are_checked_against_the_written_glb_node_order() {
-        // The written GLB names the crate at index 1 (a source model order could name the
-        // shape there): a body predicted at 1 is kept, one predicted at 2 is skipped.
+        // The written GLB names the crate at index 1, while the source model order names the
+        // shape there. A source order that the GLB keeps trusts the predicted index; a GLB
+        // that changed the order rebinds the unique name to the index it really has.
         let glb = glb_bytes(
             &serde_json::json!({
                 "asset": {"version": "2.0"},
@@ -4335,19 +4382,92 @@ mod tests {
             glb_node_names(&glb).unwrap(),
             ["Root", "Crate", "Shape", ""]
         );
+        let source_order: Vec<String> = ["Root", "Crate", "Shape"]
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
         let kept = |node: u32, target: &str, glb: &[u8], order: Option<&[String]>| {
-            let mut collision = CollisionAsset {
-                version: 2,
-                authored: true,
-                shapes: Vec::new(),
-                skipped: Vec::new(),
-                bodies: vec![body_at(node, target)],
-            };
-            retain_bodies_for_written_glb(&mut collision, glb, order).unwrap();
-            collision.bodies.len()
+            retained_in_glb(node, target, glb, order).bodies.len()
         };
-        assert_eq!(kept(1, "Crate", &glb, None), 1);
-        assert_eq!(kept(2, "Crate", &glb, None), 0);
+        // The GLB keeps the static-scene order: the predicted index is relied on when it names
+        // the target. A mixed skinned and static export can still shift that index, so a name
+        // found elsewhere is rebound when it is unique.
+        assert_eq!(kept(1, "Crate", &glb, Some(&source_order)), 1);
+        assert_eq!(kept(2, "Crate", &glb, Some(&source_order)), 1);
+        assert_eq!(
+            retained_in_glb(2, "Crate", &glb, Some(&source_order)).bodies[0].node,
+            1
+        );
+        // No usable source order (annotate): a unique name is rebound to its real index.
+        assert_eq!(kept(2, "Crate", &glb, None), 1);
+        assert_eq!(retained_in_glb(2, "Crate", &glb, None).bodies[0].node, 1);
+        // A name that the written GLB does not carry is still skipped.
+        assert_eq!(kept(1, "Barrel", &glb, None), 0);
+    }
+
+    /// A skinned NIF exports its skeleton in a different node order than the static scene, so a
+    /// predicted body index can name the wrong node. A target name that appears exactly once is
+    /// rebound to the index it really has. The shapes already carry the baked node and body
+    /// transforms, so the index only binds the body to its node name.
+    #[test]
+    fn a_skinned_body_is_rebound_to_its_unique_node_name() {
+        let glb = glb_bytes(
+            &serde_json::json!({
+                "asset": {"version": "2.0"},
+                "nodes": [
+                    {"name": "Root"},
+                    {"name": "Bone01"},
+                    {"name": "TrunkBone"},
+                    {"name": "Shape"},
+                ],
+            }),
+            b"",
+        );
+        assert_eq!(
+            glb_node_names(&glb).unwrap(),
+            ["Root", "Bone01", "TrunkBone", "Shape"]
+        );
+        // A skeletal NIF has no static-scene order to vouch for the predicted index.
+        let collision = retained_in_glb(1, "TrunkBone", &glb, Some(&[]));
+        assert_eq!(collision.bodies.len(), 1);
+        assert_eq!(collision.bodies[0].node, 2);
+        assert!(collision.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_reordered_body_whose_name_is_absent_is_skipped() {
+        let glb = glb_bytes(
+            &serde_json::json!({
+                "asset": {"version": "2.0"},
+                "nodes": [{"name": "Root"}, {"name": "Bone01"}, {"name": "Shape"}],
+            }),
+            b"",
+        );
+        let collision = retained_in_glb(1, "TrunkBone", &glb, Some(&[]));
+        assert!(collision.bodies.is_empty());
+        assert_eq!(collision.skipped.len(), 1);
+        assert!(collision.skipped[0].contains("TrunkBone"));
+        assert!(collision.skipped[0].contains("no matching glTF node"));
+    }
+
+    #[test]
+    fn a_reordered_body_with_a_repeated_node_name_is_skipped() {
+        let glb = glb_bytes(
+            &serde_json::json!({
+                "asset": {"version": "2.0"},
+                "nodes": [
+                    {"name": "Root"},
+                    {"name": "TrunkBone"},
+                    {"name": "TrunkBone"},
+                    {"name": "Shape"},
+                ],
+            }),
+            b"",
+        );
+        let collision = retained_in_glb(1, "TrunkBone", &glb, Some(&[]));
+        assert!(collision.bodies.is_empty());
+        assert_eq!(collision.skipped.len(), 1);
+        assert!(collision.skipped[0].contains("TrunkBone"));
     }
 
     #[test]
