@@ -166,13 +166,13 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
 
    CI also requires a labelled, issue-linked marker on every stand-in for retail data. A stand-in
    is a value or an asset Mudcrab makes where retail ships one. Put
-   `STAND-IN(#NNN, @owner): <what it replaces>` in the same comment block or Markdown section. An
-   added comment that admits a stand-in, or an added `PLACEHOLDER`, `GENERATED_*`, `SYNTHETIC`,
-   `DUMMY`, `FAKE` or `LEGACY_` identifier, fails without the marker. A malformed marker fails too.
-   Test code is out of scope. Existing hits are recorded per file in
-   `scripts/stand_in_baseline.json`; the gate fails when a file's count rises.
-   `python3 scripts/check_retail_claims.py --audit` lists them, and `--check-issues` reports a
-   closed or unassigned issue on a schedule. See
+   `STAND-IN(#NNN): <what it replaces>` in the same comment block or Markdown section. An owner
+   may be added as `STAND-IN(#NNN, @owner): <what it replaces>`. An added comment that admits a
+   stand-in, or an added `PLACEHOLDER`, `GENERATED_*`, `SYNTHETIC`, `DUMMY`, `FAKE` or `LEGACY_`
+   identifier, fails without the marker. A malformed marker fails too. Test code is out of scope.
+   Existing hits are recorded per file in `scripts/stand_in_baseline.json`; the gate fails when a
+   file's count rises. `python3 scripts/check_retail_claims.py --audit` lists them, and
+   `--check-issues` reports a closed issue on a schedule. See
    [writing PRs](docs/contributing/writing-prs.md#stand-ins-for-retail-data) and
    [ADR-0015](docs/adr/0015-retail-rule-quirk-defect.md).
 

@@ -501,15 +501,15 @@ class StandInTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("all labelled", out)
 
-    def test_marker_without_an_owner_fails(self):
+    def test_marker_without_an_owner_passes(self):
         self.repo.write(
             "crates/engine/src/x.rs",
-            "// STAND-IN(#900): terrain LOD mesh built from heights\n",
+            "// STAND-IN(#900): terrain LOD mesh built from heights\n"
+            "// placeholder colour\nfn main() {}\n",
         )
         self.repo.commit("marker without an owner")
         code, _, err = self.check(self.repo.run())
-        self.assertEqual(code, 1)
-        self.assertIn("needs an issue and an owner", err)
+        self.assertEqual(code, 0, err)
 
     def test_marker_without_an_issue_fails(self):
         self.repo.write(
@@ -519,7 +519,17 @@ class StandInTests(unittest.TestCase):
         self.repo.commit("marker without an issue")
         code, _, err = self.check(self.repo.run())
         self.assertEqual(code, 1)
-        self.assertIn("needs an issue and an owner", err)
+        self.assertIn("needs an issue", err)
+
+    def test_marker_with_an_optional_owner_passes(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// STAND-IN(#900, @alice): terrain LOD mesh built from heights\n"
+            "// placeholder colour\nfn main() {}\n",
+        )
+        self.repo.commit("marker with an owner")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
 
     def test_marker_with_a_full_issue_url_passes(self):
         self.repo.write(
@@ -535,7 +545,7 @@ class StandInTests(unittest.TestCase):
     def test_marker_with_too_few_words_fails(self):
         self.repo.write(
             "crates/engine/src/x.rs",
-            "// STAND-IN(#900, @alice): short text\n",
+            "// STAND-IN(#900): short text\n",
         )
         self.repo.commit("short marker")
         code, _, err = self.check(self.repo.run())
@@ -545,7 +555,7 @@ class StandInTests(unittest.TestCase):
     def test_marker_with_no_retail_data_passes(self):
         self.repo.write(
             "crates/engine/src/x.rs",
-            "// STAND-IN(#900, @alice): no retail data\n"
+            "// STAND-IN(#900): no retail data\n"
             "// placeholder colour\nfn main() {}\n",
         )
         self.repo.commit("marker for data retail never ships")
@@ -710,14 +720,13 @@ class StandInTests(unittest.TestCase):
         self.assertEqual(written["revision"], 1)
         self.assertIn("Wrote", out)
 
-    def gh_stub(self, state, assignees):
+    def gh_stub(self, state, assignees=None):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         script = Path(directory.name) / "gh"
-        payload = {
-            "state": state,
-            "assignees": [{"login": login} for login in assignees],
-        }
+        payload = {"state": state}
+        if assignees is not None:
+            payload["assignees"] = [{"login": login} for login in assignees]
         script.write_text(
             "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(payload) + "\nJSON\n",
             encoding="utf-8",
@@ -738,7 +747,7 @@ class StandInTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("issue #900 is closed", err)
 
-    def test_check_issues_open_assigned_issue_passes(self):
+    def test_check_issues_open_issue_passes(self):
         self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
         self.repo.commit("marker for an open issue")
         directory = self.gh_stub("OPEN", ["alice"])
@@ -746,7 +755,17 @@ class StandInTests(unittest.TestCase):
             "--check-issues", env=self.check_issues_env(directory)
         ))
         self.assertEqual(code, 0, err)
-        self.assertIn("open, assigned issue", out)
+        self.assertIn("open issue", out)
+
+    def test_check_issues_open_unassigned_issue_passes(self):
+        self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
+        self.repo.commit("marker for an unassigned issue")
+        directory = self.gh_stub("OPEN", [])
+        code, out, err = self.check(self.repo.run(
+            "--check-issues", env=self.check_issues_env(directory)
+        ))
+        self.assertEqual(code, 0, err)
+        self.assertIn("open issue", out)
 
     def test_check_issues_missing_gh_exits_two(self):
         self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")

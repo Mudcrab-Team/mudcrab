@@ -29,10 +29,11 @@ A stand-in is a value or an asset that Mudcrab makes where retail ships one. A b
 Put this marker in the same `//` comment block as the code, or in the same Markdown section:
 
 ```text
+STAND-IN(#900): terrain LOD mesh built from LAND heights; retail ships .btr
 STAND-IN(#900, @owner-handle): terrain LOD mesh built from LAND heights; retail ships .btr
 ```
 
-The marker word is upper case. The issue is `#NNN` or a full `https://github.com/<org>/<repo>/issues/NNN` URL. The owner is `@handle`, a GitHub login. After the colon, give at least four words: what is replaced and which retail data replaces it. Write `no retail data` when retail ships no equivalent.
+The marker word is upper case. The issue is `#NNN` or a full `https://github.com/<org>/<repo>/issues/NNN` URL. An owner is optional: add `, @handle` after the issue to name the person who owns the replacement. After the colon, give at least four words: what is replaced and which retail data replaces it. Write `no retail data` when retail ships no equivalent.
 
 A comment that admits a stand-in needs the marker. The check fails an added comment line that contains one of these narrow words without a marker in its block:
 
@@ -58,7 +59,7 @@ The check reads only lines a pull request adds. Existing stand-ins are recorded 
 python3 scripts/check_retail_claims.py --audit
 ```
 
-Lower the counts with `--audit --write-baseline` after a removal. Do not raise a count to hide a new stand-in: add the marker, or remove the stand-in. `--check-issues` reports markers whose issue is closed or has no assignee. A nightly workflow runs it, not pull-request CI. See [ADR-0015](../adr/0015-retail-rule-quirk-defect.md).
+Lower the counts with `--audit --write-baseline` after a removal. Do not raise a count to hide a new stand-in: add the marker, or remove the stand-in. `--check-issues` reports markers whose issue is closed. A nightly workflow runs it, not pull-request CI. See [ADR-0015](../adr/0015-retail-rule-quirk-defect.md).
 
 ## Voice
 

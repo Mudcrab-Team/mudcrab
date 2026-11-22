@@ -110,15 +110,17 @@ The retail data or the retail rule is the source of truth; the stand-in is a
 gap. A stand-in is not a Mudcrab-mode choice, so it never becomes the default in
 the `skyrim` profile.
 
-Every stand-in needs a label and an owner. The marker form is:
+Every stand-in needs a label and an issue. An owner is optional. The marker
+form is:
 
 ```text
-STAND-IN(#NNN, @handle): what it replaces, and which retail data replaces it
+STAND-IN(#NNN): what it replaces, and which retail data replaces it
+STAND-IN(#NNN, @handle): the same, with an owner
 ```
 
 The marker sits in the same comment block or Markdown section. It needs an open
-issue and a GitHub handle. A stand-in with no retail equivalent says
-`no retail data`.
+issue. Add a GitHub handle when one person owns the replacement. A stand-in
+with no retail equivalent says `no retail data`.
 
 A Mudcrab-mode feature keeps the rule above: it needs a reason, and it names its
 profile or switch. Adding that profile or switch is not a substitute for the

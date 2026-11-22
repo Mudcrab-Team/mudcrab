@@ -32,17 +32,17 @@ ADR-0015.
 
 A stand-in is a value or an asset that Mudcrab makes where retail ships one.  A
 comment or doc line that admits a stand-in needs the marker
-``STAND-IN(#NNN, @owner): what it replaces`` in the same ``//`` block or
-Markdown section, and the issue needs an owner.  An added line with a narrow
-trigger word, or an added ``PLACEHOLDER``, ``GENERATED_*`` or ``LEGACY_*``
-identifier, fails without that marker.  A malformed marker fails too.  Test
-code is out of scope.
+``STAND-IN(#NNN): what it replaces`` in the same ``//`` block or Markdown
+section.  An owner may be added as ``STAND-IN(#NNN, @owner): ...``.  An added
+line with a narrow trigger word, or an added ``PLACEHOLDER``, ``GENERATED_*``
+or ``LEGACY_*`` identifier, fails without that marker.  A malformed marker
+fails too.  Test code is out of scope.
 
 ``--audit`` lists every stand-in in the tree.  ``--baseline`` compares the
 per-file count with ``scripts/stand_in_baseline.json`` and fails only when a
-count rises, so existing stand-ins need no marker until an owner is assigned.
-``--check-issues`` queries GitHub for markers whose issue is closed or has no
-assignee; it runs on a schedule, not on pull requests.
+count rises, so existing stand-ins need no marker until someone labels them.
+``--check-issues`` reports markers whose issue is closed; it runs on a
+schedule, not on pull requests.
 
 Exit 0 means no findings, 1 means findings, and 2 means the diff, a file or the
 baseline could not be read, or ``gh`` failed.  Standard library only.
@@ -127,7 +127,7 @@ STAND_IN_WORD_RE = re.compile(r"\bSTAND-IN\b")
 STAND_IN_MARKER_RE = re.compile(
     r"\bSTAND-IN\(\s*"
     r"(?P<issue>#\d+|https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+)"
-    r"\s*,\s*@(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)"
+    r"(?:\s*,\s*@(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?))?"
     r"\s*\)\s*:\s*(?P<what>[^\n]+)",
 )
 # The trigger list is narrow on purpose: bare "stand-in", "temporary", "fallback",
@@ -456,8 +456,8 @@ def stand_in_marker_problem(line):
         return ""
     match = STAND_IN_MARKER_RE.search(line)
     if match is None:
-        return ("STAND-IN needs an issue and an owner: "
-                "STAND-IN(#N, @handle): <what it replaces>")
+        return ("STAND-IN needs an issue: "
+                "STAND-IN(#N): <what it replaces>")
     what = match.group("what").strip()
     if what.rstrip(".").strip().lower() == STAND_IN_NO_DATA:
         return ""
@@ -860,7 +860,7 @@ def issue_number(value):
 
 
 def collect_markers(repo):
-    """Return (path, line, issue number, owner) for every valid marker."""
+    """Return (path, line, issue number) for every valid marker."""
     markers = []
     for path in tracked_paths(repo):
         language = language_for(path)
@@ -889,14 +889,13 @@ def collect_markers(repo):
                 path,
                 number,
                 issue_number(match.group("issue")),
-                match.group("owner"),
             ))
     return markers
 
 
 def review_issue(number):
-    """Return (state, assignee logins) for one issue, or raise CheckError."""
-    command = ["gh", "issue", "view", str(number), "--json", "state,assignees"]
+    """Return the state of one issue, or raise CheckError."""
+    command = ["gh", "issue", "view", str(number), "--json", "state"]
     try:
         result = subprocess.run(
             command,
@@ -917,40 +916,29 @@ def review_issue(number):
     except ValueError as error:
         raise CheckError(f"{' '.join(command)}: invalid JSON: {error}") from error
     state = data.get("state") if isinstance(data, dict) else None
-    assignees = data.get("assignees") if isinstance(data, dict) else None
-    if not isinstance(state, str) or not isinstance(assignees, list):
-        raise CheckError(
-            f"{' '.join(command)}: response has no state or assignees"
-        )
-    logins = [
-        entry.get("login") for entry in assignees if isinstance(entry, dict)
-    ]
-    return state, [login for login in logins if isinstance(login, str)]
+    if not isinstance(state, str):
+        raise CheckError(f"{' '.join(command)}: response has no state")
+    return state
 
 
 def check_issues(repo):
-    """Report markers whose issue is closed or has no assignee."""
+    """Report markers whose issue is closed."""
     markers = collect_markers(repo)
-    issues = {}
+    states = {}
     problems = []
-    for path, line, number, owner in markers:
-        if number not in issues:
-            issues[number] = review_issue(number)
-        state, assignees = issues[number]
+    for path, line, number in markers:
+        if number not in states:
+            states[number] = review_issue(number)
+        state = states[number]
         if state.upper() != "OPEN":
             problems.append((path, line, f"issue #{number} is {state.lower()}"))
-        elif not assignees:
-            problems.append((path, line, f"issue #{number} has no assignee"))
-        elif owner not in assignees:
-            print(f"{path}:{line}: note: issue #{number} is not assigned to "
-                  f"@{owner}", file=sys.stderr)
     for path, line, problem in problems:
         print(f"{path}:{line}: {problem}", file=sys.stderr)
     if problems:
-        print(f"\n{len(problems)} stand-in marker(s) name a closed issue or one "
-              "with no assignee.", file=sys.stderr)
+        print(f"\n{len(problems)} stand-in marker(s) name a closed issue.",
+              file=sys.stderr)
         return 1
-    print(f"Stand-in issues: {len(markers)} marker(s) name an open, assigned issue.")
+    print(f"Stand-in issues: {len(markers)} marker(s) name an open issue.")
     return 0
 
 
@@ -987,8 +975,8 @@ def parse_args(argv):
     parser.add_argument(
         "--check-issues",
         action="store_true",
-        help="report markers whose issue is closed or has no assignee; "
-             "runs on a schedule, not in pull-request CI",
+        help="report markers whose issue is closed; runs on a schedule, "
+             "not in pull-request CI",
     )
     return parser.parse_args(argv)
 
@@ -1030,9 +1018,9 @@ def main(argv=None):
     if stand_in_findings:
         print(
             f"\n{len(stand_in_findings)} stand-in line(s) need a label. Add "
-            "\"STAND-IN(#NNN, @owner): <what it replaces>\" in the same comment "
-            "block or Markdown section, with an open issue that has an owner. "
-            "See ADR-0015.",
+            "\"STAND-IN(#NNN): <what it replaces>\" in the same comment "
+            "block or Markdown section, with an open issue. An owner handle "
+            "is optional. See ADR-0015.",
             file=sys.stderr,
         )
     if findings:
