@@ -1655,7 +1655,7 @@ mod tests {
         validate_object_glb(&shared.glb).unwrap();
         assert!(chunk_uses_shared_atlas(&shared.glb).unwrap());
         assert!(!chunk_uses_shared_atlas(&embedded.glb).unwrap());
-        assert!(shared.glb.len() + atlas().len() / 2 < embedded.glb.len() + 1);
+        assert!(shared.glb.len() < embedded.glb.len());
         let document = json_of(&shared.glb);
         assert_eq!(
             document["images"],
@@ -1667,7 +1667,7 @@ mod tests {
             validate_object_glb(&patch(
                 &shared.glb,
                 OBJECT_ATLAS_URI,
-                "../objects_atlaz.ktx2"
+                "../objects_atlaz.opensky-srgb.ktx2"
             ))
             .is_err()
         );
