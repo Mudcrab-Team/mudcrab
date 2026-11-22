@@ -35,6 +35,6 @@ python3 -I -B -m unittest discover -s scripts/tests -p 'test_workspace*.py'
 
 ## Keep the check in sync
 
-Last checked against production commit `633bc6723235eb5a878f536e76e701ff6d2c3340`. In `scripts/workspace.py`, `retire_leased` and `trim_leased` publish the receipt and rename its directories. `leftover_proven`, `recover_interrupted`, and `delete_leftover` decide which deletions can resume.
+Last checked against production commit `f136e48662728adda47cf62caec4c87fbe427403`. In `scripts/workspace.py`, `retire_leased` and `trim_leased` publish the receipt and rename its directories. `has_recovery_evidence`, `recover_interrupted`, and `delete_leftover` decide which deletions can resume.
 
 After a protocol change, compare its persistent mutations with the four instrumented calls. Extend the crash points if a new operation can change recoverable state. Reproduce the symptom with the production code before changing the expected result. Advance the sync commit after the historical cases still lose the file and the working copy passes. Use `/maintain-formal-verification-skill` after a change that missed this check.
