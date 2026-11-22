@@ -263,10 +263,9 @@ pub(crate) mod tests {
         bytes.extend((triangles.len() as u16).to_le_bytes());
         bytes.extend((vertices.len() as u16).to_le_bytes());
         if with_positions {
-            push_u32(
-                &mut bytes,
-                (vertices.len() * (16 + 4 * usize::from(with_uvs)) + triangles.len() * 6) as u32,
-            );
+            let payload_bytes =
+                vertices.len() * (16 + 4 * usize::from(with_uvs)) + triangles.len() * 6;
+            push_u32(&mut bytes, u32::try_from(payload_bytes).unwrap());
             for vertex in vertices {
                 for value in vertex {
                     push_f32(&mut bytes, *value);
