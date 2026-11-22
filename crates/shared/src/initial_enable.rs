@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-const INITIALLY_DISABLED: u32 = 0x800;
+/// Reference header flag: the reference starts disabled.
+pub const INITIALLY_DISABLED: u32 = 0x800;
 const OPPOSITE_OF_PARENT: u32 = 1;
 const PLAYER_REFERENCE: u32 = 0x14;
 
