@@ -1113,13 +1113,13 @@ fn unique_node_index(node_names: &[String], target: &str) -> Option<usize> {
 /// remain as fixed collision.
 ///
 /// A body is accepted only when its target name is non-empty and the written GLB can place it:
-/// at the predicted index when the GLB keeps the static-scene order, otherwise at the index of
-/// the name that appears exactly once. A reordered export therefore cannot attach a body to
-/// the wrong node. With `require_unique_name` (annotate, or a GLB whose node order differs
-/// from the NIF's static scene) the name must appear exactly once; its index is then the
-/// node's real index, so the body is rebound to it instead of being skipped. The shapes
-/// already carry the baked node and body transforms, so this index only binds the body to its
-/// node name.
+/// at the predicted index when that node carries the name, otherwise at the index of the name
+/// that appears exactly once, so a reordered or shifted export cannot attach a body to the
+/// wrong node. With `require_unique_name` (annotate, or a GLB whose node order differs from
+/// the NIF's static scene) the predicted index is not trusted even when it matches, and the
+/// name must appear exactly once; its index is then the node's real index, so the body is
+/// rebound to it instead of being skipped. The shapes already carry the baked node and body
+/// transforms, so this index only binds the body to its node name.
 fn retain_bodies_with_nodes(
     collision: &mut CollisionAsset,
     node_names: &[String],
@@ -1134,7 +1134,7 @@ fn retain_bodies_with_nodes(
         } else if node_names.get(body.node as usize) == Some(&body.target) {
             Some(body.node as usize)
         } else {
-            None
+            unique_node_index(node_names, &body.target)
         };
         let Some(index) = index else {
             collision.skipped.push(format!(
@@ -4333,11 +4333,12 @@ mod tests {
             // an empty name never identifies a node
             assert_eq!(retained("", 2, &["Root", "Shape", ""], unique), (0, 1));
         }
-        // In static-scene order the predicted index is the contract: a name found at another
-        // index is not rebound, because the node at the predicted index was replaced.
-        assert_eq!(retained("Crate", 1, &names, false), (0, 1));
-        assert_eq!(retained("Crate", 9, &names, false), (0, 1));
-        // A GLB that did not keep the static-scene order rebinds a unique name to its real index.
+        // In static-scene order a matching predicted index is kept. A unique name found at
+        // another index is still rebound, because a mixed skinned and static export can shift
+        // the index the NIF predicted.
+        assert_eq!(retained("Crate", 1, &names, false), (1, 0));
+        assert_eq!(retained("Crate", 9, &names, false), (1, 0));
+        // A GLB that did not keep the static-scene order trusts only a unique name.
         assert_eq!(retained("Crate", 1, &names, true), (1, 0));
         assert_eq!(retained("Crate", 9, &names, true), (1, 0));
         // A reused name: the conversion path (GLB built from this NIF) trusts the index;
@@ -4388,9 +4389,15 @@ mod tests {
         let kept = |node: u32, target: &str, glb: &[u8], order: Option<&[String]>| {
             retained_in_glb(node, target, glb, order).bodies.len()
         };
-        // The GLB keeps the static-scene order: the predicted index is reliable.
+        // The GLB keeps the static-scene order: the predicted index is relied on when it names
+        // the target. A mixed skinned and static export can still shift that index, so a name
+        // found elsewhere is rebound when it is unique.
         assert_eq!(kept(1, "Crate", &glb, Some(&source_order)), 1);
-        assert_eq!(kept(2, "Crate", &glb, Some(&source_order)), 0);
+        assert_eq!(kept(2, "Crate", &glb, Some(&source_order)), 1);
+        assert_eq!(
+            retained_in_glb(2, "Crate", &glb, Some(&source_order)).bodies[0].node,
+            1
+        );
         // No usable source order (annotate): a unique name is rebound to its real index.
         assert_eq!(kept(2, "Crate", &glb, None), 1);
         assert_eq!(retained_in_glb(2, "Crate", &glb, None).bodies[0].node, 1);

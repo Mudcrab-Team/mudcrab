@@ -259,12 +259,15 @@ The `node` index and `target` name are checked against the GLB that is actually 
 source NIF's static node list (skeletal and effect NIFs lay their nodes out differently). A body
 is kept only when `target` is non-empty and the written GLB can place it at a node. When the
 GLB's nodes start in the same order as the NIF's static scene, which the index was predicted
-from, the GLB node at `node` must have that name. Otherwise (a reordered export, or `annotate`
-on a GLB built elsewhere) the name must appear exactly once, and the body's `node` is rebound
-to that node's real index. An absent name and a repeated name are both skipped, because
-neither can say which node the body was authored against. The shapes already carry the baked
-node and body transforms, so the index only binds the body to its glTF node name; the engine
-reads it only for the fixed-container check (`node != 0`).
+from, the body keeps the predicted `node` when that node has the target name. A mixed skinned
+and static export can still shift the index, so when it does not name the target, a target name
+that appears exactly once is rebound to its real index. When the order is not kept (a reordered
+export, or `annotate` on a GLB built elsewhere), the predicted index is not trusted at all and
+the name must appear exactly once; the body's `node` is then rebound to that node's real index.
+An absent name and a repeated name are both skipped, because neither can say which node the body
+was authored against. The shapes already carry the baked node and body transforms, so the index
+only binds the body to its glTF node name; the engine reads it only for the fixed-container
+check (`node != 0`).
 
 The rebound `node` value changes the glTF extras. Mesh contract `collision-body-node-rebind`
 (#879) records this change; it changes the `nif` proof only.
