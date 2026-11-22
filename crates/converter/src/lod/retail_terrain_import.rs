@@ -10,23 +10,29 @@ use super::{
         IMPORT_VERSION, RETAIL_NORMAL_AXES, RetailBlock, compile_block, tier_for_level,
     },
     retail_terrain_source::{BlockId, RetailTerrainFiles, Skipped},
-    terrain::publish_chunk,
+    terrain::{TerrainChunk, index_chunk, publish_chunk, validate_terrain_glb},
 };
-use crate::cache::hash_bytes;
+use crate::{
+    cache::{CONVERTER_SCHEMA_VERSION, hash_bytes, hash_file},
+    pack_clone::require_private_output,
+};
 use color_eyre::{
     Result,
-    eyre::{ContextCompat, ensure},
+    eyre::{ContextCompat, WrapErr, ensure},
 };
 use rayon::prelude::*;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Path, PathBuf},
 };
 
 /// Blocks compiled together to bound memory.
 const BATCH_BLOCKS: usize = 96;
+pub(crate) const CHECKPOINT_DIR: &str = ".retail-terrain-lod";
 
 /// Counts of one worldspace.
 #[derive(Debug, Default, Clone)]
@@ -45,6 +51,7 @@ pub struct WorldReport {
     pub kept_from_previous_generation: usize,
     pub(crate) kept_self_built: bool,
     pub(crate) replaced_paths: BTreeSet<String>,
+    pub(crate) checkpoint_warnings: Vec<String>,
     /// Skipped blocks by class.
     pub skipped_by_class: BTreeMap<&'static str, usize>,
     pub skipped: Vec<(BlockId, Skipped)>,
@@ -59,43 +66,262 @@ pub(crate) struct LodWorld {
     pub origin: LodOrigin,
 }
 
-/// The report and identity inputs for one staged world.
+/// Per-world checkpoints survive the pipeline's resume reset of the database and
+/// LOD output directory. Checkpoint files are private to staging.
+pub(crate) struct TerrainCheckpoint {
+    root: PathBuf,
+    generation: String,
+}
+
+impl TerrainCheckpoint {
+    pub(crate) fn open(staging: &Path, plugin_hashes: &[String]) -> Result<Self> {
+        let generation = hash_bytes(&serde_json::to_vec(&(
+            "retail-terrain-checkpoint-v1",
+            CONVERTER_SCHEMA_VERSION,
+            shared::WORLD_DATABASE_SCHEMA_VERSION,
+            IMPORT_VERSION,
+            plugin_hashes,
+        ))?);
+        let root = staging.join(CHECKPOINT_DIR);
+        match fs::create_dir(&root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                ensure!(
+                    fs::symlink_metadata(&root)?.is_dir(),
+                    "retail terrain checkpoint must be a real directory"
+                );
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(Self { root, generation })
+    }
+
+    pub(crate) fn publish_payloads<'a>(
+        &self,
+        staging: &Path,
+        payloads: impl IntoIterator<Item = (&'a String, &'a String)>,
+        check_stop: impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        for (relative, hash) in payloads {
+            check_stop()?;
+            let blob = Path::new("blobs").join(hash);
+            require_private_output(&self.root, &blob)?;
+            let source = self.root.join(blob);
+            let destination = staging.join(relative);
+            require_private_output(staging, Path::new(relative))?;
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&source, &destination)?;
+            ensure!(
+                hash_file(&destination)? == *hash,
+                "checkpoint LOD payload changed during publication: {relative}"
+            );
+        }
+        Ok(())
+    }
+
+    // Metadata rebuild publishes its whole staging directory and has no resume entry point.
+    pub(crate) fn remove_from(staging: &Path) -> Result<()> {
+        match fs::remove_dir_all(staging.join(CHECKPOINT_DIR)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct WorldReceipt {
+    identity: String,
+    chunks: BTreeMap<String, ChunkReceipt>,
+}
+
+/// Chunk index and provenance saved with the verified payload.
+#[derive(Serialize, Deserialize)]
+struct ChunkReceipt {
+    tier: i32,
+    anchor: (i32, i32),
+    cells: Vec<(i32, i32)>,
+    min: [f32; 3],
+    max: [f32; 3],
+    input_hash: String,
+    payload_hash: String,
+}
+
+impl ChunkReceipt {
+    fn new(chunk: TerrainChunk, input_hash: String) -> Self {
+        Self {
+            tier: chunk.key.tier.side_cells(),
+            anchor: (chunk.key.anchor.x, chunk.key.anchor.y),
+            cells: chunk.cells,
+            min: chunk.bounds_min,
+            max: chunk.bounds_max,
+            input_hash,
+            payload_hash: hash_bytes(&chunk.glb),
+        }
+    }
+
+    fn checked_chunk(&self, root: &Path, world: u32, relative: &str) -> Result<TerrainChunk> {
+        let tier = LodTier::from_side_cells(self.tier).wrap_err("invalid checkpoint LOD tier")?;
+        let key = ChunkKey::new(world, tier, ChunkAnchor::new(self.anchor.0, self.anchor.1));
+        ensure!(
+            chunk_payload_path(key) == relative,
+            "invalid checkpoint LOD path {relative}"
+        );
+        ensure!(
+            self.payload_hash.len() == 64
+                && self
+                    .payload_hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "invalid checkpoint LOD payload digest"
+        );
+        let blob = Path::new("blobs").join(&self.payload_hash);
+        require_private_output(root, &blob)?;
+        let glb = fs::read(root.join(blob))?;
+        ensure!(
+            hash_bytes(&glb) == self.payload_hash,
+            "checkpoint LOD payload hash mismatch"
+        );
+        validate_terrain_glb(&glb)?;
+        Ok(TerrainChunk {
+            key,
+            cells: self.cells.clone(),
+            bounds_min: self.min,
+            bounds_max: self.max,
+            glb,
+        })
+    }
+}
+
+/// The report and new chunks for one staged world.
 pub(crate) struct WorldImport {
     pub(crate) report: WorldReport,
-    pub(crate) retail_inputs: BTreeMap<String, String>,
-    pub(crate) payload_hashes: Vec<String>,
+    chunks: BTreeMap<String, ChunkReceipt>,
+}
+
+impl WorldImport {
+    pub(crate) fn new_inputs(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.chunks.iter().map(|(relative, chunk)| {
+            (
+                relative.as_str(),
+                chunk.input_hash.as_str(),
+                chunk.payload_hash.as_str(),
+            )
+        })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn import_world(
     connection: &Connection,
-    target: &Path,
+    checkpoint: &TerrainCheckpoint,
     world: &LodWorld,
     files: &RetailTerrainFiles,
     ids: &[BlockId],
     pool: &rayon::ThreadPool,
     retail_inputs: &mut BTreeMap<String, String>,
-    payload_hashes: &mut Vec<String>,
+    payload_hashes: &mut BTreeMap<String, String>,
     check_stop: impl Fn() -> Result<()>,
 ) -> Result<WorldReport> {
     let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
-    let mut staged = StagedGeneration::new(target)?;
-    let imported = stage_world(
+    let root = &checkpoint.root;
+    let receipt_name = format!("world-{:08x}.json", world.id);
+    let receipt_path = root.join(&receipt_name);
+    let identity = hash_bytes(&serde_json::to_vec(&(
+        &checkpoint.generation,
+        &world.file_name,
+        world.origin.grid_x,
+        world.origin.grid_y,
+    ))?);
+    require_private_output(root, Path::new(&receipt_name))?;
+    let mut warnings = Vec::new();
+    let mut chunks = match fs::read(&receipt_path) {
+        Ok(bytes) => match serde_json::from_slice::<WorldReceipt>(&bytes) {
+            Ok(receipt) if receipt.identity == identity => receipt.chunks,
+            Ok(_) => BTreeMap::new(),
+            Err(error) => {
+                warnings.push(format!(
+                    "{}: invalid retail terrain checkpoint: {error}",
+                    world.editor_id
+                ));
+                BTreeMap::new()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut previous_retail_inputs = BTreeMap::new();
+    for (relative, chunk) in &chunks {
+        check_stop()?;
+        match chunk.checked_chunk(root, world.id, relative) {
+            Ok(verified) => {
+                index_chunk(&tx, &verified, &chunk.payload_hash)?;
+                previous_retail_inputs.insert(relative.clone(), chunk.input_hash.clone());
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "could not keep retail terrain checkpoint chunk {relative}: {error:#}"
+                ));
+            }
+        }
+    }
+    chunks.retain(|relative, _| previous_retail_inputs.contains_key(relative));
+    let mut staged = StagedGeneration::new(root)?;
+    let mut imported = stage_world(
         &tx,
         &mut staged,
         world,
         files,
         ids,
         pool,
-        &BTreeMap::new(),
+        &previous_retail_inputs,
         &check_stop,
     )?;
-    if !imported.retail_inputs.is_empty() {
+    let has_new_chunks = !imported.chunks.is_empty();
+    let receipt = if has_new_chunks {
+        // Install content-addressed payloads first. An interrupted run can still use the
+        // old receipt, which names its own blobs, until the new receipt replaces it.
+        let new = staged.staging_root();
+        fs::create_dir_all(new.join("blobs"))?;
+        staged.paths.clear();
+        staged.stale.clear();
+        for (relative, chunk) in &imported.chunks {
+            let blob = Path::new("blobs").join(&chunk.payload_hash);
+            require_private_output(root, &blob)?;
+            if root.join(&blob).is_file() && hash_file(&root.join(&blob))? == chunk.payload_hash {
+                continue;
+            }
+            if staged.paths.insert(blob.clone()) {
+                fs::rename(new.join(relative), new.join(blob))?;
+            }
+        }
+        chunks.extend(imported.chunks);
+        let receipt = WorldReceipt { identity, chunks };
+        let updated = tempfile::NamedTempFile::new_in(root)?;
+        serde_json::to_writer(updated.as_file(), &receipt)?;
         check_stop()?;
-        staged.publish(target, tx, check_stop)?;
-        retail_inputs.extend(imported.retail_inputs);
-        payload_hashes.extend(imported.payload_hashes);
+        staged.publish(root, tx, check_stop)?;
+        updated.persist(&receipt_path).wrap_err_with(|| {
+            format!(
+                "cannot save retail terrain checkpoint for {}",
+                world.editor_id
+            )
+        })?;
+        receipt
+    } else {
+        if !chunks.is_empty() {
+            check_stop()?;
+            tx.commit()?;
+        }
+        WorldReceipt { identity, chunks }
+    };
+    for (relative, chunk) in receipt.chunks {
+        payload_hashes.insert(relative.clone(), chunk.payload_hash);
+        retail_inputs.insert(relative, chunk.input_hash);
     }
+    imported.report.checkpoint_warnings = warnings;
     Ok(imported.report)
 }
 
@@ -140,7 +366,6 @@ pub(crate) fn stage_world(
     let previous_chunks = old_chunks(tx, world.id)?;
     let staging = staged.staging_root();
     let mut new_inputs = BTreeMap::new();
-    let mut new_payload_hashes = Vec::new();
 
     for batch in plan.chunks(BATCH_BLOCKS) {
         check_stop()?;
@@ -169,8 +394,7 @@ pub(crate) fn stage_world(
                         "duplicate terrain LOD chunk {relative}"
                     );
                     publish_chunk(tx, &staging, &chunk)?;
-                    new_payload_hashes.push(format!("{relative}:{}", hash_bytes(&chunk.glb)));
-                    new_inputs.insert(relative, input_hash);
+                    new_inputs.insert(relative, ChunkReceipt::new(chunk, input_hash));
                     *report.compiled.entry(id.1).or_default() += 1;
                     report.triangles += stats.triangles;
                     report.vertices += stats.vertices;
@@ -213,8 +437,7 @@ pub(crate) fn stage_world(
     }
     Ok(WorldImport {
         report,
-        retail_inputs: new_inputs,
-        payload_hashes: new_payload_hashes,
+        chunks: new_inputs,
     })
 }
 
@@ -352,12 +575,13 @@ mod tests {
             file_name: "w".to_owned(),
             origin: LodOrigin::new(0, 0),
         };
+        let checkpoint = TerrainCheckpoint::open(target.path(), &[]).unwrap();
         let checks = std::cell::Cell::new(0);
         let mut inputs = BTreeMap::new();
-        let mut hashes = Vec::new();
+        let mut hashes = BTreeMap::new();
         let cancelled = import_world(
             &connection,
-            target.path(),
+            &checkpoint,
             &world,
             &files,
             &ids,
@@ -375,10 +599,10 @@ mod tests {
         assert!(inputs.is_empty() && hashes.is_empty());
         for _ in 0..2 {
             let mut inputs = BTreeMap::new();
-            let mut hashes = Vec::new();
+            let mut hashes = BTreeMap::new();
             let report = import_world(
                 &connection,
-                target.path(),
+                &checkpoint,
                 &world,
                 &files,
                 &ids,

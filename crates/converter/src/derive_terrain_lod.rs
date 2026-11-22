@@ -164,8 +164,10 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             || Ok(()),
         )
         .wrap_err_with(|| format!("failed to stage terrain LOD for {}", world.editor_id))?;
-        retail_inputs.extend(imported.retail_inputs);
-        payload_hashes.extend(imported.payload_hashes);
+        for (relative, input_hash, payload_hash) in imported.new_inputs() {
+            retail_inputs.insert(relative.to_owned(), input_hash.to_owned());
+            payload_hashes.push(format!("{relative}:{payload_hash}"));
+        }
         let report = imported.report;
         if report.kept_self_built {
             kept.push(world.editor_id.clone());

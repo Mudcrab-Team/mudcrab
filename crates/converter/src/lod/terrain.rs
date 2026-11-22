@@ -1170,6 +1170,16 @@ pub(crate) fn publish_chunk(
         content_hash == crate::cache::hash_bytes(&chunk.glb),
         "terrain payload changed while being written: {relative}"
     );
+    index_chunk(connection, chunk, &content_hash)
+}
+
+/// Inserts or replaces the database entries for a verified terrain chunk.
+pub(crate) fn index_chunk(
+    connection: &Connection,
+    chunk: &TerrainChunk,
+    content_hash: &str,
+) -> Result<()> {
+    let relative = chunk_payload_path(chunk.key);
     let source_cells = chunk
         .cells
         .iter()
