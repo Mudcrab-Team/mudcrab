@@ -129,6 +129,16 @@ of 250 ms. A frame slower than 4 FPS therefore advances the clock slower than re
 pause of virtual time (the console, the settings menu) stops it. Retail behaviour is not
 established.
 
+`--weather <editor id or hex form id>` forces one `WTHR` record's day sky for the run, a test aid for judging how the sky
+colours the water. It replaces the sky dome, fog and clear colours with that record's day `NAM0` Sky-Upper, Sky-Lower,
+Horizon, Fog Near and Fog Far colours, and the water's sky reflection follows the dome. It leaves the sun and ambient
+lights (user settings), the water multiplier and the image space alone. The console command `Weather [<id>|off]` does the
+same at run time. With no flag the look does not change. A name or id the pack lacks, or a weather without one of the five
+colours, is an error at launch. Clear and overcast ids in the registered pack: `SkyrimClear` 0x0000081A, `SkyrimCloudy`
+0x00012F89, `SkyrimFog` 0x000C821E, `SkyrimOvercastRain` 0x000C821F, `SkyrimOvercastSnow` 0x0004D7FB. The default
+`--visual-preset cool-gray` already overrides the sky with an artistic grey; `--visual-preset vivid` gives `SkyrimClear`'s blue
+day without this flag.
+
 The directional light follows the retail sun update (SkyrimSE.exe 1.7.104.0 `0x14041bd90`;
 registry RF-SUN-001 to RF-SUN-004). Every value comes from the pack. With `T = fSunAlphaTransTime`,
 the active worldspace's climate TNAM gives sunrise and sunset midpoints (including PNAM-requested
