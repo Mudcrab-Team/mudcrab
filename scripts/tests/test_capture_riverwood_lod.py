@@ -1,5 +1,8 @@
+from contextlib import closing
 import hashlib
 import json
+import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -9,6 +12,8 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "capture-riverwood-lod.sh"
+SCHEMAS = SCRIPT.parents[1] / "crates/shared"
+SCHEMA_FILES = ("converter-schema-version.txt", "world-database-schema-version.txt")
 PROVENANCE_FILES = (
     "bin/engine",
     "assets/skyrim_world.db",
@@ -33,16 +38,33 @@ POSTFLIGHT_COUNTERS = (
 )
 
 
-def extract_python_block(opener):
-    source = SCRIPT.read_text(encoding="utf-8")
-    start = source.index(opener)
-    body_start = source.index("\n", start) + 1
-    body_end = source.index("\nPY\n", body_start)
-    return source[body_start:body_end]
+LAUNCHER = """#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import shutil
+import sys
 
-
-PROVENANCE_VALIDATOR = extract_python_block('python3 - "$package" <<\'PY\'')
-POSTFLIGHT_VALIDATOR = extract_python_block('python3 - "$output" <<\'PY\'')
+parser = argparse.ArgumentParser()
+parser.add_argument("--acceptance-screenshot", type=Path, required=True)
+parser.add_argument("--benchmark-output", type=Path, required=True)
+parser.add_argument("--profile-output", type=Path, required=True)
+parser.add_argument("--profile-scenario", required=True)
+parser.add_argument("--profile-commit", required=True)
+parser.add_argument("--profile-dirty-worktree", action="store_true")
+parser.add_argument("--stream-radius", required=True)
+args, remaining = parser.parse_known_args()
+if "--log-file" in remaining:
+    parser.error("engine does not support --log-file")
+fixture = Path(__file__).parent / "capture-fixture"
+name = args.profile_scenario
+shutil.copyfile(fixture / f"{name}.png", args.acceptance_screenshot)
+benchmark = fixture / f"{name}-benchmark.json"
+if benchmark.exists():
+    shutil.copyfile(benchmark, args.benchmark_output)
+shutil.copytree(fixture / f"{name}-profile", args.profile_output)
+print(f"radius={args.stream_radius} commit={args.profile_commit} dirty={args.profile_dirty_worktree}")
+print("launcher stderr", file=sys.stderr)
+"""
 
 
 def write_json(path, value):
@@ -61,32 +83,38 @@ def refresh_checksum(package, relative):
     write_json(path, build)
 
 
-def make_package(package):
+def make_package(package, converter_schema, world_schema):
     identity = "a" * 64
     (package / "bin").mkdir(parents=True)
     (package / "assets").mkdir()
+    launcher = package / "run-riverwood-lod.sh"
+    launcher.write_text(LAUNCHER, encoding="utf-8")
+    launcher.chmod(0o755)
+    fixture = package / "capture-fixture"
+    fixture.mkdir()
+    make_postflight_fixture(fixture)
     (package / "bin/engine").write_bytes(b"engine-binary-fixture")
     (package / "assets/cell_cache.rkyv").write_bytes(b"cell-cache-fixture")
     write_json(
         package / "assets/lod-manifest.json",
         {
-            "converter_schema": 28,
-            "world_database_schema": 9,
+            "converter_schema": converter_schema,
+            "world_database_schema": world_schema,
             "build_identity": identity,
             "chunks": 1,
         },
     )
     write_json(
         package / "assets/conversion-manifest.json",
-        {"schema_version": 28, "complete": True},
+        {"schema_version": converter_schema, "complete": True},
     )
     write_json(
         package / "assets/integration-report.json",
-        {"schema_version": 9, "passed": True},
+        {"schema_version": world_schema, "passed": True},
     )
-    with sqlite3.connect(package / "assets/skyrim_world.db") as database:
+    with closing(sqlite3.connect(package / "assets/skyrim_world.db")) as database, database:
         database.execute("CREATE TABLE schema_info(version INTEGER NOT NULL)")
-        database.execute("INSERT INTO schema_info(version) VALUES (9)")
+        database.execute("INSERT INTO schema_info(version) VALUES (?)", (world_schema,))
         database.execute(
             "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, build_identity TEXT NOT NULL)"
         )
@@ -106,24 +134,10 @@ def make_package(package):
     return package
 
 
-def run_provenance_validator(package):
-    return subprocess.run(
-        [sys.executable, "-c", PROVENANCE_VALIDATOR, str(package)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def make_postflight_fixture(root, missing_benchmark=None):
+def make_postflight_fixture(root):
     for name in ("riverwood-radius2", "riverwood-radius0"):
-        (root / f"{name}-exit-code.txt").write_text("0\n", encoding="utf-8")
         (root / f"{name}.png").write_bytes(b"screenshot-fixture")
-        if name != missing_benchmark:
-            write_json(
-                root / f"{name}-benchmark.json",
-                {"passed": True, "scenario": name},
-            )
+        write_json(root / f"{name}-benchmark.json", {"passed": True, "scenario": name})
         profile = root / f"{name}-profile/streaming.json"
         write_json(
             profile,
@@ -137,60 +151,82 @@ def make_postflight_fixture(root, missing_benchmark=None):
         )
 
 
-def run_postflight_validator(root):
-    return subprocess.run(
-        [sys.executable, "-c", POSTFLIGHT_VALIDATOR, str(root)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
 class CaptureRiverwoodGateTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.output = self.root / "capture"
+        self.icd = self.root / "radeon_icd.x86_64.json"
+        self.icd.touch()
+        self.versions = tuple(int((SCHEMAS / name).read_text()) for name in SCHEMA_FILES)
+
+    def package(self, name="package"):
+        return make_package(self.root / name, *self.versions)
+
+    def run_capture(self, package, output=None, *, script=SCRIPT):
+        return subprocess.run(
+            ["bash", str(script), str(package), str(output or self.output)],
+            env={**os.environ, "RIVERWOOD_RADEON_ICD": str(self.icd)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def assert_rejected_before_capture(self, package, message, output=None, *, script=SCRIPT):
+        output = output or self.output
+        result = self.run_capture(package, output, script=script)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(message, result.stderr)
+        self.assertFalse(output.exists())
+
     def test_lod_only20_world6_is_not_combined_contract(self):
-        with tempfile.TemporaryDirectory() as directory:
-            package = make_package(Path(directory))
-            for relative, fields in (
-                ("assets/lod-manifest.json", {"converter_schema": 20, "world_database_schema": 6}),
-                ("assets/conversion-manifest.json", {"schema_version": 20}),
-                ("assets/integration-report.json", {"schema_version": 6}),
-            ):
-                path = package / relative
-                value = json.loads(path.read_text())
-                value.update(fields)
-                write_json(path, value)
-                refresh_checksum(package, relative)
-            with sqlite3.connect(package / "assets/skyrim_world.db") as database:
-                database.execute("UPDATE schema_info SET version=6")
-            refresh_checksum(package, "assets/skyrim_world.db")
-            self.assertNotEqual(run_provenance_validator(package).returncode, 0)
+        package = make_package(self.root / "package", 20, 6)
+        self.assert_rejected_before_capture(package, "Unsupported or incomplete converter package")
 
     def test_lod_capture_rejects_mixed_conversion_producer(self):
-        with tempfile.TemporaryDirectory() as directory:
-            package = make_package(Path(directory))
-            path = package / "assets/conversion-manifest.json"
-            write_json(path, {"schema_version": 20, "complete": True})
-            refresh_checksum(package, "assets/conversion-manifest.json")
-            self.assertNotEqual(run_provenance_validator(package).returncode, 0)
+        package = self.package()
+        relative = "assets/conversion-manifest.json"
+        write_json(package / relative, {"schema_version": 20, "complete": True})
+        refresh_checksum(package, relative)
+        self.assert_rejected_before_capture(package, "Unsupported or incomplete converter package")
 
-    def test_capture_scripts_redirect_logs_without_unsupported_engine_flag(self):
-        for script in (SCRIPT, SCRIPT.with_name("capture-lod-phase1.sh")):
-            with self.subTest(script=script.name):
-                source = script.read_text(encoding="utf-8")
-                self.assertNotIn("--log-file", source)
-                self.assertIn('2>&1', source)
-                self.assertIn('$name.log', source)
+    def test_schema_bumps_flow_from_shared_contract_to_capture(self):
+        converter, world = self.versions
+        for versions, rejection in (
+            ((converter + 1, world), "Unsupported or incomplete converter package"),
+            ((converter, world + 1), "Unsupported LOD schemas"),
+        ):
+            with self.subTest(versions=versions):
+                case = self.root / f"schema-{versions[0]}-{versions[1]}"
+                repo = case / "checkout"
+                schemas = repo / "crates/shared"
+                schemas.mkdir(parents=True)
+                script = repo / "scripts" / SCRIPT.name
+                script.parent.mkdir()
+                shutil.copyfile(SCRIPT, script)
+                for name, version in zip(SCHEMA_FILES, versions, strict=True):
+                    (schemas / name).write_text(f"{version}\n", encoding="utf-8")
+                old_package = make_package(case / "old-package", *self.versions)
+                output = case / "capture"
+                self.assert_rejected_before_capture(old_package, rejection, output, script=script)
+                package = make_package(case / "package", *versions)
+                result = self.run_capture(package, output, script=script)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads((output / "capture-report.json").read_text())
+                self.assertIs(report["passed"], True)
 
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-
-    def test_valid_provenance_passes(self):
-        package = make_package(self.root / "package")
-        result = run_provenance_validator(package)
+    def test_valid_package_produces_report_and_launcher_logs(self):
+        package = self.package()
+        result = self.run_capture(package)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["b" * 40, "false"])
+        report = json.loads((self.output / "capture-report.json").read_text())
+        self.assertIs(report["passed"], True)
+        self.assertEqual(report["errors"], [])
+        for radius in (2, 0):
+            log = (self.output / f"riverwood-radius{radius}.log").read_text().splitlines()
+            self.assertIn(f"radius={radius} commit={'b' * 40} dirty=False", log)
+            self.assertIn("launcher stderr", log)
 
     def test_provenance_requires_format_commit_boolean_and_checksum_map(self):
         invalid_cases = (
@@ -206,21 +242,17 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
         )
         for label, mutate, expected in invalid_cases:
             with self.subTest(label=label):
-                package = make_package(self.root / label.replace(" ", "-"))
+                package = self.package(label.replace(" ", "-"))
                 path = package / "build-provenance.json"
                 build = json.loads(path.read_text(encoding="utf-8"))
                 mutate(build)
                 write_json(path, build)
-                result = run_provenance_validator(package)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(expected, result.stderr)
+                self.assert_rejected_before_capture(package, expected)
 
     def test_swapped_engine_binary_fails_checksum_validation(self):
-        package = make_package(self.root / "package")
+        package = self.package()
         (package / "bin/engine").write_bytes(b"different-engine-binary")
-        result = run_provenance_validator(package)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Build checksum mismatch: bin/engine", result.stderr)
+        self.assert_rejected_before_capture(package, "Build checksum mismatch: bin/engine")
 
     def test_metadata_schema_and_integration_gates(self):
         cases = (
@@ -251,47 +283,39 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
         )
         for label, relative, mutate, expected in cases:
             with self.subTest(label=label):
-                package = make_package(self.root / label.replace(" ", "-"))
+                package = self.package(label.replace(" ", "-"))
                 path = package / relative
                 metadata = json.loads(path.read_text(encoding="utf-8"))
                 mutate(metadata)
                 write_json(path, metadata)
                 refresh_checksum(package, relative)
-                result = run_provenance_validator(package)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(expected, result.stderr)
+                self.assert_rejected_before_capture(package, expected)
 
     def test_database_identity_mismatch_fails(self):
-        package = make_package(self.root / "package")
-        with sqlite3.connect(package / "assets/skyrim_world.db") as database:
+        package = self.package()
+        with closing(sqlite3.connect(package / "assets/skyrim_world.db")) as database, database:
             database.execute(
                 "UPDATE lod_build SET build_identity = ? WHERE id = 1", ("c" * 64,)
             )
         refresh_checksum(package, "assets/skyrim_world.db")
-        result = run_provenance_validator(package)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Database and manifest LOD identities differ", result.stderr)
+        self.assert_rejected_before_capture(package, "Database and manifest LOD identities differ")
 
     def test_database_schema_mismatch_fails(self):
-        package = make_package(self.root / "package")
-        with sqlite3.connect(package / "assets/skyrim_world.db") as database:
+        package = self.package()
+        with closing(sqlite3.connect(package / "assets/skyrim_world.db")) as database, database:
             database.execute("UPDATE schema_info SET version = 4")
         refresh_checksum(package, "assets/skyrim_world.db")
-        result = run_provenance_validator(package)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Database and manifest LOD identities differ", result.stderr)
+        self.assert_rejected_before_capture(package, "Database and manifest LOD identities differ")
 
     def test_manifest_identity_mismatch_fails(self):
-        package = make_package(self.root / "package")
+        package = self.package()
         relative = "assets/lod-manifest.json"
         path = package / relative
         manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest["build_identity"] = "c" * 64
         write_json(path, manifest)
         refresh_checksum(package, relative)
-        result = run_provenance_validator(package)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Database and manifest LOD identities differ", result.stderr)
+        self.assert_rejected_before_capture(package, "Database and manifest LOD identities differ")
 
     def test_nested_output_is_rejected_before_writes(self):
         package = self.root / "package"
@@ -306,39 +330,22 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
             outputs.append(alias / "new-capture")
         for output in outputs:
             with self.subTest(output=output):
-                result = subprocess.run(
-                    ["bash", str(SCRIPT), str(package), str(output)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
+                self.assert_rejected_before_capture(
+                    package, "Capture output must be outside the package", output
                 )
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("Capture output must be outside the package", result.stderr)
-                self.assertFalse(output.exists())
         self.assertEqual(list(package.iterdir()), [])
 
-    def test_valid_postflight_reports_pass(self):
-        output = self.root / "capture"
-        output.mkdir()
-        make_postflight_fixture(output)
-        result = run_postflight_validator(output)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        report = json.loads((output / "capture-report.json").read_text())
-        self.assertIs(report["passed"], True)
-        self.assertEqual(report["errors"], [])
-
     def test_missing_benchmark_fails_despite_zero_exit_and_ready_profile(self):
-        output = self.root / "capture"
-        output.mkdir()
-        make_postflight_fixture(output, missing_benchmark="riverwood-radius0")
-        result = run_postflight_validator(output)
+        package = self.package()
+        (package / "capture-fixture/riverwood-radius0-benchmark.json").unlink()
+        result = self.run_capture(package)
         self.assertNotEqual(result.returncode, 0)
-        report = json.loads((output / "capture-report.json").read_text())
+        report = json.loads((self.output / "capture-report.json").read_text())
         self.assertIn(
             "riverwood-radius0: missing or invalid benchmark report", report["errors"]
         )
         self.assertEqual(
-            (output / "riverwood-radius0-exit-code.txt").read_text().strip(), "0"
+            (self.output / "riverwood-radius0-exit-code.txt").read_text().strip(), "0"
         )
 
     def test_postflight_rejects_nonpassing_or_mislabeled_benchmark(self):
@@ -348,14 +355,13 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
         )
         for label, changes in cases:
             with self.subTest(label=label):
-                output = self.root / label
-                output.mkdir()
-                make_postflight_fixture(output)
-                benchmark = output / "riverwood-radius2-benchmark.json"
+                package = self.package(label)
+                output = self.root / f"capture-{label}"
+                benchmark = package / "capture-fixture/riverwood-radius2-benchmark.json"
                 report = json.loads(benchmark.read_text(encoding="utf-8"))
                 report.update(changes)
                 write_json(benchmark, report)
-                result = run_postflight_validator(output)
+                result = self.run_capture(package, output)
                 self.assertNotEqual(result.returncode, 0)
                 capture_report = json.loads(
                     (output / "capture-report.json").read_text(encoding="utf-8")
@@ -366,31 +372,27 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
                 )
 
     def test_postflight_rejects_every_nonzero_failure_or_pending_counter(self):
-        output = self.root / "capture"
-        output.mkdir()
-        make_postflight_fixture(output)
-        profile = output / "riverwood-radius2-profile/streaming.json"
+        package = self.package()
+        profile = package / "capture-fixture/riverwood-radius2-profile/streaming.json"
         data = json.loads(profile.read_text(encoding="utf-8"))
         for key in POSTFLIGHT_COUNTERS:
             data["aggregate"][key] = 1
         write_json(profile, data)
-        result = run_postflight_validator(output)
+        result = self.run_capture(package)
         self.assertNotEqual(result.returncode, 0)
-        report = json.loads((output / "capture-report.json").read_text())
+        report = json.loads((self.output / "capture-report.json").read_text())
         for key in POSTFLIGHT_COUNTERS:
             self.assertIn(f"riverwood-radius2: {key}=1", report["errors"])
 
     def test_postflight_rejects_missing_counter(self):
-        output = self.root / "capture"
-        output.mkdir()
-        make_postflight_fixture(output)
-        profile = output / "riverwood-radius0-profile/streaming.json"
+        package = self.package()
+        profile = package / "capture-fixture/riverwood-radius0-profile/streaming.json"
         data = json.loads(profile.read_text(encoding="utf-8"))
         del data["aggregate"]["pending_lod_queries"]
         write_json(profile, data)
-        result = run_postflight_validator(output)
+        result = self.run_capture(package)
         self.assertNotEqual(result.returncode, 0)
-        report = json.loads((output / "capture-report.json").read_text())
+        report = json.loads((self.output / "capture-report.json").read_text())
         self.assertIn("riverwood-radius0: pending_lod_queries=None", report["errors"])
 
 

@@ -10,9 +10,13 @@ output=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolv
 [[ ! -e "$output" ]] || { printf 'Capture output already exists: %s\n' "$output" >&2; exit 2; }
 [[ -x "$package/run-riverwood-lod.sh" ]] || { printf 'Missing LOD launcher\n' >&2; exit 2; }
 [[ -r "$package/build-provenance.json" ]] || { printf 'Missing build provenance\n' >&2; exit 2; }
-readarray -t provenance < <(python3 - "$package" <<'PY'
+script_dir=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
+readarray -t provenance < <(python3 - "$package" "$script_dir/../crates/shared" <<'PY'
 import hashlib, json, pathlib, re, sqlite3, sys
 root = pathlib.Path(sys.argv[1])
+versions = pathlib.Path(sys.argv[2])
+converter_schema = int((versions / "converter-schema-version.txt").read_text())
+world_schema = int((versions / "world-database-schema-version.txt").read_text())
 build = json.loads((root / "build-provenance.json").read_text())
 if type(build.get("format_version")) is not int or build["format_version"] != 1:
     raise SystemExit("Unsupported build provenance")
@@ -40,11 +44,11 @@ for relative in (
 manifest = json.loads((root / "assets/lod-manifest.json").read_text())
 integration = json.loads((root / "assets/integration-report.json").read_text())
 conversion = json.loads((root / "assets/conversion-manifest.json").read_text())
-if conversion.get("schema_version") != 28 or conversion.get("complete") is not True:
+if conversion.get("schema_version") != converter_schema or conversion.get("complete") is not True:
     raise SystemExit("Unsupported or incomplete converter package")
-if manifest.get("converter_schema") != 28 or manifest.get("world_database_schema") != 9:
+if manifest.get("converter_schema") != converter_schema or manifest.get("world_database_schema") != world_schema:
     raise SystemExit("Unsupported LOD schemas")
-if integration.get("schema_version") != 9 or integration.get("passed") is not True:
+if integration.get("schema_version") != world_schema or integration.get("passed") is not True:
     raise SystemExit("Asset integration did not pass")
 identity = build.get("lod_build_identity")
 if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
@@ -52,7 +56,7 @@ if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
 with sqlite3.connect((root / "assets/skyrim_world.db").as_uri() + "?mode=ro", uri=True) as database:
     schema = database.execute("SELECT version FROM schema_info").fetchall()
     database_identity = database.execute("SELECT build_identity FROM lod_build WHERE id=1").fetchone()
-if schema != [(9,)] or database_identity != (identity,) or manifest.get("build_identity") != identity:
+if schema != [(world_schema,)] or database_identity != (identity,) or manifest.get("build_identity") != identity:
     raise SystemExit("Database and manifest LOD identities differ")
 print(build["commit"])
 print(str(build["dirty_worktree"]).lower())
@@ -61,9 +65,13 @@ PY
 [[ ${#provenance[@]} == 2 && ${provenance[0]} =~ ^[0-9a-f]{40}$ ]] || {
     printf 'Invalid build provenance\n' >&2; exit 2;
 }
-[[ -r /run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json ]] || {
+[[ -r "${RIVERWOOD_RADEON_ICD:-/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json}" ]] || {
     printf 'Fiji Radeon ICD is unavailable\n' >&2; exit 2;
 }
+if [[ -n "${RIVERWOOD_RADEON_ICD:-}" ]]; then
+    VK_DRIVER_FILES=$(realpath -- "$RIVERWOOD_RADEON_ICD")
+    export VK_DRIVER_FILES
+fi
 mkdir -- "$output"
 output=$(realpath -- "$output")
 cp -- "$package/build-provenance.json" "$output/build-provenance.json"

@@ -42,3 +42,8 @@ class Phase1CaptureTests(unittest.TestCase):
 
     def test_worktree_local_target_default(self):
         self.assertIn("CARGO_TARGET_DIR:-$repo/target", SOURCE)
+
+    def test_capture_redirects_logs_without_unsupported_engine_flag(self):
+        self.assertNotIn("--log-file", SOURCE)
+        self.assertIn('2>&1', SOURCE)
+        self.assertIn('$name.log', SOURCE)

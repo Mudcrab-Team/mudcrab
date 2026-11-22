@@ -43,7 +43,7 @@ where
 }
 
 /// Current combined database contract: corrected TXST roles and one-byte XESP flags.
-pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
+pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = include!("../world-database-schema-version.txt");
 
 /// Current Papyrus script emission ABI: case-insensitive identifiers and permissive initial states.
 ///
@@ -67,7 +67,7 @@ pub const PAPYRUS_SCRIPT_ABI_VERSION: u32 = 5;
 /// are contiguous (KTX 2.0 sections 3.7 and 3.9.7). Producer-27
 /// texture bytes keep the largest-first, 16-byte-padded layout and must be regenerated.
 /// GLB bytes are unchanged, so producer-27 meshes stay reusable.
-pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 28;
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = include!("../converter-schema-version.txt");
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and
