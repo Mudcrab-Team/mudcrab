@@ -14,6 +14,8 @@ pub fn cpu_lod_config(
 ) -> converter::PipelineConfig {
     let mut config = converter::PipelineConfig::new(data_dir, output_dir);
     config.lod_texture_encoder = converter::TextureEncoder::Cpu;
+    // The fixtures have no retail terrain LOD files; these tests exercise the self-built stage.
+    config.terrain_lod_source = converter::config::TerrainLodSource::SelfBuilt;
     config
 }
 

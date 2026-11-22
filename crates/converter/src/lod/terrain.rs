@@ -713,7 +713,7 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB buffers are missing"))?;
     color_eyre::eyre::ensure!(
-        buffers.len() == 1,
+        buffers.len() == 1 && buffers[0].get("uri").is_none(),
         "terrain GLB must use one embedded buffer"
     );
     let declared_buffer_length = json_usize(&buffers[0]["byteLength"], "buffer byteLength")?;
@@ -746,6 +746,12 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
         view_ranges.push((offset, length));
     }
 
+    // A chunk from the .btr importer has its own contract.
+    if asset.get("generator").and_then(|value| value.as_str())
+        == Some(super::retail_terrain::GENERATOR)
+    {
+        return super::retail_terrain::validate_glb(&json, &bytes[binary_start..binary_end]);
+    }
     let accessors = json["accessors"]
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB accessors are missing"))?;
@@ -1164,6 +1170,16 @@ pub(crate) fn publish_chunk(
         content_hash == crate::cache::hash_bytes(&chunk.glb),
         "terrain payload changed while being written: {relative}"
     );
+    index_chunk(connection, chunk, &content_hash)
+}
+
+/// Inserts or replaces the database entries for a verified terrain chunk.
+pub(crate) fn index_chunk(
+    connection: &Connection,
+    chunk: &TerrainChunk,
+    content_hash: &str,
+) -> Result<()> {
+    let relative = chunk_payload_path(chunk.key);
     let source_cells = chunk
         .cells
         .iter()

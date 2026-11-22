@@ -899,6 +899,70 @@ enum ArchiveEntry {
     Ba2(ba2::Ba2Entry),
 }
 
+/// An archive inventory and its entries share one open source. Replacing the
+/// pathname after discovery cannot change the source of subsequent entry reads.
+pub(crate) struct OpenArchive {
+    source: ArchiveSource<'static>,
+    entries: BTreeMap<PathBuf, ArchiveEntry>,
+    metadata: fs::Metadata,
+}
+
+impl OpenArchive {
+    pub(crate) fn open(path: &Path, keep: impl Fn(&Path) -> bool) -> Result<Self> {
+        let file = File::open(path)?;
+        let metadata = file.metadata()?;
+        let source = ArchiveSource::from_file(file)?;
+        let entries = select_entries(&source, path, |name| keep(Path::new(name)))?
+            .into_iter()
+            .map(|(path, entry)| {
+                (
+                    PathBuf::from(path.to_string_lossy().to_ascii_lowercase()),
+                    entry,
+                )
+            })
+            .collect();
+        Ok(Self {
+            source,
+            entries,
+            metadata,
+        })
+    }
+
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.entries.keys().map(PathBuf::as_path)
+    }
+
+    pub(crate) fn sha256(&self) -> Result<String> {
+        self.check_unchanged()?;
+        let sha256 = self.source.with_file(crate::cache::hash_open_file)?;
+        self.check_unchanged()?;
+        Ok(sha256)
+    }
+
+    pub(crate) fn check_unchanged(&self) -> Result<()> {
+        let now = self.source.with_file(File::metadata)?;
+        ensure!(
+            now.len() == self.metadata.len() && now.modified()? == self.metadata.modified()?,
+            "open archive was modified after discovery"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn read(&self, path: &Path) -> Result<Vec<u8>> {
+        let entry = self.entries.get(path).wrap_err("entry was not listed")?;
+        match entry {
+            ArchiveEntry::Bsa(entry) => {
+                let _permit = STAGING_MEMORY.reserve(entry.staging_bytes(&self.source)?)?;
+                entry.decompress(&self.source)
+            }
+            ArchiveEntry::Ba2(entry) => {
+                let _permit = STAGING_MEMORY.reserve(entry.staging_bytes())?;
+                entry.decompress(&self.source)
+            }
+        }
+    }
+}
+
 fn select_entries(
     source: &ArchiveSource<'_>,
     archive_path: &Path,
@@ -1302,6 +1366,38 @@ fn detect_archive_collision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verified_archive_reads_the_same_open_file_after_path_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("terrain.bsa");
+        let replacement = dir.path().join("replacement.bsa");
+        let original = dir.path().join("original.bsa");
+        let key = "meshes/terrain/w/w.4.0.0.btr";
+        write_archive(&archive, &[dummy_content::Entry::new(key, b"verified")]);
+        write_archive(
+            &replacement,
+            &[dummy_content::Entry::new(key, b"different")],
+        );
+
+        let reader = OpenArchive::open(&archive, |_| true).unwrap();
+        let verified = reader.sha256().unwrap();
+        assert_eq!(verified, crate::cache::hash_file(&archive).unwrap());
+        fs::rename(&archive, &original).unwrap();
+        fs::rename(&replacement, &archive).unwrap();
+        assert_eq!(reader.read(Path::new(key)).unwrap(), b"verified");
+        assert_eq!(reader.sha256().unwrap(), verified);
+        assert_ne!(crate::cache::hash_file(&archive).unwrap(), verified);
+
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(original)
+            .unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        file.write_all(b"changed in place").unwrap();
+        assert!(reader.sha256().is_err());
+    }
 
     fn write_archive(path: &Path, entries: &[dummy_content::Entry<'_>]) {
         let bytes = if path.extension().unwrap() == "bsa" {

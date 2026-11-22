@@ -143,6 +143,14 @@ object path (`streaming/lod_objects.rs`) works as follows.
 - **Not yet.** No fade, no scene-name validation of object chunk GLBs, and no large-reference
   takeover.
 
+Terrain chunks cut from retail `.btr` blocks (see the
+[LOD compiler](../converters/lod-compiler.md#retail-terrain-import-the-default-source)) use the
+same quadrant nodes and handoff. A quadrant mesh may have any vertex count and no vertex
+colours, and a source cell may have one to four quadrants (the retail mesh does not cover the
+edge of a worldspace). The material carries the colour map and a normal map applied against a
+constant reference frame. The lighting is the engine's ordinary material, not the retail
+equation (unverified).
+
 Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 70000 and 250000 with a multiplier of 1.5
 ([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)). The initial terrain slice was measured and

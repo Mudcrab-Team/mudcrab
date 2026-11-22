@@ -593,7 +593,7 @@ mod tests {
 
     /// A binary glTF whose single material samples an albedo embedded as a bufferView KTX2, the
     /// way the terrain LOD compiler writes a chunk.
-    fn embedded_albedo_glb() -> Vec<u8> {
+    fn embedded_albedo_glb(material_name: &str) -> Vec<u8> {
         let mut albedo = crate::test_support::colour_ktx2(DxgiFormat::BC1_UNorm, 2);
         let albedo_len = albedo.len();
         albedo.resize(albedo_len.next_multiple_of(4), 0);
@@ -610,7 +610,7 @@ mod tests {
                 "extensions": {"KHR_texture_basisu": {"source": 0}}
             }],
             "materials": [{
-                "name": "lod_terrain",
+                "name": material_name,
                 "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}
             }]
         }))
@@ -708,7 +708,11 @@ mod tests {
             shared::lod::ChunkAnchor::new(2, -1),
         ));
         assert!(is_lod_chunk_payload(Path::new(&chunk)));
-        write_asset(directory.path(), &chunk, &embedded_albedo_glb());
+        write_asset(
+            directory.path(),
+            &chunk,
+            &embedded_albedo_glb("lod_terrain"),
+        );
 
         let mut app = app(directory.path(), VisualProfile::Skyrim);
         let (albedo, changes) = load_embedded_albedo(&mut app, &chunk);
@@ -722,13 +726,40 @@ mod tests {
     }
 
     #[test]
+    fn retail_terrain_lod_albedo_matches_diffuse_aliases_in_both_profiles() {
+        let directory = tempfile::tempdir().unwrap();
+        let chunk = "lod/0000003c/4/cell_2_-1.glb";
+        let diffuse = "object.opensky-srgb.ktx2";
+        write_asset(
+            directory.path(),
+            chunk,
+            &embedded_albedo_glb(shared::lod::RETAIL_TERRAIN_MATERIAL_NAME),
+        );
+        write_ktx2(directory.path(), diffuse, DxgiFormat::BC1_UNorm);
+
+        for (profile, expected) in [
+            (VisualProfile::Skyrim, TextureFormat::Bc1RgbaUnorm),
+            (VisualProfile::Mudcrab, TextureFormat::Bc1RgbaUnormSrgb),
+        ] {
+            let mut app = app(directory.path(), profile);
+            let diffuse = app.world().resource::<AssetServer>().load::<Image>(diffuse);
+            wait_for_asset(&mut app, &diffuse);
+            let (albedo, changes) = load_embedded_albedo(&mut app, chunk);
+            let diffuse_format = loaded_format(&app, &diffuse);
+            assert_eq!(diffuse_format, expected, "{profile:?}");
+            assert_eq!(loaded_format(&app, &albedo), diffuse_format, "{profile:?}");
+            assert_eq!(changes, [ImageChange::Added(Some(expected))], "{profile:?}");
+        }
+    }
+
+    #[test]
     fn only_skyrim_lod_chunks_have_their_embedded_albedo_replaced() {
         let directory = tempfile::tempdir().unwrap();
         let chunk = "lod/0000003c/4/cell_2_-1.glb";
         let prop = "meshes/prop.glb";
         assert!(!is_lod_chunk_payload(Path::new(prop)));
         for path in [chunk, prop] {
-            write_asset(directory.path(), path, &embedded_albedo_glb());
+            write_asset(directory.path(), path, &embedded_albedo_glb("lod_terrain"));
         }
         for (profile, path) in [
             (VisualProfile::Skyrim, prop),

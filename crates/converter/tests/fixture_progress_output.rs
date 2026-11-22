@@ -28,7 +28,7 @@ fn notices_are_printed_on_complete_and_incomplete_runs() {
         let run = Command::new(env!("CARGO_BIN_EXE_converter"))
             .arg(&data)
             .arg(&output)
-            .args(["--lod-encoder", "cpu"])
+            .args(["--lod-encoder", "cpu", "--terrain-lod", "self-built"])
             .arg("--report-json")
             .arg(&report_path)
             .output()
@@ -206,7 +206,7 @@ fn the_converter_binary_prints_a_few_status_lines_and_a_summary() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
-        .args(["--lod-encoder", "cpu"])
+        .args(["--lod-encoder", "cpu", "--terrain-lod", "self-built"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -266,7 +266,7 @@ fn a_failed_run_prints_what_went_wrong_and_the_command_that_resumes_it() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
-        .args(["--lod-encoder", "cpu"])
+        .args(["--lod-encoder", "cpu", "--terrain-lod", "self-built"])
         .arg("--fail-fast")
         .output()
         .unwrap();
@@ -311,7 +311,7 @@ fn an_incomplete_run_does_not_call_itself_complete() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
-        .args(["--lod-encoder", "cpu"])
+        .args(["--lod-encoder", "cpu", "--terrain-lod", "self-built"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);

@@ -46,6 +46,20 @@ pub enum TerrainDefaultTexture {
     SkyrimIni,
 }
 
+/// Where terrain LOD chunks come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerrainLodSource {
+    /// Import the game's retail terrain LOD (`.btr`, colour map, normal map). The default.
+    /// Missing files are reported and counted; nothing is generated in their place.
+    #[default]
+    Retail,
+    /// Mudcrab's own terrain LOD, built from cell heights and baked land colours. It invents its
+    /// geometry, colour and normals, so it is never the default. It exists for fixtures and for
+    /// comparison, and its output carries `terrain_lod_source: self-built` in `lod-manifest.json`.
+    SelfBuilt,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     pub data_dir: PathBuf,
@@ -82,6 +96,10 @@ pub struct PipelineConfig {
     /// no LOD, never an assumed origin of zero (GEOM-02).
     #[serde(default)]
     pub lod_origins: BTreeMap<String, [i32; 2]>,
+    /// Where terrain LOD chunks come from. The default `retail` imports the game's own `.btr`
+    /// meshes, colour maps and normal maps; a world without them gets no terrain LOD.
+    #[serde(default)]
+    pub terrain_lod_source: TerrainLodSource,
     /// Skip generated terrain LOD in both conversion routes. Asset byte contracts
     /// are unchanged; generated database/LOD outputs are rebuilt on every run.
     #[serde(default)]
@@ -189,6 +207,7 @@ impl PipelineConfig {
             skyrim_ccc_file: None,
             skyrim_ini_file: None,
             lod_origins: BTreeMap::new(),
+            terrain_lod_source: TerrainLodSource::default(),
             no_lod: false,
             merged_terrain: false,
             terrain_default_texture: TerrainDefaultTexture::default(),

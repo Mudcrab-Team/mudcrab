@@ -30,6 +30,15 @@ pub(crate) struct LodManifest {
     pub compiler_version: u32,
     #[serde(default)]
     pub chunk_inputs: BTreeMap<String, String>,
+    /// Where the terrain chunks come from. Absent in a pack made before retail import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain_lod_source: Option<String>,
+    /// [`crate::lod::retail_terrain::IMPORT_VERSION`] of the importer that wrote the retail chunks.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub retail_terrain_import_version: u32,
+    /// Per retail chunk payload path, the hash of every input file it was compiled from.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retail_terrain_inputs: BTreeMap<String, String>,
     /// Number of retail object LOD chunks in `lod_object_chunks`. Absent (0) for a pack without
     /// object LOD. Additive: terrain reuse and the runtime contract ignore it.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -52,6 +61,11 @@ fn is_zero(value: &u64) -> bool {
 fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
+
+/// `terrain_lod_source` of a manifest whose terrain chunks were imported from retail files.
+pub(crate) const TERRAIN_SOURCE_RETAIL: &str = "retail";
+/// `terrain_lod_source` of a manifest whose terrain chunks were built from cell heights.
+pub(crate) const TERRAIN_SOURCE_SELF_BUILT: &str = "self-built";
 
 /// Prior-package proof is optional. Legacy, incomplete or damaged proof is a
 /// cache miss, while the current source/compiler/publication checks remain fatal.

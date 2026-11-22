@@ -25,6 +25,21 @@ impl<'a> ArchiveSource<'a> {
         })
     }
 
+    pub(super) fn with_file<T>(&self, read: impl FnOnce(&File) -> io::Result<T>) -> io::Result<T> {
+        let Self::File { reader, .. } = self else {
+            return Err(io::Error::other("archive has no open file"));
+        };
+        let mut guard = reader
+            .lock()
+            .map_err(|_| io::Error::other("archive reader lock is poisoned"))?;
+        let (reader, cursor) = &mut *guard;
+        *cursor = None;
+        let result = read(reader.get_ref());
+        // Discard buffered metadata after an operation that may have repositioned the file.
+        reader.seek(SeekFrom::Start(0))?;
+        result
+    }
+
     pub(super) fn len(&self) -> usize {
         match self {
             Self::Slice(bytes) => bytes.len(),
