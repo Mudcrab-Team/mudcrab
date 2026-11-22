@@ -1,8 +1,10 @@
 """Regressions for the retail-claim source gate; builds throwaway repositories."""
 
 import importlib.util
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,13 +63,14 @@ class Repository:
     def mark_base(self):
         self.base = run_git(self.root, "rev-parse", "HEAD").stdout.strip()
 
-    def run(self, *extra):
+    def run(self, *extra, env=None):
         return subprocess.run(
             [sys.executable, "-B", str(Path(CHECK.__file__)), "--repo", str(self.root),
              "--base", self.base, *extra],
             text=True,
             capture_output=True,
             check=False,
+            env=dict(os.environ, **(env or {})),
         )
 
 
@@ -464,6 +467,311 @@ class ClaimTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("retail claim check", result.stderr)
+
+
+class StandInTests(unittest.TestCase):
+    """The stand-in marker gate from section 6 of the stand-in audit."""
+
+    MARKER = ("// STAND-IN(#900, @alice): terrain LOD mesh built from "
+              "LAND heights\n")
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Repository(self.temporary.name)
+
+    def check(self, result):
+        return result.returncode, result.stdout, result.stderr
+
+    def test_placeholder_comment_without_a_marker_fails(self):
+        self.repo.write("crates/engine/src/x.rs", "// placeholder colour\nfn main() {}\n")
+        self.repo.commit("bare stand-in")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("crates/engine/src/x.rs:1", err)
+        self.assertIn("stand-in has no label", err)
+
+    def test_marker_labels_a_trigger_in_the_same_block(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            self.MARKER + "// placeholder colour\nfn main() {}\n",
+        )
+        self.repo.commit("labelled stand-in")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("all labelled", out)
+
+    def test_marker_without_an_owner_fails(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// STAND-IN(#900): terrain LOD mesh built from heights\n",
+        )
+        self.repo.commit("marker without an owner")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("needs an issue and an owner", err)
+
+    def test_marker_without_an_issue_fails(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// STAND-IN(@alice): terrain LOD mesh built from heights\n",
+        )
+        self.repo.commit("marker without an issue")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("needs an issue and an owner", err)
+
+    def test_marker_with_a_full_issue_url_passes(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// STAND-IN(https://github.com/Mudcrab-Team/mudcrab/issues/900, "
+            "@alice): terrain LOD mesh built from LAND heights\n"
+            "// placeholder colour\nfn main() {}\n",
+        )
+        self.repo.commit("marker with a URL")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_marker_with_too_few_words_fails(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// STAND-IN(#900, @alice): short text\n",
+        )
+        self.repo.commit("short marker")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("at least four words", err)
+
+    def test_marker_with_no_retail_data_passes(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// STAND-IN(#900, @alice): no retail data\n"
+            "// placeholder colour\nfn main() {}\n",
+        )
+        self.repo.commit("marker for data retail never ships")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_lowercase_stand_in_prose_passes(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// The LOD tile stands in for a gap in the terrain.\n"
+            "// A stand-in shader validates the pipeline.\n"
+            "fn main() {}\n",
+        )
+        self.repo.commit("prose about stand-ins")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 stand-in line(s)", out)
+
+    def test_negated_trigger_passes(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// No placeholder is used.\n"
+            "// Nothing is invented and no provisional value remains.\n"
+            "fn main() {}\n",
+        )
+        self.repo.commit("negated triggers")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 stand-in line(s)", out)
+
+    def test_test_code_is_out_of_scope(self):
+        self.repo.write(
+            "crates/engine/src/lib.rs",
+            "fn main() {}\n\n#[cfg(test)]\nmod tests {\n"
+            "    // placeholder colour\n}\n",
+        )
+        self.repo.write(
+            "crates/engine/src/foo_tests.rs",
+            "// placeholder colour\n",
+        )
+        self.repo.commit("trigger in test code")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 stand-in line(s)", out)
+
+    def test_stand_in_identifier_without_a_comment_fails(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "pub const GENERATED_WHITE: [u8; 4] = [255, 255, 255, 255];\n",
+        )
+        self.repo.commit("bare stand-in identifier")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("stand-in identifier has no label", err)
+
+    def test_stand_in_identifier_with_a_marker_passes(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            self.MARKER
+            + "pub const GENERATED_WHITE: [u8; 4] = [255, 255, 255, 255];\n",
+        )
+        self.repo.commit("labelled stand-in identifier")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_markdown_marker_labels_its_section(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\n## Stand-in\n\n"
+            "// STAND-IN(#900, @alice): example note for this section\n\n"
+            "This is a placeholder colour.\n",
+        )
+        self.repo.commit("marker in the same section")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_markdown_marker_in_another_section_does_not_label(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\n## First\n\n"
+            "// STAND-IN(#900, @alice): example note for the first section\n\n"
+            "Nothing here.\n\n"
+            "## Second\n\n"
+            "This is a placeholder colour.\n",
+        )
+        self.repo.commit("marker in another section")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("docs/specs/example.md:11", err)
+
+    def test_moved_stand_in_is_not_a_new_finding(self):
+        self.repo.write(
+            "crates/engine/src/lib.rs",
+            "fn a() {}\n// placeholder colour\nfn b() {}\nfn c() {}\n",
+        )
+        self.repo.commit("stand-in in the first position")
+        self.repo.mark_base()
+        self.repo.write(
+            "crates/engine/src/lib.rs",
+            "fn a() {}\nfn b() {}\nfn c() {}\n// placeholder colour\n",
+        )
+        self.repo.commit("move the stand-in")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 stand-in line(s)", out)
+
+    def test_audit_lists_hits_and_exits_zero(self):
+        self.repo.write("crates/engine/src/x.rs", "// placeholder one\nfn x() {}\n")
+        self.repo.write("crates/engine/src/y.rs", "// placeholder two\nfn y() {}\n")
+        self.repo.commit("two stand-ins")
+        code, out, err = self.check(self.repo.run("--audit"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("crates/engine/src/x.rs:1", out)
+        self.assertIn("crates/engine/src/y.rs:1", out)
+        self.assertIn("2 unlabelled hit(s)", out)
+
+    def test_audit_baseline_passes_at_the_count(self):
+        self.repo.write("crates/engine/src/x.rs", "// placeholder one\nfn x() {}\n")
+        self.repo.write("crates/engine/src/y.rs", "// placeholder two\nfn y() {}\n")
+        baseline = self.repo.root / "baseline.json"
+        baseline.write_text(json.dumps({
+            "counts": {
+                "crates/engine/src/x.rs": 1,
+                "crates/engine/src/y.rs": 1,
+            },
+            "revision": 1,
+        }), encoding="utf-8")
+        self.repo.commit("two stand-ins and a baseline")
+        code, out, err = self.check(
+            self.repo.run("--audit", "--baseline", str(baseline))
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("at or below the baseline", out)
+
+    def test_audit_baseline_rise_fails(self):
+        self.repo.write(
+            "crates/engine/src/x.rs",
+            "// placeholder one\n// placeholder two\nfn x() {}\n",
+        )
+        baseline = self.repo.root / "baseline.json"
+        baseline.write_text(
+            '{"counts": {"crates/engine/src/x.rs": 1}, "revision": 1}\n',
+            encoding="utf-8",
+        )
+        self.repo.commit("one more stand-in than the baseline")
+        code, _, err = self.check(
+            self.repo.run("--audit", "--baseline", str(baseline))
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("rose from 1 to 2", err)
+
+    def test_audit_writes_the_baseline(self):
+        self.repo.write("crates/engine/src/x.rs", "// placeholder one\nfn x() {}\n")
+        baseline = self.repo.root / "baseline.json"
+        self.repo.commit("one stand-in")
+        code, out, err = self.check(
+            self.repo.run("--audit", "--write-baseline", "--baseline", str(baseline))
+        )
+        self.assertEqual(code, 0, err)
+        written = json.loads(baseline.read_text(encoding="utf-8"))
+        self.assertEqual(written["counts"], {"crates/engine/src/x.rs": 1})
+        self.assertEqual(written["revision"], 1)
+        self.assertIn("Wrote", out)
+
+    def gh_stub(self, state, assignees):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        script = Path(directory.name) / "gh"
+        payload = {
+            "state": state,
+            "assignees": [{"login": login} for login in assignees],
+        }
+        script.write_text(
+            "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(payload) + "\nJSON\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return directory.name
+
+    def check_issues_env(self, directory):
+        return {"PATH": directory + os.pathsep + os.environ.get("PATH", "")}
+
+    def test_check_issues_closed_issue_fails(self):
+        self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
+        self.repo.commit("marker for a closed issue")
+        directory = self.gh_stub("CLOSED", ["alice"])
+        code, _, err = self.check(self.repo.run(
+            "--check-issues", env=self.check_issues_env(directory)
+        ))
+        self.assertEqual(code, 1)
+        self.assertIn("issue #900 is closed", err)
+
+    def test_check_issues_open_assigned_issue_passes(self):
+        self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
+        self.repo.commit("marker for an open issue")
+        directory = self.gh_stub("OPEN", ["alice"])
+        code, out, err = self.check(self.repo.run(
+            "--check-issues", env=self.check_issues_env(directory)
+        ))
+        self.assertEqual(code, 0, err)
+        self.assertIn("open, assigned issue", out)
+
+    def test_check_issues_missing_gh_exits_two(self):
+        self.repo.write("crates/engine/src/x.rs", self.MARKER + "fn main() {}\n")
+        self.repo.commit("marker without a gh client")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        git = shutil.which("git")
+        self.assertIsNotNone(git)
+        (Path(directory.name) / "git").symlink_to(git)
+        code, _, err = self.check(self.repo.run(
+            "--check-issues", env={"PATH": directory.name}
+        ))
+        self.assertEqual(code, 2)
+        self.assertIn("gh is not installed", err)
+
+    def test_workflow_runs_the_stand_in_baseline(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "name: Stand-in count does not rise above the baseline", workflow
+        )
+        self.assertIn(
+            "scripts/check_retail_claims.py --audit --baseline "
+            "scripts/stand_in_baseline.json",
+            workflow,
+        )
 
 
 class ClaimRuleTests(unittest.TestCase):

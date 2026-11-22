@@ -30,13 +30,28 @@ without the field is a rule.  A row that uses another kind value, or that says
 "quirk" or "defect" in its text but has no ``kind:`` field, is a finding.  See
 ADR-0015.
 
-Exit 0 means no unlabelled claims, 1 means findings, and 2 means the diff or
-one of its files could not be read.  Standard library only.
+A stand-in is a value or an asset that Mudcrab makes where retail ships one.  A
+comment or doc line that admits a stand-in needs the marker
+``STAND-IN(#NNN, @owner): what it replaces`` in the same ``//`` block or
+Markdown section, and the issue needs an owner.  An added line with a narrow
+trigger word, or an added ``PLACEHOLDER``, ``GENERATED_*`` or ``LEGACY_*``
+identifier, fails without that marker.  A malformed marker fails too.  Test
+code is out of scope.
+
+``--audit`` lists every stand-in in the tree.  ``--baseline`` compares the
+per-file count with ``scripts/stand_in_baseline.json`` and fails only when a
+count rises, so existing stand-ins need no marker until an owner is assigned.
+``--check-issues`` queries GitHub for markers whose issue is closed or has no
+assignee; it runs on a schedule, not on pull requests.
+
+Exit 0 means no findings, 1 means findings, and 2 means the diff, a file or the
+baseline could not be read, or ``gh`` failed.  Standard library only.
 """
 
 import argparse
 from collections import Counter
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import re
@@ -108,6 +123,50 @@ REGISTRY_ROW_RE = re.compile(r"^\s*\|\s*RF-[A-Z0-9]+-[0-9]+\s*\|")
 KIND_RE = re.compile(r"\bkind:\s*([A-Za-z-]+)", re.IGNORECASE)
 KIND_WORD_RE = re.compile(r"\b(?:quirk|defect)s?\b", re.IGNORECASE)
 KINDS = ("rule", "quirk", "defect")
+STAND_IN_WORD_RE = re.compile(r"\bSTAND-IN\b")
+STAND_IN_MARKER_RE = re.compile(
+    r"\bSTAND-IN\(\s*"
+    r"(?P<issue>#\d+|https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+)"
+    r"\s*,\s*@(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)"
+    r"\s*\)\s*:\s*(?P<what>[^\n]+)",
+)
+# The trigger list is narrow on purpose: bare "stand-in", "temporary", "fallback",
+# "approximation" and "synthetic" are common engineering words.  See section 6 of
+# the stand-in audit.
+STAND_IN_TRIGGER_RE = re.compile(
+    r"\bplaceholder\b"
+    r"|\bprovisional\b"
+    r"|\binterim\b"
+    r"|\bfor\s+now\b"
+    r"|\bmade\s+up\b"
+    r"|\bnot\s+consumed\b"
+    r"|\blegacy\s+fallback\b"
+    r"|\blegacy\s+normalization\b"
+    r"|\bengineering\s+approximation\b"
+    r"|\beyeball(?:ed|ing)?\b"
+    r"|\bfitted\b"
+    r"|\bgenerated\s+white\b"
+    r"|\binvented\s+(?:value|colour|color|constant|normal|height)\b"
+    r"|\b(?:a|the)\s+stand-in\s+(?:for|of)\s+(?:(?:a|the)\s+)?"
+    r"(?:retail|authored|record|texture|asset|value|colour|color)\b",
+    re.IGNORECASE,
+)
+STAND_IN_NEGATION_RE = re.compile(
+    r"\b(?:no|not|never|without|nothing)\b", re.IGNORECASE
+)
+STAND_IN_IDENT_RE = re.compile(
+    r"\bPLACEHOLDER\w*\b"
+    r"|\bGENERATED[_-]?(?:WHITE|COLOR|COLOUR|NORMAL)\w*\b"
+    r"|\bSYNTHETIC\w*\b"
+    r"|\bDUMMY\w*\b"
+    r"|\bFAKE\w*\b"
+    r"|\bLEGACY_\w+\b",
+    re.IGNORECASE,
+)
+STAND_IN_MIN_WORDS = 4
+STAND_IN_NO_DATA = "no retail data"
+DEFAULT_BASELINE = Path("scripts/stand_in_baseline.json")
+TEST_PATH_RE = re.compile(r"(?:^|/)(?:tests|recovery_tests)/")
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -122,6 +181,7 @@ class Finding:
     text: str
     unreasoned_note: bool
     kind_problem: str = ""
+    stand_in_problem: str = ""
 
 
 class CheckError(RuntimeError):
@@ -375,6 +435,135 @@ def makes_claim(text):
     return bool(CLAIM_RE.search(text) or NON_RETAIL_RE.search(text))
 
 
+def stand_in_marker(line):
+    """Return the marker match on a line, or None when it is absent or invalid."""
+    if not STAND_IN_WORD_RE.search(line):
+        return None
+    match = STAND_IN_MARKER_RE.search(line)
+    if match is None:
+        return None
+    what = match.group("what").strip()
+    if what.rstrip(".").strip().lower() == STAND_IN_NO_DATA:
+        return match
+    if len(what.split()) < STAND_IN_MIN_WORDS:
+        return None
+    return match
+
+
+def stand_in_marker_problem(line):
+    """Return why a STAND-IN marker on this line is invalid, or an empty string."""
+    if not STAND_IN_WORD_RE.search(line):
+        return ""
+    match = STAND_IN_MARKER_RE.search(line)
+    if match is None:
+        return ("STAND-IN needs an issue and an owner: "
+                "STAND-IN(#N, @handle): <what it replaces>")
+    what = match.group("what").strip()
+    if what.rstrip(".").strip().lower() == STAND_IN_NO_DATA:
+        return ""
+    if len(what.split()) < STAND_IN_MIN_WORDS:
+        return "STAND-IN needs at least four words after the colon"
+    return ""
+
+
+def is_stand_in_labelled(block):
+    """Return True when a comment block or Markdown section holds a valid marker."""
+    return any(
+        STAND_IN_WORD_RE.search(line) and stand_in_marker(line) is not None
+        for line in block.split("\n")
+    )
+
+
+def is_stand_in_trigger(text):
+    """Return True when the text admits a stand-in, with the negation guard."""
+    for match in STAND_IN_TRIGGER_RE.finditer(text):
+        before = text[max(0, match.start() - 24):match.start()]
+        if STAND_IN_NEGATION_RE.search(before):
+            continue
+        return True
+    return False
+
+
+def direct_type_member_lines(lines):
+    """Return 1-based lines that are direct struct fields or enum variants."""
+    texts = scan_comment_texts(lines)
+    members = set()
+    stack = []
+    pending_type = False
+    for number, raw in enumerate(lines, 1):
+        if stack and stack[-1] == "type":
+            members.add(number)
+        code = raw
+        index = raw.find("//") if texts[number - 1] is not None else -1
+        if index >= 0:
+            code = raw[:index]
+        code = re.sub(r'"(?:\\.|[^"\\])*"', '""', code)
+        if re.search(r"\b(?:struct|enum)\b", code):
+            pending_type = True
+        for char in code:
+            if char == "{":
+                stack.append("type" if pending_type else "other")
+                pending_type = False
+            elif char == "}":
+                if stack:
+                    stack.pop()
+            elif char == ";" and not stack:
+                pending_type = False
+    return members
+
+
+def stand_in_identifier(line, direct_member=False):
+    """Return the declared stand-in name on a code line, or None.
+
+    A declaration is a ``const``, ``static`` or ``fn`` item, a struct field, or
+    an enum variant.  A use such as ``Entity::PLACEHOLDER`` is not a declaration,
+    and a parameter or a struct-literal field is not a type member.
+    """
+    for match in STAND_IN_IDENT_RE.finditer(line):
+        prefix = line[:match.start()]
+        suffix = line[match.end():]
+        if re.search(r"\b(?:const|static|fn)\s+(?:mut\s+)?$", prefix):
+            return match.group(0)
+        if (direct_member
+                and re.fullmatch(r"\s*(?:pub(?:\([^)]*\))?\s*)?", prefix)
+                and re.match(r"\s*(?::|,|\(|\{)", suffix)):
+            return match.group(0)
+    return None
+
+
+def preceding_comment_block(number, lines, line_block):
+    """Return the comment block directly above a 1-based code line, if any.
+
+    Attribute lines between the comment and the item are skipped.  A blank line
+    ends the search, so a file-level marker does not label a later item.
+    """
+    index = number - 1
+    while index >= 1:
+        stripped = lines[index - 1].strip()
+        if not stripped:
+            return None
+        if stripped.startswith("#[") or stripped.startswith("#!["):
+            index -= 1
+            continue
+        return line_block.get(index)
+    return None
+
+
+def is_test_path(path):
+    """Return True for a test file, whose stand-ins are out of scope."""
+    name = Path(path).name
+    return (name == "tests.rs" or name.endswith("_tests.rs")
+            or TEST_PATH_RE.search(path) is not None)
+
+
+def cfg_test_start(lines):
+    """Return the 1-based line of the first ``#[cfg(test)]``, or None."""
+    for number, line in enumerate(lines, 1):
+        if line.strip().startswith("#[cfg(test)]"):
+            return number
+    return None
+
+
 def module_doc_cites_registry(lines, texts=None):
     """Return True when a ``//!`` module doc in the file cites an RF ID."""
     if texts is None:
@@ -404,7 +593,7 @@ def registry_kind_problem(text):
 
 
 def check(repo, base, head):
-    """Return (checked lines, claim lines, findings) for one revision range."""
+    """Return (checked, claims, stand-in lines, findings) for one revision range."""
     # A second -C is the expensive copy search: it finds a copy whose source
     # file did not change in the same diff.
     diff = git(repo, "-c", "color.ui=false", "diff", "-U0", "-M", "-C", "-C",
@@ -412,6 +601,7 @@ def check(repo, base, head):
     changed, removed = parse_diff(diff)
     checked = 0
     claims = 0
+    stand_ins = 0
     findings = []
     for path, added in changed.items():
         language = language_for(path)
@@ -427,47 +617,347 @@ def check(repo, base, head):
             blocks, line_block = build_comment_blocks(lines, texts)
             file_labelled = (language == "rust"
                              and module_doc_cites_registry(lines, texts))
+        test_from = cfg_test_start(lines) if language == "rust" else None
+        type_members = direct_type_member_lines(lines) if language == "rust" else set()
         for number in sorted(added):
             if number < 1 or number > len(lines):
                 raise CheckError(f"{path}:{number}: line is outside the checked revision")
-            if number not in line_block:
-                continue
             text = added[number]
-            claim = lines[number - 1].strip() if texts is None else texts[number - 1]
-            if claim is None:
-                continue
             if removed[text] > 0:
                 removed[text] -= 1
                 continue
-            checked += 1
-            if path == REGISTRY_PATH:
-                problem = registry_kind_problem(text)
-                if problem:
+            claim = (lines[number - 1].strip() if texts is None
+                     else texts[number - 1])
+            in_block = number in line_block
+            if in_block:
+                checked += 1
+                if claim is not None:
+                    if path == REGISTRY_PATH:
+                        problem = registry_kind_problem(text)
+                        if problem:
+                            findings.append(Finding(
+                                path=path,
+                                line=number,
+                                text=text.strip(),
+                                unreasoned_note=False,
+                                kind_problem=problem,
+                            ))
+                    if makes_claim(claim):
+                        claims += 1
+                        if not (file_labelled
+                                or is_labelled(blocks[line_block[number]])):
+                            findings.append(Finding(
+                                path=path,
+                                line=number,
+                                text=text.strip(),
+                                unreasoned_note=bool(NON_RETAIL_RE.search(claim)),
+                            ))
+            if is_test_path(path) or (test_from is not None and number >= test_from):
+                continue
+            if not in_block:
+                if language != "rust" or claim is not None:
+                    continue
+                if stand_in_identifier(lines[number - 1],
+                                       number in type_members) is None:
+                    continue
+                stand_ins += 1
+                block = preceding_comment_block(number, lines, line_block)
+                if block is None or not is_stand_in_labelled(blocks[block]):
                     findings.append(Finding(
                         path=path,
                         line=number,
                         text=text.strip(),
                         unreasoned_note=False,
-                        kind_problem=problem,
+                        stand_in_problem="stand-in identifier has no label",
                     ))
-            if not makes_claim(claim):
                 continue
-            claims += 1
-            if file_labelled or is_labelled(blocks[line_block[number]]):
+            if claim is None:
                 continue
-            findings.append(Finding(
-                path=path,
-                line=number,
-                text=text.strip(),
-                unreasoned_note=bool(NON_RETAIL_RE.search(claim)),
-            ))
+            problem = stand_in_marker_problem(claim)
+            if problem:
+                findings.append(Finding(
+                    path=path,
+                    line=number,
+                    text=text.strip(),
+                    unreasoned_note=False,
+                    stand_in_problem=problem,
+                ))
+                continue
+            if STAND_IN_WORD_RE.search(claim):
+                continue
+            if is_stand_in_trigger(claim):
+                stand_ins += 1
+                if not is_stand_in_labelled(blocks[line_block[number]]):
+                    findings.append(Finding(
+                        path=path,
+                        line=number,
+                        text=text.strip(),
+                        unreasoned_note=False,
+                        stand_in_problem="stand-in has no label",
+                    ))
     findings.sort(key=lambda finding: (finding.path, finding.line))
-    return checked, claims, findings
+    return checked, claims, stand_ins, findings
+
+
+def tracked_paths(repo):
+    """Return the repository's tracked paths."""
+    return [path for path in git(repo, "ls-files", "-z").split("\0") if path]
+
+
+def read_worktree_file(repo, path):
+    """Read a tracked path from the working tree for an audit."""
+    try:
+        return (Path(repo) / path).read_text(
+            encoding="utf-8", errors="replace"
+        ).split("\n")
+    except OSError as error:
+        raise CheckError(f"{path}: cannot read: {error}") from error
+
+
+def stand_ins_in_lines(path, lines):
+    """Return (path, line, problem, text) for every stand-in in one file."""
+    language = language_for(path)
+    hits = []
+    if language is None or is_test_path(path):
+        return hits
+    if language == "markdown":
+        blocks, line_block = build_markdown_blocks(lines)
+        texts = None
+    else:
+        texts = scan_comment_texts(lines)
+        blocks, line_block = build_comment_blocks(lines, texts)
+    test_from = cfg_test_start(lines) if language == "rust" else None
+    type_members = direct_type_member_lines(lines) if language == "rust" else set()
+    for number, raw in enumerate(lines, 1):
+        if test_from is not None and number >= test_from:
+            break
+        stripped = raw.strip()
+        if texts is None:
+            if number not in line_block:
+                continue
+            if STAND_IN_WORD_RE.search(raw):
+                problem = stand_in_marker_problem(raw)
+                if problem:
+                    hits.append((path, number, problem, stripped))
+                continue
+            if (is_stand_in_trigger(stripped)
+                    and not is_stand_in_labelled(blocks[line_block[number]])):
+                hits.append((path, number, "stand-in has no label", stripped))
+            continue
+        comment = texts[number - 1]
+        if comment is None:
+            if (language != "rust"
+                    or stand_in_identifier(raw, number in type_members) is None):
+                continue
+            block = preceding_comment_block(number, lines, line_block)
+            if block is None or not is_stand_in_labelled(blocks[block]):
+                hits.append(
+                    (path, number, "stand-in identifier has no label", stripped)
+                )
+            continue
+        if STAND_IN_WORD_RE.search(comment):
+            problem = stand_in_marker_problem(comment)
+            if problem:
+                hits.append((path, number, problem, stripped))
+            continue
+        if (is_stand_in_trigger(comment)
+                and not is_stand_in_labelled(blocks[line_block[number]])):
+            hits.append((path, number, "stand-in has no label", stripped))
+    return hits
+
+
+def audit(repo):
+    """Return every unlabelled stand-in in the working tree."""
+    hits = []
+    for path in tracked_paths(repo):
+        if language_for(path) is None or is_test_path(path):
+            continue
+        hits.extend(stand_ins_in_lines(path, read_worktree_file(repo, path)))
+    hits.sort(key=lambda hit: (hit[0], hit[1]))
+    return hits
+
+
+def stand_in_counts(hits):
+    """Return the number of hits per file."""
+    return Counter(hit[0] for hit in hits)
+
+
+def load_baseline(path):
+    """Return (per-file counts, revision) from a baseline file."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise CheckError(f"cannot read baseline {path}: {error}") from error
+    counts = data.get("counts") if isinstance(data, dict) else None
+    revision = data.get("revision", 1) if isinstance(data, dict) else None
+    if not isinstance(counts, dict):
+        raise CheckError(f"baseline {path} has no counts object")
+    if not isinstance(revision, int) or isinstance(revision, bool):
+        raise CheckError(f"baseline {path} has no integer revision")
+    for key, value in counts.items():
+        if (not isinstance(key, str) or not isinstance(value, int)
+                or isinstance(value, bool) or value < 0):
+            raise CheckError(f"baseline {path} has an invalid count for {key!r}")
+    return counts, revision
+
+
+def write_baseline(path, counts):
+    """Write the current counts, raising the revision so the change is visible."""
+    target = Path(path)
+    revision = 1
+    if target.exists():
+        _, previous = load_baseline(target)
+        revision = previous + 1
+    document = {"counts": dict(counts), "revision": revision}
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        raise CheckError(f"cannot write baseline {target}: {error}") from error
+
+
+def run_audit(repo, baseline, write):
+    """List every stand-in, optionally gate or write the baseline."""
+    hits = audit(repo)
+    for path, line, problem, text in hits:
+        print(f"{path}:{line}: {problem}: {text}")
+    counts = stand_in_counts(hits)
+    print(f"Stand-ins: {len(hits)} unlabelled hit(s) in {len(counts)} file(s).")
+    if write:
+        target = baseline or str(DEFAULT_BASELINE)
+        write_baseline(target, counts)
+        print(f"Wrote {target} with {len(hits)} hit(s).")
+        return 0
+    if baseline is None:
+        print("Audit only: pass --baseline or --write-baseline to gate a count.")
+        return 0
+    limits, revision = load_baseline(baseline)
+    risen = [
+        (path, limits.get(path, 0), count)
+        for path, count in sorted(counts.items())
+        if count > limits.get(path, 0)
+    ]
+    if risen:
+        for path, limit, count in risen:
+            print(f"{path}: stand-in count rose from {limit} to {count}",
+                  file=sys.stderr)
+        print(f"\n{len(risen)} file(s) hold more stand-ins than the baseline "
+              f"({baseline}, revision {revision}). Add a marker with an issue and "
+              "an owner, or raise the baseline in a reviewed change.",
+              file=sys.stderr)
+        return 1
+    print(f"Stand-in count is at or below the baseline ({baseline}, "
+          f"revision {revision}).")
+    return 0
+
+
+def issue_number(value):
+    """Return the issue number from ``#900`` or a full issue URL."""
+    return int(value.rsplit("/", 1)[-1].lstrip("#"))
+
+
+def collect_markers(repo):
+    """Return (path, line, issue number, owner) for every valid marker."""
+    markers = []
+    for path in tracked_paths(repo):
+        language = language_for(path)
+        if language is None or is_test_path(path):
+            continue
+        lines = read_worktree_file(repo, path)
+        if language == "markdown":
+            _, line_block = build_markdown_blocks(lines)
+            texts = None
+        else:
+            texts = scan_comment_texts(lines)
+            _, line_block = build_comment_blocks(lines, texts)
+        test_from = cfg_test_start(lines) if language == "rust" else None
+        for number, raw in enumerate(lines, 1):
+            if test_from is not None and number >= test_from:
+                break
+            if number not in line_block:
+                continue
+            line = raw if texts is None else texts[number - 1]
+            if line is None:
+                continue
+            match = stand_in_marker(line)
+            if match is None:
+                continue
+            markers.append((
+                path,
+                number,
+                issue_number(match.group("issue")),
+                match.group("owner"),
+            ))
+    return markers
+
+
+def review_issue(number):
+    """Return (state, assignee logins) for one issue, or raise CheckError."""
+    command = ["gh", "issue", "view", str(number), "--json", "state,assignees"]
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise CheckError(
+            "gh is not installed; --check-issues needs the GitHub CLI"
+        ) from error
+    if result.returncode:
+        message = (result.stderr.strip() or result.stdout.strip()
+                   or f"exit {result.returncode}")
+        raise CheckError(f"{' '.join(command)}: {message}")
+    try:
+        data = json.loads(result.stdout)
+    except ValueError as error:
+        raise CheckError(f"{' '.join(command)}: invalid JSON: {error}") from error
+    state = data.get("state") if isinstance(data, dict) else None
+    assignees = data.get("assignees") if isinstance(data, dict) else None
+    if not isinstance(state, str) or not isinstance(assignees, list):
+        raise CheckError(
+            f"{' '.join(command)}: response has no state or assignees"
+        )
+    logins = [
+        entry.get("login") for entry in assignees if isinstance(entry, dict)
+    ]
+    return state, [login for login in logins if isinstance(login, str)]
+
+
+def check_issues(repo):
+    """Report markers whose issue is closed or has no assignee."""
+    markers = collect_markers(repo)
+    issues = {}
+    problems = []
+    for path, line, number, owner in markers:
+        if number not in issues:
+            issues[number] = review_issue(number)
+        state, assignees = issues[number]
+        if state.upper() != "OPEN":
+            problems.append((path, line, f"issue #{number} is {state.lower()}"))
+        elif not assignees:
+            problems.append((path, line, f"issue #{number} has no assignee"))
+        elif owner not in assignees:
+            print(f"{path}:{line}: note: issue #{number} is not assigned to "
+                  f"@{owner}", file=sys.stderr)
+    for path, line, problem in problems:
+        print(f"{path}:{line}: {problem}", file=sys.stderr)
+    if problems:
+        print(f"\n{len(problems)} stand-in marker(s) name a closed issue or one "
+              "with no assignee.", file=sys.stderr)
+        return 1
+    print(f"Stand-in issues: {len(markers)} marker(s) name an open, assigned issue.")
+    return 0
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="Require a source on added comment and doc retail claims.",
+        description="Require a source on added comment and doc retail claims, "
+                    "and a label on every stand-in for retail data.",
     )
     parser.add_argument("--repo", default=".", help="repository to inspect (default: .)")
     parser.add_argument(
@@ -476,6 +966,30 @@ def parse_args(argv):
         help="base revision; the diff uses its merge base (default: origin/main)",
     )
     parser.add_argument("--head", default="HEAD", help="changed revision (default: HEAD)")
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="list every stand-in in the tree instead of checking one diff",
+    )
+    parser.add_argument(
+        "--baseline",
+        nargs="?",
+        const=str(DEFAULT_BASELINE),
+        default=None,
+        help="with --audit, fail when a file's count rises above this baseline "
+             f"(default: {DEFAULT_BASELINE})",
+    )
+    parser.add_argument(
+        "--write-baseline",
+        action="store_true",
+        help="with --audit, write the current counts to the baseline",
+    )
+    parser.add_argument(
+        "--check-issues",
+        action="store_true",
+        help="report markers whose issue is closed or has no assignee; "
+             "runs on a schedule, not in pull-request CI",
+    )
     return parser.parse_args(argv)
 
 
@@ -483,12 +997,23 @@ def main(argv=None):
     args = parse_args(argv)
     repo = Path(args.repo)
     try:
-        checked, claims, findings = check(repo, args.base, args.head)
+        if args.check_issues:
+            return check_issues(repo)
+        if args.audit or args.baseline is not None or args.write_baseline:
+            return run_audit(repo, args.baseline, args.write_baseline)
+        checked, claims, stand_ins, findings = check(repo, args.base, args.head)
     except (CheckError, OSError) as error:
         print(f"retail claim check: {error}", file=sys.stderr)
         return 2
     kind_findings = [finding for finding in findings if finding.kind_problem]
-    findings = [finding for finding in findings if not finding.kind_problem]
+    stand_in_findings = [
+        finding for finding in findings
+        if not finding.kind_problem and finding.stand_in_problem
+    ]
+    findings = [
+        finding for finding in findings
+        if not finding.kind_problem and not finding.stand_in_problem
+    ]
     for finding in kind_findings:
         print(f"{finding.path}:{finding.line}: {finding.kind_problem}: "
               f"{finding.text}", file=sys.stderr)
@@ -497,6 +1022,17 @@ def main(argv=None):
             f"\n{len(kind_findings)} registry row(s) have a kind problem. "
             "Kinds are rule, quirk and defect; see docs/adr/"
             "0015-retail-rule-quirk-defect.md.",
+            file=sys.stderr,
+        )
+    for finding in stand_in_findings:
+        print(f"{finding.path}:{finding.line}: {finding.stand_in_problem}: "
+              f"{finding.text}", file=sys.stderr)
+    if stand_in_findings:
+        print(
+            f"\n{len(stand_in_findings)} stand-in line(s) need a label. Add "
+            "\"STAND-IN(#NNN, @owner): <what it replaces>\" in the same comment "
+            "block or Markdown section, with an open issue that has an owner. "
+            "See ADR-0015.",
             file=sys.stderr,
         )
     if findings:
@@ -522,10 +1058,12 @@ def main(argv=None):
                 "or what Mudcrab does instead.",
                 file=sys.stderr,
             )
-    if findings or kind_findings:
+    if findings or kind_findings or stand_in_findings:
         return 1
     print(f"Retail claims: {claims} claim line(s) checked in {checked} added "
           "comment/doc line(s), all labelled.")
+    print(f"Stand-ins: {stand_ins} stand-in line(s) checked in added lines, "
+          "all labelled.")
     return 0
 
 

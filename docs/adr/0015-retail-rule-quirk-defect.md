@@ -103,6 +103,31 @@ The community's well-known engine-fix and unofficial-patch projects form a
 checklist of facts about retail bugs. Study what they fix and why. Never copy
 their code. Do not name or link any decompiled code in the repository.
 
+### Stand-ins
+
+A stand-in is a value or an asset that Mudcrab makes where retail ships one.
+The retail data or the retail rule is the source of truth; the stand-in is a
+gap. A stand-in is not a Mudcrab-mode choice, so it never becomes the default in
+the `skyrim` profile.
+
+Every stand-in needs a label and an owner. The marker form is:
+
+```text
+STAND-IN(#NNN, @handle): what it replaces, and which retail data replaces it
+```
+
+The marker sits in the same comment block or Markdown section. It needs an open
+issue and a GitHub handle. A stand-in with no retail equivalent says
+`no retail data`.
+
+A Mudcrab-mode feature keeps the rule above: it needs a reason, and it names its
+profile or switch. Adding that profile or switch is not a substitute for the
+marker when the feature stands in for retail data.
+
+`scripts/check_retail_claims.py` checks added lines and a committed per-file
+baseline. See
+[writing PRs](../contributing/writing-prs.md#stand-ins-for-retail-data).
+
 ## Enforcement
 
 1. **Registry.** A registry row may carry a `kind` field with the value `rule`,
