@@ -337,8 +337,9 @@ fn tamriel_level_8_and_4_blocks_compile_and_level_4_segments_are_cells() {
             "Tamriel level {level} block count"
         );
         let (mut triangles, mut pieces, mut with_large_refs) = (0usize, 0usize, 0usize);
-        // Segment i of a 16-segment level-4 shape covers cell (x + i / 4, y + i % 4): the mean
-        // vertex of the segment lies within 0.75 cell of that cell.
+        // Segment i of a level-4 shape covers cell (x + i / 4, y + i % 4) (verified in the loader,
+        // skyrim_decomp#816): the geometry check counts segments whose mean vertex is within 0.75
+        // cell of that cell.
         let (mut fitted, mut total) = (0usize, 0usize);
         for file in &files {
             let name = parse_lod_file_name(&file.to_string_lossy()).unwrap();
@@ -353,39 +354,9 @@ fn tamriel_level_8_and_4_blocks_compile_and_level_4_segments_are_cells() {
             if level != 4 {
                 continue;
             }
-            for shape in block.shapes.iter().filter(|shape| shape.segments.len() > 1) {
-                let mut start = 0usize;
-                for (index, segment) in shape.segments.iter().enumerate() {
-                    let count = segment.num_primitives as usize;
-                    if count == 0 {
-                        continue;
-                    }
-                    let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0u32);
-                    for triangle in &shape.triangles[start..start + count] {
-                        for &vertex in triangle {
-                            let position = shape.vertices[vertex as usize].position;
-                            sx += f64::from(position[0]);
-                            sy += f64::from(position[1]);
-                            n += 1;
-                        }
-                    }
-                    start += count;
-                    let world_x = (f64::from(shape.translation[0])
-                        + sx / f64::from(n) * f64::from(shape.scale))
-                        / 4096.0;
-                    let world_y = (f64::from(shape.translation[1])
-                        + sy / f64::from(n) * f64::from(shape.scale))
-                        / 4096.0;
-                    let (cell_x, cell_y) = (x + (index / 4) as i32, y + (index % 4) as i32);
-                    total += 1;
-                    fitted += usize::from(
-                        world_x > f64::from(cell_x) - 0.75
-                            && world_x < f64::from(cell_x) + 1.75
-                            && world_y > f64::from(cell_y) - 0.75
-                            && world_y < f64::from(cell_y) + 1.75,
-                    );
-                }
-            }
+            let (cell_fit, cell_total) = converter::lod::objects::segment_cell_fit(&block, (x, y));
+            fitted += cell_fit;
+            total += cell_total;
         }
         println!(
             "level {level}: {triangles} triangles, {pieces} cell pieces, {with_large_refs} blocks with large-reference data, segment fit {fitted}/{total}"

@@ -22,6 +22,7 @@ use crate::{
         object_stage::{LevelCounts, compile_candidates, level_counts, read_retail},
         objects::{
             OBJECT_COMPILER_VERSION, ObjectChunk, publish_object_atlas, publish_object_chunk,
+            segment_cell_fit,
         },
         reuse::LodManifest,
     },
@@ -162,6 +163,21 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
     let blocks_found = retail.blocks.len();
     let atlas_sha256 = hash_bytes(&retail.atlas_dds);
 
+    let segment_check = retail
+        .blocks
+        .iter()
+        .filter(|block| block.level == 4)
+        .filter_map(|block| {
+            block
+                .parsed
+                .as_ref()
+                .ok()
+                .map(|parsed| (block.cell, parsed))
+        })
+        .fold((0usize, 0usize), |(fitted, total), (cell, parsed)| {
+            let (block_fit, block_total) = segment_cell_fit(parsed, cell);
+            (fitted + block_fit, total + block_total)
+        });
     let manifest_before = fs::read(target.join("lod-manifest.json"))?;
     let core = derive_into(
         &target,
@@ -256,10 +272,18 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
             "before": hash_bytes(&manifest_before),
             "after": hash_file(&target.join("lod-manifest.json"))?,
         },
+        "verified": [
+            "Level-4 segment i covers cell (x + i / 4, y + i % 4): verified in the retail loader (skyrim_decomp#816, static reading). Level-8 and level-16 shapes are whole shapes, not split per cell.",
+        ],
+        "level_4_segment_geometry_check": {
+            "segments": segment_check.1,
+            "within_0_75_cell_of_assigned_cell": segment_check.0,
+            "misfits": segment_check.1 - segment_check.0,
+            "note": "Mean vertex of each non-empty multi-segment slice against its assigned cell. A misfit is geometry that reaches beyond its cell (an inference); the research's own geometry test gave 6,698 of 6,708. The count is reported, not corrected.",
+        },
         "unverified": [
             "Material: alpha mask 128/255 and single-sided unless node flags & 0x108 (reviewed static research, culling medium confidence).",
             "Vertex alpha is written as stored; whether retail multiplies it into the cutout is not verified.",
-            "Level-4 segment i covers cell (x + i / 4, y + i % 4): a measured fit (6,706 of 6,708 segments), not decoded from retail code.",
             "Large-reference data (levels 8 and 4) is kept undecoded and not applied.",
         ],
         "elapsed_ms": elapsed_ms,

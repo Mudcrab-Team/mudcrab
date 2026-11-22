@@ -152,10 +152,15 @@ block into one object chunk GLB beside the terrain chunk of the same key
   `object_batch_<n>` piece. At level 4 a shape has up to 16 segments, one per cell of the 4 x 4
   block, and becomes one `object_cell_<x>_<y>_<n>` piece per non-empty segment, tagged with its cell
   so the engine can hide the pieces of cells it has loaded in full detail. Segment `i` covers cell
-  `(block_x + i / 4, block_y + i % 4)`: a measured fit (6,706 of 6,708 Tamriel segments), not
-  decoded from retail code. Large-reference data (`BSDistantObjectLargeRefExtraData`, 496 of 517
+  `(block_x + i / 4, block_y + i % 4)` (for a width-4 node `i = 4 * dx + dy`; ordinals restart per
+  shape; empty slots keep their index). **Verified in the retail loader** (static reading, reviewed:
+  skyrim_decomp#816). Only a width-4 node is split per cell: level-8 and level-16 shapes are whole
+  shapes, and a level-4 shape with one segment carries no cell. Our geometry check (mean vertex of a
+  segment within 0.75 cell of its cell) fits 6,706 of 6,708 Tamriel segments; the research's own test
+  gave 6,698. A misfit is geometry that reaches beyond its cell (an inference). The derive receipt
+  keeps the count. Large-reference data (`BSDistantObjectLargeRefExtraData`, 496 of 517
   Tamriel level-4 blocks) is kept undecoded and not applied (counted in the LOD warnings), because
-  the engine does not implement the large-reference takeover. A block with no geometry, a shape with
+  the engine does not implement the large-reference takeover (issue #899). A block with no geometry, a shape with
   several segments outside level 4, a level-4 shape with more than 16 segments, large-reference data
   at level 16, or a non-finite vertex is refused and reported, never guessed.
 - **Atlas (format 3).** The retail object atlas (`textures/terrain/<world>/objects/<world>.objects.dds`)

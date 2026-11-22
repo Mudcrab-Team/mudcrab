@@ -153,18 +153,66 @@ struct Piece {
     cell: Option<(i32, i32)>,
 }
 
-/// Level-4 shapes are split into 16 segments, one per cell of the 4 x 4 block, ordered x-major:
-/// segment `i` covers cell `(block_x + i / 4, block_y + i % 4)`. Measured, not decoded from retail
-/// code: on all 6,708 non-empty segments of the 1,408 Tamriel level-4 shapes with several segments,
-/// this mapping puts the segment's mean vertex inside the cell's neighbourhood 6,706 times (the
-/// y-major order, 3,268 times). Unverified against the retail routine (the reviewed research names
-/// only the packed cell key of its lookup). Shapes with one segment carry no cell.
+/// Level-4 shapes are split into 16 segments, one per cell of the 4 x 4 block: for a width-4 node
+/// the ordinal is `i = 4 * dx + dy`, so segment `i` covers cell `(block_x + i / 4, block_y + i % 4)`.
+/// Verified in the retail loader (static reading, independently reviewed:
+/// <https://github.com/Mudcrab-Team/skyrim_decomp/pull/816>). Ordinals restart per shape; empty
+/// slots keep their index and are skipped. Only a node whose width is the segmented level (4) is
+/// split per cell: shapes of width 8 and 16 are whole shapes, and a level-4 shape with one segment
+/// carries no cell. [`segment_cell_fit`] checks the rule against the geometry.
 fn segment_cell(block: (i32, i32), segment: usize) -> Option<(i32, i32)> {
     let (column, row) = match (i32::try_from(segment / 4), i32::try_from(segment % 4)) {
         (Ok(column), Ok(row)) => (column, row),
         _ => return None,
     };
     (column < 4).then_some((block.0 + column, block.1 + row))
+}
+
+/// How many non-empty segments of the multi-segment shapes of a level-4 `block` (whose south-west
+/// cell is `block_cell`) have their mean vertex within 0.75 cell of their assigned cell
+/// ([`segment_cell`]), and how many there are. A segment whose geometry reaches beyond its cell
+/// is a possible misfit (an inference); the count is reported, not corrected.
+pub fn segment_cell_fit(block: &ObjectLodFile, block_cell: (i32, i32)) -> (usize, usize) {
+    let (mut fitted, mut total) = (0usize, 0usize);
+    for shape in block.shapes.iter().filter(|shape| shape.segments.len() > 1) {
+        let mut start = 0usize;
+        for (index, segment) in shape.segments.iter().enumerate() {
+            let Ok(count) = usize::try_from(segment.num_primitives) else {
+                return (fitted, total);
+            };
+            let Some(triangles) = shape.triangles.get(start..start + count) else {
+                return (fitted, total);
+            };
+            start += count;
+            if count == 0 {
+                continue;
+            }
+            let (mut sum_x, mut sum_y, mut vertices) = (0.0f64, 0.0f64, 0.0f64);
+            for triangle in triangles {
+                for &vertex in triangle {
+                    if let Some(position) = shape.vertices.get(usize::from(vertex)) {
+                        sum_x += f64::from(position.position[0]);
+                        sum_y += f64::from(position.position[1]);
+                        vertices += 1.0;
+                    }
+                }
+            }
+            let Some((cell_x, cell_y)) = segment_cell(block_cell, index) else {
+                continue;
+            };
+            let scale = f64::from(shape.scale);
+            let world_x = (f64::from(shape.translation[0]) + sum_x / vertices * scale) / CELL_SIZE;
+            let world_y = (f64::from(shape.translation[1]) + sum_y / vertices * scale) / CELL_SIZE;
+            total += 1;
+            fitted += usize::from(
+                world_x > f64::from(cell_x) - 0.75
+                    && world_x < f64::from(cell_x) + 1.75
+                    && world_y > f64::from(cell_y) - 0.75
+                    && world_y < f64::from(cell_y) + 1.75,
+            );
+        }
+    }
+    (fitted, total)
 }
 
 /// Compiles one retail object block (level 16, 8 or 4) into an object chunk. `atlas_ktx2` is the
