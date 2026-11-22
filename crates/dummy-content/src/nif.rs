@@ -157,6 +157,43 @@ pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
     static_shape_with_colors(shape, &[])
 }
 
+/// Generates a two-child switch with identical meshes 1,000 units apart on X.
+pub fn static_switch(shape: &StaticShape<'_>, flags: u16, selector: i32) -> Result<Vec<u8>> {
+    validate(shape)?;
+    let mut switch = fade_node(&[1, 5]);
+    push_u16(&mut switch, flags);
+    switch.extend_from_slice(&selector.to_le_bytes());
+    let first = triangle_shape(shape, &[], NULL_REF)?;
+    let mut second = first.clone();
+    set_av_transform(
+        &mut second,
+        RootTransform {
+            translation: [1000.0, 0.0, 0.0],
+            rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+        },
+    );
+    assemble(
+        vec![
+            fade_node(&[4]),
+            first,
+            lighting_shader_property(false, 3),
+            texture_set(shape)?,
+            switch,
+            second,
+        ],
+        vec![
+            "BSFadeNode",
+            "BSTriShape",
+            "BSLightingShaderProperty",
+            "BSShaderTextureSet",
+            "NiSwitchNode",
+            "BSTriShape",
+        ],
+        vec![shape.name],
+    )
+}
+
 /// Generates a static NIF with authored RGBA vertex data and both color flags enabled.
 pub fn static_shape_with_colors(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
     build_static_shape(shape, colors, &[], None, None)
@@ -321,18 +358,26 @@ pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
     legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false, SkinNormals::Authored)
 }
 
+/// Target of the named transform track in the generated skin hierarchy.
+#[derive(Clone, Copy)]
+pub enum SkinTrackTarget {
+    Root,
+    Ancestor,
+    Bone,
+}
+
 /// Generates a legacy skin with a named transform track on a root controller chain.
 pub fn legacy_skinned_shape_with_transform_track(
     spec: &LegacySkin<'_>,
-    target_bone: bool,
+    target: SkinTrackTarget,
 ) -> Result<Vec<u8>> {
     legacy_skinned_shape_with_shader(
         spec,
         LegacyShapeKind::Plain,
-        false,
+        true,
         SkinNormals::Authored,
         false,
-        SkinFixtureExtra::Track(target_bone),
+        SkinFixtureExtra::Track(target),
     )
 }
 
@@ -553,7 +598,7 @@ fn legacy_skinned_shape_with(
 
 enum SkinFixtureExtra<'a> {
     None,
-    Track(bool),
+    Track(SkinTrackTarget),
     Controller(SkinController, SkinControllerTarget),
     Body(&'a BoxBody<'a>),
 }
@@ -724,7 +769,7 @@ fn legacy_skinned_shape_with_shader(
             });
             None
         }
-        SkinFixtureExtra::Track(target_bone) => {
+        SkinFixtureExtra::Track(target) => {
             let root_name = u32::try_from(strings.len())?;
             strings.push(if spec.name == "SceneRoot" {
                 "FixtureRoot"
@@ -732,11 +777,12 @@ fn legacy_skinned_shape_with_shader(
                 "SceneRoot"
             });
             blocks[0][..4].copy_from_slice(&root_name.to_le_bytes());
-            Some((
-                SkinController::NamedTrack,
-                if target_bone { 1 } else { root_name },
-                if target_bone { bone0 } else { 0 },
-            ))
+            let (name, block) = match target {
+                SkinTrackTarget::Root => (root_name, 0),
+                SkinTrackTarget::Ancestor => (3, 2),
+                SkinTrackTarget::Bone => (2, bone1),
+            };
+            Some((SkinController::NamedTrack, name, block))
         }
         SkinFixtureExtra::Controller(kind, target) => {
             let outer = u32::try_from(blocks.len())?;

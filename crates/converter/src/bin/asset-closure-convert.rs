@@ -107,7 +107,6 @@ fn main() -> Result<()> {
     let mut results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
     results.sort_by_key(|result| result.model_path.to_ascii_lowercase());
     let converted = count_status(&results, "converted");
-    let reused = count_status(&results, "reused");
     let missing_sources = count_status(&results, "missing_source");
     let invalid_model_paths = count_status(&results, "invalid_model_path");
     let failures = count_status(&results, "failed");
@@ -115,16 +114,15 @@ fn main() -> Result<()> {
     // source assets. The geometry gate covers every source that exists in the
     // selected load-order extraction and fails only on conversion failures and
     // on stored paths the canonicalizer refuses.
-    let passed = converted + reused + missing_sources == requested
-        && failures == 0
-        && invalid_model_paths == 0;
+    let passed =
+        converted + missing_sources == requested && failures == 0 && invalid_model_paths == 0;
     let report = ConversionReport {
         format_version: 1,
         source_root,
         assets_root,
         requested,
         converted,
-        reused,
+        reused: 0,
         missing_sources,
         invalid_model_paths,
         failures,
@@ -181,10 +179,9 @@ fn convert_job(job: Vec<String>, source_root: &Path, assets_root: &Path) -> Vec<
     results
 }
 
-/// Converts or reuses one reachable model. A stored path the canonicalizer refuses is reported,
+/// Converts one reachable model. A stored path the canonicalizer refuses is reported,
 /// never joined onto the roots: a raw `..` or absolute plugin string would read or write outside
 /// both the source and the assets tree.
-/// Validates current NIF input before converting or reusing a model, recording local failure.
 fn convert_model(model_path: String, source_root: &Path, assets_root: &Path) -> ConversionResult {
     let relative = match relative_model_path(&model_path) {
         Ok(relative) => relative,
@@ -217,24 +214,13 @@ fn convert_model(model_path: String, source_root: &Path, assets_root: &Path) -> 
             error: Some("source NIF is missing".to_owned()),
         };
     }
-    // This utility has no manifest settings proof. Validate the current source
-    // even when the old GLB is readable, so it cannot bypass NIF refusal.
-    let result = MeshConverter::validate_nif_for_conversion(&source).and_then(|_| {
-        if output.is_file()
-            && MeshConverter::glb_bounds(&output).is_ok()
-            && MeshConverter::glb_texture_uris(&output).is_ok()
-        {
-            Ok("reused")
-        } else {
-            MeshConverter::convert_nif_to_glb(&source, &output).map(|_| "converted")
-        }
-    });
-    match result {
-        Ok(status) => ConversionResult {
+    // This utility has no source or producer manifest for pre-existing GLBs.
+    match MeshConverter::convert_nif_to_glb(&source, &output) {
+        Ok(()) => ConversionResult {
             model_path,
             source_path: Some(source.to_string_lossy().into_owned()),
             output_path: relative_output,
-            status,
+            status: "converted",
             error: None,
         },
         Err(error) => {
