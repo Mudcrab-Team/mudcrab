@@ -457,10 +457,8 @@ pub(super) fn update_lod_objects(
 
 /// A number in a node name, or `None` for a name that is not an object cell piece.
 fn parse_number<T: std::str::FromStr>(text: &str) -> Option<T> {
-    match text.parse() {
-        Ok(value) => Some(value),
-        Err(_) => None,
-    }
+    // silent-ok: a part that is not a number means the name is not an object cell piece.
+    text.parse().ok()
 }
 
 /// The cell of an `object_cell_<x>_<y>_<n>` node name of a level-4 chunk.
