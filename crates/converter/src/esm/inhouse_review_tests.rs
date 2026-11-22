@@ -182,6 +182,55 @@ fn word(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes[..4].try_into().unwrap())
 }
 
+#[test]
+fn rnam_removals_require_proven_tombstone_identity() {
+    let mut fixture = Fixture::new();
+    let mut world = sub(b"EDID", b"DeletionWorld\0");
+    for (x, member) in [(1u16, 7u32), (2, 8)] {
+        let [lo, hi] = x.to_le_bytes();
+        let key = [0, 0, lo, hi];
+        let rnam = [key, 1u32.to_le_bytes(), member.to_le_bytes(), key].concat();
+        world.extend(sub(b"RNAM", &rnam));
+    }
+    fixture.add(
+        "Base.esm",
+        &[],
+        1,
+        &[
+            native_record(b"WRLD", 60, 0, &world),
+            native_record(b"REFR", 0x0100_0007, 0x20, &[]),
+            native_record(b"REFR", 8, 0x20, &[]),
+        ]
+        .concat(),
+    );
+    let order = LoadOrder::read(&fixture.paths).unwrap();
+    let result = records::read_plugins(&fixture.paths, &order).unwrap();
+    assert_eq!(result.deleted_ids, std::collections::HashSet::from([7, 8]));
+
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        r#"CREATE TABLE worldspaces(id INTEGER PRIMARY KEY);
+           INSERT INTO worldspaces VALUES(60);
+           CREATE TABLE "references"(id INTEGER PRIMARY KEY);"#,
+    )
+    .unwrap();
+    db.execute_batch(super::super::large_references::TABLE_SQL)
+        .unwrap();
+    result.large_references.write(&db).unwrap();
+    let mut query = db
+        .prepare(
+            "SELECT grid_x,omitted_count,confirmed_removed_count
+             FROM large_reference_omissions WHERE worldspace_id=60 ORDER BY grid_x",
+        )
+        .unwrap();
+    let counts = query
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(counts, [(1_i32, 1_i32, 0_i32), (2, 0, 1)]);
+}
+
 /// Legacy flags must survive typed/runtime publication even in a localized plugin with no bank.
 #[test]
 fn r10_sndr_fnam_flags_publish_without_localization() {

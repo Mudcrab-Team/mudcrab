@@ -1345,9 +1345,24 @@ fn read_plugins_with_prepared(
             || !unresolved_linked_markers.is_empty();
     }
     result.large_references.confirm_removed(|id| {
+        // The final override chain includes tombstones admitted during duplicate
+        // recovery. Supplier-self compatibility alone does not prove RNAM identity.
         !result.records.contains_key(&id)
             && !unreadable_refs.contains_key(&Some(id))
             && recovery.deleted.is_unrestored_reference(id)
+            && result
+                .overrides
+                .get(&id)
+                .and_then(|chain| chain.last())
+                .is_some_and(|source| {
+                    source.deleted
+                        && source_identity::header_runtime_id(
+                            b"REFR",
+                            source.source_form_id,
+                            source.plugin_index as usize,
+                            order,
+                        ) == Some(id)
+                })
     });
     if unknown_cell_scope {
         result.damaged_cell_groups.extend(

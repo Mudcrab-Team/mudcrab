@@ -99,15 +99,17 @@ fn member_model(row: &ReferenceRow) -> MemberModel {
     if !row.initially_enabled {
         return MemberModel::Disabled;
     }
+    if row.base_is_marker {
+        return MemberModel::EditorMarker;
+    }
     match row.model_path.as_deref() {
-        None if row.base_is_marker => MemberModel::EditorMarker,
-        Some(path) if !row.base_is_marker => match classify_streamed_model_path(path) {
+        Some(path) => match classify_streamed_model_path(path) {
             Ok(model) => MemberModel::Draw(model),
             Err(StreamedModelExclusion::Effects) => MemberModel::Effects,
             Err(StreamedModelExclusion::Sky) => MemberModel::Sky,
             Err(StreamedModelExclusion::Other) => MemberModel::Unknown,
         },
-        _ => MemberModel::Unknown,
+        None => MemberModel::Unknown,
     }
 }
 
@@ -867,10 +869,12 @@ mod tests {
             placement(9, Some("Meshes\\Effects\\FXRapids01.nif"), false),
             placement(10, Some("SKY/Clouds.nif"), false),
             placement(11, Some("Effects/FXCobwebRoundWall01.nif"), false),
+            placement(12, Some("Markers/Marker.nif"), true),
         ];
         assert_eq!(member_model(&rows[1]), MemberModel::EditorMarker);
         assert_eq!(member_model(&rows[2]), MemberModel::Effects);
         assert_eq!(member_model(&rows[3]), MemberModel::Sky);
+        assert_eq!(member_model(&rows[5]), MemberModel::EditorMarker);
         for row in &rows {
             let actual =
                 super::super::spawned_model_path(row.model_path.clone(), row.base_is_marker);
@@ -908,14 +912,16 @@ mod tests {
     #[test]
     fn unknown_filtered_members_and_enable_state_still_require_lod() {
         let cell = key(3, 0);
-        let mut unresolved = placement(8, Some("Effects/FXRapids01.nif"), false);
-        unresolved.initially_enabled = false;
-        unresolved.enable_state_unresolved = true;
+        let mut disabled_marker = placement(8, Some("Markers/Marker.nif"), true);
+        disabled_marker.initially_enabled = false;
+        assert_eq!(member_model(&disabled_marker), MemberModel::Disabled);
+        let mut unresolved_marker = disabled_marker;
+        unresolved_marker.enable_state_unresolved = true;
         for unknown in [
             placement(8, None, false),
-            placement(8, Some("Markers/Marker.nif"), true),
+            placement(8, Some("Markers/Marker.nif"), false),
             placement(8, Some("Effects/../Unverified.nif"), false),
-            unresolved,
+            unresolved_marker,
         ] {
             assert_eq!(member_model(&unknown), MemberModel::Unknown);
             let mut catalog = AssetCatalog::default();
