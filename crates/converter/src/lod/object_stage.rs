@@ -721,11 +721,6 @@ pub(crate) fn build_object_lod(
             id,
             origin: LodOrigin::new(origin_x, origin_y),
         };
-        if retail.normal_atlas_dds.is_none() {
-            stage
-                .warnings
-                .push(format!("object LOD {editor_id}: {MISSING_NORMAL_ATLAS}"));
-        }
         let atlas_sha256 = hash_bytes(&retail.atlas_dds);
         let atlas = crate::texture::TextureConverter::convert_with_options(
             &retail.atlas_dds,
@@ -755,6 +750,11 @@ pub(crate) fn build_object_lod(
                 "object LOD {editor_id}: no block compiled, so the world has no object chunks"
             ));
             continue;
+        }
+        if retail.normal_atlas_dds.is_none() {
+            stage
+                .warnings
+                .push(format!("object LOD {editor_id}: {MISSING_NORMAL_ATLAS}"));
         }
         for (level, counts) in level_counts(&chunks) {
             if level != 4 && counts.large_ref_chunks > 0 {
@@ -1122,6 +1122,34 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn a_world_without_compiled_chunks_does_not_warn_about_its_normal_atlas() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1), (0, 1, 0)]))]);
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert!(stage.chunks.is_empty());
+        assert!(
+            !stage
+                .warnings
+                .iter()
+                .any(|line| line.contains(MISSING_NORMAL_ATLAS))
+        );
+    }
+
+    #[test]
+    fn both_normal_atlas_names_at_once_are_refused() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        for name in atlas_paths("tamriel", true) {
+            fs::copy(data.path().join(ATLAS_DOTTED), data.path().join(name)).unwrap();
+        }
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let error = build_object_lod(&config(data.path()), staging.path(), &connection)
+            .expect_err("ambiguous normal atlas");
+        assert!(format!("{error:#}").contains("the object normal atlas is ambiguous"));
     }
 
     #[test]

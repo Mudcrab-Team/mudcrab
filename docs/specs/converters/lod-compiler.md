@@ -217,8 +217,14 @@ terrain chunk of the same key (`lod/<world>/<tier>/objects_<x>_<y>.glb`).
   `lod/<world>/objects_atlas.opensky-srgb.ktx2`. Every chunk of the worldspace references it with the image URI
   `../objects_atlas.opensky-srgb.ktx2` (relative to the chunk file, so it is the same file for every tier). The
   file has a row in the additive table `lod_object_atlases` (path and SHA-256) and an entry in the
-  `object_atlases` field of `lod-manifest.json`. `OBJECT_COMPILER_VERSION` is 5. A chunk that embeds
+  `object_atlases` field of `lod-manifest.json`. `OBJECT_COMPILER_VERSION` is 6. A chunk that embeds
   the atlas (format 2, from an earlier derive) is still valid and still loads.
+- **Normal atlas.** The importer preserves the packed BTO basis and writes the optional normal atlas
+  as linear KTX2 with authored mips at `lod/<world>/objects_normal_atlas.opensky-linear.ktx2`.
+  The normal atlas uses the same lookup as the diffuse atlas, with `_n` before `.dds`.
+  The `object_normal_atlases` field in `lod-manifest.json` records the path and SHA-256. A world with compiled chunks and no normal atlas reports `missing_normal_atlas`.
+  The engine's object LOD material uses the normal atlas and the BTO basis for diffuse lighting
+  (skyrim_decomp#948).
 - **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
   128/255 with no blending. The grouped draw uses runtime flags unavailable in the BTO reader
   (finding B3). Mudcrab uses back-face culling for all imported shapes. Winding and vertex colours

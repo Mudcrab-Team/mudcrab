@@ -247,9 +247,12 @@ pub fn object_atlas_path(worldspace_id: u32) -> String {
 pub const OBJECT_ATLAS_RED: &str = "_OBJECT_ATLAS_RED";
 pub const OBJECT_ATLAS_GREEN: &str = "_OBJECT_ATLAS_GREEN";
 
+/// File name of the optional linear object LOD normal atlas.
+pub const OBJECT_NORMAL_ATLAS_FILE: &str = "objects_normal_atlas.opensky-linear.ktx2";
+
 /// Path of the optional linear object LOD normal atlas.
 pub fn object_normal_atlas_path(worldspace_id: u32) -> String {
-    format!("lod/{worldspace_id:08x}/objects_normal_atlas.opensky-linear.ktx2")
+    format!("lod/{worldspace_id:08x}/{OBJECT_NORMAL_ATLAS_FILE}")
 }
 
 /// The image URI an object chunk GLB uses for the shared atlas. It is relative to the chunk file,

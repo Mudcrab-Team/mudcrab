@@ -2163,17 +2163,25 @@ fn all_object_blocks_skipped(
     let Some(counts) = &pack.reconciliation else {
         return false;
     };
-    let Some(by_level) = counts.object_skips.get(world_file) else {
-        return false;
-    };
     let mut covered = BTreeSet::new();
-    for (level, classes) in by_level {
-        for skip in classes.values() {
-            // silent-ok: an incomplete record cannot explain the absent atlas
-            let consistent = u64::try_from(skip.cells.len()).ok() == Some(skip.blocks);
-            if skip.blocks > 0 && consistent {
-                for cell in &skip.cells {
-                    covered.insert((*level, cell.0, cell.1));
+    if counts
+        .object_world_skips
+        .get(world_file)
+        .map(String::as_str)
+        == Some(crate::lod::object_stage::MISSING_ATLAS)
+        && let Some(blocks) = counts.object_world_skip_blocks.get(world_file)
+    {
+        covered.extend(blocks.iter().copied());
+    }
+    if let Some(by_level) = counts.object_skips.get(world_file) {
+        for (level, classes) in by_level {
+            for skip in classes.values() {
+                // silent-ok: an incomplete record cannot explain the absent atlas
+                let consistent = u64::try_from(skip.cells.len()).ok() == Some(skip.blocks);
+                if skip.blocks > 0 && consistent {
+                    for cell in &skip.cells {
+                        covered.insert((*level, cell.0, cell.1));
+                    }
                 }
             }
         }
@@ -3232,6 +3240,35 @@ mod tests {
         let row = row(&report, "object_block", "W", Some(16));
         assert_eq!(row.status, Status::Balanced);
         assert_eq!(row.explained_by_class["missing_atlas"], 1);
+    }
+
+    #[test]
+    fn a_world_skip_explains_a_normal_atlas_only_with_coverage_at_every_level() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (0, 0), Some("w.objects_n.dds"));
+        object_block(data.path(), "w", 8, (0, 0), None);
+        object_block(data.path(), "v", 16, (0, 0), Some("v.objects_n.dds"));
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w", "v"]);
+        manifest["reconciliation"]["object_world_skips"] = json!({ "w": "missing_atlas" });
+        for (coverage, expected) in [
+            (json!([[16, 0, 0]]), Status::Unexplained),
+            (json!([[16, 0, 0], [8, 0, 0]]), Status::Balanced),
+        ] {
+            manifest["reconciliation"]["object_world_skip_blocks"] = json!({ "w": coverage });
+            write_manifest(pack.path(), &manifest);
+            let report = check(data.path(), pack.path());
+            assert_eq!(
+                row(&report, "object_normal_atlas", "W", None).status,
+                expected
+            );
+            assert_eq!(
+                row(&report, "object_normal_atlas", "V", None).status,
+                Status::Unexplained
+            );
+        }
     }
 
     #[test]

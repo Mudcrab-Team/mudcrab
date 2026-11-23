@@ -2,6 +2,7 @@
     clustered_forward,
     forward_io::{VertexOutput, FragmentOutput},
     mesh_functions,
+    lighting::getDistanceAttenuation,
     mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
@@ -109,10 +110,12 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     for (var i = first; i < end; i += 1u) {
         let point = view_bindings::clustered_lights.data[clustered_forward::get_clusterable_object_id(i)];
         let delta = point.position_radius.xyz - in.world_position.xyz;
-        let distance = length(delta);
-        let ratio = clamp(distance / max(point.range, 0.0001), 0.0, 1.0);
-        let angle = clamp(dot(normal, delta) / max(distance, 0.0001), 0.0, 1.0);
-        light += point.color_inverse_square_range.rgb * angle * (1.0 - ratio * ratio);
+        // STAND-IN(#940): G05 in skyrim_decomp#948 uses a radius-based falloff.
+        // Our lights carry Bevy intensities, so use the falloff in pbr_lighting.wgsl.
+        let distance_squared = dot(delta, delta);
+        let angle = clamp(dot(normal, delta) / max(sqrt(distance_squared), 0.0001), 0.0, 1.0);
+        let attenuation = getDistanceAttenuation(distance_squared, point.color_inverse_square_range.w);
+        light += point.color_inverse_square_range.rgb * angle * attenuation / 3.14159265;
     }
     var out: FragmentOutput;
     let exposed = diffuse.rgb * light * view_bindings::view.exposure;

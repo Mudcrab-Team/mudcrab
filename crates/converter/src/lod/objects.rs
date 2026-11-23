@@ -990,10 +990,17 @@ pub fn chunk_uses_shared_atlas(bytes: &[u8]) -> Result<bool> {
     Ok(document["images"][0].get("uri").is_some())
 }
 
-/// Checks a KTX2 atlas file: a valid sRGB 2D texture.
+/// Checks a KTX2 diffuse atlas file.
 pub fn validate_atlas_ktx2(bytes: &[u8]) -> Result<()> {
-    let metadata = crate::texture::inspect_ktx2(bytes, crate::texture::TextureEncoding::ColorSrgb)
-        .wrap_err("the object atlas is not a valid sRGB KTX2")?;
+    validate_atlas_encoding(bytes, crate::texture::TextureEncoding::ColorSrgb)
+}
+
+pub(crate) fn validate_normal_atlas_ktx2(bytes: &[u8]) -> Result<()> {
+    validate_atlas_encoding(bytes, crate::texture::TextureEncoding::NormalLinear)
+}
+
+fn validate_atlas_encoding(bytes: &[u8], encoding: crate::texture::TextureEncoding) -> Result<()> {
+    let metadata = crate::texture::inspect_ktx2(bytes, encoding)?;
     ensure!(
         metadata.layers <= 1 && metadata.faces == 1 && metadata.depth <= 1,
         "the object atlas is not a 2D texture"
@@ -1007,14 +1014,9 @@ pub fn publish_object_normal_atlas(
     worldspace_id: u32,
     dds: &[u8],
 ) -> Result<(String, String)> {
-    use crate::texture::{TextureConverter, TextureEncoding, inspect_ktx2};
-    let encoding = TextureEncoding::NormalLinear;
-    let ktx2 = TextureConverter::convert(dds, encoding)?;
-    let metadata = inspect_ktx2(&ktx2, encoding)?;
-    ensure!(
-        metadata.layers <= 1 && metadata.faces == 1 && metadata.depth <= 1,
-        "the object normal atlas is not a 2D texture"
-    );
+    use crate::texture::{TextureConverter, TextureEncoding};
+    let ktx2 = TextureConverter::convert(dds, TextureEncoding::NormalLinear)?;
+    validate_normal_atlas_ktx2(&ktx2)?;
     let relative = shared::lod::object_normal_atlas_path(worldspace_id);
     let path = root.join(&relative);
     std::fs::write(&path, &ktx2)?;
@@ -1232,7 +1234,8 @@ pub(crate) fn validate_object_generation(
                 hash.as_str() == Some(crate::cache::hash_bytes(&bytes).as_str()),
                 "object normal atlas {path} does not match its recorded SHA-256"
             );
-            crate::texture::inspect_ktx2(&bytes, crate::texture::TextureEncoding::NormalLinear)?;
+            validate_normal_atlas_ktx2(&bytes)
+                .wrap_err_with(|| format!("invalid object normal atlas {path}"))?;
         }
     }
     Ok(())

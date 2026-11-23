@@ -576,6 +576,7 @@ fn shader_files() -> Vec<PathBuf> {
             }
         }
     }
+    files.push(root.join("crates/engine/src/streaming/lod_object.wgsl"));
     files.sort();
     files
 }

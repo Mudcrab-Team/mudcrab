@@ -4181,9 +4181,17 @@ pub(crate) fn validate_artifact(
                 path.display()
             );
         }
-        // The shared object LOD atlas (an sRGB base-colour texture, not a converted source texture).
+        // Object LOD atlases have a fixed encoding and no source texture semantics.
         Some("ktx2") if relative.starts_with("lod") => {
-            crate::lod::objects::validate_atlas_ktx2(&fs::read(&path)?)
+            let bytes = fs::read(&path)?;
+            let validate = if relative.file_name()
+                == Some(std::ffi::OsStr::new(shared::lod::OBJECT_NORMAL_ATLAS_FILE))
+            {
+                crate::lod::objects::validate_normal_atlas_ktx2
+            } else {
+                crate::lod::objects::validate_atlas_ktx2
+            };
+            validate(&bytes)
                 .wrap_err_with(|| format!("invalid object LOD atlas {}", path.display()))?;
         }
         Some("ktx2") => {
@@ -15376,6 +15384,28 @@ mod tests {
             .count();
         assert_eq!(blobs, entries);
         assert_eq!(report.converted, entries as u64);
+    }
+
+    #[test]
+    fn artifact_validation_accepts_a_published_linear_object_normal_atlas() {
+        let root = tempfile::tempdir().unwrap();
+        let relative = shared::lod::object_normal_atlas_path(1);
+        let path = root.path().join(&relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 4, 4),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        let (published, _) =
+            crate::lod::objects::publish_object_normal_atlas(root.path(), 1, &dds).unwrap();
+        assert_eq!(published, relative);
+        let artifacts = [PathBuf::from(relative)];
+        validate_artifacts(root.path(), &artifacts, &BTreeMap::new(), 1).unwrap();
+
+        let srgb = TextureConverter::convert(&dds, TextureEncoding::ColorSrgb).unwrap();
+        fs::write(path, srgb).unwrap();
+        assert!(validate_artifacts(root.path(), &artifacts, &BTreeMap::new(), 1).is_err());
     }
 
     /// The window between the last stage and the publish rename cannot be hit from outside in a
