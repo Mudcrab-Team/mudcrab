@@ -6,6 +6,7 @@ use crate::{
     config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
     swap_bridge::SwapWaiting,
+    terrain_lod_noise::{LandNoise, LandNoiseMaterials, NoisyTerrainLodMaterial},
     visual_profile::VisualProfile,
     world::{
         components::{CELL_SIZE, StreamingCamera},
@@ -714,6 +715,7 @@ pub(super) fn track_lod_readiness(
     materials: Query<&MeshMaterial3d<StandardMaterial>>,
     material_assets: Res<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut noise: LandNoiseMaterials,
     profile: Res<VisualProfile>,
     mut pending_chunks: Query<(Entity, &LodChunkRoot, &mut PendingLodChunk)>,
     mut streaming: ResMut<LodStreaming>,
@@ -721,6 +723,10 @@ pub(super) fn track_lod_readiness(
     mut profiler: ResMut<ProfilingState>,
 ) {
     let started = Instant::now();
+    if noise.loading(&asset_server) {
+        return;
+    }
+    let noise_image = noise.loaded(&asset_server);
     for (entity, root, mut pending) in &mut pending_chunks {
         let Some(asset) = pending.asset.clone() else {
             continue;
@@ -817,7 +823,33 @@ pub(super) fn track_lod_readiness(
                 pending.metadata.payload_path
             );
         }
+        let mut chunk_materials = HashMap::new();
         for (patch, coverage) in &patches {
+            if let (Some(image), Some(noisy_materials), Ok(primitives)) = (
+                noise_image.as_ref(),
+                noise.materials.as_deref_mut(),
+                children.get(*patch),
+            ) {
+                for primitive in primitives.iter() {
+                    if let Ok(material) = materials.get(primitive)
+                        && let Some(base) = material_assets.get(&material.0)
+                        && base.base_color_texture.is_some()
+                    {
+                        let handle = chunk_materials.entry(material.0.id()).or_insert_with(|| {
+                            noisy_materials.add(NoisyTerrainLodMaterial {
+                                base: base.clone(),
+                                extension: LandNoise {
+                                    image: image.clone(),
+                                },
+                            })
+                        });
+                        commands
+                            .entity(primitive)
+                            .remove::<MeshMaterial3d<StandardMaterial>>()
+                            .insert(MeshMaterial3d(handle.clone()));
+                    }
+                }
+            }
             commands
                 .entity(*patch)
                 .insert((*coverage, TerrainSurfaceReady, Visibility::Hidden));

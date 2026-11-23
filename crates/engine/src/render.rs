@@ -433,6 +433,7 @@ impl Plugin for VercidiumRendererPlugin {
         embedded_asset!(app, "shaders/water.wgsl");
         app.add_plugins((
             MaterialPlugin::<TerrainMaterial>::default(),
+            crate::terrain_lod_noise::TerrainLodNoisePlugin,
             MaterialPlugin::<WaterMaterial>::default(),
             crate::prepass_vertex_alpha::PrepassVertexAlphaPlugin,
             crate::water_depth::WaterDepthPlugin,

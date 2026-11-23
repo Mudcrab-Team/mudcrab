@@ -67,6 +67,7 @@ mod streaming_preparation;
 mod streaming_trace;
 pub mod sun;
 pub mod swap_bridge;
+mod terrain_lod_noise;
 pub mod terrain_merge;
 pub mod terrain_upload;
 #[cfg(test)]
