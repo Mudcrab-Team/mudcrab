@@ -256,11 +256,13 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
         let noisy = noisy_land_colour(distant, seam_noise, seam_noise_sampler, distant_uv);
         color = vec4<f32>(mix(color.rgb, noisy, seam_weight), color.a);
     }
-    // Technique 19 order (skyrim-research NEEDS 12c answer, 2026-11-23):
-    // Noise scales the distant sample before blending. Vertex tint scales the full lit diffuse,
-    // including the distant contribution, before fog and bounds. Highlights have no tint multiplier.
-    // Bevy's vertex color scales the blended base color before diffuse lighting.
-    // These opaque dielectric materials derive specular reflectance independently of base color.
+    // Technique 19 order (skyrim_decomp#979): noise scales the distant sample before blending.
+    // Vertex tint scales the full lit diffuse before the first fog bound. Highlights enter
+    // separately before a second bound when enabled.
+    // Bevy's vertex color scales the blended base color before diffuse lighting. The specular
+    // reflectance of these opaque dielectric materials is independent of base color.
+    // Bevy fog processes the combined lit result. The separate fog bounds need draw inputs
+    // that this pass does not bind.
     pbr_input.material.base_color *= color;
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.
