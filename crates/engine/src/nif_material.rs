@@ -559,6 +559,16 @@ fn native_depth_state(
     NifDepthState::from_flags(flags_1, flags_2, alpha_mode)
 }
 
+/// The registered pack carries the glow's source texture and effect flags, but glTF BLEND
+/// omits its authored source-alpha/one factors. Restore those factors for this material.
+fn is_whiterun_window_glow(path: &std::path::Path, material: &gltf::Material<'_>) -> bool {
+    path == std::path::Path::new("meshes/architecture/whiterun/wrbuildings/wrlodwindowglow01.glb")
+        && material.name() == Some("WRLODWindowGlow01:0")
+        && material.alpha_mode() == GltfAlphaMode::Blend
+        && native_tag(material, "shaderFamily", "effect")
+        && has_external_emittance(material)
+}
+
 fn native_material(
     source: &gltf::Material<'_>,
     loaded: &StandardMaterial,
@@ -638,7 +648,20 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             .get_labeled(format!("{label}/std"))
             .and_then(|asset| asset.get::<StandardMaterial>())
             .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
-        let material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+        let mut material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+        let additive_glow = is_whiterun_window_glow(context.path().path(), source);
+        if additive_glow {
+            // Sample the source colour and alpha without lighting the overlay as a solid wall.
+            // STAND-IN(#934): Use the packed emission as the source multiplier and skip
+            // surface fog until the retail effect's tint and fog evaluation are traced.
+            let alpha = material.base_color.to_linear().alpha;
+            material.base_color = Color::LinearRgba(LinearRgba {
+                alpha,
+                ..material.emissive
+            });
+            material.unlit = true;
+            material.fog_enabled = false;
+        }
         // `native_material` drops a model-space map from the base; the skin material takes it
         // from the stock material instead.
         let model_space_normal = standard.normal_map_texture.clone();
@@ -674,7 +697,8 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             }
             None => {
                 let hair_tint = nif_hair_tint(source).filter(|_| !has_model_space_normals(source));
-                if let Some(state) = native_depth_state(source, material.alpha_mode) {
+                if let Some(mut state) = native_depth_state(source, material.alpha_mode) {
+                    state.source_alpha_additive = additive_glow;
                     self.depth_states.insert(label.to_owned(), state);
                     if let Some(tint) = hair_tint {
                         // Retail brows and hairlines are authored decals.
@@ -728,6 +752,20 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         label: &str,
     ) {
         record_texture_fallbacks(context, primitive, mesh, material);
+        if is_whiterun_window_glow(context.path().path(), material) {
+            let texture = material.pbr_metallic_roughness().base_color_texture();
+            if !texture.is_some_and(|texture| {
+                primitive
+                    .get(&::gltf::Semantic::TexCoords(texture.tex_coord()))
+                    .is_some()
+            }) {
+                error!(
+                    "window glow needs a source texture and UVs: {}",
+                    context.path()
+                );
+                entity.insert(Visibility::Hidden);
+            }
+        }
         if let Some(shape) = crate::object_materials::ObjectGeometryIndex::from_primitive(primitive)
         {
             entity.insert(shape);

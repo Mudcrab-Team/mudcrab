@@ -10,7 +10,7 @@
 //!
 //! A surface whose reference names no source, or one the converter could not resolve, keeps the
 //! model's own emission.
-use crate::nif_material::ExternalEmittance;
+use crate::{nif_depth::NifDepthMaterial, nif_material::ExternalEmittance};
 use bevy::{app::SceneSpawnerSystems, prelude::*};
 use std::collections::HashMap;
 
@@ -19,13 +19,18 @@ pub struct EmittancePlugin;
 
 impl Plugin for EmittancePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EmittanceMaterials>()
-            .add_systems(
-                SpawnScene,
-                apply_reference_emittance.after(SceneSpawnerSystems::WorldInstanceSpawn),
-            )
-            .add_systems(Update, forget_freed_materials);
+        register_emittance::<StandardMaterial>(app);
+        register_emittance::<NifDepthMaterial>(app);
     }
+}
+
+fn register_emittance<M: EmittingMaterial>(app: &mut App) {
+    app.init_resource::<EmittanceMaterials<M>>()
+        .add_systems(
+            SpawnScene,
+            apply_reference_emittance::<M>.after(SceneSpawnerSystems::WorldInstanceSpawn),
+        )
+        .add_systems(Update, forget_freed_materials::<M>);
 }
 
 /// The linear colour a reference's `XEMI` source lends its model's `External_Emittance` surfaces.
@@ -42,43 +47,78 @@ impl ReferenceEmittance {
 /// The material a surface drew with before its reference's emittance was applied, so a second
 /// application starts again from the model's own emission instead of compounding.
 #[derive(Component, Clone)]
-struct EmittanceSourceMaterial(Handle<StandardMaterial>);
+struct EmittanceSourceMaterial<M: Asset>(Handle<M>);
 
 /// One material per model material and emittance colour, shared by every reference that lends the
 /// same colour, so emitting references keep batching together. The cache holds ids, not handles:
 /// a derived material is freed with the last surface that draws with it, as a cell unloads, and
 /// [`forget_freed_materials`] then drops its entry.
-#[derive(Resource, Default)]
-struct EmittanceMaterials(
-    HashMap<(AssetId<StandardMaterial>, [u32; 3]), AssetId<StandardMaterial>>,
-);
+#[derive(Resource)]
+struct EmittanceMaterials<M: Asset = StandardMaterial>(HashMap<(AssetId<M>, [u32; 3]), AssetId<M>>);
+
+impl<M: Asset> Default for EmittanceMaterials<M> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
+trait EmittingMaterial: bevy::pbr::Material + Clone {
+    fn base_mut(&mut self) -> &mut StandardMaterial;
+
+    fn uses_additive_source_colour(&self) -> bool {
+        false
+    }
+}
+
+impl EmittingMaterial for StandardMaterial {
+    fn base_mut(&mut self) -> &mut StandardMaterial {
+        self
+    }
+}
+
+impl EmittingMaterial for NifDepthMaterial {
+    fn base_mut(&mut self) -> &mut StandardMaterial {
+        &mut self.base
+    }
+
+    fn uses_additive_source_colour(&self) -> bool {
+        self.extension.state.source_alpha_additive
+    }
+}
 
 /// `material` with its emission multiplied by `colour`. The published emission is the NIF's tint
 /// times its multiplier (`docs/specs/engine/color-pipeline.md`), which the glTF cannot separate, so
 /// the external colour multiplies the tint rather than replacing it; the window shaders that use
 /// external emittance have a white tint, where the two agree.
-fn lit_by(material: &StandardMaterial, colour: LinearRgba) -> StandardMaterial {
-    let emissive = material.emissive;
-    StandardMaterial {
-        emissive: LinearRgba::new(
-            emissive.red * colour.red,
-            emissive.green * colour.green,
-            emissive.blue * colour.blue,
-            emissive.alpha,
-        ),
-        ..material.clone()
+fn lit_by<M: EmittingMaterial>(material: &M, colour: LinearRgba) -> M {
+    let mut material = material.clone();
+    let additive = material.uses_additive_source_colour();
+    let base = material.base_mut();
+    let mut tint = if additive {
+        base.base_color.to_linear()
+    } else {
+        base.emissive
+    };
+    tint.red *= colour.red;
+    tint.green *= colour.green;
+    tint.blue *= colour.blue;
+    if additive {
+        base.base_color = Color::LinearRgba(tint);
+    } else {
+        base.emissive = tint;
     }
+    material
 }
 
 /// A model's `External_Emittance` surfaces: the material each draws with and, once a reference's
 /// colour has been applied, the model's own material it started from.
-type ExternalEmittanceSurfaces<'world, 'state> = Query<
+type ExternalEmittanceSurfaces<'world, 'state, M> = Query<
     'world,
     'state,
     (
         Entity,
-        &'static mut MeshMaterial3d<StandardMaterial>,
-        Option<&'static EmittanceSourceMaterial>,
+        &'static mut MeshMaterial3d<M>,
+        Option<&'static EmittanceSourceMaterial<M>>,
     ),
     With<ExternalEmittance>,
 >;
@@ -86,19 +126,19 @@ type ExternalEmittanceSurfaces<'world, 'state> = Query<
 /// Marks a reference with a surface whose model material had not loaded when its scene was
 /// instantiated, so [`apply_reference_emittance`] tries again once a material arrives.
 #[derive(Component)]
-struct AwaitingEmittanceMaterial;
+struct AwaitingEmittanceMaterial<M: Asset = StandardMaterial>(std::marker::PhantomData<M>);
 
 /// Emitting references to visit: a newly instantiated model, or one still waiting for a material.
-type EmittingReferences<'world, 'state> = Query<
+type EmittingReferences<'world, 'state, M> = Query<
     'world,
     'state,
     (
         Entity,
         &'static ReferenceEmittance,
         Ref<'static, Children>,
-        Has<AwaitingEmittanceMaterial>,
+        Has<AwaitingEmittanceMaterial<M>>,
     ),
-    Or<(Changed<Children>, With<AwaitingEmittanceMaterial>)>,
+    Or<(Changed<Children>, With<AwaitingEmittanceMaterial<M>>)>,
 >;
 
 /// Gives every `External_Emittance` surface of a newly instantiated model its reference's colour.
@@ -107,14 +147,14 @@ type EmittingReferences<'world, 'state> = Query<
 /// `Changed<Children>` on an emitting reference is the frame its surfaces exist. A model can be
 /// instantiated before its materials finish loading; a surface whose material is not there yet is
 /// left as it is and its reference waits, to be visited again when a material is added.
-fn apply_reference_emittance(
+fn apply_reference_emittance<M: EmittingMaterial>(
     mut commands: Commands,
-    references: EmittingReferences,
+    references: EmittingReferences<M>,
     descendants: Query<&Children>,
-    mut surfaces: ExternalEmittanceSurfaces,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut cache: ResMut<EmittanceMaterials>,
-    mut material_events: MessageReader<AssetEvent<StandardMaterial>>,
+    mut surfaces: ExternalEmittanceSurfaces<M>,
+    mut materials: ResMut<Assets<M>>,
+    mut cache: ResMut<EmittanceMaterials<M>>,
+    mut material_events: MessageReader<AssetEvent<M>>,
 ) {
     let material_arrived = material_events.read().any(|event| {
         matches!(
@@ -165,12 +205,14 @@ fn apply_reference_emittance(
         }
         match (missing, awaiting) {
             (true, false) => {
-                commands.entity(reference).insert(AwaitingEmittanceMaterial);
+                commands
+                    .entity(reference)
+                    .insert(AwaitingEmittanceMaterial::<M>(std::marker::PhantomData));
             }
             (false, true) => {
                 commands
                     .entity(reference)
-                    .remove::<AwaitingEmittanceMaterial>();
+                    .remove::<AwaitingEmittanceMaterial<M>>();
             }
             _ => {}
         }
@@ -179,9 +221,9 @@ fn apply_reference_emittance(
 
 /// Drops the cache entries of materials Bevy has freed: a derived material whose last surface
 /// unloaded, or a model material whose model did.
-fn forget_freed_materials(
-    mut events: MessageReader<AssetEvent<StandardMaterial>>,
-    mut cache: ResMut<EmittanceMaterials>,
+fn forget_freed_materials<M: Asset>(
+    mut events: MessageReader<AssetEvent<M>>,
+    mut cache: ResMut<EmittanceMaterials<M>>,
 ) {
     for event in events.read() {
         if let AssetEvent::Removed { id } = event {
@@ -199,10 +241,17 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<StandardMaterial>()
+            .init_asset::<NifDepthMaterial>()
+            .init_resource::<EmittanceMaterials<NifDepthMaterial>>()
             .init_resource::<EmittanceMaterials>()
             .add_systems(
                 Update,
-                (apply_reference_emittance, forget_freed_materials).chain(),
+                (
+                    apply_reference_emittance::<StandardMaterial>,
+                    forget_freed_materials::<StandardMaterial>,
+                    apply_reference_emittance::<NifDepthMaterial>,
+                )
+                    .chain(),
             );
         app
     }
@@ -272,6 +321,85 @@ mod tests {
             glow,
             "the model's material is not changed in place"
         );
+    }
+
+    #[test]
+    fn the_day_colour_applies_to_a_depth_material_without_changing_its_depth_state() {
+        use crate::nif_depth::{NifDepthExtension, NifDepthState};
+
+        let mut app = app();
+        let state = NifDepthState {
+            depth_test: true,
+            depth_write: false,
+            decal: true,
+            alpha_mask: false,
+            cast_shadows: false,
+            source_alpha_additive: false,
+        };
+        let glow = LinearRgba::new(2.0, 2.0, 2.0, 1.0);
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<NifDepthMaterial>>()
+            .add(NifDepthMaterial {
+                base: StandardMaterial {
+                    emissive: glow,
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                },
+                extension: NifDepthExtension { state },
+            });
+        let surface = app
+            .world_mut()
+            .spawn((MeshMaterial3d(material.clone()), ExternalEmittance))
+            .id();
+        app.world_mut()
+            .spawn(ReferenceEmittance::from_srgb([0, 0, 0]))
+            .add_child(surface);
+        app.update();
+
+        let world = app.world();
+        let derived = &world
+            .get::<MeshMaterial3d<NifDepthMaterial>>(surface)
+            .unwrap()
+            .0;
+        let assets = world.resource::<Assets<NifDepthMaterial>>();
+        assert_eq!(assets.get(&material).unwrap().base.emissive, glow);
+        let drawn = assets.get(derived).unwrap();
+        assert_eq!(drawn.base.emissive, LinearRgba::new(0.0, 0.0, 0.0, 1.0));
+        assert_eq!(drawn.base.alpha_mode, AlphaMode::Blend);
+        assert_eq!(drawn.extension.state, state);
+    }
+
+    #[test]
+    fn additive_glow_scales_source_rgb_and_preserves_alpha() {
+        use crate::nif_depth::{DECAL, DEPTH_TEST, depth_material};
+
+        let mut state =
+            crate::nif_depth::NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Blend)
+                .unwrap();
+        state.source_alpha_additive = true;
+        let material = depth_material(
+            StandardMaterial {
+                base_color: Color::linear_rgba(2.0, 2.0, 2.0, 0.5),
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            },
+            state,
+        );
+
+        let daylight = lit_by(&material, LinearRgba::rgb(0.0, 0.0, 0.0));
+        let night = lit_by(&material, LinearRgba::rgb(1.0, 0.5, 0.25));
+
+        assert_eq!(
+            daylight.base.base_color,
+            Color::linear_rgba(0.0, 0.0, 0.0, 0.5)
+        );
+        assert_eq!(
+            night.base.base_color,
+            Color::linear_rgba(2.0, 1.0, 0.5, 0.5)
+        );
+        assert_eq!(night.extension.state, state);
     }
 
     #[test]

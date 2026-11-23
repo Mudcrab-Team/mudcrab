@@ -4,8 +4,8 @@ use bevy::{
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     prelude::*,
     render::render_resource::{
-        AsBindGroup, CompareFunction, DepthStencilState, RenderPipelineDescriptor,
-        SpecializedMeshPipelineError,
+        AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, CompareFunction,
+        DepthStencilState, RenderPipelineDescriptor, SpecializedMeshPipelineError,
     },
 };
 
@@ -35,6 +35,7 @@ pub struct NifDepthState {
     pub decal: bool,
     pub alpha_mask: bool,
     pub cast_shadows: bool,
+    pub source_alpha_additive: bool,
 }
 
 impl NifDepthState {
@@ -53,6 +54,7 @@ impl NifDepthState {
             decal,
             alpha_mask: matches!(alpha_mode, AlphaMode::Mask(_)),
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
+            source_alpha_additive: false,
         })
     }
 
@@ -130,6 +132,24 @@ fn specialize_nif_depth_descriptor(
             *def = "MAY_DISCARD".into();
         } else {
             fragment.shader_defs.push("MAY_DISCARD".into());
+        }
+    }
+    if state.source_alpha_additive
+        && let Some(fragment) = descriptor.fragment.as_mut()
+    {
+        for target in fragment.targets.iter_mut().flatten() {
+            target.blend = Some(BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::SrcAlpha,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent {
+                    src_factor: BlendFactor::Zero,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+            });
         }
     }
     if color_pass && let Some(depth) = descriptor.depth_stencil.as_mut() {
@@ -236,6 +256,26 @@ mod tests {
         assert_eq!(depth.depth_compare, Some(CompareFunction::GreaterEqual));
         assert_eq!(depth.depth_write_enabled, Some(true));
         assert_eq!(depth.bias.constant, DECAL_DEPTH_BIAS);
+    }
+
+    #[test]
+    fn additive_decal_preserves_the_receiver_colour_and_alpha() {
+        let mut state = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Blend).unwrap();
+        state.source_alpha_additive = true;
+        let mut color = descriptor(vec![color_target()]);
+
+        specialize_nif_depth_descriptor(&mut color, state);
+
+        let fragment = color.fragment.unwrap();
+        let blend = fragment.targets[0].as_ref().unwrap().blend.unwrap();
+        assert_eq!(blend.color.src_factor, BlendFactor::SrcAlpha);
+        assert_eq!(blend.color.dst_factor, BlendFactor::One);
+        assert_eq!(blend.alpha.src_factor, BlendFactor::Zero);
+        assert_eq!(blend.alpha.dst_factor, BlendFactor::One);
+        assert_eq!(
+            color.depth_stencil.unwrap().depth_write_enabled,
+            Some(false)
+        );
     }
 
     #[test]
