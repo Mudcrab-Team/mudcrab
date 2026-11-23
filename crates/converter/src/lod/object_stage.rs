@@ -13,8 +13,9 @@ use crate::{
     lod::{
         near_match::FileIndex,
         objects::{
-            MissingObjectUv, ObjectChunk, chunk_key_for_block, compile_object_chunk_shared_atlas,
-            object_chunk_input_hash, publish_object_atlas, publish_object_chunk,
+            MissingObjectUv, NonfiniteObjectBasis, ObjectChunk, chunk_key_for_block,
+            compile_object_chunk_shared_atlas, object_chunk_input_hash, publish_object_atlas,
+            publish_object_chunk,
         },
         reconciliation::LodReconciliation,
         retail::{
@@ -570,6 +571,8 @@ pub(crate) fn compile_candidates(
                 cell: candidate.cell,
                 class: if error.is::<MissingObjectUv>() {
                     "block lacks required vertex data"
+                } else if error.is::<NonfiniteObjectBasis>() {
+                    "nonfinite_basis"
                 } else {
                     "block refused by the compiler"
                 },
@@ -1016,6 +1019,41 @@ mod tests {
                 .iter()
                 .all(|line| line.contains("skipped block") || line.contains(MISSING_NORMAL_ATLAS))
         );
+    }
+
+    #[test]
+    fn a_nonfinite_basis_skips_only_its_block() {
+        let world = WorldFacts {
+            id: 60,
+            origin: LodOrigin::new(-96, -96),
+        };
+        let candidates = [(0, f32::NAN), (16, -0.25)]
+            .into_iter()
+            .map(|(x, bitangent_x)| {
+                let bytes = bto(x, -16, &[(0, 0, 1)]);
+                let mut block = read_object_lod(&bytes, Path::new("test.bto")).unwrap();
+                for vertex in &mut block.shapes[0].vertices {
+                    vertex.normal = Some([0.0, 0.0, 1.0]);
+                    vertex.atlas_basis = Some([[bitangent_x, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+                }
+                BlockCandidate {
+                    level: 16,
+                    cell: (x, -16),
+                    sha256: hash_bytes(&bytes),
+                    parsed: Ok(block),
+                }
+            })
+            .collect();
+        let (chunks, skipped) = compile_candidates(world, candidates, "atlas").unwrap();
+        assert_eq!(chunks.len(), 1);
+        crate::lod::objects::validate_object_glb(&chunks[0].0.glb).unwrap();
+        let [skip] = skipped.as_slice() else {
+            panic!("expected one skipped block");
+        };
+        assert_eq!(skip.level, 16);
+        assert_eq!(skip.cell, (0, -16));
+        assert_eq!(skip.class, "nonfinite_basis");
+        assert!(skip.detail.contains("shape block 0 (3 vertices)"));
     }
 
     #[cfg(unix)]

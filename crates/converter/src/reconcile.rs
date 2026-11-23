@@ -3209,16 +3209,18 @@ mod tests {
         add_plugin(pack.path());
         let mut manifest = retail_manifest(&["w"]);
         manifest["reconciliation"]["object_skips"] = json!({
-            "w": { "16": { "block cannot be read": { "blocks": 2, "cells": [[0, 0], [4, 0]] } } }
+            "w": { "16": {
+                "block cannot be read": { "blocks": 1, "cells": [[0, 0]] },
+                "nonfinite_basis": { "blocks": 1, "cells": [[4, 0]] }
+            } }
         });
         write_manifest(pack.path(), &manifest);
 
         let report = check(data.path(), pack.path());
         assert!(report.passed(), "{:#?}", report.categories);
-        assert_eq!(
-            row(&report, "object_block", "W", Some(16)).status,
-            Status::Balanced
-        );
+        let blocks = row(&report, "object_block", "W", Some(16));
+        assert_eq!(blocks.status, Status::Balanced);
+        assert_eq!(blocks.explained_by_class["nonfinite_basis"], 1);
         let atlas = row(&report, "object_atlas", "W", None);
         assert_eq!(atlas.status, Status::Balanced);
         assert_eq!(atlas.explained_by_class["no_object_chunk_compiled"], 1);

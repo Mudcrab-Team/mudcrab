@@ -305,6 +305,24 @@ impl std::fmt::Display for MissingObjectUv {
 
 impl std::error::Error for MissingObjectUv {}
 
+#[derive(Debug)]
+pub(crate) struct NonfiniteObjectBasis {
+    block_index: usize,
+    vertex_count: usize,
+}
+
+impl std::fmt::Display for NonfiniteObjectBasis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "shape block {} ({} vertices) has a non-finite atlas basis",
+            self.block_index, self.vertex_count
+        )
+    }
+}
+
+impl std::error::Error for NonfiniteObjectBasis {}
+
 fn compile_with_atlas(
     key: ChunkKey,
     origin: LodOrigin,
@@ -387,10 +405,17 @@ fn compile_with_atlas(
                 streams.normals.extend(transform(shape, normal, false));
             }
             if let Some([red, green]) = vertex.atlas_basis {
-                streams.atlas_red_axes.extend(transform(shape, red, false));
-                streams
-                    .atlas_green_axes
-                    .extend(transform(shape, green, false));
+                let red = transform(shape, red, false);
+                let green = transform(shape, green, false);
+                if !red.into_iter().chain(green).all(f32::is_finite) {
+                    return Err(NonfiniteObjectBasis {
+                        block_index: shape.block_index,
+                        vertex_count: shape.vertices.len(),
+                    }
+                    .into());
+                }
+                streams.atlas_red_axes.extend(red);
+                streams.atlas_green_axes.extend(green);
             }
             if let Some(color) = vertex.color {
                 streams
