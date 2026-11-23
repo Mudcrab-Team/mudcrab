@@ -1124,6 +1124,7 @@ fn compare_terrain(
     pack: &Pack,
     selected: Option<&BTreeSet<String>>,
 ) {
+    let mut pack_failure_reported = false;
     let mut worlds: BTreeSet<String> = retail.terrain.keys().cloned().collect();
     if let TerrainState::Retail(chunks) = &pack.terrain {
         for (world_id, _) in chunks.keys() {
@@ -1271,13 +1272,19 @@ fn compare_terrain(
                     || shown.pack.unwrap_or(0) > 0
                     || shown.status != Status::Balanced
                 {
+                    if let TerrainState::Unknown(reason) = &pack.terrain
+                        && shown.status == Status::Unknown
+                        && shown.reason.as_deref() == Some(reason)
+                    {
+                        pack_failure_reported = true;
+                    }
                     report.push(shown);
                 }
             }
         }
     }
-    if retail.terrain.is_empty()
-        && let TerrainState::Unknown(reason) = &pack.terrain
+    if let TerrainState::Unknown(reason) = &pack.terrain
+        && !pack_failure_reported
     {
         for category in ["terrain_mesh", "terrain_colour", "terrain_normal"] {
             report.push(unknown_row(category, "*", None, reason));
@@ -1536,6 +1543,7 @@ fn compare_objects(
             reason,
         ));
     }
+    let mut pack_failure_reported = false;
     let mut worlds: BTreeSet<String> = retail.objects.keys().cloned().collect();
     if let ObjectState::Tables { chunks, .. } = &pack.objects {
         for (world_id, _) in chunks.keys() {
@@ -1644,12 +1652,18 @@ fn compare_objects(
                 || shown.pack.unwrap_or(0) > 0
                 || shown.status != Status::Balanced
             {
+                if let ObjectState::Unknown(reason) = &pack.objects
+                    && shown.status == Status::Unknown
+                    && shown.reason.as_deref() == Some(reason)
+                {
+                    pack_failure_reported = true;
+                }
                 report.push(shown);
             }
         }
     }
-    if retail.objects.is_empty()
-        && let ObjectState::Unknown(reason) = &pack.objects
+    if let ObjectState::Unknown(reason) = &pack.objects
+        && !pack_failure_reported
     {
         report.push(unknown_row("object_block", "*", None, reason));
     }
@@ -1796,6 +1810,7 @@ fn compare_atlases(
     pack: &Pack,
     selected: Option<&BTreeSet<String>>,
 ) {
+    let mut pack_failure_reported = false;
     let mut entries: Vec<(String, u64, bool)> = Vec::new();
     for (world_file, count) in &retail.atlases {
         let pack_count = atlas_pack_count(pack, world_file);
@@ -1841,6 +1856,7 @@ fn compare_atlases(
         if let ObjectState::Unknown(reason) = &pack.objects {
             let mut row = unknown_row("object_atlas", &label, None, reason);
             row.retail = Some(retail_count);
+            pack_failure_reported = true;
             report.push(row);
             continue;
         }
@@ -1916,8 +1932,8 @@ fn compare_atlases(
         }
         report.push(row);
     }
-    if retail.atlases.is_empty()
-        && let ObjectState::Unknown(reason) = &pack.objects
+    if let ObjectState::Unknown(reason) = &pack.objects
+        && !pack_failure_reported
     {
         report.push(unknown_row("object_atlas", "*", None, reason));
     }
@@ -3207,6 +3223,43 @@ mod tests {
         assert_eq!(object.status, Status::Unexplained);
         let atlas = row(&report, "object_atlas", "W", None);
         assert_eq!(atlas.status, Status::Unexplained);
+    }
+
+    #[test]
+    fn a_pack_failure_is_unknown_when_all_source_files_are_out_of_scope() {
+        let data = tempfile::tempdir().unwrap();
+        terrain_block(data.path(), "v", 4, (0, 0), true, true, true);
+        object_block(data.path(), "v", 16, (0, 0), Some("v.objects.dds"));
+        write_plugin(data.path());
+        let pack = pack_with(&[(1, "W")]);
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        let terrain = add_terrain_chunk(pack.path(), &mut manifest, 1, 4, (0, 0));
+        let object = add_object_chunk(pack.path(), &mut manifest, 1, 16, (0, 0));
+        add_atlas(pack.path(), &mut manifest, 1);
+        fs::remove_file(pack.path().join(&terrain)).unwrap();
+        fs::remove_file(pack.path().join(&object)).unwrap();
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        assert!(
+            report
+                .categories
+                .iter()
+                .any(|row| row.world == "v" && row.status == Status::OutOfScope),
+            "{:#?}",
+            report.categories
+        );
+        for category in ["terrain_mesh", "object_block", "object_atlas"] {
+            let row = report
+                .categories
+                .iter()
+                .find(|row| row.category == category && row.world == "*")
+                .unwrap_or_else(|| {
+                    panic!("no category-wide {category} row: {:#?}", report.categories)
+                });
+            assert_eq!(row.status, Status::Unknown, "{row:#?}");
+        }
     }
 
     #[test]
