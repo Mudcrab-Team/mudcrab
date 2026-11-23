@@ -370,6 +370,8 @@ fn capture(
                         decal: false,
                         alpha_mask: false,
                         cast_shadows: true,
+                        blend_factors: None,
+                        uses_effect_emittance: false,
                     },
                     false,
                 )

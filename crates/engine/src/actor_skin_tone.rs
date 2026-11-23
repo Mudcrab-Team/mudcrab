@@ -13,21 +13,42 @@
 //! model's own material, and a derived material reuses that material's images.
 //!
 //! An actor without a tone keeps the model's material with `SKIN_TINT` clear.
-use crate::skin_material::{SkinTintSurface, SkyrimSkinMaterial};
+use crate::skin_material::{SkinTintSurface, SkyrimSkinDepthMaterial, SkyrimSkinMaterial};
 use bevy::{app::SceneSpawnerSystems, prelude::*};
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 
 /// Register after `NifMaterialPlugin`, which marks the surfaces this applies to.
 pub struct ActorSkinTonePlugin;
 
 impl Plugin for ActorSkinTonePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SkinToneMaterials>()
-            .add_systems(
-                SpawnScene,
-                apply_actor_skin_tone.after(SceneSpawnerSystems::WorldInstanceSpawn),
-            )
-            .add_systems(Update, forget_freed_materials);
+        add_skin_tone_systems::<SkyrimSkinMaterial>(app);
+        add_skin_tone_systems::<SkyrimSkinDepthMaterial>(app);
+    }
+}
+
+fn add_skin_tone_systems<M: TintedSkinMaterial>(app: &mut App) {
+    app.init_resource::<SkinToneMaterials<M>>()
+        .add_systems(
+            SpawnScene,
+            apply_actor_skin_tone::<M>.after(SceneSpawnerSystems::WorldInstanceSpawn),
+        )
+        .add_systems(Update, forget_freed_materials::<M>);
+}
+
+trait TintedSkinMaterial: Material {
+    fn set_tone(&mut self, tone: Vec3);
+}
+
+impl TintedSkinMaterial for SkyrimSkinMaterial {
+    fn set_tone(&mut self, tone: Vec3) {
+        self.extension.settings.set_skin_tint(tone);
+    }
+}
+
+impl TintedSkinMaterial for SkyrimSkinDepthMaterial {
+    fn set_tone(&mut self, tone: Vec3) {
+        self.base.set_tone(tone);
     }
 }
 
@@ -46,30 +67,29 @@ impl ActorSkinTone {
 /// The material a surface drew with before its actor's tone was applied, so a later application
 /// starts from the model's material instead of a derived one.
 #[derive(Component, Clone)]
-struct SkinToneSourceMaterial(Handle<SkyrimSkinMaterial>);
+struct SkinToneSourceMaterial<M: Material>(Handle<M>);
 
 /// One material per model material and tone. The cache holds ids, not handles: a derived material
 /// is freed with the last surface that draws with it, as a cell unloads, and
 /// [`forget_freed_materials`] then drops its entry.
-#[derive(Resource, Default)]
-struct SkinToneMaterials(
-    HashMap<(AssetId<SkyrimSkinMaterial>, [u32; 3]), AssetId<SkyrimSkinMaterial>>,
+#[derive(Resource)]
+struct SkinToneMaterials<M: Material = SkyrimSkinMaterial>(
+    HashMap<(AssetId<M>, [u32; 3]), AssetId<M>>,
 );
 
-/// `material` with the skin tint set to `tone`.
-fn toned(material: &SkyrimSkinMaterial, tone: Vec3) -> SkyrimSkinMaterial {
-    let mut material = material.clone();
-    material.extension.settings.set_skin_tint(tone);
-    material
+impl<M: Material> Default for SkinToneMaterials<M> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
 }
 
-type SkinTintSurfaces<'world, 'state> = Query<
+type SkinTintSurfaces<'world, 'state, M> = Query<
     'world,
     'state,
     (
         Entity,
-        &'static mut MeshMaterial3d<SkyrimSkinMaterial>,
-        Option<&'static SkinToneSourceMaterial>,
+        &'static mut MeshMaterial3d<M>,
+        Option<&'static SkinToneSourceMaterial<M>>,
     ),
     With<SkinTintSurface>,
 >;
@@ -77,19 +97,19 @@ type SkinTintSurfaces<'world, 'state> = Query<
 /// Marks an actor with a surface whose model material had not loaded when its scene was
 /// instantiated, so [`apply_actor_skin_tone`] tries again once a material arrives.
 #[derive(Component)]
-struct AwaitingSkinToneMaterial;
+struct AwaitingSkinToneMaterial<M: Material = SkyrimSkinMaterial>(PhantomData<M>);
 
 /// Toned actors to visit: a newly instantiated model or head, or one still waiting for a material.
-type TonedActors<'world, 'state> = Query<
+type TonedActors<'world, 'state, M> = Query<
     'world,
     'state,
     (
         Entity,
         &'static ActorSkinTone,
         Ref<'static, Children>,
-        Has<AwaitingSkinToneMaterial>,
+        Has<AwaitingSkinToneMaterial<M>>,
     ),
-    Or<(Changed<Children>, With<AwaitingSkinToneMaterial>)>,
+    Or<(Changed<Children>, With<AwaitingSkinToneMaterial<M>>)>,
 >;
 
 /// Gives every `skin_tint` surface below a newly instantiated actor model its actor's tone.
@@ -97,14 +117,14 @@ type TonedActors<'world, 'state> = Query<
 /// An actor gains a child the moment Bevy writes its converted scene below it, so
 /// `Changed<Children>` on a toned actor is the frame its surfaces exist. A surface whose material
 /// has not loaded yet is left as it is and its actor waits for a material to arrive.
-fn apply_actor_skin_tone(
+fn apply_actor_skin_tone<M: TintedSkinMaterial>(
     mut commands: Commands,
-    actors: TonedActors,
+    actors: TonedActors<M>,
     descendants: Query<&Children>,
-    mut surfaces: SkinTintSurfaces,
-    mut materials: ResMut<Assets<SkyrimSkinMaterial>>,
-    mut cache: ResMut<SkinToneMaterials>,
-    mut material_events: MessageReader<AssetEvent<SkyrimSkinMaterial>>,
+    mut surfaces: SkinTintSurfaces<M>,
+    mut materials: ResMut<Assets<M>>,
+    mut cache: ResMut<SkinToneMaterials<M>>,
+    mut material_events: MessageReader<AssetEvent<M>>,
 ) {
     let material_arrived = material_events.read().any(|event| {
         matches!(
@@ -140,10 +160,11 @@ fn apply_actor_skin_tone(
             let derived = match cached {
                 Some(derived) => derived,
                 None => {
-                    let Some(derived) = materials.get(&source).map(|base| toned(base, tone)) else {
+                    let Some(mut derived) = materials.get(&source).cloned() else {
                         missing = true;
                         continue;
                     };
+                    derived.set_tone(tone);
                     let derived = materials.add(derived);
                     cache.0.insert(key, derived.id());
                     derived
@@ -155,10 +176,14 @@ fn apply_actor_skin_tone(
         }
         match (missing, awaiting) {
             (true, false) => {
-                commands.entity(actor).insert(AwaitingSkinToneMaterial);
+                commands
+                    .entity(actor)
+                    .insert(AwaitingSkinToneMaterial::<M>(PhantomData));
             }
             (false, true) => {
-                commands.entity(actor).remove::<AwaitingSkinToneMaterial>();
+                commands
+                    .entity(actor)
+                    .remove::<AwaitingSkinToneMaterial<M>>();
             }
             _ => {}
         }
@@ -166,9 +191,9 @@ fn apply_actor_skin_tone(
 }
 
 /// Drops the cache entries of materials Bevy has freed.
-fn forget_freed_materials(
-    mut events: MessageReader<AssetEvent<SkyrimSkinMaterial>>,
-    mut cache: ResMut<SkinToneMaterials>,
+fn forget_freed_materials<M: Material>(
+    mut events: MessageReader<AssetEvent<M>>,
+    mut cache: ResMut<SkinToneMaterials<M>>,
 ) {
     for event in events.read() {
         if let AssetEvent::Removed { id } = event {
@@ -191,7 +216,11 @@ mod tests {
             .init_resource::<SkinToneMaterials>()
             .add_systems(
                 Update,
-                (apply_actor_skin_tone, forget_freed_materials).chain(),
+                (
+                    apply_actor_skin_tone::<SkyrimSkinMaterial>,
+                    forget_freed_materials::<SkyrimSkinMaterial>,
+                )
+                    .chain(),
             );
         app
     }
@@ -220,6 +249,43 @@ mod tests {
             .extension
             .settings
             .clone()
+    }
+
+    #[test]
+    fn actor_tint_preserves_the_wrapped_depth_state() {
+        use crate::nif_depth::{DECAL, DEPTH_TEST, NifDepthState, depth_material};
+        let mut app = app();
+        app.init_asset::<SkyrimSkinDepthMaterial>()
+            .init_resource::<SkinToneMaterials<SkyrimSkinDepthMaterial>>()
+            .add_systems(Update, apply_actor_skin_tone::<SkyrimSkinDepthMaterial>);
+        let state =
+            NifDepthState::from_material(DEPTH_TEST | DECAL, 0, AlphaMode::Blend, Some([6, 0]))
+                .unwrap();
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<SkyrimSkinDepthMaterial>>()
+            .add(depth_material(SkyrimSkinMaterial::default(), state));
+        let body = app
+            .world_mut()
+            .spawn((MeshMaterial3d(source.clone()), SkinTintSurface))
+            .id();
+        app.world_mut()
+            .spawn(ActorSkinTone(Vec3::splat(0.5)))
+            .add_child(body);
+        app.update();
+
+        let handle = app
+            .world()
+            .get::<MeshMaterial3d<SkyrimSkinDepthMaterial>>(body)
+            .unwrap();
+        let materials = app.world().resource::<Assets<SkyrimSkinDepthMaterial>>();
+        let derived = materials.get(&handle.0).unwrap();
+        assert_ne!(handle.0, source);
+        assert_eq!(derived.extension.state, state);
+        assert_ne!(
+            derived.base.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+            0
+        );
     }
 
     /// An actor with a model below it: one `skin_tint` surface and one untinted skin surface (a

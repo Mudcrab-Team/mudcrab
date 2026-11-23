@@ -5330,6 +5330,7 @@ mod tests {
                         shader_block: 0,
                         texture_set_block: None,
                         alpha_property_block: None,
+                        alpha_property: None,
                         shader_flags_1: if alpha_mode == NifAlphaMode::Opaque {
                             1 << 3
                         } else {
@@ -6476,7 +6477,7 @@ mod tests {
     /// the shared 256-node bound. The pinned hashes come from the converter before that bound,
     /// except that both single-shape cases also carry the `mudcrabGeometryIndex` primitive tag
     /// that `object-texture-swap-geometry-index-v1` adds; each case asserts that tag below.
-    /// Additive room-assignment metadata is excluded from this render-output comparison.
+    /// Exclude newer room metadata and the explicit absence of a NIF alpha property.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -6503,7 +6504,7 @@ mod tests {
                 document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"], 0,
                 "{name}: the single shape carries its geometry index"
             );
-            // These additive bounds postdate the reference GLBs. Every other byte must match.
+            // These metadata fields postdate the reference GLBs. Every other byte must match.
             let strip_bound = |owner: &mut serde_json::Value, key: &str| {
                 if let Some(extras) = owner
                     .get_mut("extras")
@@ -6518,6 +6519,13 @@ mod tests {
             strip_bound(&mut document, "mudcrabRoomSphere");
             for mesh in document["meshes"].as_array_mut().unwrap() {
                 strip_bound(mesh, shared::room_assignment::DRAWABLE_SPHERE_EXTRA);
+            }
+            for material in document["materials"].as_array_mut().unwrap() {
+                let extras = material["extras"]["openSkyrim"].as_object_mut().unwrap();
+                assert_eq!(
+                    extras.remove("alphaProperty"),
+                    Some(serde_json::Value::Null)
+                );
             }
             assert_eq!(
                 crate::cache::hash_bytes(&rebuild_glb_with_document(&glb, &document).unwrap()),

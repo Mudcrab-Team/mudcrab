@@ -141,7 +141,7 @@
           "path": "crates/engine/src/streaming.rs"
         },
         {
-          "anchor": "emissive.red * colour.red",
+          "anchor": "tint.red *= colour.red;",
           "path": "crates/engine/src/emittance.rs"
         }
       ],
@@ -187,7 +187,7 @@
           "path": "crates/engine/src/streaming.rs"
         },
         {
-          "anchor": "emissive.red * colour.red",
+          "anchor": "tint.red *= colour.red;",
           "path": "crates/engine/src/emittance.rs"
         }
       ],
@@ -233,7 +233,7 @@
           "path": "crates/engine/src/streaming.rs"
         },
         {
-          "anchor": "emissive.red * colour.red",
+          "anchor": "tint.red *= colour.red;",
           "path": "crates/engine/src/emittance.rs"
         }
       ],
