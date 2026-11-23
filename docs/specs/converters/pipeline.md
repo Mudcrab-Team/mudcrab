@@ -53,7 +53,9 @@ subrecord is not an intended omission: it stays a warning and still marks the ru
 Only the classes in `intended_omission_class` and the `omitted` projection severity
 (`db-schema.md` §19) qualify. A site is listed there only when the field is absent from the record.
 A field that is present but short, empty or unreadable stays data loss (a `VHGT` with no bytes is
-not an absent `VHGT`). Both record readers apply the same boundary. Older manifests and notes
+not an absent `VHGT`). Both record readers apply the same boundary for `LAND`. Known gap: a
+`WRLD` with a present but empty `EDID` is not checked yet. It passes framing and gets a worldspace
+row with no data-loss row (unverified whether retail ships one). Older manifests and notes
 without the field read as empty.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
