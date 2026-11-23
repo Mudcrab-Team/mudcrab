@@ -37,8 +37,8 @@ use shared::lod::{
 use std::path::Path;
 
 /// Explicit producer revision of the object chunk compiler. Terrain chunk reuse is unaffected.
-/// Version 5 carries the per-shape large-reference marker into width-4 piece names.
-pub const OBJECT_COMPILER_VERSION: u32 = 5;
+/// Version 6 keeps the authored basis for sampling the object normal atlas.
+pub const OBJECT_COMPILER_VERSION: u32 = 6;
 
 /// Alpha-test reference of the retail object LOD material: 128 of 255, discard strictly below.
 pub const ALPHA_CUTOFF: f64 = 128.0 / 255.0;
@@ -101,6 +101,8 @@ pub fn chunk_key_for_block(
 struct Streams {
     positions: Vec<f32>,
     normals: Vec<f32>,
+    atlas_red_axes: Vec<f32>,
+    atlas_green_axes: Vec<f32>,
     uvs: Vec<f32>,
     colors: Vec<f32>,
     indices: Vec<u32>,
@@ -141,6 +143,7 @@ struct Piece {
     vertex_start: usize,
     vertex_count: usize,
     normal_start: Option<usize>,
+    basis_start: Option<usize>,
     color_start: Option<usize>,
     /// Start in the chunk's index stream, and the index count.
     index_start: usize,
@@ -302,6 +305,24 @@ impl std::fmt::Display for MissingObjectUv {
 
 impl std::error::Error for MissingObjectUv {}
 
+#[derive(Debug)]
+pub(crate) struct NonfiniteObjectBasis {
+    block_index: usize,
+    vertex_count: usize,
+}
+
+impl std::fmt::Display for NonfiniteObjectBasis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "shape block {} ({} vertices) has a non-finite atlas basis",
+            self.block_index, self.vertex_count
+        )
+    }
+}
+
+impl std::error::Error for NonfiniteObjectBasis {}
+
 fn compile_with_atlas(
     key: ChunkKey,
     origin: LodOrigin,
@@ -350,6 +371,12 @@ fn compile_with_atlas(
             |vertex| vertex.normal.is_some(),
             "NORMAL",
         )?;
+        let basis_start = optional_stream_start(
+            shape,
+            streams.atlas_red_axes.len(),
+            |vertex| vertex.atlas_basis.is_some(),
+            "atlas basis",
+        )?;
         let color_start = optional_stream_start(
             shape,
             streams.colors.len(),
@@ -376,6 +403,19 @@ fn compile_with_atlas(
             streams.uvs.extend(uv);
             if let Some(normal) = vertex.normal {
                 streams.normals.extend(transform(shape, normal, false));
+            }
+            if let Some([red, green]) = vertex.atlas_basis {
+                let red = transform(shape, red, false);
+                let green = transform(shape, green, false);
+                if !red.into_iter().chain(green).all(f32::is_finite) {
+                    return Err(NonfiniteObjectBasis {
+                        block_index: shape.block_index,
+                        vertex_count: shape.vertices.len(),
+                    }
+                    .into());
+                }
+                streams.atlas_red_axes.extend(red);
+                streams.atlas_green_axes.extend(green);
             }
             if let Some(color) = vertex.color {
                 streams
@@ -407,6 +447,7 @@ fn compile_with_atlas(
                 vertex_start,
                 vertex_count: shape.vertices.len(),
                 normal_start,
+                basis_start,
                 color_start,
                 index_start: index_start + range.start,
                 index_count: range.len(),
@@ -479,6 +520,10 @@ fn emit_object_glb(
     let uv_view = add_view(f32_slice_bytes(&streams.uvs), Some(34962));
     let normals_view = (!streams.normals.is_empty())
         .then(|| add_view(f32_slice_bytes(&streams.normals), Some(34962)));
+    let red_view = (!streams.atlas_red_axes.is_empty())
+        .then(|| add_view(f32_slice_bytes(&streams.atlas_red_axes), Some(34962)));
+    let green_view = (!streams.atlas_green_axes.is_empty())
+        .then(|| add_view(f32_slice_bytes(&streams.atlas_green_axes), Some(34962)));
     let colors_view = (!streams.colors.is_empty())
         .then(|| add_view(f32_slice_bytes(&streams.colors), Some(34962)));
     let index_bytes: Vec<_> = streams
@@ -546,6 +591,18 @@ fn emit_object_glb(
                 "VEC3",
             ),
             ("TEXCOORD_0", Some(uv_view), Some(vertex_start * 8), "VEC2"),
+            (
+                shared::lod::OBJECT_ATLAS_RED,
+                red_view,
+                piece.basis_start.map(|start| start * 4),
+                "VEC3",
+            ),
+            (
+                shared::lod::OBJECT_ATLAS_GREEN,
+                green_view,
+                piece.basis_start.map(|start| start * 4),
+                "VEC3",
+            ),
             (
                 "NORMAL",
                 normals_view,
@@ -833,16 +890,30 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
                 attributes.keys().all(|key| {
                     matches!(
                         key.as_str(),
-                        "POSITION" | "TEXCOORD_0" | "NORMAL" | "COLOR_0"
+                        "POSITION"
+                            | "TEXCOORD_0"
+                            | "NORMAL"
+                            | "COLOR_0"
+                            | shared::lod::OBJECT_ATLAS_RED
+                            | shared::lod::OBJECT_ATLAS_GREEN
                     )
                 })
             })
             .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has unexpected attributes"))?;
+        ensure!(
+            attributes.contains_key(shared::lod::OBJECT_ATLAS_RED)
+                == attributes.contains_key(shared::lod::OBJECT_ATLAS_GREEN)
+                && (!attributes.contains_key(shared::lod::OBJECT_ATLAS_RED)
+                    || attributes.contains_key("NORMAL")),
+            "an object batch has an incomplete atlas basis"
+        );
         let mut vertex_count = None;
         for (semantic, components, required) in [
             ("POSITION", 3, true),
             ("TEXCOORD_0", 2, true),
             ("NORMAL", 3, false),
+            (shared::lod::OBJECT_ATLAS_RED, 3, false),
+            (shared::lod::OBJECT_ATLAS_GREEN, 3, false),
             ("COLOR_0", 4, false),
         ] {
             if !required && !attributes.contains_key(semantic) {
@@ -944,15 +1015,37 @@ pub fn chunk_uses_shared_atlas(bytes: &[u8]) -> Result<bool> {
     Ok(document["images"][0].get("uri").is_some())
 }
 
-/// Checks a KTX2 atlas file: a valid sRGB 2D texture.
+/// Checks a KTX2 diffuse atlas file.
 pub fn validate_atlas_ktx2(bytes: &[u8]) -> Result<()> {
-    let metadata = crate::texture::inspect_ktx2(bytes, crate::texture::TextureEncoding::ColorSrgb)
-        .wrap_err("the object atlas is not a valid sRGB KTX2")?;
+    validate_atlas_encoding(bytes, crate::texture::TextureEncoding::ColorSrgb)
+}
+
+pub(crate) fn validate_normal_atlas_ktx2(bytes: &[u8]) -> Result<()> {
+    validate_atlas_encoding(bytes, crate::texture::TextureEncoding::NormalLinear)
+}
+
+fn validate_atlas_encoding(bytes: &[u8], encoding: crate::texture::TextureEncoding) -> Result<()> {
+    let metadata = crate::texture::inspect_ktx2(bytes, encoding)?;
     ensure!(
         metadata.layers <= 1 && metadata.faces == 1 && metadata.depth <= 1,
         "the object atlas is not a 2D texture"
     );
     Ok(())
+}
+
+/// Writes the optional linear normal atlas with its authored mip levels.
+pub fn publish_object_normal_atlas(
+    root: &Path,
+    worldspace_id: u32,
+    dds: &[u8],
+) -> Result<(String, String)> {
+    use crate::texture::{TextureConverter, TextureEncoding};
+    let ktx2 = TextureConverter::convert(dds, TextureEncoding::NormalLinear)?;
+    validate_normal_atlas_ktx2(&ktx2)?;
+    let relative = shared::lod::object_normal_atlas_path(worldspace_id);
+    let path = root.join(&relative);
+    std::fs::write(&path, &ktx2)?;
+    Ok((relative, crate::cache::hash_bytes(&ktx2)))
 }
 
 /// Writes the worldspace's shared atlas, validates what was written and records its row in
@@ -1041,6 +1134,9 @@ fn validate_no_object_table(manifest: Option<&serde_json::Value>, missing: &str)
                 && manifest["object_chunk_inputs"]
                     .as_object()
                     .is_none_or(serde_json::Map::is_empty)
+                && manifest["object_normal_atlases"]
+                    .as_object()
+                    .is_none_or(serde_json::Map::is_empty)
                 && manifest["object_atlases"]
                     .as_object()
                     .is_none_or(serde_json::Map::is_empty)
@@ -1074,7 +1170,7 @@ pub(crate) fn validate_object_generation(
         row.get(0)
     })?;
     if rows == 0 && listed == 0 && inputs.is_empty() {
-        return Ok(());
+        return validate_no_object_table(manifest, "object chunks");
     }
     ensure!(
         manifest.is_some(),
@@ -1146,7 +1242,28 @@ pub(crate) fn validate_object_generation(
             shared_atlas_worlds.insert(worldspace);
         }
     }
-    validate_object_atlases(payload, connection, manifest, &shared_atlas_worlds)
+    validate_object_atlases(payload, connection, manifest, &shared_atlas_worlds)?;
+    if let Some(atlases) = manifest.and_then(|m| m["object_normal_atlases"].as_object()) {
+        let paths: std::collections::BTreeSet<_> = shared_atlas_worlds
+            .into_iter()
+            .map(shared::lod::object_normal_atlas_path)
+            .collect();
+        for (path, hash) in atlases {
+            ensure!(
+                paths.contains(path),
+                "unexpected object normal atlas {path}"
+            );
+            let bytes = std::fs::read(payload(path))
+                .wrap_err_with(|| format!("cannot read object normal atlas {path}"))?;
+            ensure!(
+                hash.as_str() == Some(crate::cache::hash_bytes(&bytes).as_str()),
+                "object normal atlas {path} does not match its recorded SHA-256"
+            );
+            validate_normal_atlas_ktx2(&bytes)
+                .wrap_err_with(|| format!("invalid object normal atlas {path}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Checks the shared atlas files: every worldspace whose chunks reference the shared atlas has a
@@ -1322,6 +1439,7 @@ mod tests {
     fn vertex(position: [f32; 3]) -> ObjectLodVertex {
         ObjectLodVertex {
             position,
+            atlas_basis: None,
             normal: Some([0.0, 0.0, 1.0]),
             uv: Some([0.25, 0.75]),
             color: Some([255, 128, 0, 255]),
@@ -1836,6 +1954,22 @@ mod tests {
             base,
             object_chunk_input_hash(key(), LodOrigin::new(-95, -96), "a", "b").unwrap()
         );
+    }
+
+    #[test]
+    fn compiler_version_includes_the_object_atlas_basis() {
+        assert_eq!(OBJECT_COMPILER_VERSION, 6);
+        let mut shape = shape(1, [0.0; 3]);
+        for vertex in &mut shape.vertices {
+            vertex.atlas_basis = Some([[0.75, 0.0, 0.0], [0.0, 0.25, 0.0]]);
+        }
+        let chunk = compile_object_chunk_shared_atlas(key(), ORIGIN, &block(vec![shape])).unwrap();
+        validate_object_glb(&chunk.glb).unwrap();
+        let gltf = gltf::binary::Glb::from_slice(&chunk.glb).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&gltf.json).unwrap();
+        let attributes = &json["meshes"][0]["primitives"][0]["attributes"];
+        assert!(attributes[shared::lod::OBJECT_ATLAS_RED].is_u64());
+        assert!(attributes[shared::lod::OBJECT_ATLAS_GREEN].is_u64());
     }
 
     #[test]

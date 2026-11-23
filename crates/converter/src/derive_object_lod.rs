@@ -167,6 +167,12 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
             "refused: the game data has no level 16, 8 or 4 object LOD blocks for `{world_file}`: {detail}"
         ),
     };
+    if retail.normal_atlas_dds.is_none() {
+        eprintln!(
+            "object LOD {world_file}: {}",
+            crate::lod::object_stage::MISSING_NORMAL_ATLAS
+        );
+    }
     let blocks_found = retail.blocks.len() + retail.skipped.len();
     let atlas_sha256 = hash_bytes(&retail.atlas_dds);
 
@@ -190,6 +196,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         &retail.skipped,
         retail.blocks,
         &retail.atlas_dds,
+        retail.normal_atlas_dds.as_deref(),
         &atlas_sha256,
         options.force,
     )?;
@@ -238,6 +245,7 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
             "height": core.atlas_height,
             "mip_levels": core.atlas_levels,
         },
+        "missing_normal_atlas": retail.normal_atlas_dds.is_none(),
         "blocks_found": blocks_found,
         "chunks": core.chunks.iter().map(|(chunk, input)| serde_json::json!({
             "path": object_chunk_payload_path(chunk.key),
@@ -391,6 +399,7 @@ fn stage_generation(
     read_skipped: &[SkippedBlock],
     candidates: Vec<BlockCandidate>,
     atlas_dds: &[u8],
+    normal_atlas_dds: Option<&[u8]>,
     atlas_sha256: &str,
     force: bool,
 ) -> Result<(StagedGeneration, CoreReport)> {
@@ -458,6 +467,19 @@ fn stage_generation(
     let (atlas_path, atlas_file_sha256) =
         publish_object_atlas(transaction, &new, world.id, &atlas)?;
     let mut paths = BTreeSet::from([PathBuf::from(&atlas_path)]);
+    let normal_path = shared::lod::object_normal_atlas_path(world.id);
+    if manifest
+        .object_normal_atlases
+        .remove(&normal_path)
+        .is_some()
+    {
+        stale.insert(PathBuf::from(&normal_path));
+    }
+    if let Some(dds) = normal_atlas_dds {
+        let (path, hash) = crate::lod::objects::publish_object_normal_atlas(&new, world.id, dds)?;
+        paths.insert(PathBuf::from(&path));
+        manifest.object_normal_atlases.insert(path, hash);
+    }
     let world_prefix = format!("lod/{:08x}/", world.id);
     manifest
         .object_chunk_inputs
@@ -555,6 +577,7 @@ mod tests {
     fn shape(segments: u32) -> ObjectLodShape {
         let vertex = |position| ObjectLodVertex {
             position,
+            atlas_basis: None,
             normal: Some([0.0, 0.0, 1.0]),
             uv: Some([0.5, 0.5]),
             color: Some([255; 4]),
@@ -631,6 +654,7 @@ mod tests {
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
                 object_atlases: BTreeMap::new(),
+                object_normal_atlases: BTreeMap::new(),
                 reconciliation: None,
             })
             .unwrap(),
@@ -654,6 +678,7 @@ mod tests {
             &[],
             candidates,
             &atlas_dds(),
+            None,
             "atlas",
             force,
         )?;
@@ -842,6 +867,7 @@ mod tests {
             &[],
             vec![candidate((0, -16), Ok(block(vec![changed])))],
             &atlas_dds(),
+            None,
             "atlas",
             true,
         )

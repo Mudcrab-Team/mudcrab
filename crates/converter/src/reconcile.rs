@@ -190,7 +190,8 @@ pub fn run(options: &Options) -> Result<ReconcileReport> {
     if let Some(retail) = &retail {
         compare_terrain(&mut report, retail, &pack, selected);
         compare_objects(&mut report, retail, &pack, selected);
-        compare_atlases(&mut report, retail, &pack, selected);
+        compare_atlases(&mut report, retail, &pack, selected, false);
+        compare_atlases(&mut report, retail, &pack, selected, true);
         compare_unclassified(&mut report, retail, &pack, selected);
     } else {
         for category in [
@@ -199,6 +200,7 @@ pub fn run(options: &Options) -> Result<ReconcileReport> {
             "terrain_normal",
             "object_block",
             "object_atlas",
+            "object_normal_atlas",
         ] {
             report.push(unknown_row(category, "*", None, "retail_listing_failed"));
         }
@@ -395,6 +397,7 @@ struct Retail {
     terrain: TerrainBlocks,
     objects: ObjectBlocks,
     atlases: BTreeMap<String, u64>,
+    normal_atlases: BTreeMap<String, u64>,
     /// `.bto` files the converter does not read, by world, level and reason.
     object_out_of_scope: BTreeMap<(String, Option<u32>), (u64, &'static str)>,
     /// Terrain-folder files whose name no LOD parser accepts, by category, world and reason.
@@ -413,6 +416,7 @@ impl Retail {
             terrain: BTreeMap::new(),
             objects: BTreeMap::new(),
             atlases: BTreeMap::new(),
+            normal_atlases: BTreeMap::new(),
             object_out_of_scope: BTreeMap::new(),
             unclassified: BTreeMap::new(),
         };
@@ -434,8 +438,13 @@ impl Retail {
                 }
                 continue;
             }
-            if let Some(world) = atlas_world(path) {
-                *retail.atlases.entry(world.clone()).or_default() += 1;
+            if let Some((world, normal)) = atlas_world(path) {
+                let atlases = if normal {
+                    &mut retail.normal_atlases
+                } else {
+                    &mut retail.atlases
+                };
+                *atlases.entry(world).or_default() += 1;
                 continue;
             }
             if path.ends_with(".bto")
@@ -530,17 +539,18 @@ fn unclassified_kind(path: &str) -> Option<(&'static str, String, &'static str)>
 }
 
 /// The world of an atlas path, if it is one of the two documented name forms.
-fn atlas_world(path: &str) -> Option<String> {
+fn atlas_world(path: &str) -> Option<(String, bool)> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() != 5 || parts[0] != "textures" || parts[1] != "terrain" || parts[3] != "objects"
     {
         return None;
     }
     let world = parts[2];
-    atlas_paths(world)
+    let normal = path.ends_with("_n.dds");
+    atlas_paths(world, normal)
         .iter()
         .any(|candidate| candidate == path)
-        .then(|| world.to_owned())
+        .then(|| (world.to_owned(), normal))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -568,6 +578,7 @@ enum ObjectState {
     Tables {
         chunks: BTreeMap<(u32, u32), BTreeSet<(i32, i32)>>,
         atlases: BTreeSet<u32>,
+        normal_atlases: BTreeSet<u32>,
     },
     Unknown(&'static str),
 }
@@ -662,8 +673,17 @@ impl Pack {
             Ok(Some(manifest)) => manifest.object_atlases.clone(),
             _ => BTreeMap::new(),
         };
-        let objects = match object_state(root, &connection, &worlds_by_id, &declared_object_atlases)
-        {
+        let declared_normal_atlases = match &manifest {
+            Ok(Some(manifest)) => manifest.object_normal_atlases.clone(),
+            _ => BTreeMap::new(),
+        };
+        let objects = match object_state(
+            root,
+            &connection,
+            &worlds_by_id,
+            &declared_object_atlases,
+            &declared_normal_atlases,
+        ) {
             Ok(state) => state,
             Err(error) => {
                 eprintln!("Object LOD pack counts cannot be read: {error:#}");
@@ -862,6 +882,7 @@ fn object_state(
     connection: &Connection,
     worlds_by_id: &BTreeMap<u32, PackWorld>,
     declared_atlases: &BTreeMap<String, String>,
+    declared_normal_atlases: &BTreeMap<String, String>,
 ) -> Result<ObjectState> {
     if !has_table(connection, "lod_object_chunks")? {
         return Ok(ObjectState::Unknown("no_object_lod_tables"));
@@ -957,7 +978,28 @@ fn object_state(
             "the object atlas of worldspace {world:08X} has no chunk that uses it"
         );
     }
-    Ok(ObjectState::Tables { chunks, atlases })
+    let mut normal_atlases = BTreeSet::new();
+    let mut declared_normals = declared_normal_atlases.clone();
+    for &world in &atlases {
+        let path = shared::lod::object_normal_atlas_path(world);
+        if let Some(hash) = declared_normals.remove(&path) {
+            ensure!(
+                crate::cache::hash_file(&root.join(&path))? == hash,
+                "object normal atlas {path} does not match its recorded SHA-256"
+            );
+            normal_atlases.insert(world);
+        }
+    }
+    if let Some(path) = declared_normals.keys().next() {
+        return Err(color_eyre::eyre::eyre!(
+            "lod-manifest.json lists object normal atlas {path} with no matching object LOD world"
+        ));
+    }
+    Ok(ObjectState::Tables {
+        chunks,
+        atlases,
+        normal_atlases,
+    })
 }
 
 fn rnam_state(
@@ -1890,18 +1932,36 @@ fn compare_atlases(
     retail: &Retail,
     pack: &Pack,
     selected: Option<&BTreeSet<String>>,
+    normal: bool,
 ) {
+    let (category, retail_atlases) = if normal {
+        ("object_normal_atlas", &retail.normal_atlases)
+    } else {
+        ("object_atlas", &retail.atlases)
+    };
+    let pack_atlases = match &pack.objects {
+        ObjectState::Tables {
+            atlases,
+            normal_atlases,
+            ..
+        } => Some(if normal { normal_atlases } else { atlases }),
+        ObjectState::Unknown(_) => None,
+    };
     let mut pack_failure_reported = false;
     let mut entries: Vec<(String, u64, bool)> = Vec::new();
-    for (world_file, count) in &retail.atlases {
-        let pack_count = atlas_pack_count(pack, world_file);
+    for (world_file, count) in retail_atlases {
+        let pack_count = pack_atlases.is_some_and(|atlases| {
+            pack.worlds
+                .get(world_file)
+                .is_some_and(|world| atlases.contains(&world.id))
+        });
         entries.push((world_file.clone(), *count, pack_count));
     }
-    if let ObjectState::Tables { atlases, .. } = &pack.objects {
+    if let Some(atlases) = pack_atlases {
         for world_id in atlases {
             if let Some(world) = pack.worlds_by_id.get(world_id) {
                 let file = world.editor_id.to_ascii_lowercase();
-                if !retail.atlases.contains_key(&file) {
+                if !retail_atlases.contains_key(&file) {
                     entries.push((file, 0, true));
                 }
             }
@@ -1915,7 +1975,7 @@ fn compare_atlases(
         };
         if matches!(match_, WorldMatch::NotSelected) {
             report.push(report_row(
-                "object_atlas",
+                category,
                 &label,
                 None,
                 (Some(retail_count), Some(0), Some(0), None),
@@ -1927,7 +1987,7 @@ fn compare_atlases(
         }
         if matches!(match_, WorldMatch::SelectionUnknown) {
             report.push(unknown_row(
-                "object_atlas",
+                category,
                 &label,
                 None,
                 "plugin_selection_unknown",
@@ -1935,7 +1995,7 @@ fn compare_atlases(
             continue;
         }
         if let ObjectState::Unknown(reason) = &pack.objects {
-            let mut row = unknown_row("object_atlas", &label, None, reason);
+            let mut row = unknown_row(category, &label, None, reason);
             row.retail = Some(retail_count);
             pack_failure_reported = true;
             report.push(row);
@@ -1983,7 +2043,7 @@ fn compare_atlases(
         let difference = i64::try_from(retail_count).unwrap_or(i64::MAX)
             - i64::try_from(pack_count.saturating_add(explained)).unwrap_or(i64::MAX);
         let mut row = report_row(
-            "object_atlas",
+            category,
             &label,
             None,
             (
@@ -1997,7 +2057,7 @@ fn compare_atlases(
             reason,
         );
         if status == Status::Unexplained {
-            let names = atlas_paths(&world_file);
+            let names = atlas_paths(&world_file, normal);
             if retail_count > 1 {
                 row.examples.push(format!(
                     "the game data has both {} and {}; the converter refuses an ambiguous atlas",
@@ -2016,7 +2076,7 @@ fn compare_atlases(
     if let ObjectState::Unknown(reason) = &pack.objects
         && !pack_failure_reported
     {
-        report.push(unknown_row("object_atlas", "*", None, reason));
+        report.push(unknown_row(category, "*", None, reason));
     }
 }
 
@@ -2073,15 +2133,6 @@ fn compare_unclassified(
     }
 }
 
-fn atlas_pack_count(pack: &Pack, world_file: &str) -> bool {
-    let (ObjectState::Tables { atlases, .. }, Some(world)) =
-        (&pack.objects, pack.worlds.get(world_file))
-    else {
-        return false;
-    };
-    atlases.contains(&world.id)
-}
-
 fn object_chunk_count(pack: &Pack, world_file: &str) -> usize {
     let (ObjectState::Tables { chunks, .. }, Some(world)) =
         (&pack.objects, pack.worlds.get(world_file))
@@ -2112,17 +2163,25 @@ fn all_object_blocks_skipped(
     let Some(counts) = &pack.reconciliation else {
         return false;
     };
-    let Some(by_level) = counts.object_skips.get(world_file) else {
-        return false;
-    };
     let mut covered = BTreeSet::new();
-    for (level, classes) in by_level {
-        for skip in classes.values() {
-            // silent-ok: an incomplete record cannot explain the absent atlas
-            let consistent = u64::try_from(skip.cells.len()).ok() == Some(skip.blocks);
-            if skip.blocks > 0 && consistent {
-                for cell in &skip.cells {
-                    covered.insert((*level, cell.0, cell.1));
+    if counts
+        .object_world_skips
+        .get(world_file)
+        .map(String::as_str)
+        == Some(crate::lod::object_stage::MISSING_ATLAS)
+        && let Some(blocks) = counts.object_world_skip_blocks.get(world_file)
+    {
+        covered.extend(blocks.iter().copied());
+    }
+    if let Some(by_level) = counts.object_skips.get(world_file) {
+        for (level, classes) in by_level {
+            for skip in classes.values() {
+                // silent-ok: an incomplete record cannot explain the absent atlas
+                let consistent = u64::try_from(skip.cells.len()).ok() == Some(skip.blocks);
+                if skip.blocks > 0 && consistent {
+                    for cell in &skip.cells {
+                        covered.insert((*level, cell.0, cell.1));
+                    }
                 }
             }
         }
@@ -2458,6 +2517,7 @@ mod tests {
     fn test_shape() -> ObjectLodShape {
         let vertex = |position| ObjectLodVertex {
             position,
+            atlas_basis: None,
             normal: Some([0.0, 0.0, 1.0]),
             uv: Some([0.5, 0.5]),
             color: Some([255; 4]),
@@ -2806,6 +2866,8 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         object_block(data.path(), "w", 16, (0, 0), Some("w.objects.dds"));
         object_block(data.path(), "v", 16, (0, 0), Some("vobjectslod.dds"));
+        object_block(data.path(), "w", 16, (0, 0), Some("w.objects_n.dds"));
+        object_block(data.path(), "v", 16, (0, 0), Some("vobjectslod_n.dds"));
         write_plugin(data.path());
         let pack = pack_dir();
         add_plugin(pack.path());
@@ -2814,12 +2876,27 @@ mod tests {
         add_object_chunk(pack.path(), &mut manifest, 2, 16, (0, 0));
         add_atlas(pack.path(), &mut manifest, 1);
         add_atlas(pack.path(), &mut manifest, 2);
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        for world in [1, 2] {
+            let (path, hash) =
+                crate::lod::objects::publish_object_normal_atlas(pack.path(), world, &dds).unwrap();
+            manifest["object_normal_atlases"][&path] = json!(hash);
+        }
         write_manifest(pack.path(), &manifest);
 
         let report = check(data.path(), pack.path());
         assert!(report.passed(), "{:#?}", report.categories);
         assert_eq!(row(&report, "object_atlas", "W", None).retail, Some(1));
         assert_eq!(row(&report, "object_atlas", "V", None).retail, Some(1));
+        for world in ["W", "V"] {
+            let atlas = row(&report, "object_normal_atlas", world, None);
+            assert_eq!(atlas.status, Status::Balanced);
+            assert_eq!((atlas.retail, atlas.pack), (Some(1), Some(1)));
+        }
     }
 
     #[test]
@@ -3132,16 +3209,18 @@ mod tests {
         add_plugin(pack.path());
         let mut manifest = retail_manifest(&["w"]);
         manifest["reconciliation"]["object_skips"] = json!({
-            "w": { "16": { "block cannot be read": { "blocks": 2, "cells": [[0, 0], [4, 0]] } } }
+            "w": { "16": {
+                "block cannot be read": { "blocks": 1, "cells": [[0, 0]] },
+                "nonfinite_basis": { "blocks": 1, "cells": [[4, 0]] }
+            } }
         });
         write_manifest(pack.path(), &manifest);
 
         let report = check(data.path(), pack.path());
         assert!(report.passed(), "{:#?}", report.categories);
-        assert_eq!(
-            row(&report, "object_block", "W", Some(16)).status,
-            Status::Balanced
-        );
+        let blocks = row(&report, "object_block", "W", Some(16));
+        assert_eq!(blocks.status, Status::Balanced);
+        assert_eq!(blocks.explained_by_class["nonfinite_basis"], 1);
         let atlas = row(&report, "object_atlas", "W", None);
         assert_eq!(atlas.status, Status::Balanced);
         assert_eq!(atlas.explained_by_class["no_object_chunk_compiled"], 1);
@@ -3163,6 +3242,35 @@ mod tests {
         let row = row(&report, "object_block", "W", Some(16));
         assert_eq!(row.status, Status::Balanced);
         assert_eq!(row.explained_by_class["missing_atlas"], 1);
+    }
+
+    #[test]
+    fn a_world_skip_explains_a_normal_atlas_only_with_coverage_at_every_level() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (0, 0), Some("w.objects_n.dds"));
+        object_block(data.path(), "w", 8, (0, 0), None);
+        object_block(data.path(), "v", 16, (0, 0), Some("v.objects_n.dds"));
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w", "v"]);
+        manifest["reconciliation"]["object_world_skips"] = json!({ "w": "missing_atlas" });
+        for (coverage, expected) in [
+            (json!([[16, 0, 0]]), Status::Unexplained),
+            (json!([[16, 0, 0], [8, 0, 0]]), Status::Balanced),
+        ] {
+            manifest["reconciliation"]["object_world_skip_blocks"] = json!({ "w": coverage });
+            write_manifest(pack.path(), &manifest);
+            let report = check(data.path(), pack.path());
+            assert_eq!(
+                row(&report, "object_normal_atlas", "W", None).status,
+                expected
+            );
+            assert_eq!(
+                row(&report, "object_normal_atlas", "V", None).status,
+                Status::Unexplained
+            );
+        }
     }
 
     #[test]

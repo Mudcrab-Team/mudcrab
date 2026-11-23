@@ -137,6 +137,11 @@ object path (`streaming/lod_objects.rs`) works as follows.
   KTX2 file (`lod/<world>/objects_atlas.opensky-srgb.ktx2`). The engine hash-checks it like a chunk, loads it
   once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an
   earlier pack) loads as before.
+- **Normal atlas material.** Compiler 6 preserves the BTO vertex basis and lists the optional linear
+  atlas and its hash in `lod-manifest.json`. After the normal image loads, the object material uses
+  signed RGB with blue as Z and transforms the result through the vertex basis for diffuse lighting.
+  Both slots use clamp addressing and 16× anisotropy (skyrim_decomp#948). Older chunks and chunks
+  with a missing atlas, failed load, or missing basis retain the standard material.
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
   every file of every tier, and the shared atlas, is hash-checked, one IO-pool task per file. A bad row, a missing file
   or a wrong hash logs one error and turns object LOD off for the pack. No chunk is skipped on its

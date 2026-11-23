@@ -61,6 +61,7 @@ mod large_references;
 #[cfg(test)]
 mod local_light_tests;
 pub(crate) mod lod;
+pub(crate) mod lod_object_material;
 pub mod lod_objects;
 #[cfg(test)]
 mod merged_tests;
@@ -142,6 +143,9 @@ pub enum StaticColliderSource {
 
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
+        if app.world().contains_resource::<Assets<Shader>>() {
+            lod_object_material::build(app);
+        }
         app.init_resource::<StreamingWorld>()
             .init_resource::<StreamingMetrics>()
             .init_resource::<StreamingCommitBudget>()

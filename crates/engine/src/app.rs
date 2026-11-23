@@ -888,6 +888,14 @@ fn world_gltf_plugin() -> bevy::gltf::GltfPlugin {
         default_sampler: terrain_layer_sampler(),
         ..default()
     }
+    .add_custom_vertex_attribute(
+        "OBJECT_ATLAS_RED",
+        crate::streaming::lod_object_material::RED_AXIS,
+    )
+    .add_custom_vertex_attribute(
+        "OBJECT_ATLAS_GREEN",
+        crate::streaming::lod_object_material::GREEN_AXIS,
+    )
 }
 
 /// Reads the `--shots` file, if one was given, and points the run at its first exterior pose: that
