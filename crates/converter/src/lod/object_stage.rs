@@ -51,8 +51,10 @@ pub struct SkippedBlock {
     pub detail: String,
 }
 
-/// The class of a world that is skipped because the game data has no object atlas file for it.
-/// This is a world-level class. The block-level classes are on [`SkippedBlock`].
+/// A world with object chunks and no normal atlas.
+pub const MISSING_NORMAL_ATLAS: &str = "missing_normal_atlas";
+
+/// A world skipped because it has object blocks and no diffuse atlas.
 pub const MISSING_ATLAS: &str = "missing_atlas";
 
 /// The game data has level 16, 8 or 4 object blocks for a world, but no object atlas file under
@@ -101,10 +103,12 @@ pub struct SkippedWorld {
 /// `cckrtsse001qnworld` use `<world>objectslod.dds`. In every one of these 14 worlds the archives
 /// hold exactly one of the two, and the texture set inside the world's `.bto` blocks names that
 /// same file. The paths are lowercase with forward slashes.
-pub(crate) fn atlas_paths(world_file: &str) -> [String; 2] {
+pub(crate) fn atlas_paths(world_file: &str, normal: bool) -> [String; 2] {
+    // STAND-IN(#940): live resolution of the joined name is unverified.
+    let suffix = if normal { "_n" } else { "" };
     [
-        format!("textures/terrain/{world_file}/objects/{world_file}.objects.dds"),
-        format!("textures/terrain/{world_file}/objects/{world_file}objectslod.dds"),
+        format!("textures/terrain/{world_file}/objects/{world_file}.objects{suffix}.dds"),
+        format!("textures/terrain/{world_file}/objects/{world_file}objectslod{suffix}.dds"),
     ]
 }
 
@@ -131,6 +135,7 @@ pub struct WorldFacts {
 pub(crate) struct Retail {
     pub blocks: Vec<BlockCandidate>,
     pub atlas_dds: Vec<u8>,
+    pub normal_atlas_dds: Option<Vec<u8>>,
     /// Where each input came from, for the receipt.
     pub sources: Vec<serde_json::Value>,
     /// Blocks that could not be read at all.
@@ -319,7 +324,8 @@ pub(crate) fn read_retail(
     scratch: &Path,
     verify_archive: &mut dyn FnMut(&str, &Path) -> Result<serde_json::Value>,
 ) -> Result<RetailRead> {
-    let atlas_names = atlas_paths(world_file);
+    let atlas_names = atlas_paths(world_file, false);
+    let normal_names = atlas_paths(world_file, true);
     let is_block = |path: &str| {
         parse_lod_file_name(path).is_some_and(|name| {
             name.kind == RetailLodKind::Object
@@ -327,7 +333,13 @@ pub(crate) fn read_retail(
                 && name.level.is_some_and(|level| LEVELS.contains(&level))
         }) && path.starts_with("meshes/")
     };
-    let wanted = |path: &str| atlas_names.iter().any(|name| name == path) || is_block(path);
+    let wanted = |path: &str| {
+        atlas_names
+            .iter()
+            .chain(&normal_names)
+            .any(|name| name == path)
+            || is_block(path)
+    };
     let (found, index) = providers(data, &wanted)?;
     if !found.keys().any(|path| is_block(path)) {
         // The folder, not a file, is what is absent. A block of this world has this shape.
@@ -402,32 +414,46 @@ pub(crate) fn read_retail(
         extracted.insert(path.clone(), root);
     }
 
-    // The atlas.
-    let atlas_options = found
-        .get(&atlas_path)
-        .ok_or_else(|| color_eyre::eyre::eyre!("{atlas_path} was listed and then lost"))?;
-    let (atlas_dds, atlas_providers) =
-        match read_provider_bytes(&atlas_path, atlas_options, &extracted)? {
-            Ok(read) => read,
-            Err(conflict) => bail!("refused: the object atlas is ambiguous: {conflict}"),
-        };
-    let info = read_dds_info(&atlas_dds).map_err(|error| {
-        color_eyre::eyre::eyre!("refused: the object atlas is not a valid DDS: {error}")
-    })?;
-    let atlas_length = u64::try_from(atlas_dds.len()).wrap_err("the object atlas is too large")?;
-    let header_length =
-        u64::try_from(info.data_offset).wrap_err("the object atlas header is too large")?;
+    let mut read_atlas = |atlas_path: &str| -> Result<Vec<u8>> {
+        let atlas_options = found
+            .get(atlas_path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{atlas_path} was listed and then lost"))?;
+        let (atlas_dds, atlas_providers) =
+            match read_provider_bytes(atlas_path, atlas_options, &extracted)? {
+                Ok(read) => read,
+                Err(conflict) => bail!("refused: the object atlas is ambiguous: {conflict}"),
+            };
+        let info = read_dds_info(&atlas_dds).map_err(|error| {
+            color_eyre::eyre::eyre!("refused: the object atlas is not a valid DDS: {error}")
+        })?;
+        let atlas_length =
+            u64::try_from(atlas_dds.len()).wrap_err("the object atlas is too large")?;
+        let header_length =
+            u64::try_from(info.data_offset).wrap_err("the object atlas header is too large")?;
+        ensure!(
+            info.expected_payload_bytes()
+                .and_then(|payload| header_length.checked_add(payload))
+                == Some(atlas_length),
+            "refused: the object atlas DDS has the wrong length for its header"
+        );
+        sources.push(serde_json::json!({
+            "file": atlas_path,
+            "providers": atlas_providers.iter().map(describe).collect::<Vec<_>>(),
+            "sha256": hash_bytes(&atlas_dds),
+        }));
+
+        Ok(atlas_dds)
+    };
+    let atlas_dds = read_atlas(&atlas_path)?;
+    let mut normal_paths = normal_names.iter().filter(|path| found.contains_key(*path));
+    let normal_atlas_dds = normal_paths
+        .next()
+        .map(|path| read_atlas(path))
+        .transpose()?;
     ensure!(
-        info.expected_payload_bytes()
-            .and_then(|payload| header_length.checked_add(payload))
-            == Some(atlas_length),
-        "refused: the object atlas DDS has the wrong length for its header"
+        normal_paths.next().is_none(),
+        "refused: the object normal atlas is ambiguous"
     );
-    sources.push(serde_json::json!({
-        "file": atlas_path,
-        "providers": atlas_providers.iter().map(describe).collect::<Vec<_>>(),
-        "sha256": hash_bytes(&atlas_dds),
-    }));
 
     // The blocks.
     let mut blocks = Vec::new();
@@ -482,6 +508,7 @@ pub(crate) fn read_retail(
     Ok(RetailRead::Found(Retail {
         blocks,
         atlas_dds,
+        normal_atlas_dds,
         sources,
         skipped,
     }))
@@ -589,6 +616,7 @@ pub(crate) struct ObjectLodStage {
     pub chunks: Vec<(String, String)>,
     /// Payload path and SHA-256 of each shared atlas file (one per worldspace with chunks).
     pub atlases: Vec<(String, String)>,
+    pub normal_atlases: Vec<(String, String)>,
     pub triangles: usize,
     /// Counts per block level.
     pub levels: BTreeMap<u32, LevelCounts>,
@@ -693,6 +721,11 @@ pub(crate) fn build_object_lod(
             id,
             origin: LodOrigin::new(origin_x, origin_y),
         };
+        if retail.normal_atlas_dds.is_none() {
+            stage
+                .warnings
+                .push(format!("object LOD {editor_id}: {MISSING_NORMAL_ATLAS}"));
+        }
         let atlas_sha256 = hash_bytes(&retail.atlas_dds);
         let atlas = crate::texture::TextureConverter::convert_with_options(
             &retail.atlas_dds,
@@ -743,6 +776,13 @@ pub(crate) fn build_object_lod(
             publish_object_atlas(connection, staging, id, &atlas)
                 .wrap_err_with(|| format!("failed to publish the object atlas of {editor_id}"))?,
         );
+        if let Some(dds) = retail.normal_atlas_dds {
+            stage
+                .normal_atlases
+                .push(super::objects::publish_object_normal_atlas(
+                    staging, id, &dds,
+                )?);
+        }
         for (chunk, input) in &chunks {
             publish_object_chunk(connection, staging, chunk)
                 .wrap_err_with(|| format!("failed to publish an object chunk of {editor_id}"))?;
@@ -878,7 +918,14 @@ mod tests {
         let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
         assert_eq!(stage.chunks.len(), 1);
         assert_eq!(stage.triangles, 1);
-        assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
+        assert!(
+            stage
+                .warnings
+                .iter()
+                .all(|warning| warning.contains(MISSING_NORMAL_ATLAS)),
+            "{:?}",
+            stage.warnings
+        );
         let rows: i64 = connection
             .query_row("SELECT count(*) FROM lod_object_chunks", [], |row| {
                 row.get(0)
@@ -919,7 +966,14 @@ mod tests {
         let staging = tempfile::tempdir().unwrap();
         let connection = staged(staging.path());
         let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
-        assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
+        assert!(
+            stage
+                .warnings
+                .iter()
+                .all(|warning| warning.contains(MISSING_NORMAL_ATLAS)),
+            "{:?}",
+            stage.warnings
+        );
         assert_eq!(stage.chunks.len(), 3);
         assert_eq!(
             stage.levels.keys().copied().collect::<Vec<_>>(),
@@ -955,12 +1009,12 @@ mod tests {
         let connection = staged(staging.path());
         let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
         assert_eq!(stage.chunks.len(), 1);
-        assert_eq!(stage.warnings.len(), 2, "{:?}", stage.warnings);
+        assert_eq!(stage.warnings.len(), 3, "{:?}", stage.warnings);
         assert!(
             stage
                 .warnings
                 .iter()
-                .all(|line| line.contains("skipped block"))
+                .all(|line| line.contains("skipped block") || line.contains(MISSING_NORMAL_ATLAS))
         );
     }
 
@@ -981,7 +1035,7 @@ mod tests {
         let connection = staged(staging.path());
         let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
         assert_eq!(stage.chunks.len(), 1);
-        assert_eq!(stage.warnings.len(), 2);
+        assert_eq!(stage.warnings.len(), 3);
         assert!(
             stage
                 .warnings
@@ -1018,11 +1072,16 @@ mod tests {
     #[test]
     fn the_atlas_is_found_under_the_dotted_name() {
         let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
-        assert!(data.path().join(ATLAS_DOTTED).is_file());
+        fs::copy(
+            data.path().join(ATLAS_DOTTED),
+            data.path().join(&atlas_paths("tamriel", true)[0]),
+        )
+        .unwrap();
         let staging = tempfile::tempdir().unwrap();
         let connection = staged(staging.path());
         let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
         assert_eq!(stage.chunks.len(), 1);
+        assert_eq!(stage.normal_atlases.len(), 1);
         assert!(stage.skipped_worlds.is_empty());
         assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
     }
@@ -1032,13 +1091,37 @@ mod tests {
         // The Creation Club worlds ship `<world>objectslod.dds` and no dotted atlas.
         let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
         fs::rename(data.path().join(ATLAS_DOTTED), data.path().join(ATLAS_LOD)).unwrap();
+        fs::copy(
+            data.path().join(ATLAS_LOD),
+            data.path().join(&atlas_paths("tamriel", true)[1]),
+        )
+        .unwrap();
         let staging = tempfile::tempdir().unwrap();
         let connection = staged(staging.path());
         let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
         assert_eq!(stage.chunks.len(), 1, "{:?}", stage.warnings);
+        assert_eq!(stage.normal_atlases.len(), 1);
         assert!(stage.skipped_worlds.is_empty());
         assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
         assert_eq!(atlas_object_rows(&connection), 1);
+    }
+
+    #[test]
+    fn a_missing_normal_atlas_keeps_the_chunks() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert_eq!(stage.chunks.len(), 1);
+        assert!(stage.normal_atlases.is_empty());
+        assert_eq!(
+            stage
+                .warnings
+                .iter()
+                .filter(|warning| warning.contains(MISSING_NORMAL_ATLAS))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1157,7 +1240,7 @@ mod tests {
             .err()
             .unwrap();
         let missing = error.downcast_ref::<MissingObjectAtlas>().unwrap();
-        assert_eq!(missing.paths, atlas_paths("tamriel").to_vec());
+        assert_eq!(missing.paths, atlas_paths("tamriel", false).to_vec());
         let text = format!("{error:#}");
         assert!(text.starts_with("refused: the game data has no "), "{text}");
         assert!(text.ends_with(", the object atlas"), "{text}");

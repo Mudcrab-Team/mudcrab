@@ -28,6 +28,8 @@ pub const LARGE_REF_BLOCK_TYPE: &str = "BSDistantObjectLargeRefExtraData";
 pub struct ObjectLodVertex {
     pub position: [f32; 3],
     pub normal: Option<[f32; 3]>,
+    /// Model-space axes for the atlas red and green channels (skyrim_decomp#948 G03).
+    pub atlas_basis: Option<[[f32; 3]; 2]>,
     pub uv: Option<[f32; 2]>,
     /// Vertex colour as stored (`R, G, B, A`).
     pub color: Option<[u8; 4]>,
@@ -121,6 +123,18 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
                 Ok(ObjectLodVertex {
                     position: position.to_array(),
                     normal: vertex.normal.map(|normal| normal.to_array()),
+                    atlas_basis: vertex
+                        .bitangent_x
+                        .zip(vertex.bitangent_y)
+                        .zip(vertex.bitangent_z)
+                        .zip(vertex.tangent)
+                        .map(|(((x, y), z), green)| {
+                            let signed = |value: f32| value * (2.0 / 255.0) - 1.0;
+                            [
+                                [x, signed(y), signed(z)],
+                                green.to_array().map(|value| signed(f32::from(value))),
+                            ]
+                        }),
                     uv: vertex.uv.map(|uv| uv.to_array()),
                     color: vertex.vertex_colors.map(|color| color.to_array()),
                 })

@@ -5967,6 +5967,12 @@ async fn compile_lod_chunks_inline(
         report
             .artifacts
             .extend(stage.atlases.iter().map(|(path, _)| PathBuf::from(path)));
+        report.artifacts.extend(
+            stage
+                .normal_atlases
+                .iter()
+                .map(|(path, _)| PathBuf::from(path)),
+        );
         stage
     } else {
         crate::lod::object_stage::ObjectLodStage::default()
@@ -6013,6 +6019,7 @@ async fn compile_lod_chunks_inline(
             },
             object_chunk_inputs: object_lod.chunks.iter().cloned().collect(),
             object_atlases: object_lod.atlases.iter().cloned().collect(),
+            object_normal_atlases: object_lod.normal_atlases.iter().cloned().collect(),
             reconciliation,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
@@ -7917,6 +7924,7 @@ mod tests {
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
                 object_atlases: BTreeMap::new(),
+                object_normal_atlases: BTreeMap::new(),
                 reconciliation: None,
             };
             Proof {
@@ -9140,6 +9148,11 @@ mod tests {
         // The Creation Club name: no `<world>.objects.dds`.
         let atlas = object_textures.join(format!("{world}objectslod.dds"));
         fs::write(&atlas, dds(9)).unwrap();
+        fs::write(
+            object_textures.join(format!("{world}objectslod_n.dds")),
+            dds(10),
+        )
+        .unwrap();
         let mut config = cpu_lod_config(&data, &output);
         config.cpu_jobs = 2;
         config.terrain_lod_source = crate::config::TerrainLodSource::Retail;
@@ -9178,6 +9191,7 @@ mod tests {
             serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest.object_chunks, 0);
         assert!(manifest.object_atlases.is_empty());
+        assert!(manifest.object_normal_atlases.is_empty());
         shared::world_assets::validate_lod_build_contract(&output, CONVERTER_SCHEMA_VERSION)
             .unwrap();
     }

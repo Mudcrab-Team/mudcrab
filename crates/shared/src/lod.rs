@@ -243,6 +243,15 @@ pub fn object_atlas_path(worldspace_id: u32) -> String {
     format!("lod/{worldspace_id:08x}/objects_atlas.opensky-srgb.ktx2")
 }
 
+/// glTF vertex attributes for the model-space axes of the red and green atlas channels.
+pub const OBJECT_ATLAS_RED: &str = "_OBJECT_ATLAS_RED";
+pub const OBJECT_ATLAS_GREEN: &str = "_OBJECT_ATLAS_GREEN";
+
+/// Path of the optional linear object LOD normal atlas.
+pub fn object_normal_atlas_path(worldspace_id: u32) -> String {
+    format!("lod/{worldspace_id:08x}/objects_normal_atlas.opensky-linear.ktx2")
+}
+
 /// The image URI an object chunk GLB uses for the shared atlas. It is relative to the chunk file,
 /// `lod/<world-hex>/<tier>/objects_<x>_<y>.glb`, so it resolves to [`object_atlas_path`] for every
 /// tier of the worldspace.
