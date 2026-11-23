@@ -58,11 +58,7 @@ impl NifDepthState {
         let decal = flags_1 & (DECAL | DYNAMIC_DECAL) != 0;
         // Stock blending already avoids depth writes. Ordinary depth-writing surfaces keep
         // their existing opaque/cutout/prepass path.
-        if blend_factors.is_none()
-            && !decal
-            && depth_test
-            && (depth_write || matches!(alpha_mode, AlphaMode::Blend))
-        {
+        if !decal && depth_test && (depth_write || matches!(alpha_mode, AlphaMode::Blend)) {
             return None;
         }
         Some(Self {
@@ -71,7 +67,11 @@ impl NifDepthState {
             decal,
             alpha_mask: matches!(alpha_mode, AlphaMode::Mask(_)),
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
-            blend_factors,
+            blend_factors: if matches!(alpha_mode, AlphaMode::Mask(_)) {
+                None
+            } else {
+                blend_factors
+            },
             uses_effect_emittance: false,
         })
     }
@@ -153,11 +153,12 @@ fn specialize_nif_depth_descriptor(
         }
     }
     if let Some([source, destination]) = state.blend_factors
-        && let Some(color) = blend_component(source, destination, false)
-        && let Some(alpha) = blend_component(source, destination, true)
+        && let Some(color) = blend_component(source, destination)
         && let Some(fragment) = descriptor.fragment.as_mut()
     {
         for target in fragment.targets.iter_mut().flatten() {
+            // Keep Bevy's alpha equation. A separate retail alpha equation is unverified.
+            let alpha = target.blend.unwrap_or(BlendState::ALPHA_BLENDING).alpha;
             target.blend = Some(BlendState { color, alpha });
         }
     }
@@ -167,33 +168,36 @@ fn specialize_nif_depth_descriptor(
 }
 
 // nif.xml AlphaFunction, documented in vendor/project-wormhole-nif/src/nif_enum.rs.
-fn blend_factor(value: u8, alpha: bool) -> Option<BlendFactor> {
+fn blend_factor(value: u8) -> Option<BlendFactor> {
     use BlendFactor::*;
     Some(match value {
         0 => One,
         1 => Zero,
-        2 if !alpha => Src,
-        3 if !alpha => OneMinusSrc,
-        4 if !alpha => Dst,
-        5 if !alpha => OneMinusDst,
-        2 | 6 => SrcAlpha,
-        3 | 7 => OneMinusSrcAlpha,
-        4 | 8 => DstAlpha,
-        5 | 9 => OneMinusDstAlpha,
-        10 if alpha => One,
+        2 => Src,
+        3 => OneMinusSrc,
+        4 => Dst,
+        5 => OneMinusDst,
+        6 => SrcAlpha,
+        7 => OneMinusSrcAlpha,
+        8 => DstAlpha,
+        9 => OneMinusDstAlpha,
         10 => SrcAlphaSaturated,
         _ => return None,
     })
 }
 
 pub fn valid_blend_factors([source, destination]: [u8; 2]) -> bool {
-    blend_component(source, destination, false).is_some()
+    // SRC_ALPHA_SATURATE is valid only as a source factor.
+    source <= 10 && destination <= 9
 }
 
-fn blend_component(source: u8, destination: u8, alpha: bool) -> Option<BlendComponent> {
+fn blend_component(source: u8, destination: u8) -> Option<BlendComponent> {
+    if !valid_blend_factors([source, destination]) {
+        return None;
+    }
     Some(BlendComponent {
-        src_factor: blend_factor(source, alpha)?,
-        dst_factor: blend_factor(destination, alpha)?,
+        src_factor: blend_factor(source)?,
+        dst_factor: blend_factor(destination)?,
         operation: BlendOperation::Add,
     })
 }
@@ -245,7 +249,7 @@ mod tests {
     fn color_target() -> Option<ColorTargetState> {
         Some(ColorTargetState {
             format: TextureFormat::Rgba8UnormSrgb,
-            blend: None,
+            blend: Some(BlendState::ALPHA_BLENDING),
             write_mask: ColorWrites::ALL,
         })
     }
@@ -311,11 +315,50 @@ mod tests {
         let blend = fragment.targets[0].as_ref().unwrap().blend.unwrap();
         assert_eq!(blend.color.src_factor, BlendFactor::SrcAlpha);
         assert_eq!(blend.color.dst_factor, BlendFactor::One);
-        assert_eq!(blend.alpha.src_factor, BlendFactor::SrcAlpha);
-        assert_eq!(blend.alpha.dst_factor, BlendFactor::One);
+        assert_eq!(blend.alpha, BlendState::ALPHA_BLENDING.alpha);
         assert_eq!(
             color.depth_stencil.unwrap().depth_write_enabled,
             Some(false)
+        );
+    }
+
+    #[test]
+    fn authored_blend_preserves_cutout_and_ordinary_blend_routing() {
+        for mode in [AlphaMode::Mask(0.4), AlphaMode::Blend] {
+            assert!(
+                NifDepthState::from_material(
+                    DEPTH_TEST,
+                    DEPTH_WRITE,
+                    mode,
+                    Some(SOURCE_ALPHA_ADDITIVE)
+                )
+                .is_none()
+            );
+        }
+        let mask = NifDepthState::from_material(
+            DEPTH_TEST | DECAL,
+            DEPTH_WRITE,
+            AlphaMode::Mask(0.4),
+            Some(SOURCE_ALPHA_ADDITIVE),
+        )
+        .unwrap();
+        assert!(mask.alpha_mask);
+        assert_eq!(mask.blend_factors, None);
+    }
+
+    #[test]
+    fn authored_source_alpha_blend_keeps_bevys_alpha_component() {
+        let state =
+            NifDepthState::from_material(DEPTH_TEST | DECAL, 0, AlphaMode::Blend, Some([6, 7]))
+                .unwrap();
+        let mut pipeline = descriptor(vec![color_target()]);
+        specialize_nif_depth_descriptor(&mut pipeline, state);
+        assert_eq!(
+            pipeline.fragment.unwrap().targets[0]
+                .as_ref()
+                .unwrap()
+                .blend,
+            Some(BlendState::ALPHA_BLENDING)
         );
     }
 

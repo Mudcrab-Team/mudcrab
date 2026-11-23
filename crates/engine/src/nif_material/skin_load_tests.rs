@@ -2,7 +2,10 @@
 //! binds: the skin material, its linear `_s` twin and the dependency holder.
 
 use super::*;
-use crate::skin_material::{SkyrimSkinFlags, SkyrimSkinKey};
+use crate::{
+    nif_depth::{DECAL, DEPTH_TEST},
+    skin_material::{SkyrimSkinFlags, SkyrimSkinKey},
+};
 use bevy::{
     asset::{LoadState, RenderAssetUsages},
     image::{
@@ -434,26 +437,15 @@ fn shared_source_keeps_distinct_linear_images_and_samplers_in_both_material_orde
 }
 
 #[test]
-fn model_space_material_with_a_depth_state_keeps_the_depth_material() {
+fn model_space_material_keeps_skin_shading_when_depth_state_is_authored() {
     let directory = tempfile::tempdir().unwrap();
-    // No depth write: an authored depth state, which keeps its own extension.
     write_model_space_gltf(directory.path(), (1 << 12) | 1);
     let mut app = loader_app(directory.path());
-    let scene: Handle<WorldAsset> = app
-        .world()
-        .resource::<AssetServer>()
-        .load(GltfAssetLabel::Scene(0).from_asset("body.gltf"));
-    wait_for_dependencies(&mut app, &scene);
-    let mut scene_world = app
-        .world_mut()
-        .resource_mut::<Assets<WorldAsset>>()
-        .remove(&scene)
-        .unwrap()
-        .world;
-    let mut skins = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
-    assert_eq!(skins.iter(&scene_world).count(), 0);
-    let mut depth = scene_world.query::<&MeshMaterial3d<NifDepthMaterial>>();
-    assert_eq!(depth.iter(&scene_world).count(), 1);
+    let mut scene = load_scene_world(&mut app);
+    let mut skins = scene.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
+    assert_eq!(skins.iter(&scene).count(), 1);
+    let mut depth = scene.query::<&MeshMaterial3d<NifDepthMaterial>>();
+    assert_eq!(depth.iter(&scene).count(), 0);
 }
 
 /// [`write_model_space_gltf`] turned into a FaceGen head: a `face_tint` material whose detail and
@@ -693,6 +685,8 @@ fn write_masked_hair_gltf(directory: &Path, cutoff: f32) {
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     document["materials"][0]["alphaMode"] = serde_json::json!("MASK");
     document["materials"][0]["alphaCutoff"] = serde_json::json!(cutoff);
+    document["materials"][0]["extras"]["openSkyrim"]["alphaProperty"] =
+        serde_json::json!(shared::nif_alpha::NifAlphaProperty::from_nif(0x120d, 77));
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
 }
 
@@ -903,38 +897,96 @@ fn a_loaded_masked_hair_card_keeps_its_cutoff_and_specialises_as_hair() {
 }
 
 #[test]
-fn nif_blend_extras_bind_an_arbitrary_mesh_to_the_authored_depth_material() {
+fn model_space_skin_keeps_its_material_and_tint_with_authored_blend() {
     let directory = tempfile::tempdir().unwrap();
-    write_model_space_gltf(directory.path(), 0);
+    write_model_space_gltf(directory.path(), u64::from(DEPTH_TEST | DECAL));
     let path = directory.path().join("body.gltf");
     let mut document: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    document["materials"][0] = serde_json::json!({
-        "name": "arbitrary fixture",
-        "alphaMode": "BLEND",
-        "extras": {"openSkyrim": {
-            "shaderFlags1": crate::nif_depth::DEPTH_TEST,
-            "shaderFlags2": 0,
-            "alphaProperty": {
-                "blendEnabled": true, "sourceFactor": 6, "destinationFactor": 0,
-                "testEnabled": false, "testFunction": 4, "threshold": 128
-            }
-        }}
-    });
+    let material = &mut document["materials"][0];
+    material["alphaMode"] = serde_json::json!("BLEND");
+    material["extensions"]["OPEN_SKYRIM_material"]["lightingShaderType"] =
+        serde_json::json!("skin_tint");
+    material["extras"]["openSkyrim"]["alphaProperty"] =
+        serde_json::json!(shared::nif_alpha::NifAlphaProperty::from_nif(0x0d, 128));
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
 
     let mut app = loader_app(directory.path());
     let mut scene = load_scene_world(&mut app);
     let mut query = scene.query::<(
-        &MeshMaterial3d<NifDepthMaterial>,
-        Has<MeshMaterial3d<StandardMaterial>>,
+        &MeshMaterial3d<SkyrimSkinMaterial>,
+        &SkinTintSurface,
+        Has<MeshMaterial3d<NifDepthMaterial>>,
     )>();
-    let (handle, has_stock_material) = query.single(&scene).unwrap();
-    let materials = app.world().resource::<Assets<NifDepthMaterial>>();
+    let (handle, _, has_depth_material) = query.single(&scene).unwrap();
+    let materials = app.world().resource::<Assets<SkyrimSkinMaterial>>();
     let material = materials.get(&handle.0).unwrap();
-    assert!(!has_stock_material);
-    assert_eq!(material.extension.state.blend_factors, Some([6, 0]));
-    assert!(!material.extension.state.uses_effect_emittance);
+    assert!(!has_depth_material);
+    assert_eq!(material.base.alpha_mode, AlphaMode::Blend);
+    assert!(material.extension.model_space_normal.is_some());
+}
+
+#[test]
+fn authored_additive_glow_uses_depth_material_and_ordinary_blend_keeps_stock_route() {
+    for decal in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        write_model_space_gltf(directory.path(), 0);
+        let path = directory.path().join("body.gltf");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let flags = DEPTH_TEST | if decal { DECAL | (1 << 29) } else { 0 };
+        document["materials"][0] = serde_json::json!({
+            "alphaMode": "BLEND",
+            "pbrMetallicRoughness": {"baseColorTexture": {"index": 1}},
+            "emissiveFactor": [0.2, 0.4, 0.6],
+            "extras": {"openSkyrim": {
+                "shaderFamily": "effect",
+                "shaderFlags1": flags,
+                "shaderFlags2": if decal { 0 } else { 1 },
+                "alphaProperty": shared::nif_alpha::NifAlphaProperty::from_nif(0x0d, 128)
+            }}
+        });
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let mut app = loader_app(directory.path());
+        let mut scene = load_scene_world(&mut app);
+        if decal {
+            let mut query = scene.query::<(
+                &MeshMaterial3d<NifDepthMaterial>,
+                &ExternalEmittance,
+                Has<MeshMaterial3d<StandardMaterial>>,
+                &NifSourceMaterial,
+            )>();
+            let (handle, _, has_stock_material, source) = query.single(&scene).unwrap();
+            let materials = app.world().resource::<Assets<NifDepthMaterial>>();
+            let material = materials.get(&handle.0).unwrap();
+            let stock = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&source.0)
+                .unwrap();
+            assert!(!has_stock_material);
+            assert_eq!(material.extension.state.blend_factors, Some([6, 0]));
+            assert!(material.extension.state.uses_effect_emittance);
+            assert!(!material.extension.state.depth_write);
+            assert!(material.base.base_color_texture.is_some());
+            assert_eq!(material.base.base_color_texture, stock.base_color_texture);
+        } else {
+            let mut query = scene.query::<(
+                &MeshMaterial3d<StandardMaterial>,
+                Has<MeshMaterial3d<NifDepthMaterial>>,
+                Has<NotShadowCaster>,
+            )>();
+            let (handle, has_depth_material, excludes_shadow) = query.single(&scene).unwrap();
+            let materials = app.world().resource::<Assets<StandardMaterial>>();
+            assert_eq!(
+                materials.get(&handle.0).unwrap().alpha_mode,
+                AlphaMode::Blend
+            );
+            assert!(!has_depth_material);
+            assert!(!excludes_shadow);
+        }
+    }
 }
 
 #[test]

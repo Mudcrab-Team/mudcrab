@@ -2327,26 +2327,27 @@ mod tests {
     fn nif_alpha_property_round_trips_through_material_extras() {
         use shared::nif_alpha::NifAlphaProperty;
 
-        let mut material = fixture(NifAlphaMode::Cutout, false, false, false);
-        // Source alpha / one, with a Greater test and a nondefault threshold.
-        material.alpha_property = Some(NifAlphaProperty::from_nif(0x120d, 73));
-        let published = publish_specular_fixture(material);
-        let extras = &published["materials"][0]["extras"]["openSkyrim"]["alphaProperty"];
-        assert_eq!(
-            extras,
-            &serde_json::json!({
-                "blendEnabled": true,
-                "sourceFactor": 6,
-                "destinationFactor": 0,
-                "testEnabled": true,
-                "testFunction": 4,
-                "threshold": 73
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<NifAlphaProperty>(extras.clone()).unwrap(),
-            NifAlphaProperty::from_nif(0x120d, 73)
-        );
+        for source in 0u8..=15 {
+            for destination in 0u8..=15 {
+                let mut material = fixture(NifAlphaMode::Cutout, false, false, false);
+                // Include reserved codes so the engine can diagnose them after export.
+                let flags = 0x1201 | (u16::from(source) << 1) | (u16::from(destination) << 5);
+                material.alpha_property = Some(NifAlphaProperty::from_nif(flags, 73));
+                let published = publish_specular_fixture(material);
+                let extras = &published["materials"][0]["extras"]["openSkyrim"]["alphaProperty"];
+                assert_eq!(
+                    serde_json::from_value::<NifAlphaProperty>(extras.clone()).unwrap(),
+                    NifAlphaProperty {
+                        blend_enabled: true,
+                        source_factor: source,
+                        destination_factor: destination,
+                        test_enabled: true,
+                        test_function: 4,
+                        threshold: 73,
+                    }
+                );
+            }
+        }
     }
 
     #[test]
