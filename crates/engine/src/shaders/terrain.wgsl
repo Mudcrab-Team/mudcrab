@@ -256,6 +256,7 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
         let noisy = noisy_land_colour(distant, seam_noise, seam_noise_sampler, distant_uv);
         color = vec4<f32>(mix(color.rgb, noisy, seam_weight), color.a);
     }
+    // stand-in(#939): The retail order of vertex tint and the distant blend is unverified.
     pbr_input.material.base_color *= color;
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.
