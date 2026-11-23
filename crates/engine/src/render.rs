@@ -1,3 +1,4 @@
+use crate::streaming::near_terrain_blend::{NearTerrainBlend, NearTerrainBlendSettings};
 use crate::{
     color_pipeline::{DEFAULT_SCENE_EV100, SceneColorPipeline},
     profiling::ProfilingState,
@@ -631,6 +632,14 @@ fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<R
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct TerrainExtension {
+    #[uniform(121)]
+    seam_settings: NearTerrainBlendSettings,
+    #[texture(122, visibility(fragment))]
+    #[sampler(123, visibility(fragment))]
+    seam_overlay: Option<Handle<Image>>,
+    #[texture(124, visibility(fragment))]
+    #[sampler(125, visibility(fragment))]
+    seam_noise: Option<Handle<Image>>,
     #[texture(100)]
     layer_0: Option<Handle<Image>>,
     #[texture(102)]
@@ -809,7 +818,30 @@ pub struct TerrainImages {
 }
 
 impl TerrainExtension {
-    /// The exact image resources retained by this quadrant's material.
+    pub(crate) fn blend_differs(&self, blend: Option<&NearTerrainBlend>) -> bool {
+        match blend {
+            Some((settings, overlay, noise)) => {
+                self.seam_settings != *settings
+                    || self.seam_overlay.as_ref() != Some(overlay)
+                    || self.seam_noise.as_ref() != Some(noise)
+            }
+            None => self.seam_overlay.is_some(),
+        }
+    }
+
+    pub(crate) fn set_blend(&mut self, blend: Option<NearTerrainBlend>) {
+        if let Some((settings, overlay, noise)) = blend {
+            self.seam_settings = settings;
+            self.seam_overlay = Some(overlay);
+            self.seam_noise = Some(noise);
+        } else {
+            self.seam_settings = NearTerrainBlendSettings::default();
+            self.seam_overlay = None;
+            self.seam_noise = None;
+        }
+    }
+
+    /// The layer and normal images, plus the atlas and noise while seam blending is bound.
     pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
         [
             self.layer_0.as_ref(),
@@ -824,6 +856,8 @@ impl TerrainExtension {
             self.normal_3.as_ref(),
             self.normal_4.as_ref(),
             self.normal_5.as_ref(),
+            self.seam_overlay.as_ref(),
+            self.seam_noise.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -885,6 +919,9 @@ impl TerrainExtension {
         settings.set_normal_layers(&normals);
         Ok((
             Self {
+                seam_settings: NearTerrainBlendSettings::default(),
+                seam_overlay: None,
+                seam_noise: None,
                 layer_0: textures[0].clone(),
                 layer_1: textures[1].clone(),
                 layer_2: textures[2].clone(),
@@ -919,6 +956,9 @@ impl TerrainExtension {
         let layers = crate::streaming::quadrant_layers(terrain, quadrant)?;
         let overlay_weights = crate::streaming::quadrant_overlay_weights(terrain, quadrant)?;
         Ok(Self {
+            seam_settings: NearTerrainBlendSettings::default(),
+            seam_overlay: None,
+            seam_noise: None,
             layer_0: Some(textures[0].clone()),
             layer_1: Some(textures[1].clone()),
             layer_2: Some(textures[2].clone()),
@@ -969,6 +1009,9 @@ impl TerrainExtension {
 impl Default for TerrainExtension {
     fn default() -> Self {
         Self {
+            seam_settings: NearTerrainBlendSettings::default(),
+            seam_overlay: None,
+            seam_noise: None,
             layer_0: None,
             layer_1: None,
             layer_2: None,
@@ -988,6 +1031,10 @@ impl Default for TerrainExtension {
 }
 
 impl MaterialExtension for TerrainExtension {
+    fn vertex_shader() -> ShaderRef {
+        "embedded://engine/shaders/terrain.wgsl".into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         "embedded://engine/shaders/terrain.wgsl".into()
     }
@@ -1736,10 +1783,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terrain_reservation_observes_all_six_diffuse_and_normal_layers() {
+    fn terrain_reservation_observes_layers_and_bound_seam_images() {
         let mut images = Assets::<Image>::default();
         let handles: [Handle<Image>; 12] = std::array::from_fn(|_| images.add(Image::default()));
-        let extension = TerrainExtension {
+        let mut extension = TerrainExtension {
             layer_0: Some(handles[0].clone()),
             layer_1: Some(handles[1].clone()),
             layer_2: Some(handles[2].clone()),
@@ -1754,10 +1801,18 @@ mod tests {
             normal_5: Some(handles[11].clone()),
             ..default()
         };
-        assert_eq!(
-            extension.image_ids().collect::<Vec<_>>(),
-            handles.iter().map(Handle::id).collect::<Vec<_>>()
-        );
+        let layer_ids: Vec<_> = handles.iter().map(Handle::id).collect();
+        assert_eq!(extension.image_ids().collect::<Vec<_>>(), layer_ids);
+
+        let overlay = images.add(Image::default());
+        let noise = images.add(Image::default());
+        let mut blended_ids = layer_ids.clone();
+        blended_ids.extend([overlay.id(), noise.id()]);
+        extension.set_blend(Some((NearTerrainBlendSettings::default(), overlay, noise)));
+        assert_eq!(extension.image_ids().collect::<Vec<_>>(), blended_ids);
+
+        extension.set_blend(None);
+        assert_eq!(extension.image_ids().collect::<Vec<_>>(), layer_ids);
     }
     use crate::world::components::{StreamingCamera, WaterSurface};
 

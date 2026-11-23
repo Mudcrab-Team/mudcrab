@@ -1,3 +1,5 @@
+#import engine::terrain_blend::noisy_land_colour
+
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
@@ -10,14 +12,6 @@
 
 // Ordinary exterior terrain LOD uses the non-projected key 12000005.
 // Key selection: https://github.com/Mudcrab-Team/skyrim_decomp/pull/947, G01.
-// Noise equation: https://github.com/Mudcrab-Team/skyrim_decomp/pull/946, G02.
-fn noise_multiplier(base: vec3<f32>, red: f32) -> f32 {
-    let a = clamp((0.55 * dot(base, vec3<f32>(1.0)) - 0.4) * 1.666667, 0.0, 1.0);
-    let h = a * a * (3.0 - 2.0 * a);
-    let mixed_red = red + (0.37 - red) * (0.8 * h);
-    return 0.37 + 0.833333 * mixed_red;
-}
-
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var input = pbr_input_from_standard_material(in, is_front);
@@ -27,9 +21,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #else
     let base_uv = (input.material.uv_transform * vec3<f32>(in.uv, 1.0)).xy;
 #endif
-    let red = textureSample(land_noise, land_noise_sampler, 3.0 * base_uv).r;
     let base = input.material.base_color;
-    input.material.base_color = vec4<f32>(base.rgb * noise_multiplier(base.rgb, red), base.a);
+    input.material.base_color = vec4<f32>(noisy_land_colour(base.rgb, land_noise, land_noise_sampler, base_uv), base.a);
 #endif
     input.material.base_color = alpha_discard(input.material, input.material.base_color);
     var out: FragmentOutput;

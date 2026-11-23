@@ -65,6 +65,7 @@ pub(crate) mod lod_object_material;
 pub mod lod_objects;
 #[cfg(test)]
 mod merged_tests;
+pub(crate) mod near_terrain_blend;
 mod priority;
 pub(crate) mod requests;
 mod reservations;
@@ -201,6 +202,7 @@ impl Plugin for StreamingPlugin {
                     lod::track_lod_readiness,
                     lod::batch_ready_lod_chunks,
                     lod::update_terrain_lod_visibility,
+                    near_terrain_blend::update_near_terrain_blend,
                     finish_streaming_commit_budget,
                     update_render_origin,
                     validate_streaming_lifecycle,
@@ -502,6 +504,10 @@ pub struct StreamingMetrics {
     pub diagnostic_fallbacks: u64,
     pub canonical_fixture_validated: bool,
     pub terrain_patches_validated: u64,
+    /// Requested cell updates without a loaded near-terrain noise image.
+    pub near_terrain_blend_missing_noise: u64,
+    /// Requested cell updates without a ready near-terrain atlas.
+    pub near_terrain_blend_missing_atlas: u64,
     /// Exterior cells drawn as one merged mesh with the shared terrain material (#215).
     pub terrain_cells_merged: u64,
     /// Terrain cells drawn by the four-quadrant path: every cell when the merged path is absent
@@ -1754,7 +1760,9 @@ fn spawn_cell(
                 // Waiting for the render world from birth, like a quadrant: the grid's LOD tiles
                 // stay drawn until the bridge confirms the merged mesh drawn
                 // (`lod::update_terrain_lod_visibility`). The cell declares the shared material and
-                // every land texture array it binds.
+                // every land texture array it binds. The later seam material binds its atlas
+                // and noise after the swap. Merged surface accounting tracks the spawn resources
+                // only, so it omits these later bindings.
                 let surface = SwapSurface::new(material.id().untyped(), images.iter().copied());
                 let mut patch = parent.spawn((
                     Name::new("Terrain cell"),
