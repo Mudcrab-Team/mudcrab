@@ -52,7 +52,8 @@ clear `record_data_complete` or `complete`. A parse error, an unexpected layout 
 subrecord is not an intended omission: it stays a warning and still marks the run incomplete.
 Only the classes in `intended_omission_class` and the `omitted` projection severity
 (`db-schema.md` §19) qualify. A site is listed there only when the field is absent from the record.
-A field that is present but short or unreadable stays data loss. Older manifests and notes
+A field that is present but short, empty or unreadable stays data loss (a `VHGT` with no bytes is
+not an absent `VHGT`). Both record readers apply the same boundary. Older manifests and notes
 without the field read as empty.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild

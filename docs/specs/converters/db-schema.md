@@ -2299,6 +2299,7 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `reference_missing_cell` | Placed record with no parent cell: no placement or spatial row | data loss |
 | `worldspace_missing_editor_id` | `WRLD` without `EDID`: no `worldspaces` row | omitted |
 | `land_missing_heights` | `LAND` without `VHGT`: no `land` row | omitted |
+| `land_unusable_heights` | `LAND` whose `VHGT` is present but empty: no `land` row | data loss |
 | `armature_missing_race` | `ARMA` without a readable `RNAM`: `actor_model_parts.armature_race_id` is NULL | data loss |
 | `room_marker_unreadable_flags` | Room marker whose `XRMR` header is present but short, repeated or unframed: no `room_bounds` row; its cell is incomplete | data loss |
 | `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row and leaves its cell incomplete | data loss |

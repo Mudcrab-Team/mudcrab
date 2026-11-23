@@ -489,10 +489,7 @@ impl PluginDiagnostics {
             ));
         }
         for row in self.intended_omission_rows(plugin) {
-            lines.push(format!(
-                "notice: {plugin}: in-house reader omitted {} {} record(s), class {}: no usable value in the source, none invented; not a read failure (first: {})",
-                row.count, row.record_type, row.class, row.first_example
-            ));
+            lines.push(row.notice());
         }
         if let Some(example) = self.first_by_category.get("retired_base") {
             lines.push(format!(

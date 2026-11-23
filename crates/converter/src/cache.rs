@@ -383,6 +383,16 @@ pub struct IntendedOmission {
     pub first_example: String,
 }
 
+impl IntendedOmission {
+    /// The notice that keeps this omission visible in the log and the report.
+    pub fn notice(&self) -> String {
+        format!(
+            "notice: {}: in-house reader omitted {} {} record(s), class {}: no usable value in the source, none invented; not a read failure (first: {})",
+            self.source, self.count, self.record_type, self.class, self.first_example
+        )
+    }
+}
+
 /// Fold equal `(source, record_type, class)` rows into one: sum the counts, keep the least example.
 pub fn merge_intended_omissions(omissions: &mut Vec<IntendedOmission>) {
     omissions.sort();

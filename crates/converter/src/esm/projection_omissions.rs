@@ -49,6 +49,9 @@ pub enum OmissionCategory {
     RoomMarkerUnreadableFlags,
     /// A LAND without a `VHGT` height field gets no `land` row.
     LandMissingHeights,
+    /// A LAND whose `VHGT` is present but empty gets no `land` row. The field is authored and
+    /// unusable, so this is data loss, not an intended omission.
+    LandUnusableHeights,
     /// A PlaneMarker with unusable geometry gets no occluder row.
     OccluderUnusableGeometry,
     /// A PlaneMarker has malformed XORD or an unresolved target in an authored slot.
@@ -84,6 +87,7 @@ impl OmissionCategory {
             Self::ArmatureMissingRace => "armature_missing_race",
             Self::RoomMarkerUnreadableFlags => "room_marker_unreadable_flags",
             Self::LandMissingHeights => "land_missing_heights",
+            Self::LandUnusableHeights => "land_unusable_heights",
             Self::OccluderUnusableGeometry => "occluder_unusable_geometry",
             Self::OccluderUnusableLinks => "occluder_unusable_links",
             Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
@@ -115,6 +119,7 @@ impl OmissionCategory {
             | Self::ReferenceMissingCell
             | Self::ArmatureMissingRace
             | Self::RoomMarkerUnreadableFlags
+            | Self::LandUnusableHeights
             | Self::OccluderUnusableGeometry
             | Self::OccluderUnusableLinks
             | Self::LightingTemplateUnusableData

@@ -34,7 +34,7 @@ fn land_without_heights(id: u32) -> Vec<u8> {
 }
 
 /// A generated world plus one patch plugin holding `content` in cell 0x1000.
-fn fixture(root: &Path, content: &[u8]) -> PipelineConfig {
+fn fixture(root: &Path, content: &[u8], reader: RecordReader) -> PipelineConfig {
     let data = root.join("Data");
     layout::prepare_directory(&data, false).unwrap();
     layout::generate(
@@ -55,7 +55,7 @@ fn fixture(root: &Path, content: &[u8]) -> PipelineConfig {
     fs::write(&list, "*Skyrim.esm\n*Patch.esp\n").unwrap();
     let mut config = PipelineConfig::new(&data, root.join("pack"));
     config.plugins_file = Some(list);
-    config.record_reader = RecordReader::Inhouse;
+    config.record_reader = reader;
     config.no_lod = true;
     config.cpu_jobs = 2;
     config
@@ -73,11 +73,90 @@ fn json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
+/// A LAND whose `VHGT` is present with the given bytes.
+fn land_with_vhgt(id: u32, vhgt: &[u8]) -> Vec<u8> {
+    let mut fields = subrecord(b"VHGT", vhgt);
+    fields.extend(subrecord(b"VNML", &vec![7; 33 * 33 * 3]));
+    record(b"LAND", id, 0, &fields)
+}
+
+const READERS: [RecordReader; 2] = [RecordReader::Inhouse, RecordReader::Legacy];
+
 /// The no-false-data rule: a height-less LAND is omitted and listed, and the pack is complete.
+/// Both readers apply it.
 #[tokio::test]
-async fn land_without_heights_is_listed_and_the_pack_stays_complete() {
+async fn land_without_heights_is_listed_by_both_readers_and_the_pack_stays_complete() {
+    for reader in READERS {
+        let directory = tempfile::tempdir().unwrap();
+        let config = fixture(directory.path(), &land_without_heights(0x0100_08B0), reader);
+        let output = config.output_dir.clone();
+        let report = publish(config).await;
+        assert!(report.complete, "{reader:?}: {report:?}");
+        assert!(
+            report.warnings.is_empty(),
+            "{reader:?}: {:?}",
+            report.warnings
+        );
+        let manifest = json(&output.join("conversion-manifest.json"));
+        assert_eq!(manifest["complete"], true, "{reader:?}");
+        assert_eq!(manifest["record_data_complete"], true, "{reader:?}");
+        let listed = manifest["intended_omissions"].as_array().unwrap();
+        assert_eq!(listed.len(), 1, "{reader:?}: {listed:?}");
+        assert_eq!(listed[0]["source"], "patch.esp", "{reader:?}");
+        assert_eq!(listed[0]["record_type"], "LAND");
+        assert_eq!(listed[0]["class"], "land_missing_heights");
+        assert_eq!(listed[0]["count"], 1);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|n| n.contains("patch.esp") && n.contains("land_missing_heights")),
+            "{reader:?}: {:?}",
+            report.notices
+        );
+    }
+}
+
+/// An authored `VHGT` that is empty or malformed is not an absent field: it stays a reader
+/// failure and the pack stays incomplete, under both readers.
+#[tokio::test]
+async fn empty_or_malformed_vhgt_stays_a_reader_failure() {
+    for reader in READERS {
+        for (label, vhgt) in [("empty", Vec::new()), ("short", vec![0u8; 100])] {
+            let directory = tempfile::tempdir().unwrap();
+            let config = fixture(
+                directory.path(),
+                &land_with_vhgt(0x0100_08B0, &vhgt),
+                reader,
+            );
+            let output = config.output_dir.clone();
+            let report = publish(config).await;
+            assert!(!report.complete, "{reader:?} {label}: {report:?}");
+            assert!(!report.warnings.is_empty(), "{reader:?} {label}");
+            assert!(report.intended_omissions.is_empty(), "{reader:?} {label}");
+            let manifest = json(&output.join("conversion-manifest.json"));
+            assert_eq!(manifest["complete"], false, "{reader:?} {label}");
+            assert_eq!(
+                manifest["record_data_complete"], false,
+                "{reader:?} {label}"
+            );
+            assert!(
+                manifest.get("intended_omissions").is_none(),
+                "{reader:?} {label}"
+            );
+        }
+    }
+}
+
+/// The in-house diagnostics, journal and rows of the absent-`VHGT` case.
+#[tokio::test]
+async fn land_without_heights_is_journaled_by_the_inhouse_reader() {
     let directory = tempfile::tempdir().unwrap();
-    let config = fixture(directory.path(), &land_without_heights(0x0100_08B0));
+    let config = fixture(
+        directory.path(),
+        &land_without_heights(0x0100_08B0),
+        RecordReader::Inhouse,
+    );
     let output = config.output_dir.clone();
     let report = publish(config).await;
 
@@ -147,7 +226,7 @@ async fn land_without_heights_is_listed_and_the_pack_stays_complete() {
 async fn a_damaged_land_is_still_a_reader_failure() {
     let directory = tempfile::tempdir().unwrap();
     let damaged = record(b"LAND", 0x0100_08B0, 0x40000, &[24, 0, 0, 0, 99]);
-    let config = fixture(directory.path(), &damaged);
+    let config = fixture(directory.path(), &damaged, RecordReader::Inhouse);
     let output = config.output_dir.clone();
     let report = publish(config).await;
 
@@ -170,7 +249,7 @@ async fn a_failure_beside_an_omission_keeps_the_pack_incomplete() {
     let directory = tempfile::tempdir().unwrap();
     let mut content = land_without_heights(0x0100_08B0);
     content.extend(record(b"LAND", 0x0100_08B1, 0x40000, &[24, 0, 0, 0, 99]));
-    let config = fixture(directory.path(), &content);
+    let config = fixture(directory.path(), &content, RecordReader::Inhouse);
     let output = config.output_dir.clone();
     let report = publish(config).await;
 
