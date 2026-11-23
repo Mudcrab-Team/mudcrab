@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, HashMap};
 /// `asset.generator` of a chunk written by this module. The terrain GLB validator dispatches on it.
 pub const GENERATOR: &str = "Mudcrab retail terrain LOD import";
 /// Revision of this importer's output. It goes into the LOD manifest.
-pub const IMPORT_VERSION: u32 = 1;
+pub const IMPORT_VERSION: u32 = 2;
 
 /// Exterior cells of 4096 Creation units.
 const CELL_SIZE: f64 = 4096.0;
@@ -205,7 +205,7 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                 .map(|p| p[axis])
                 .fold(f64::NEG_INFINITY, f64::max);
             (
-                ((low / QUADRANT_SIZE).floor() as i64).max(0),
+                ((low / QUADRANT_SIZE).floor() as i64).clamp(0, quadrants_per_side - 1),
                 ((high / QUADRANT_SIZE).floor() as i64).min(quadrants_per_side - 1),
             )
         };
@@ -233,16 +233,6 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                 if polygon.len() < 3 {
                     continue;
                 }
-                let doubled_area: f64 = (0..polygon.len())
-                    .map(|i| {
-                        let (a, b) = (&polygon[i], &polygon[(i + 1) % polygon.len()]);
-                        a[0] * b[1] - b[0] * a[1]
-                    })
-                    .sum();
-                // A piece with no area is a sliver along a boundary, not terrain.
-                if doubled_area.abs() < 1.0e-6 {
-                    continue;
-                }
                 pieces.entry((qx, qy)).or_default().push(polygon);
             }
         }
@@ -262,11 +252,23 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                 let mut patch = QuadrantPatch::default();
                 let mut seen: HashMap<[u32; 5], u32> = HashMap::new();
                 for polygon in polygons {
-                    let ids: Vec<u32> = polygon
-                        .iter()
-                        .map(|p| {
+                    for fan in 1..polygon.len() - 1 {
+                        let points = [polygon[0], polygon[fan], polygon[fan + 1]];
+                        let positions = points.map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]);
+                        let [a, b, c] = positions.map(|p| p.map(f64::from));
+                        let ab = std::array::from_fn::<_, 3, _>(|i| b[i] - a[i]);
+                        let ac = std::array::from_fn::<_, 3, _>(|i| c[i] - a[i]);
+                        // Retail BTR land includes vertical faces (Mudcrab #948).
+                        // Test the stored triangle in 3D, including faces on a block boundary.
+                        if (0..3).all(|i| {
+                            let j = (i + 1) % 3;
+                            let k = (i + 2) % 3;
+                            ab[j] * ac[k] == ab[k] * ac[j]
+                        }) {
+                            continue;
+                        }
+                        for (p, position) in points.into_iter().zip(positions) {
                             let uv = [p[3].clamp(0.0, 1.0) as f32, p[4].clamp(0.0, 1.0) as f32];
-                            let position = [p[0] as f32, p[1] as f32, p[2] as f32];
                             let bits = [
                                 position[0].to_bits(),
                                 position[1].to_bits(),
@@ -274,18 +276,18 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                                 uv[0].to_bits(),
                                 uv[1].to_bits(),
                             ];
-                            *seen.entry(bits).or_insert_with(|| {
+                            let index = *seen.entry(bits).or_insert_with(|| {
                                 patch.positions.push(position);
                                 patch.uvs.push(uv);
                                 (patch.positions.len() - 1) as u32
-                            })
-                        })
-                        .collect();
-                    for fan in 1..ids.len() - 1 {
-                        patch.indices.extend([ids[0], ids[fan], ids[fan + 1]]);
+                            });
+                            patch.indices.push(index);
+                        }
                     }
                 }
-                patches.insert((cell_x, cell_y, quadrant as u8), patch);
+                if !patch.indices.is_empty() {
+                    patches.insert((cell_x, cell_y, quadrant as u8), patch);
+                }
             }
         }
     }
@@ -1065,6 +1067,46 @@ mod tests {
                 assert!((f64::from(uv[0]) - x / 16384.0).abs() < 1.0e-4);
                 assert!((f64::from(uv[1]) - (1.0 - y / 16384.0)).abs() < 1.0e-4);
             }
+        }
+    }
+
+    #[test]
+    fn cutting_preserves_vertical_faces_on_quadrant_and_block_boundaries() {
+        let mut shape = land(4, 1, |_, _| 0.0, 0.0);
+        // Each face spans two quadrants along its horizontal axis.
+        for (axis, boundary) in [(0, 512.0), (0, 4096.0), (1, 4096.0)] {
+            let start = u16::try_from(shape.vertices.len()).unwrap();
+            for (along, z) in [(0.0, 0.0), (1024.0, 0.0), (0.0, -128.0)] {
+                let [x, y] = if axis == 0 {
+                    [boundary, along]
+                } else {
+                    [along, boundary]
+                };
+                shape.vertices.push(vertex(x, y, z, 4096.0));
+            }
+            shape.triangles.push([start, start + 1, start + 2]);
+        }
+        let patches = cut_land(&shape, 4).unwrap();
+        for (axis, boundary) in [(0, 2048.0), (0, 16384.0), (1, 16384.0)] {
+            let mut area = 0.0;
+            let mut quadrants = 0;
+            for patch in patches.values() {
+                let mut contains_face = false;
+                for triangle in patch.indices.chunks_exact(3) {
+                    let [a, b, c] = std::array::from_fn(|i| patch.positions[triangle[i] as usize]);
+                    if [a, b, c].iter().all(|p| p[axis] == boundary) {
+                        let along = 1 - axis;
+                        let doubled_area = (b[along] - a[along]) * (c[2] - a[2])
+                            - (c[along] - a[along]) * (b[2] - a[2]);
+                        assert_ne!(doubled_area, 0.0);
+                        area += doubled_area.abs() / 2.0;
+                        contains_face = true;
+                    }
+                }
+                quadrants += usize::from(contains_face);
+            }
+            assert_eq!(quadrants, 2);
+            assert_eq!(area, 4096.0 * 512.0 / 2.0);
         }
     }
 
