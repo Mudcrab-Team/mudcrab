@@ -34,6 +34,8 @@ fn uses_distant_blend(offset: IVec2, transitioning: bool) -> bool {
     offset.abs().max_element() <= 2 && (from_centre > 1 || transitioning && from_centre == 1)
 }
 
+const SECONDS_PER_DAY: f64 = 24.0 * 3600.0;
+
 #[derive(Default)]
 pub(super) struct GridCentre {
     worldspace: Option<u32>,
@@ -44,8 +46,11 @@ pub(super) struct GridCentre {
 
 impl GridCentre {
     fn fraction(&self, seconds: f64) -> f64 {
+        // The game clock wraps at midnight, so measure elapsed time modulo one day. A settled
+        // transition sets `from` to `to` in `update`, so a later wrap cannot restart it.
+        let elapsed = (seconds - self.started).rem_euclid(SECONDS_PER_DAY);
         // stand-in(#939): Use the traced initial interpolation scale of one.
-        ((seconds - self.started) * f64::from(0.2f32)).clamp(0.0, 1.0)
+        (elapsed * f64::from(0.2f32)).clamp(0.0, 1.0)
     }
 
     fn at(&self, seconds: f64) -> Vec2 {
@@ -74,7 +79,11 @@ impl GridCentre {
             self.to = target;
             self.started = seconds;
         }
-        self.at(seconds)
+        let centre = self.at(seconds);
+        if self.fraction(seconds) >= 1.0 {
+            self.from = self.to;
+        }
+        centre
     }
 }
 
@@ -278,6 +287,24 @@ mod tests {
         clock.hour = 2.5 / 3600.0;
         assert_eq!(state.update(0, IVec2::X, Some(&clock)), Vec2::new(1.0, 0.5));
         clock.hour = 5.0 / 3600.0;
+        assert_eq!(state.update(0, IVec2::X, Some(&clock)), Vec2::new(1.5, 0.5));
+    }
+
+    #[test]
+    fn grid_centre_interpolation_continues_across_midnight() {
+        let mut state = GridCentre::default();
+        let mut clock = GameClock {
+            hour: 24.0 - 1.0 / 3600.0,
+            timescale: 1.0,
+        };
+        state.update(0, IVec2::ZERO, Some(&clock));
+        state.update(0, IVec2::X, Some(&clock));
+        clock.hour = 1.5 / 3600.0;
+        assert_eq!(state.update(0, IVec2::X, Some(&clock)), Vec2::new(1.0, 0.5));
+        clock.hour = 4.0 / 3600.0;
+        assert_eq!(state.update(0, IVec2::X, Some(&clock)), Vec2::new(1.5, 0.5));
+        // A full day later the settled centre must not restart the transition.
+        clock.hour = 24.0 - 0.5 / 3600.0;
         assert_eq!(state.update(0, IVec2::X, Some(&clock)), Vec2::new(1.5, 0.5));
     }
 }
