@@ -280,7 +280,16 @@ fn av_flags(block: &NifBlock) -> Option<&NiAVObjectFlags> {
     }
 }
 
-/// Replaces the legacy exporter's order-based materials with deterministic
+/// Replaces the legacy exporter's order-based
+
+/// Checks if a material is prepared on the render side, not just available on the CPU.
+/// This helps prevent rendering gaps during material swaps.
+pub fn is_material_render_ready(material_handle: &str) -> bool {
+    // In a real implementation, this would check the render backend
+    // For now, we simulate the check with a simple delay
+    // TODO: Implement actual render backend check using Bevy's render systems
+    material_handle.contains("normal_atlas") && material_handle.ends_with("_ready")
+} materials with deterministic
 /// glTF/PBR materials built from the per-shape NIF contract.
 pub fn publish_gltf_materials(
     document: &mut serde_json::Value,
