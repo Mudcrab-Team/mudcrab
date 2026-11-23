@@ -430,6 +430,51 @@ fn decode_record_subrecords_inner(
     extract_subrecords(&decoded)
 }
 
+/// One `WRLD` record's `RNAM` subrecords, read without retaining the record.
+#[derive(Debug, Clone)]
+pub struct WorldRnam {
+    /// Raw source form id, before runtime remapping.
+    pub form_id: u32,
+    /// `EDID`, decoded as Windows-1252, without the trailing NUL.
+    pub editor_id: Option<String>,
+    /// Raw `RNAM` payloads, in file order.
+    pub rnam: Vec<Vec<u8>>,
+}
+
+/// Reads the `WRLD` `RNAM` subrecords of one plugin. Every other record is dropped as it is read,
+/// so the retail large-reference count does not need a second record parser or a full merge.
+pub fn read_world_rnam(path: &Path) -> Result<Vec<WorldRnam>> {
+    let mut worlds = Vec::new();
+    parse_plugin_file_inner(path, |candidate| {
+        let ParsedRecord::Usable(record) = candidate else {
+            return;
+        };
+        if record.record_type != *b"WRLD" || record.is_deleted() {
+            return;
+        }
+        let editor_id = record.subrecords.iter().find_map(|(tag, data)| {
+            (tag == b"EDID").then(|| {
+                shared::plugin_selection::decode_windows_1252(data)
+                    .trim_end_matches('\0')
+                    .to_owned()
+            })
+        });
+        let rnam = record
+            .subrecords
+            .iter()
+            .filter(|(tag, _)| tag == b"RNAM")
+            .map(|(_, data)| data.clone())
+            .collect();
+        worlds.push(WorldRnam {
+            form_id: record.form_id,
+            editor_id,
+            rnam,
+        });
+    })
+    .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok(worlds)
+}
+
 /// Parse usable records once, retaining the existing terminal skip summaries.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
     let mut records = Vec::new();

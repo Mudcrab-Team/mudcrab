@@ -244,6 +244,9 @@ async fn main() -> Result<()> {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_object_lod(&args[1..], command_line);
     }
+    if args.first().and_then(|argument| argument.to_str()) == Some("reconcile") {
+        return reconcile(&args[1..]);
+    }
     let command = parse_command(args)?;
     let mo2 = match &command {
         Command::Convert(cli) => cli.mo2.as_ref(),
@@ -941,6 +944,56 @@ fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
 /// Usage line of `derive-terrain-lod`, printed by its help and its errors.
 const DERIVE_TERRAIN_LOD_USAGE: &str = "usage: converter derive-terrain-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--force] [--converter-head <sha>]";
 
+/// Usage line of `reconcile`, printed by its help and its errors.
+const RECONCILE_USAGE: &str = "usage: converter reconcile <Skyrim Data> <pack> [--json <path>]";
+
+/// Parse `reconcile` options, run the read-only count check and print its table.
+fn reconcile(args: &[OsString]) -> Result<()> {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
+        println!("{RECONCILE_USAGE}");
+        return Ok(());
+    }
+    let mut positional = Vec::new();
+    let mut json = None;
+    let mut arguments = args.iter().cloned();
+    while let Some(argument) = arguments.next() {
+        match argument.to_str() {
+            Some("--json") => {
+                let value = arguments.next().ok_or_else(|| {
+                    color_eyre::eyre::eyre!("--json requires a path\n{RECONCILE_USAGE}")
+                })?;
+                json = Some(PathBuf::from(value));
+            }
+            Some("--help" | "-h") => {
+                println!("{RECONCILE_USAGE}");
+                return Ok(());
+            }
+            Some(flag) if flag.starts_with('-') => {
+                bail!("unknown option {flag}\n{RECONCILE_USAGE}");
+            }
+            _ => positional.push(PathBuf::from(argument)),
+        }
+    }
+    if positional.len() != 2 {
+        bail!("{RECONCILE_USAGE}");
+    }
+    let options = converter::reconcile::Options {
+        data: positional.remove(0),
+        pack: positional.remove(0),
+        json,
+    };
+    let report = converter::reconcile::run(&options)?;
+    converter::reconcile::print_report(&report);
+    if let Some(path) = &options.json {
+        converter::reconcile::write_json(path, &report)?;
+        println!("JSON: {}", path.display());
+    }
+    if !report.passed() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 /// Keep Unicode arguments verbatim and escape otherwise unrepresentable bytes in the receipt.
 fn receipt_command(args: impl IntoIterator<Item = OsString>) -> Vec<String> {
     args.into_iter()
@@ -1594,6 +1647,7 @@ fn usage() -> &'static str {
        converter derive-terrain-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--force] [--converter-head <sha>]
        converter derive-object-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data>
                  [--worldspace <EditorID>] [--force] [--converter-head <sha>]
+       converter reconcile <Skyrim Data> <pack> [--json <path>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
@@ -1701,7 +1755,14 @@ skips and counts any block it cannot read, and never writes into a registered pa
 derive-object-lod adds retail object LOD (level-16 .bto blocks and the object atlas, read from <Skyrim Data>)
 to an APFS clone of a registered pack: object chunk files, the lod_object_chunks table, additive lod-manifest.json
 fields and a receipt. It reconverts no NIF or texture, refuses a target that is not an exact clone, refuses a pack
-that already has object chunks unless --force, and reports every skipped block with its reason."
+that already has object chunks unless --force, and reports every skipped block with its reason.
+
+reconcile reads the Skyrim Data folder and an existing pack, and writes to neither. For every worldspace and
+block level it counts retail terrain LOD meshes, colour maps and normal maps, object LOD blocks and atlases,
+and WRLD RNAM memberships, and compares them with the pack's LOD tables and lod-manifest.json. Every difference
+must be explained by a converter skip class. A count it cannot compute is unknown, never zero. --json writes
+counts and reason classes only; local paths stay on the terminal. Exit code 1: an unexplained difference or an
+unknown count."
 }
 
 #[cfg(test)]

@@ -186,6 +186,8 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         &target,
         &transaction,
         world,
+        &world_file,
+        &retail.skipped,
         retail.blocks,
         &retail.atlas_dds,
         &atlas_sha256,
@@ -380,10 +382,13 @@ fn object_row_count(connection: &Connection) -> Result<i64> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_generation(
     target: &Path,
     transaction: &Transaction<'_>,
     world: WorldFacts,
+    world_file: &str,
+    read_skipped: &[SkippedBlock],
     candidates: Vec<BlockCandidate>,
     atlas_dds: &[u8],
     atlas_sha256: &str,
@@ -477,6 +482,14 @@ fn stage_generation(
             row.get(0)
         })?;
     manifest.objects_compiler_version = OBJECT_COMPILER_VERSION;
+    // silent-ok: a pack made before the block existed has no recorded skips
+    let mut reconciliation = manifest.reconciliation.take().unwrap_or_default();
+    reconciliation.remove_object_world(world_file);
+    for block in read_skipped.iter().chain(&skipped) {
+        reconciliation.record_object_skip(world_file, block.level, block.class, block.cell);
+    }
+    reconciliation.objects_recorded = true;
+    manifest.reconciliation = Some(reconciliation);
     let manifest = serde_json::to_value(&manifest)?;
     validate_object_generation(transaction, Some(&manifest), &|path| {
         if paths.contains(Path::new(path)) {
@@ -617,6 +630,7 @@ mod tests {
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
                 object_atlases: BTreeMap::new(),
+                reconciliation: None,
             })
             .unwrap(),
         )
@@ -635,6 +649,8 @@ mod tests {
             root,
             &transaction,
             WORLD,
+            "tamriel",
+            &[],
             candidates,
             &atlas_dds(),
             "atlas",
@@ -821,6 +837,8 @@ mod tests {
             root.path(),
             &transaction,
             WORLD,
+            "tamriel",
+            &[],
             vec![candidate((0, -16), Ok(block(vec![changed])))],
             &atlas_dds(),
             "atlas",

@@ -18,6 +18,7 @@ use crate::{
     integration::open_private_world_database,
     lod::{
         generation::StagedGeneration,
+        reconciliation::SkipPresence,
         retail_terrain::{IMPORT_VERSION, RETAIL_NORMAL_AXES, tier_for_level},
         retail_terrain_import::{LodWorld, WorldReport, stage_world},
         retail_terrain_source::{self as source, BlockId},
@@ -141,6 +142,11 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     let mut staged = StagedGeneration::new(&target)?;
     let mut reports = Vec::new();
     let mut kept = Vec::new();
+    // silent-ok: a pack made before the block existed has no recorded skips
+    let mut reconciliation = manifest.reconciliation.take().unwrap_or_default();
+    for world in &worlds {
+        reconciliation.remove_terrain_world(&world.file_name);
+    }
     let mut retail_inputs: BTreeMap<String, String> = BTreeMap::new();
     let mut payload_hashes: Vec<String> = Vec::new();
     let pool = rayon::ThreadPoolBuilder::new()
@@ -169,6 +175,15 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             payload_hashes.push(format!("{relative}:{payload_hash}"));
         }
         let report = imported.report;
+        for (id, skipped) in &report.skipped {
+            reconciliation.record_terrain_skip(
+                &world.file_name,
+                id.1,
+                skipped.class,
+                (id.2, id.3),
+                SkipPresence::of(&files, id),
+            );
+        }
         if report.kept_self_built {
             kept.push(world.editor_id.clone());
         }
@@ -221,6 +236,8 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     });
     manifest.retail_terrain_import_version = IMPORT_VERSION;
     manifest.retail_terrain_inputs.extend(retail_inputs);
+    reconciliation.terrain_recorded = true;
+    manifest.reconciliation = Some(reconciliation);
     if kept.is_empty() {
         // Every world's land texture sources fed only the chunks that were replaced.
         manifest.terrain_sources.clear();

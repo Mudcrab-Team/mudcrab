@@ -16,6 +16,7 @@ use crate::{
             MissingObjectUv, ObjectChunk, chunk_key_for_block, compile_object_chunk_shared_atlas,
             object_chunk_input_hash, publish_object_atlas, publish_object_chunk,
         },
+        reconciliation::LodReconciliation,
         retail::{
             atlas::read_dds_info,
             bto::{ObjectLodFile, read_object_lod},
@@ -166,7 +167,7 @@ fn is_terrain_entry_name(name: &str) -> bool {
 /// Finds the files `wanted` accepts in loose files and archives of `data`. Loose files win over
 /// archives; otherwise every archive that has the file is listed. The index holds every terrain
 /// file that was listed, wanted or not, for near-match reports.
-fn providers(
+pub(crate) fn providers(
     data: &Path,
     wanted: &dyn Fn(&str) -> bool,
 ) -> Result<(BTreeMap<String, Vec<Provider>>, FileIndex)> {
@@ -584,6 +585,8 @@ pub(crate) struct ObjectLodStage {
     pub warnings: Vec<String>,
     /// The worlds that have object blocks but were skipped, each with its reason class.
     pub skipped_worlds: Vec<SkippedWorld>,
+    /// Structured skip counts for `converter reconcile`.
+    pub reconciliation: LodReconciliation,
 }
 
 /// Compiles the retail object LOD of every world that has terrain LOD and publishes it into the
@@ -653,6 +656,9 @@ pub(crate) fn build_object_lod(
                     );
                     warn!("{message}");
                     stage.warnings.push(message);
+                    stage
+                        .reconciliation
+                        .record_object_world_skip(&editor_id.to_ascii_lowercase(), MISSING_ATLAS);
                     stage.skipped_worlds.push(SkippedWorld {
                         editor_id,
                         class: MISSING_ATLAS,
@@ -683,7 +689,14 @@ pub(crate) fn build_object_lod(
         crate::texture::inspect_ktx2(&atlas, crate::texture::TextureEncoding::ColorSrgb)
             .wrap_err_with(|| format!("the object atlas of {editor_id} is not a valid KTX2"))?;
         let (chunks, skipped) = compile_candidates(world, retail.blocks, &atlas_sha256)?;
+        let world_file = editor_id.to_ascii_lowercase();
         for block in retail.skipped.iter().chain(&skipped) {
+            stage.reconciliation.record_object_skip(
+                &world_file,
+                block.level,
+                block.class,
+                block.cell,
+            );
             stage.warnings.push(format!(
                 "object LOD {editor_id}: skipped block ({}, {}): {}: {}",
                 block.cell.0, block.cell.1, block.class, block.detail

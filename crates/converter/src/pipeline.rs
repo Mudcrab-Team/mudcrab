@@ -5376,6 +5376,7 @@ async fn compile_lod_chunks_inline(
     )
     .await;
     let mut chunk_hashes: Vec<String> = Vec::new();
+    let mut terrain_reconciliation = crate::lod::reconciliation::LodReconciliation::new();
     let mut world_settings = Vec::with_capacity(worlds.len());
     let mut compiled_worlds = 0u64;
     let mut terrain_sources = BTreeMap::new();
@@ -5490,6 +5491,15 @@ async fn compile_lod_chunks_inline(
                 || interrupt(cancellation),
             )?;
             let compiled: usize = imported.compiled.values().sum();
+            for (id, skipped) in &imported.skipped {
+                terrain_reconciliation.record_terrain_skip(
+                    &id.0,
+                    id.1,
+                    skipped.class,
+                    (id.2, id.3),
+                    crate::lod::reconciliation::SkipPresence::of(files, id),
+                );
+            }
             report.lod_warnings.extend(imported.checkpoint_warnings);
             let retained = imported.kept_from_previous_generation;
             if ids.is_empty() && retained == 0 {
@@ -5923,6 +5933,18 @@ async fn compile_lod_chunks_inline(
     };
     if compiled_worlds > 0 {
         report.artifacts.push(PathBuf::from("lod-manifest.json"));
+        terrain_reconciliation.terrain_recorded = retail_terrain;
+        terrain_reconciliation.objects_recorded = compiled_worlds > 0;
+        terrain_reconciliation.object_skips = object_lod.reconciliation.object_skips;
+        terrain_reconciliation.object_world_skips = object_lod.reconciliation.object_world_skips;
+        let reconciliation = if terrain_reconciliation.terrain_skips.is_empty()
+            && terrain_reconciliation.object_skips.is_empty()
+            && terrain_reconciliation.object_world_skips.is_empty()
+        {
+            None
+        } else {
+            Some(terrain_reconciliation)
+        };
         let manifest = LodManifest {
             build_identity: identity,
             converter_schema: CONVERTER_SCHEMA_VERSION,
@@ -5954,6 +5976,7 @@ async fn compile_lod_chunks_inline(
             },
             object_chunk_inputs: object_lod.chunks.iter().cloned().collect(),
             object_atlases: object_lod.atlases.iter().cloned().collect(),
+            reconciliation,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -7857,6 +7880,7 @@ mod tests {
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
                 object_atlases: BTreeMap::new(),
+                reconciliation: None,
             };
             Proof {
                 identity,

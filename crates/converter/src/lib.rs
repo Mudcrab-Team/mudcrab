@@ -27,6 +27,7 @@ pub mod pack_clone;
 pub mod pipeline;
 pub mod progress;
 pub mod reader_diff;
+pub mod reconcile;
 pub mod records;
 pub mod repair;
 mod reuse;
