@@ -67,7 +67,8 @@ impl Plugin for TerrainLodNoisePlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/terrain_lod_noise.wgsl");
         app.add_plugins(MaterialPlugin::<NoisyTerrainLodMaterial>::default())
-            .add_systems(Startup, load_land_noise);
+            .add_systems(Startup, load_land_noise)
+            .add_systems(Update, report_land_noise_load_failure);
     }
 }
 
@@ -75,11 +76,13 @@ fn load_land_noise(mut commands: Commands, config: Res<EngineConfig>, server: Re
     if config.visual_profile != VisualProfile::Skyrim {
         return;
     }
-    // A shared texture role for all terrain LOD chunks.
+    // Skyrim's shared terrain noise texture, with the pack's KTX2 extension.
+    // https://github.com/Mudcrab-Team/skyrim_decomp/pull/946, G02.
     let image = server
         .load_builder()
         .with_settings(|settings: &mut ImageLoaderSettings| {
             settings.is_srgb = false;
+            // stand-in(#939): The slot 15 address, filter, and mip rules are unverified.
             settings.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
                 address_mode_u: ImageAddressMode::Repeat,
                 address_mode_v: ImageAddressMode::Repeat,
@@ -91,6 +94,23 @@ fn load_land_noise(mut commands: Commands, config: Res<EngineConfig>, server: Re
         })
         .load("textures/terrain/noise.ktx2");
     commands.insert_resource(LandNoiseImage(image));
+}
+
+fn report_land_noise_load_failure(
+    image: Option<Res<LandNoiseImage>>,
+    server: Res<AssetServer>,
+    mut reported: Local<bool>,
+) {
+    if *reported {
+        return;
+    }
+    let Some(image) = image else {
+        return;
+    };
+    if let Some(LoadState::Failed(error)) = server.get_load_state(image.0.id()) {
+        error!("Terrain LOD land noise failed to load; using the base colour: {error}");
+        *reported = true;
+    }
 }
 
 #[cfg(test)]

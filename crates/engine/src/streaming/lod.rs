@@ -726,6 +726,7 @@ pub(super) fn track_lod_readiness(
     if noise.loading(&asset_server) {
         return;
     }
+    // A failed noise load leaves the chunks on their original materials.
     let noise_image = noise.loaded(&asset_server);
     for (entity, root, mut pending) in &mut pending_chunks {
         let Some(asset) = pending.asset.clone() else {
