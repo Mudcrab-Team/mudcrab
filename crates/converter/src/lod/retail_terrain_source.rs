@@ -119,7 +119,7 @@ fn is_terrain_path(path: &str) -> bool {
 }
 
 /// What one canonical path is, if it is a terrain LOD mesh or map of a block.
-fn classify(path: &str) -> Option<(BlockId, Kind)> {
+pub(crate) fn classify(path: &str) -> Option<(BlockId, Kind)> {
     if !is_terrain_path(path) {
         return None;
     }
@@ -140,7 +140,7 @@ fn classify(path: &str) -> Option<(BlockId, Kind)> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     Mesh,
     Colour,
     Normal,
@@ -268,7 +268,7 @@ fn children_ci(directory: &Path, name: &str) -> Result<Vec<PathBuf>> {
     Ok(children)
 }
 
-fn canonical_path(id: &BlockId, kind: Kind) -> String {
+pub(crate) fn canonical_path(id: &BlockId, kind: Kind) -> String {
     let (world, level, x, y) = id;
     match kind {
         Kind::Mesh => format!("meshes/terrain/{world}/{world}.{level}.{x}.{y}.btr"),

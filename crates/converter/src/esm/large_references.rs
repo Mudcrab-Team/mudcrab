@@ -24,7 +24,7 @@ pub(super) const TABLE_SQL: &str = "
         CHECK((grid_x IS NULL) = (grid_y IS NULL))
     )";
 
-type Member = (i32, i32, u32);
+pub(crate) type Member = (i32, i32, u32);
 type OmissionScope = (u32, Option<(i32, i32)>);
 
 #[derive(Debug, Default)]
@@ -50,7 +50,7 @@ fn cell_key(bytes: &[u8]) -> Option<(i32, i32)> {
     ))
 }
 
-fn members(bytes: &[u8]) -> Option<impl Iterator<Item = Member> + '_> {
+pub(crate) fn members(bytes: &[u8]) -> Option<impl Iterator<Item = Member> + '_> {
     let (header, tuples) = bytes.split_at_checked(8)?;
     let (key, count) = header.split_at(4);
     // silent-ok: the caller counts an unrepresentable RNAM tuple count.

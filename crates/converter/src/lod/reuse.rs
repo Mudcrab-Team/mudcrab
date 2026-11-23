@@ -52,6 +52,10 @@ pub(crate) struct LodManifest {
     /// SHA-256 of each shared object atlas file, by payload path (one per worldspace).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub object_atlases: BTreeMap<String, String>,
+    /// Counts of retail LOD files the converter skipped, by world, level and reason class. Used
+    /// only by `converter reconcile`; absent in a pack made before the block existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation: Option<super::reconciliation::LodReconciliation>,
 }
 
 fn is_zero(value: &u64) -> bool {

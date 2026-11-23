@@ -1,5 +1,5 @@
 use crate::esm::{
-    extractors::extract_subrecords,
+    extractors::{SubrecordView, extract_subrecords},
     mmap_reader::EsmReader,
     records::RawRecord,
     types::{CELL_CHILD_GROUP_KINDS, GroupHeader, RecordHeader, WorldReference},
@@ -188,11 +188,14 @@ pub fn parse_group_header(input: &[u8]) -> IResult<&[u8], GroupHeader> {
 struct ParseWarnings {
     count: u64,
     first: Option<String>,
+    /// Set by every recovery event that can hide a WRLD, not only the first one.
+    may_hide_worlds: bool,
 }
 
 impl ParseWarnings {
-    fn skipped(&mut self, reason: String) {
+    fn skipped_with(&mut self, reason: String, may_hide_worlds: bool) {
         self.count += 1;
+        self.may_hide_worlds |= may_hide_worlds;
         if self.first.is_none() {
             self.first = Some(reason);
         }
@@ -295,10 +298,10 @@ fn parse_group_inner(
             continue;
         }
         if curr.len() < 24 {
-            warnings.skipped(format!(
-                "trailing {} bytes in bounded record frame",
-                curr.len(),
-            ));
+            warnings.skipped_with(
+                format!("trailing {} bytes in bounded record frame", curr.len(),),
+                true,
+            );
             if let Some(candidate) = discarded_prefix(curr, current_cell, current_worldspace) {
                 visit(candidate);
             }
@@ -309,7 +312,7 @@ fn parse_group_inner(
         let peek_tag = &curr[..4];
         if peek_tag == b"GRUP" {
             let Ok((rest, group)) = parse_group_header(curr) else {
-                warnings.skipped("invalid GRUP header".into());
+                warnings.skipped_with("invalid GRUP header".into(), true);
                 visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown));
                 curr = &[];
                 continue;
@@ -321,13 +324,16 @@ fn parse_group_inner(
             let Some((group_content, siblings)) =
                 content_size.and_then(|size| rest.split_at_checked(size))
             else {
-                warnings.skipped(match content_size {
-                    Some(size) => format!(
-                        "truncated GRUP payload: expected {size}, got {}",
-                        rest.len()
-                    ),
-                    None => format!("invalid GRUP size {}", group.data_size),
-                });
+                warnings.skipped_with(
+                    match content_size {
+                        Some(size) => format!(
+                            "truncated GRUP payload: expected {size}, got {}",
+                            rest.len()
+                        ),
+                        None => format!("invalid GRUP size {}", group.data_size),
+                    },
+                    true,
+                );
                 if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
                     visit(candidate);
                 }
@@ -354,7 +360,7 @@ fn parse_group_inner(
             current_worldspace = next_worldspace;
         } else {
             let Ok((rest, header)) = parse_record_header(curr) else {
-                warnings.skipped("invalid record header".into());
+                warnings.skipped_with("invalid record header".into(), true);
                 visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown));
                 curr = &[];
                 continue;
@@ -388,11 +394,14 @@ fn parse_group_inner(
                     visit(ParsedRecord::Usable(record));
                 }
                 Err(error) => {
-                    warnings.skipped(format!(
-                        "{} {:08X}: {error}",
-                        String::from_utf8_lossy(&header.type_tag),
-                        header.form_id
-                    ));
+                    warnings.skipped_with(
+                        format!(
+                            "{} {:08X}: {error}",
+                            String::from_utf8_lossy(&header.type_tag),
+                            header.form_id
+                        ),
+                        header.type_tag == *b"WRLD",
+                    );
                     if record.is_deleted() {
                         visit(ParsedRecord::Usable(record));
                     } else {
@@ -430,15 +439,82 @@ fn decode_record_subrecords_inner(
     extract_subrecords(&decoded)
 }
 
+/// One `WRLD` record's `RNAM` subrecords, read without retaining the record.
+#[derive(Debug, Clone)]
+pub struct WorldRnam {
+    /// Raw source form id, before runtime remapping.
+    pub form_id: u32,
+    /// `EDID`, decoded with the exporter's UTF-8 lossy string rule, without the trailing NUL.
+    pub editor_id: Option<String>,
+    /// Raw `RNAM` payloads, in file order.
+    pub rnam: Vec<Vec<u8>>,
+}
+
+/// The `WRLD` `RNAM` records of one plugin, with the parser's recovery state.
+#[derive(Debug, Clone)]
+pub struct WorldRnamScan {
+    pub worlds: Vec<WorldRnam>,
+    /// Parser warnings. Some can hide a WRLD record, so the caller must not treat the subset as
+    /// complete when [`Self::incomplete`] is true.
+    pub warnings: Vec<String>,
+    /// Whether a lost frame, group or untyped record could have hidden a WRLD.
+    pub incomplete: bool,
+}
+
+/// Reads the `WRLD` `RNAM` subrecords of one plugin. Every other record is dropped as it is read,
+/// so the retail large-reference count does not need a second record parser or a full merge.
+pub fn read_world_rnam(path: &Path) -> Result<WorldRnamScan> {
+    let mut worlds = Vec::new();
+    let mut lost_world = false;
+    let report = parse_plugin_file_inner(path, |candidate| match candidate {
+        ParsedRecord::Usable(record) => {
+            if record.record_type != *b"WRLD" || record.is_deleted() {
+                return;
+            }
+            // Same decode as the exporter's record projection.
+            let editor_id = SubrecordView::new(&record.subrecords).get_string(b"EDID");
+            let rnam = record
+                .subrecords
+                .iter()
+                .filter(|(tag, _)| tag == b"RNAM")
+                .map(|(_, data)| data.clone())
+                .collect();
+            worlds.push(WorldRnam {
+                form_id: record.form_id,
+                editor_id,
+                rnam,
+            });
+        }
+        ParsedRecord::DamagedRecord(record) if record.record_type == *b"WRLD" => {
+            lost_world = true;
+        }
+        ParsedRecord::DiscardedFrame(_) => lost_world = true,
+        ParsedRecord::DamagedRecord(_) | ParsedRecord::TruncatedPlacement(_) => {}
+    })
+    .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok(WorldRnamScan {
+        worlds,
+        warnings: report.warnings,
+        incomplete: report.may_hide_worlds || lost_world,
+    })
+}
+
+/// The bounded parser summary and whether any recovery event could hide a WRLD.
+pub(super) struct ParseReport {
+    pub warnings: Vec<String>,
+    pub may_hide_worlds: bool,
+}
+
 /// Parse usable records once, retaining the existing terminal skip summaries.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
     let mut records = Vec::new();
-    parse_plugin_file_inner(path, |candidate| {
+    let report = parse_plugin_file_inner(path, |candidate| {
         if let ParsedRecord::Usable(record) = candidate {
             records.push(record);
         }
     })
     .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    let _ = report.warnings;
     Ok(records)
 }
 
@@ -447,13 +523,13 @@ pub(super) fn parse_plugin_file_with_warnings(
     path: &Path,
 ) -> Result<(Vec<ParsedRecord>, Vec<String>)> {
     let mut records = Vec::new();
-    let warnings = parse_plugin_file_inner(path, |record| records.push(record))
+    let report = parse_plugin_file_inner(path, |record| records.push(record))
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
-    Ok((records, warnings))
+    Ok((records, report.warnings))
 }
 
 /// Keep header checks and local recovery unchanged while returning their bounded summary.
-fn parse_plugin_file_inner(path: &Path, visit: impl FnMut(ParsedRecord)) -> Result<Vec<String>> {
+fn parse_plugin_file_inner(path: &Path, visit: impl FnMut(ParsedRecord)) -> Result<ParseReport> {
     let reader = EsmReader::open(path)?;
     parse_plugin_bytes(
         reader.as_slice(),
@@ -469,7 +545,7 @@ pub(super) fn parse_plugin_bytes(
     data: &[u8],
     name: &str,
     visit: impl FnMut(ParsedRecord),
-) -> Result<Vec<String>> {
+) -> Result<ParseReport> {
     let (after_header, header) =
         parse_record_header(data).map_err(|e| eyre!("Failed to parse record header: {e}"))?;
     if &header.type_tag != b"TES4" {
@@ -501,7 +577,11 @@ pub(super) fn parse_plugin_bytes(
         &mut warnings,
         visit,
     );
-    Ok(warnings.report(name))
+    let report = warnings.report(name);
+    Ok(ParseReport {
+        warnings: report,
+        may_hide_worlds: warnings.may_hide_worlds,
+    })
 }
 
 /// Parses REFR payload for Position and Base Form ID pointers
@@ -590,6 +670,66 @@ mod tests {
         .unwrap()
     }
 
+    fn record_bytes_with_flags(tag: &[u8; 4], form_id: u32, flags: u32, payload: &[u8]) -> Vec<u8> {
+        [
+            tag.as_slice(),
+            &u32::try_from(payload.len()).unwrap().to_le_bytes(),
+            &flags.to_le_bytes(),
+            &form_id.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &44u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            payload,
+        ]
+        .concat()
+    }
+
+    fn record_bytes(tag: &[u8; 4], form_id: u32, payload: &[u8]) -> Vec<u8> {
+        record_bytes_with_flags(tag, form_id, 0, payload)
+    }
+
+    /// A compressed record whose zlib stream has bytes after its end.
+    fn compressed_record_with_trailing(
+        tag: &[u8; 4],
+        form_id: u32,
+        subrecords: &[u8],
+        trailing: &[u8],
+    ) -> Vec<u8> {
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, subrecords).unwrap();
+        let mut payload = u32::try_from(subrecords.len())
+            .unwrap()
+            .to_le_bytes()
+            .to_vec();
+        payload.extend(encoder.finish().unwrap());
+        payload.extend(trailing);
+        record_bytes_with_flags(tag, form_id, FLAG_COMPRESSED, &payload)
+    }
+
+    fn subrecord_bytes(tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        [
+            tag.as_slice(),
+            &u16::try_from(data.len()).unwrap().to_le_bytes(),
+            data,
+        ]
+        .concat()
+    }
+
+    fn rnam_bytes() -> Vec<u8> {
+        let mut rnam = vec![0u8; 4];
+        rnam.extend(1u32.to_le_bytes());
+        rnam.extend(7u32.to_le_bytes());
+        rnam.extend([0u8; 4]);
+        rnam
+    }
+
+    fn write_plugin(bytes: &[u8]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("Test.esm"), bytes).unwrap();
+        directory
+    }
+
     /// Mirrors `parse_plugin_file` without file IO so prefixes can be swept.
     fn parse_prefix(bytes: &[u8]) -> Result<()> {
         let (rest, header) = parse_record_header(bytes).map_err(|error| eyre!("{error}"))?;
@@ -598,6 +738,124 @@ mod tests {
         }
         let mut records = Vec::new();
         parse_group(&rest[header.data_size as usize..], None, None, &mut records)
+    }
+
+    #[test]
+    fn world_edids_use_the_exporter_string_decode() {
+        let world = record_bytes(
+            b"WRLD",
+            1,
+            &[
+                subrecord_bytes(b"EDID", &[b'W', 0xE9, 0]),
+                subrecord_bytes(b"RNAM", &rnam_bytes()),
+            ]
+            .concat(),
+        );
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), world].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert_eq!(scan.worlds.len(), 1);
+        assert!(!scan.incomplete, "{:?}", scan.warnings);
+        assert_eq!(
+            scan.worlds[0].editor_id.as_deref(),
+            Some("W\u{FFFD}"),
+            "the exporter decodes invalid UTF-8 with String::from_utf8_lossy"
+        );
+    }
+
+    #[test]
+    fn a_truncated_world_record_marks_the_scan_incomplete() {
+        let mut truncated = record_bytes(b"WRLD", 1, b"");
+        let declared = u32::try_from(64).unwrap().to_le_bytes();
+        truncated[4..8].copy_from_slice(&declared);
+        truncated.extend(b"x");
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), truncated].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert!(scan.incomplete, "{:?}", scan.warnings);
+    }
+
+    #[test]
+    fn a_damaged_non_world_record_keeps_the_scan_complete() {
+        // A STAT payload declares more subrecord bytes than it holds. The warning names STAT, so
+        // it cannot have hidden a WRLD.
+        let damaged = record_bytes(b"STAT", 2, &[b'E', b'D', b'I', b'D', 10, 0, b'x', b'y']);
+        let world = record_bytes(
+            b"WRLD",
+            1,
+            &[
+                subrecord_bytes(b"EDID", b"W\0"),
+                subrecord_bytes(b"RNAM", &rnam_bytes()),
+            ]
+            .concat(),
+        );
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), damaged, world].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert!(!scan.incomplete, "{:?}", scan.warnings);
+        assert_eq!(scan.worlds.len(), 1);
+    }
+
+    #[test]
+    fn trailing_bytes_on_a_non_world_record_keep_the_scan_complete() {
+        let stat = compressed_record_with_trailing(
+            b"STAT",
+            2,
+            &subrecord_bytes(b"EDID", b"S\0"),
+            b"extra",
+        );
+        let world = record_bytes(
+            b"WRLD",
+            1,
+            &[
+                subrecord_bytes(b"EDID", b"W\0"),
+                subrecord_bytes(b"RNAM", &rnam_bytes()),
+            ]
+            .concat(),
+        );
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), stat, world].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert!(!scan.incomplete, "{:?}", scan.warnings);
+        assert_eq!(scan.worlds.len(), 1);
+    }
+
+    #[test]
+    fn trailing_bytes_on_a_world_keep_the_scan_incomplete() {
+        let world = compressed_record_with_trailing(
+            b"WRLD",
+            1,
+            &[
+                subrecord_bytes(b"EDID", b"W\0"),
+                subrecord_bytes(b"RNAM", &rnam_bytes()),
+            ]
+            .concat(),
+            b"extra",
+        );
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), world].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert!(scan.incomplete, "{:?}", scan.warnings);
+    }
+
+    #[test]
+    fn a_world_loss_that_is_not_the_first_skip_is_incomplete() {
+        // The first skip is a STAT with a truncated subrecord. The WRLD trailing-bytes loss is
+        // second, so a first-reason-only check would miss it.
+        let stat = record_bytes(b"STAT", 2, &[b'E', b'D', b'I', b'D', 10, 0, b'x', b'y']);
+        let world = compressed_record_with_trailing(
+            b"WRLD",
+            1,
+            &[
+                subrecord_bytes(b"EDID", b"W\0"),
+                subrecord_bytes(b"RNAM", &rnam_bytes()),
+            ]
+            .concat(),
+            b"extra",
+        );
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), stat, world].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert!(
+            scan.warnings.iter().any(|warning| warning.contains("STAT")),
+            "{:?}",
+            scan.warnings
+        );
+        assert!(scan.incomplete, "{:?}", scan.warnings);
     }
 
     #[test]

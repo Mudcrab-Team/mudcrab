@@ -186,6 +186,8 @@ pub fn run(options: &DeriveObjectLodOptions) -> Result<DeriveObjectLodReport> {
         &target,
         &transaction,
         world,
+        &world_file,
+        &retail.skipped,
         retail.blocks,
         &retail.atlas_dds,
         &atlas_sha256,
@@ -380,10 +382,13 @@ fn object_row_count(connection: &Connection) -> Result<i64> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_generation(
     target: &Path,
     transaction: &Transaction<'_>,
     world: WorldFacts,
+    world_file: &str,
+    read_skipped: &[SkippedBlock],
     candidates: Vec<BlockCandidate>,
     atlas_dds: &[u8],
     atlas_sha256: &str,
@@ -477,6 +482,15 @@ fn stage_generation(
             row.get(0)
         })?;
     manifest.objects_compiler_version = OBJECT_COMPILER_VERSION;
+    // silent-ok: a pack made before the block existed has no recorded skips
+    let mut reconciliation = manifest.reconciliation.take().unwrap_or_default();
+    reconciliation.remove_object_world(world_file);
+    for block in read_skipped.iter().chain(&skipped) {
+        reconciliation.record_object_skip(world_file, block.level, block.class, block.cell);
+    }
+    reconciliation.record_object_world(world_file);
+    reconciliation.format = crate::lod::reconciliation::FORMAT.to_owned();
+    manifest.reconciliation = Some(reconciliation);
     let manifest = serde_json::to_value(&manifest)?;
     validate_object_generation(transaction, Some(&manifest), &|path| {
         if paths.contains(Path::new(path)) {
@@ -617,6 +631,7 @@ mod tests {
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
                 object_atlases: BTreeMap::new(),
+                reconciliation: None,
             })
             .unwrap(),
         )
@@ -635,6 +650,8 @@ mod tests {
             root,
             &transaction,
             WORLD,
+            "tamriel",
+            &[],
             candidates,
             &atlas_dds(),
             "atlas",
@@ -821,6 +838,8 @@ mod tests {
             root.path(),
             &transaction,
             WORLD,
+            "tamriel",
+            &[],
             vec![candidate((0, -16), Ok(block(vec![changed])))],
             &atlas_dds(),
             "atlas",
@@ -878,6 +897,37 @@ mod tests {
                     chunk_key_for_block(60, WORLD.origin, 16, 0, -16).unwrap()
                 ))
                 .exists()
+        );
+    }
+
+    #[test]
+    fn a_derive_records_its_world_and_skip_classes() {
+        let root = tempfile::tempdir().unwrap();
+        pack(root.path());
+        let report = derive(
+            root.path(),
+            vec![
+                candidate((0, -16), Ok(block(vec![shape(1)]))),
+                candidate((16, -16), Err("bad block".to_owned())),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(report.skipped.len(), 1);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("lod-manifest.json")).unwrap())
+                .unwrap();
+        let reconciliation = &manifest["reconciliation"];
+        assert!(
+            reconciliation["objects_recorded_worlds"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("tamriel")),
+            "{reconciliation}"
+        );
+        assert_eq!(
+            reconciliation["object_skips"]["tamriel"]["16"]["block cannot be read"]["blocks"], 1,
+            "{reconciliation}"
         );
     }
 }

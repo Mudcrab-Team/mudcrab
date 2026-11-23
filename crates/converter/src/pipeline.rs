@@ -5372,6 +5372,7 @@ async fn compile_lod_chunks_inline(
         ));
     }
     // List the retail files once. A listing failure still allows verified checkpoints to resume.
+    let mut terrain_listing_failed = false;
     let retail_files = if retail_terrain {
         let files = match crate::lod::retail_terrain_source::list(&config.data_dir) {
             Ok(files) => {
@@ -5381,6 +5382,7 @@ async fn compile_lod_chunks_inline(
                 files
             }
             Err(error) => {
+                terrain_listing_failed = true;
                 report.lod_warnings.push(format!(
                     "the retail terrain LOD files cannot be listed: {error:#}; no new terrain LOD is imported"
                 ));
@@ -5410,6 +5412,8 @@ async fn compile_lod_chunks_inline(
     )
     .await;
     let mut chunk_hashes: Vec<String> = Vec::new();
+    let mut terrain_reconciliation = crate::lod::reconciliation::LodReconciliation::new();
+    terrain_reconciliation.terrain_listing_failed = terrain_listing_failed;
     let mut world_settings = Vec::with_capacity(worlds.len());
     let mut compiled_worlds = 0u64;
     let mut terrain_sources = BTreeMap::new();
@@ -5512,6 +5516,9 @@ async fn compile_lod_chunks_inline(
                 file_name,
                 origin,
             };
+            if !terrain_listing_failed {
+                terrain_reconciliation.record_terrain_world(&world.file_name);
+            }
             let imported = import_world(
                 &connection,
                 checkpoint,
@@ -5524,6 +5531,15 @@ async fn compile_lod_chunks_inline(
                 || interrupt(cancellation),
             )?;
             let compiled: usize = imported.compiled.values().sum();
+            for (id, skipped) in &imported.skipped {
+                terrain_reconciliation.record_terrain_skip(
+                    &id.0,
+                    id.1,
+                    skipped.class,
+                    (id.2, id.3),
+                    crate::lod::reconciliation::SkipPresence::of(files, id),
+                );
+            }
             report.lod_warnings.extend(imported.checkpoint_warnings);
             let retained = imported.kept_from_previous_generation;
             if ids.is_empty() && retained == 0 {
@@ -5957,6 +5973,15 @@ async fn compile_lod_chunks_inline(
     };
     if compiled_worlds > 0 {
         report.artifacts.push(PathBuf::from("lod-manifest.json"));
+        terrain_reconciliation.objects_recorded_worlds =
+            object_lod.reconciliation.objects_recorded_worlds;
+        terrain_reconciliation.object_skips = object_lod.reconciliation.object_skips;
+        terrain_reconciliation.object_world_skips = object_lod.reconciliation.object_world_skips;
+        terrain_reconciliation.object_world_skip_blocks =
+            object_lod.reconciliation.object_world_skip_blocks;
+        // Always write the block, even with no skips, so a clean pack says which worlds were
+        // inspected instead of reading as unknown.
+        let reconciliation = Some(terrain_reconciliation);
         let manifest = LodManifest {
             build_identity: identity,
             converter_schema: CONVERTER_SCHEMA_VERSION,
@@ -5988,6 +6013,7 @@ async fn compile_lod_chunks_inline(
             },
             object_chunk_inputs: object_lod.chunks.iter().cloned().collect(),
             object_atlases: object_lod.atlases.iter().cloned().collect(),
+            reconciliation,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -7891,6 +7917,7 @@ mod tests {
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
                 object_atlases: BTreeMap::new(),
+                reconciliation: None,
             };
             Proof {
                 identity,
@@ -8740,6 +8767,12 @@ mod tests {
             let manifest: LodManifest =
                 serde_json::from_slice(&fs::read(root.join("lod-manifest.json")).unwrap()).unwrap();
             assert_eq!(manifest.object_chunks, 1);
+            let reconciliation = manifest
+                .reconciliation
+                .as_ref()
+                .expect("a clean conversion still writes the reconciliation block");
+            assert!(reconciliation.terrain_recorded_worlds.contains(&world));
+            assert!(reconciliation.objects_recorded_worlds.contains(&world));
             assert_eq!(report.lod_chunks, 1, "{:?}", report.lod_warnings);
             assert_eq!(manifest.chunks, report.lod_chunks);
             assert_eq!(
@@ -8814,6 +8847,82 @@ mod tests {
         drain.await.unwrap();
         check(&directory.path().join("rebuilt"), &rebuilt);
         assert_eq!(rebuilt.converted, 0, "a rebuild reconverts nothing");
+    }
+
+    /// A missing atlas records the blocks it inspected, and the pipeline copies that coverage
+    /// into lod-manifest.json instead of dropping it.
+    #[tokio::test]
+    async fn a_missing_atlas_coverage_survives_the_pipeline_manifest() {
+        use crate::lod::retail::bto::tests::{SHAPE, nif_bytes, shape_block};
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        let mut config = cpu_lod_config(&data, directory.path().join("before"));
+        config.cpu_jobs = 2;
+        let before = run_without_progress(config.clone()).await;
+        assert!(before.complete && before.lod_chunks > 0);
+        let (editor_id, x, y): (String, i32, i32) =
+            Connection::open(directory.path().join("before/skyrim_world.db"))
+                .unwrap()
+                .query_row(
+                    "SELECT editor_id, lod_origin_x, lod_origin_y FROM worldspaces w \
+                     WHERE EXISTS(SELECT 1 FROM lod_chunks c WHERE c.worldspace_id = w.id) LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        let world = editor_id.to_ascii_lowercase();
+        let folder = data.join(format!("meshes/terrain/{world}/objects"));
+        fs::create_dir_all(&folder).unwrap();
+        let block = shape_block(
+            [x as f32 * 4096.0, y as f32 * 4096.0, 0.0],
+            16.0,
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
+            &[[0, 1, 2]],
+            &[(0, 0, 1)],
+            true,
+            true,
+        );
+        fs::write(
+            folder.join(format!("{world}.16.{x}.{y}.bto")),
+            nif_bytes(&[(SHAPE, block)]),
+        )
+        .unwrap();
+
+        let mut missing = config;
+        missing.output_dir = directory.path().join("missing-atlas");
+        let report = run_without_progress(missing).await;
+        assert!(report.complete, "{:?}", report.warnings);
+        assert_eq!(report.object_lod_chunks, 0);
+        let manifest: LodManifest = serde_json::from_slice(
+            &fs::read(directory.path().join("missing-atlas/lod-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let reconciliation = manifest
+            .reconciliation
+            .as_ref()
+            .expect("the pipeline writes the reconciliation block");
+        assert_eq!(
+            reconciliation
+                .object_world_skips
+                .get(&world)
+                .map(String::as_str),
+            Some(crate::lod::object_stage::MISSING_ATLAS)
+        );
+        assert!(
+            reconciliation
+                .object_world_skip_blocks
+                .get(&world)
+                .is_some_and(|blocks| blocks.contains(&(16, x, y))),
+            "{:?}",
+            reconciliation.object_world_skip_blocks
+        );
     }
 
     #[tokio::test]

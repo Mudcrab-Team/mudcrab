@@ -16,6 +16,7 @@ use crate::{
             MissingObjectUv, ObjectChunk, chunk_key_for_block, compile_object_chunk_shared_atlas,
             object_chunk_input_hash, publish_object_atlas, publish_object_chunk,
         },
+        reconciliation::LodReconciliation,
         retail::{
             atlas::read_dds_info,
             bto::{ObjectLodFile, read_object_lod},
@@ -66,6 +67,9 @@ pub(crate) struct MissingObjectAtlas {
     pub paths: Vec<String>,
     /// The absent paths and the near matches in the game data, from [`FileIndex`].
     pub detail: String,
+    /// The level and south-west cell of every source block the listing found. A later block
+    /// outside this set is not covered by this world-level skip.
+    pub blocks: BTreeSet<(u32, i32, i32)>,
 }
 
 impl std::fmt::Display for MissingObjectAtlas {
@@ -166,7 +170,7 @@ fn is_terrain_entry_name(name: &str) -> bool {
 /// Finds the files `wanted` accepts in loose files and archives of `data`. Loose files win over
 /// archives; otherwise every archive that has the file is listed. The index holds every terrain
 /// file that was listed, wanted or not, for near-match reports.
-fn providers(
+pub(crate) fn providers(
     data: &Path,
     wanted: &dyn Fn(&str) -> bool,
 ) -> Result<(BTreeMap<String, Vec<Provider>>, FileIndex)> {
@@ -342,9 +346,19 @@ pub(crate) fn read_retail(
         [] => {
             // An absent atlas is known from the file listing. Fail before any archive is read.
             let names: Vec<&str> = atlas_names.iter().map(String::as_str).collect();
+            let blocks = found
+                .keys()
+                .filter(|path| is_block(path))
+                .filter_map(|path| {
+                    let name = parse_lod_file_name(path)?;
+                    let (level, (x, y)) = (name.level?, name.cell?);
+                    Some((level, x, y))
+                })
+                .collect();
             return Err(MissingObjectAtlas {
                 paths: atlas_names.to_vec(),
                 detail: index.describe_missing(&names, Some(world_file)),
+                blocks,
             }
             .into());
         }
@@ -584,6 +598,8 @@ pub(crate) struct ObjectLodStage {
     pub warnings: Vec<String>,
     /// The worlds that have object blocks but were skipped, each with its reason class.
     pub skipped_worlds: Vec<SkippedWorld>,
+    /// Structured skip counts for `converter reconcile`.
+    pub reconciliation: LodReconciliation,
 }
 
 /// Compiles the retail object LOD of every world that has terrain LOD and publishes it into the
@@ -637,6 +653,7 @@ pub(crate) fn build_object_lod(
             ));
             continue;
         }
+        stage.reconciliation.record_object_world(&file_name);
         let world_scratch = scratch.path().join(format!("world-{id:08x}"));
         let retail = match read_retail(&config.data_dir, &file_name, &world_scratch, &mut verify) {
             Ok(RetailRead::Found(retail)) => retail,
@@ -653,6 +670,11 @@ pub(crate) fn build_object_lod(
                     );
                     warn!("{message}");
                     stage.warnings.push(message);
+                    stage.reconciliation.record_object_world_skip(
+                        &file_name,
+                        MISSING_ATLAS,
+                        missing.blocks.clone(),
+                    );
                     stage.skipped_worlds.push(SkippedWorld {
                         editor_id,
                         class: MISSING_ATLAS,
@@ -684,6 +706,12 @@ pub(crate) fn build_object_lod(
             .wrap_err_with(|| format!("the object atlas of {editor_id} is not a valid KTX2"))?;
         let (chunks, skipped) = compile_candidates(world, retail.blocks, &atlas_sha256)?;
         for block in retail.skipped.iter().chain(&skipped) {
+            stage.reconciliation.record_object_skip(
+                &file_name,
+                block.level,
+                block.class,
+                block.cell,
+            );
             stage.warnings.push(format!(
                 "object LOD {editor_id}: skipped block ({}, {}): {}: {}",
                 block.cell.0, block.cell.1, block.class, block.detail
