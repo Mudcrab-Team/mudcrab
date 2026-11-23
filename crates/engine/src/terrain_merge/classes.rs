@@ -37,6 +37,9 @@ pub const NO_NORMAL_WORD: u32 = u32::MAX;
 /// every normal slot, bound or not, because a slot is in the bind group layout either way.
 pub const TERRAIN_CLASS_BINDINGS: u32 = (2 * MAX_CLASSES_PER_USAGE) as u32;
 
+/// The distant atlas and the shared land noise bindings.
+const TERRAIN_BLEND_BINDINGS: u32 = 2;
+
 /// What the checks leave for the rest of Bevy's PBR pipeline (the standard material's textures,
 /// shadow maps, environment maps, prepass textures): a deliberately generous allowance, since the
 /// real count depends on the features a view turns on and wgpu offers no way to ask for it.
@@ -161,7 +164,7 @@ impl TerrainClasses {
     /// The sampled textures the material needs on top of Bevy's own: the class slots it always
     /// declares, bound or not.
     pub fn sampled_textures_needed(&self) -> u32 {
-        TERRAIN_CLASS_BINDINGS
+        TERRAIN_CLASS_BINDINGS + TERRAIN_BLEND_BINDINGS
     }
 
     /// The lookup table as the bytes of the shader's `array<vec2<u32>>`.
@@ -453,7 +456,7 @@ pub(crate) mod tests {
         );
 
         // Exactly enough sampled textures passes, one fewer is refused.
-        let needed = TERRAIN_CLASS_BINDINGS + PBR_SAMPLED_TEXTURE_RESERVE;
+        let needed = classes.sampled_textures_needed() + PBR_SAMPLED_TEXTURE_RESERVE;
         let edge = AdapterLimits {
             max_sampled_textures_per_shader_stage: needed,
             ..roomy()

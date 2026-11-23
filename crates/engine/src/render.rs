@@ -1,3 +1,4 @@
+use crate::streaming::near_terrain_blend::{NearTerrainBlend, NearTerrainBlendSettings};
 use crate::{
     color_pipeline::{DEFAULT_SCENE_EV100, SceneColorPipeline},
     profiling::ProfilingState,
@@ -631,6 +632,14 @@ fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<R
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct TerrainExtension {
+    #[uniform(121)]
+    seam_settings: NearTerrainBlendSettings,
+    #[texture(122, visibility(fragment))]
+    #[sampler(123, visibility(fragment))]
+    seam_overlay: Option<Handle<Image>>,
+    #[texture(124, visibility(fragment))]
+    #[sampler(125, visibility(fragment))]
+    seam_noise: Option<Handle<Image>>,
     #[texture(100)]
     layer_0: Option<Handle<Image>>,
     #[texture(102)]
@@ -809,6 +818,29 @@ pub struct TerrainImages {
 }
 
 impl TerrainExtension {
+    pub(crate) fn blend_differs(&self, blend: Option<&NearTerrainBlend>) -> bool {
+        match blend {
+            Some((settings, overlay, noise)) => {
+                self.seam_settings != *settings
+                    || self.seam_overlay.as_ref() != Some(overlay)
+                    || self.seam_noise.as_ref() != Some(noise)
+            }
+            None => self.seam_overlay.is_some(),
+        }
+    }
+
+    pub(crate) fn set_blend(&mut self, blend: Option<NearTerrainBlend>) {
+        if let Some((settings, overlay, noise)) = blend {
+            self.seam_settings = settings;
+            self.seam_overlay = Some(overlay);
+            self.seam_noise = Some(noise);
+        } else {
+            self.seam_settings = NearTerrainBlendSettings::default();
+            self.seam_overlay = None;
+            self.seam_noise = None;
+        }
+    }
+
     /// The exact image resources retained by this quadrant's material.
     pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
         [
@@ -885,6 +917,9 @@ impl TerrainExtension {
         settings.set_normal_layers(&normals);
         Ok((
             Self {
+                seam_settings: NearTerrainBlendSettings::default(),
+                seam_overlay: None,
+                seam_noise: None,
                 layer_0: textures[0].clone(),
                 layer_1: textures[1].clone(),
                 layer_2: textures[2].clone(),
@@ -919,6 +954,9 @@ impl TerrainExtension {
         let layers = crate::streaming::quadrant_layers(terrain, quadrant)?;
         let overlay_weights = crate::streaming::quadrant_overlay_weights(terrain, quadrant)?;
         Ok(Self {
+            seam_settings: NearTerrainBlendSettings::default(),
+            seam_overlay: None,
+            seam_noise: None,
             layer_0: Some(textures[0].clone()),
             layer_1: Some(textures[1].clone()),
             layer_2: Some(textures[2].clone()),
@@ -969,6 +1007,9 @@ impl TerrainExtension {
 impl Default for TerrainExtension {
     fn default() -> Self {
         Self {
+            seam_settings: NearTerrainBlendSettings::default(),
+            seam_overlay: None,
+            seam_noise: None,
             layer_0: None,
             layer_1: None,
             layer_2: None,
@@ -988,6 +1029,10 @@ impl Default for TerrainExtension {
 }
 
 impl MaterialExtension for TerrainExtension {
+    fn vertex_shader() -> ShaderRef {
+        "embedded://engine/shaders/terrain.wgsl".into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         "embedded://engine/shaders/terrain.wgsl".into()
     }

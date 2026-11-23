@@ -15,7 +15,7 @@ use crate::{
 };
 use bevy::{
     asset::{AssetLoadError, LoadState, RecursiveDependencyLoadState, io::AssetReaderError},
-    gltf::GltfAssetLabel,
+    gltf::{GltfAssetLabel, GltfMaterialName},
     mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
     tasks::{IoTaskPool, Task, block_on},
@@ -79,6 +79,32 @@ pub(super) struct LodStreaming {
 }
 
 impl LodStreaming {
+    pub(super) fn near_terrain_overlay<'a>(
+        &self,
+        overlays: &'a Query<&TerrainLodOverlay>,
+        worldspace: u32,
+        centre: IVec2,
+        cell: IVec2,
+        distances: &TerrainLodDistances,
+    ) -> Option<(&'a Handle<Image>, IVec2, f32)> {
+        // stand-in(#939): The seam pairing is inferred. Query the loaded LOD tree at the
+        // land cell centre using Mudcrab's tier selector before full-detail visibility hides it.
+        let wanted = distances.terrain_tier(centre, cell, self.grid_origin)?;
+        let origin = LodOrigin::new(self.grid_origin.x, self.grid_origin.y);
+        for tier in LodTier::ALL.into_iter().filter(|tier| *tier >= wanted) {
+            let anchor = origin.chunk_for_cell(tier, cell.x, cell.y);
+            let key = ChunkKey::new(worldspace, tier, anchor);
+            if let Some(LodChunkStatus::Ready { root, .. }) = self.chunks.get(&key) {
+                // silent-ok: A chunk without a retail atlas cannot supply a near blend.
+                let atlas = overlays.get(*root).ok()?;
+                let relative = anchor.min_cell(tier);
+                let base = self.grid_origin + IVec2::new(relative.0, relative.1);
+                return Some((&atlas.0, base, tier.side_cells() as f32));
+            }
+        }
+        None
+    }
+
     fn query_ready(&self, tier: LodTier, now: Instant) -> bool {
         !self.requested_queries.contains(&tier)
             && self
@@ -190,6 +216,10 @@ pub(super) struct LodChunkGridOrigin {
     pub(super) grid_x: i64,
     pub(super) grid_y: i64,
 }
+
+/// The converted block's diffuse atlas, retained when batching replaces the source scene.
+#[derive(Component)]
+pub(super) struct TerrainLodOverlay(Handle<Image>);
 
 #[derive(Component)]
 pub(super) struct PendingLodChunk {
@@ -710,7 +740,7 @@ pub(super) fn track_lod_readiness(
     world_assets: Res<Assets<WorldAsset>>,
     meshes: Res<Assets<Mesh>>,
     children: Query<&Children>,
-    names: Query<&Name>,
+    names: (Query<&Name>, Query<&GltfMaterialName>),
     mesh_handles: Query<&Mesh3d>,
     materials: Query<&MeshMaterial3d<StandardMaterial>>,
     material_assets: Res<Assets<StandardMaterial>>,
@@ -722,6 +752,7 @@ pub(super) fn track_lod_readiness(
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
+    let (names, material_names) = names;
     let started = Instant::now();
     if noise.loading(&asset_server) {
         return;
@@ -825,6 +856,7 @@ pub(super) fn track_lod_readiness(
             );
         }
         let mut chunk_materials = HashMap::new();
+        let mut overlay = None;
         for (patch, coverage) in &patches {
             if let (Some(image), Some(noisy_materials), Ok(primitives)) = (
                 noise_image.as_ref(),
@@ -834,8 +866,15 @@ pub(super) fn track_lod_readiness(
                 for primitive in primitives.iter() {
                     if let Ok(material) = materials.get(primitive)
                         && let Some(base) = material_assets.get(&material.0)
-                        && base.base_color_texture.is_some()
+                        && let Some(diffuse) = &base.base_color_texture
                     {
+                        if overlay.is_none()
+                            && material_names.get(primitive).is_ok_and(|name| {
+                                name.0 == shared::lod::RETAIL_TERRAIN_MATERIAL_NAME
+                            })
+                        {
+                            overlay = Some(TerrainLodOverlay(diffuse.clone()));
+                        }
                         let handle = chunk_materials.entry(material.0.id()).or_insert_with(|| {
                             noisy_materials.add(NoisyTerrainLodMaterial {
                                 base: base.clone(),
@@ -854,6 +893,9 @@ pub(super) fn track_lod_readiness(
             commands
                 .entity(*patch)
                 .insert((*coverage, TerrainSurfaceReady, Visibility::Hidden));
+        }
+        if let Some(overlay) = overlay {
+            commands.entity(entity).insert(overlay);
         }
         commands.entity(entity).insert(Visibility::Inherited);
         commands.entity(entity).remove::<PendingLodChunk>();

@@ -34,6 +34,35 @@ struct PbrInput {
 
 const FORWARD_IO: &str = "
 #define_import_path bevy_pbr::forward_io
+struct Vertex {
+    @builtin(instance_index) instance_index: u32,
+#ifdef VERTEX_POSITIONS
+    @location(0) position: vec3<f32>,
+#endif
+#ifdef VERTEX_NORMALS
+    @location(1) normal: vec3<f32>,
+#endif
+#ifdef VERTEX_UVS_A
+    @location(2) uv: vec2<f32>,
+#endif
+#ifdef VERTEX_UVS_B
+    @location(3) uv_b: vec2<f32>,
+#endif
+#ifdef VERTEX_TANGENTS
+    @location(4) tangent: vec4<f32>,
+#endif
+#ifdef VERTEX_COLORS
+    @location(5) color: vec4<f32>,
+#endif
+#ifdef SKINNED
+    @location(6) joint_indices: vec4<u32>,
+    @location(7) joint_weights: vec4<f32>,
+#endif
+#ifdef MORPH_TARGETS
+    @builtin(vertex_index) index: u32,
+#endif
+};
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) world_position: vec4<f32>,
@@ -70,6 +99,9 @@ fn get_world_from_local(instance_index: u32) -> mat4x4<f32> {
         vec4<f32>(0.0, 1.0, 0.0, 0.0),
         vec4<f32>(0.0, 0.0, 1.0, 0.0),
         vec4<f32>(0.0, 0.0, 0.0, 1.0));
+}
+fn mesh_tangent_local_to_world(world_from_local: mat4x4<f32>, tangent: vec4<f32>, instance_index: u32) -> vec4<f32> {
+    return tangent;
 }
 fn mesh_normal_local_to_world(vertex_normal: vec3<f32>, instance_index: u32) -> vec3<f32> {
     return vertex_normal;
@@ -169,6 +201,8 @@ fn compose_module(
     let mut composer = Composer::default();
     let mut shader_defs: HashMap<String, ShaderDefValue> = HashMap::new();
     for name in [
+        "VERTEX_POSITIONS",
+        "VERTEX_NORMALS",
         "VERTEX_UVS_A",
         "VERTEX_COLORS",
         "VERTEX_OUTPUT_INSTANCE_INDEX",
@@ -186,6 +220,10 @@ fn compose_module(
         }
     }
     for (path, source) in [
+        (
+            "terrain_blend.wgsl",
+            include_str!("../shaders/terrain_blend.wgsl"),
+        ),
         ("pbr_types.wgsl", PBR_TYPES),
         ("forward_io.wgsl", FORWARD_IO),
         ("mesh_functions.wgsl", MESH_FUNCTIONS),

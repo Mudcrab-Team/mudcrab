@@ -64,6 +64,7 @@ pub(crate) mod lod;
 pub mod lod_objects;
 #[cfg(test)]
 mod merged_tests;
+pub(crate) mod near_terrain_blend;
 mod priority;
 pub(crate) mod requests;
 mod reservations;
@@ -197,6 +198,7 @@ impl Plugin for StreamingPlugin {
                     lod::track_lod_readiness,
                     lod::batch_ready_lod_chunks,
                     lod::update_terrain_lod_visibility,
+                    near_terrain_blend::update_near_terrain_blend,
                     finish_streaming_commit_budget,
                     update_render_origin,
                     validate_streaming_lifecycle,

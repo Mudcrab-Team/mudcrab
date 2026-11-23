@@ -1,3 +1,5 @@
+#import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
+
 // The shared terrain shader of merged cells (#215): one material for every cell.
 //
 // Each vertex carries its quadrant's land texture ids and its own slot weights (see
@@ -118,6 +120,12 @@ struct TerrainVertex {
 #endif
 }
 
+@group(#{MATERIAL_BIND_GROUP}) @binding(121) var<uniform> seam: NearTerrainBlendSettings;
+@group(#{MATERIAL_BIND_GROUP}) @binding(122) var seam_overlay: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(123) var seam_overlay_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(124) var seam_noise: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(125) var seam_noise_sampler: sampler;
+
 struct TerrainVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) world_position: vec4<f32>,
@@ -145,6 +153,7 @@ struct TerrainVertexOutput {
     @location(14) weights_2: vec4<f32>,
     @location(15) weights_3: vec4<f32>,
 #endif
+    @location(3) seam_ramp: f32,
 }
 
 @vertex
@@ -175,6 +184,7 @@ fn vertex(input: TerrainVertex) -> TerrainVertexOutput {
     out.weights_2 = input.weights_2;
     out.weights_3 = input.weights_3;
 #endif
+    out.seam_ramp = terrain_blend_ramp(distance(vec2<f32>(input.position.x, -input.position.z), seam.centre.xy));
     return out;
 }
 
@@ -357,12 +367,20 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
         tangent_normal += vec3<f32>(0.0, 0.0, 1.0) * weight;
 #endif
     }
-    pbr_input.material.base_color *= color / total;
+    color = color / total;
+    let seam_weight = terrain_blend_weight(in.seam_ramp, seam.atlas.w);
+    if seam.atlas.w != 0.0 {
+        let distant_uv = terrain_atlas_uv(in.uv, seam.atlas);
+        let distant = textureSample(seam_overlay, seam_overlay_sampler, distant_uv).rgb;
+        let noisy = noisy_land_colour(distant, seam_noise, seam_noise_sampler, distant_uv);
+        color = vec4<f32>(mix(color.rgb, noisy, seam_weight), color.a);
+    }
+    pbr_input.material.base_color *= color;
     pbr_input.material.reflectance = terrain_reflectance(pbr_input.material.reflectance, specular_mask, total);
     // Only a fragment that reads at least one normal map turns the blend into a world normal.
     if any_normal {
         let geometric = normalize(pbr_input.world_normal);
-        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(tangent_normal));
+        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(tangent_normal / total, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
     }
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     var out: FragmentOutput;
