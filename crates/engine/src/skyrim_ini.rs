@@ -15,6 +15,9 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
+//! | `[Display]` | `fSunUpdateThreshold` | shadow step trigger (degrees are an engine choice; default 0.5) |
+//! | `[Display]` | `fSunShadowUpdateTime` | parsed transition duration in seconds (default 1); reported as reserved while shadows snap |
+//! | `[Display]` | `fSunShadowMaxHoldSeconds` | engine extension: maximum moving-clock hold in virtual seconds (default 10) |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
@@ -148,6 +151,43 @@ impl SkyrimIni {
                 ),
             }
         }
+        for (key, setting, upper_bound, positive) in [
+            (
+                "fSunUpdateThreshold",
+                &mut config.sun_shadow.threshold_degrees,
+                180.0,
+                false,
+            ),
+            (
+                "fSunShadowUpdateTime",
+                &mut config.sun_shadow.transition_seconds,
+                f32::MAX,
+                false,
+            ),
+            (
+                "fSunShadowMaxHoldSeconds",
+                &mut config.sun_shadow.max_hold_seconds,
+                f32::MAX,
+                true,
+            ),
+        ] {
+            let Some(raw) = self.get("Display", key) else {
+                continue;
+            };
+            match raw.parse::<f32>() {
+                Ok(value)
+                    if value.is_finite()
+                        && (0.0..=upper_bound).contains(&value)
+                        && (!positive || value > 0.0) =>
+                {
+                    *setting = value;
+                }
+                _ => eprintln!(
+                    "warning: ignoring [Display] {key}={raw:?}; expected a finite {} number up to {upper_bound}",
+                    if positive { "positive" } else { "nonnegative" }
+                ),
+            }
+        }
         for (index, key) in crate::sun::SUN_KEYS.into_iter().enumerate() {
             let Some(raw) = self.get("Sky", key) else {
                 continue;
@@ -243,6 +283,45 @@ fn parse_grass_value(key: &str, default: &Value, raw: &str) -> Result<Value, &'s
 mod tests {
     use super::*;
     use shared::lod::LodTier;
+
+    /// Legacy keys retain separate meanings, layer independently, and expose the engine cap.
+    #[test]
+    fn shadow_stepping_keys_layer_and_keep_transition_duration_separate() {
+        let mut ini = SkyrimIni::default();
+        ini.merge_str("[Display]\nfSunUpdateThreshold=0.25\nfSunShadowUpdateTime=2.5\nfSunShadowMaxHoldSeconds=7\n");
+        ini.merge_str("[dIsPlAy]\nfsunupdatethreshold=0.75\n");
+        let mut config = EngineConfig::default();
+        ini.apply(&mut config);
+        assert_eq!(config.sun_shadow.threshold_degrees, 0.75);
+        assert_eq!(config.sun_shadow.transition_seconds, 2.5);
+        assert_eq!(config.sun_shadow.max_hold_seconds, 7.0);
+        let zero = apply("[Display]\nfSunUpdateThreshold=0\nfSunShadowUpdateTime=0\n");
+        assert_eq!(zero.sun_shadow.threshold_degrees, 0.0);
+        assert_eq!(zero.sun_shadow.transition_seconds, 0.0);
+    }
+
+    /// Invalid numbers retain the documented defaults and a strictly positive hold cap.
+    #[test]
+    fn malformed_shadow_stepping_keys_retain_defaults() {
+        for (key, values) in [
+            (
+                "fSunUpdateThreshold",
+                vec!["NaN", "inf", "bad", "-1", "181"],
+            ),
+            ("fSunShadowUpdateTime", vec!["NaN", "inf", "bad", "-1"]),
+            (
+                "fSunShadowMaxHoldSeconds",
+                vec!["NaN", "inf", "bad", "-1", "0"],
+            ),
+        ] {
+            for value in values {
+                let config = apply(&format!("[Display]\n{key}={value}\n"));
+                assert_eq!(config.sun_shadow.threshold_degrees, 0.5);
+                assert_eq!(config.sun_shadow.transition_seconds, 1.0);
+                assert_eq!(config.sun_shadow.max_hold_seconds, 10.0);
+            }
+        }
+    }
 
     fn apply(text: &str) -> EngineConfig {
         let mut ini = SkyrimIni::default();

@@ -7,8 +7,13 @@
 //! no climate timing has no sunrise or sunset: it gets no sun path and `app::sun_rotation` gives its
 //! sun no authored direction (identity rotation).
 
+use crate::sun_shadow::{SunShadowDirection, SunShadowSettings};
 use crate::{config::EngineConfig, streaming::ActiveSpace, world::environment::EnvironmentCatalog};
 use bevy::prelude::*;
+
+/// A single frame that advances the game clock by at least this many game seconds (15 game
+/// minutes) counts as a time jump, so shadows refresh at once.
+const IMMEDIATE_REFRESH_GAME_SECONDS: f64 = 900.0;
 
 /// Retail `GameHour` (GLOB record, form id 0x38, editor id `GameHour`): 8.0 in the registered pack
 /// data. It is the default start hour and the replacement for a non-finite hour. The matching
@@ -218,6 +223,7 @@ impl GameClock {
 
 /// Marks the world's sun so fixture and other directional lights are never rotated accidentally.
 #[derive(Component)]
+#[require(SunShadowDirection)]
 pub struct SunLight;
 
 /// The sun rotation of a world that has no sun path: no authored direction exists, so the light
@@ -283,7 +289,35 @@ pub fn sun_path_problem(
     })
 }
 
-/// Advance before rendering; no allocations or database access occur per frame.
+/// Last clock and path inputs, used to recognize travel and explicit time changes immediately.
+struct SunFrame {
+    hour: f64,
+    worldspace: u32,
+    path: Option<(u32, SunTiming, SunSettings)>,
+    shadow_settings: SunShadowSettings,
+}
+
+/// Suns the game clock turns. Sky modes 1 and 2 hold the sun with the cell key light
+/// (RF-LIGHT-CPU-011), so a sun with `ExteriorSunState` keeps its interior rotation
+/// (`world::environment::interior`).
+type ClockDrivenSun = (
+    With<SunLight>,
+    Without<crate::world::environment::interior::ExteriorSunState>,
+);
+
+/// Per-driver history and one-time diagnostics.
+#[derive(Default)]
+pub(crate) struct SunUpdateState {
+    problem: Option<SunPathProblem>,
+    previous: Option<SunFrame>,
+    transition_reported: bool,
+    /// Counts discontinuities (time, world or path changes). Each sun records the count it last
+    /// applied, so a sun the interior lighting held during a change refreshes when it returns.
+    refreshes: u64,
+}
+
+/// Advance continuous illumination and the independent stepped shadow basis before rendering.
+/// No allocations or database access occur per frame.
 ///
 /// The clock advances by the delta of `Res<Time>`, which in `Update` is virtual time. Bevy clamps
 /// a virtual-time delta to its default maximum (250 ms) and no production code changes that limit,
@@ -295,34 +329,56 @@ pub(crate) fn update_sun(
     config: Res<EngineConfig>,
     catalog: Option<Res<EnvironmentCatalog>>,
     space: Option<Res<ActiveSpace>>,
-    // Sky modes 1 and 2 hold the sun with the cell key light (RF-LIGHT-CPU-011): the clock must
-    // not turn it (`world::environment::interior`).
-    mut sun: Query<
-        &mut Transform,
-        (
-            With<SunLight>,
-            Without<crate::world::environment::interior::ExteriorSunState>,
-        ),
-    >,
-    mut reported: Local<Option<SunPathProblem>>,
+    mut sun: Query<(&mut Transform, &mut SunShadowDirection), ClockDrivenSun>,
+    mut state: Local<SunUpdateState>,
 ) {
+    let before = clock.hour;
     clock.advance(time.delta_secs_f64());
+    if !state.transition_reported {
+        info!(
+            "sun shadows: fSunUpdateThreshold={} degrees (engine units), \
+             fSunShadowUpdateTime={} seconds, fSunShadowMaxHoldSeconds={} (engine extension)",
+            config.sun_shadow.threshold_degrees,
+            config.sun_shadow.transition_seconds,
+            config.sun_shadow.max_hold_seconds
+        );
+        if config.sun_shadow.transition_seconds > 0.0 {
+            // The default value is expected, so it is only informational. A value the user set
+            // has no effect yet, so it is worth a warning.
+            let message = "sun shadows: fSunShadowUpdateTime is reserved for cross-fading; \
+                           shadow transitions are not implemented yet, so shadows snap";
+            if config.sun_shadow.transition_seconds
+                == SunShadowSettings::default().transition_seconds
+            {
+                info!("{message}");
+            } else {
+                warn!("{message}");
+            }
+        }
+        state.transition_reported = true;
+    }
     if config.sun_position.is_some() {
+        for (transform, mut shadow) in &mut sun {
+            shadow.update(transform.rotation, config.sun_shadow, 0.0, true);
+        }
+        state.previous = None;
         return;
     }
     let worldspace = space.as_deref().map_or(config.worldspace_id, |s| {
         s.exterior_worldspace(config.worldspace_id)
     });
-    let direction = world_sun_direction(&config, clock.hour, catalog.as_deref(), worldspace);
+    let path = world_sun_inputs(&config, catalog.as_deref(), worldspace);
+    let direction =
+        path.and_then(|(_, timing, settings)| sun_direction(clock.hour, timing, settings));
     let rotation = match direction {
         Some(direction) => {
-            *reported = None;
+            state.problem = None;
             Quat::from_rotation_arc(Vec3::Z, direction)
         }
         None => {
             // Report an incompatible fade once per distinct problem, never every frame.
             let problem = sun_path_problem(&config, catalog.as_deref(), worldspace);
-            if problem != *reported {
+            if problem != state.problem {
                 if let Some(problem) = problem {
                     warn!(
                         "sun: fSunAlphaTransTime={} gives a {:.2}-hour day window with climate {:#x}; \
@@ -331,16 +387,41 @@ pub(crate) fn update_sun(
                         problem.transition, problem.window_hours, problem.climate
                     );
                 }
-                *reported = problem;
+                state.problem = problem;
             }
             NO_SUN_ROTATION
         }
     };
-    for mut transform in &mut sun {
+    let immediate = state.previous.as_ref().is_none_or(|previous| {
+        previous.hour != before
+            || previous.worldspace != worldspace
+            || previous.path != path
+            || previous.shadow_settings.threshold_degrees != config.sun_shadow.threshold_degrees
+            || previous.shadow_settings.max_hold_seconds != config.sun_shadow.max_hold_seconds
+    }) || (time.delta_secs_f64() * clock.timescale).abs()
+        >= IMMEDIATE_REFRESH_GAME_SECONDS;
+    if immediate {
+        state.refreshes = state.refreshes.wrapping_add(1);
+    }
+    let moving_seconds = if before == clock.hour {
+        0.0
+    } else {
+        time.delta_secs_f64()
+    };
+    for (mut transform, mut shadow) in &mut sun {
+        let refresh = shadow.refreshes_applied != state.refreshes;
+        shadow.refreshes_applied = state.refreshes;
+        shadow.update(rotation, config.sun_shadow, moving_seconds, refresh);
         if transform.rotation != rotation {
             transform.rotation = rotation;
         }
     }
+    state.previous = Some(SunFrame {
+        hour: clock.hour,
+        worldspace,
+        path,
+        shadow_settings: config.sun_shadow,
+    });
 }
 
 #[cfg(test)]

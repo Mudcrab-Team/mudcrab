@@ -594,7 +594,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
         .add_plugins(room_culling)
         .add_systems(PostUpdate, keep_windows_hidden)
-        .add_systems(Update, crate::sun::update_sun)
+        .add_plugins(crate::sun_shadow::SunShadowPlugin)
         .add_systems(Update, crate::background_window::hold_focus_with_the_user)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),

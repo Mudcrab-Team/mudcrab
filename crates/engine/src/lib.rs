@@ -66,6 +66,7 @@ mod streaming_gpu_metrics;
 mod streaming_preparation;
 mod streaming_trace;
 pub mod sun;
+pub mod sun_shadow;
 pub mod swap_bridge;
 mod terrain_lod_noise;
 pub mod terrain_merge;

@@ -283,6 +283,19 @@ pub(crate) struct ExteriorSunState {
     shadow_maps_enabled: bool,
 }
 
+#[cfg(test)]
+impl ExteriorSunState {
+    /// A held sun for tests outside this module; the saved values are never restored there.
+    pub(crate) fn held_for_tests() -> Self {
+        Self {
+            rotation: Quat::IDENTITY,
+            color: Color::WHITE,
+            illuminance: 0.0,
+            shadow_maps_enabled: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum LightingSource {
     CellXcll,
