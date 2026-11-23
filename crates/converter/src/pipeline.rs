@@ -160,6 +160,11 @@ pub struct PipelineReport {
     /// configured-default land texture fallbacks, that do not affect completeness.
     #[serde(default)]
     pub notices: Vec<String>,
+    /// Records omitted on purpose because they have no usable value, per plugin, record type and
+    /// reason class (#811). They stay visible here and in the manifest, and they do not make the
+    /// run incomplete; a read failure still does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intended_omissions: Vec<crate::cache::IntendedOmission>,
     /// Original plugin filenames omitted by selection recovery, once each in selection order.
     /// Full exclusions stay available without expanding the bounded user-facing warning summaries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -206,7 +211,30 @@ pub(crate) fn report_projection_omissions(
         match outcome.severity {
             Severity::DataLoss => report.warnings.push(message),
             Severity::Fallback => report.notices.push(message),
+            Severity::Omitted => {
+                report.notices.push(message);
+                report
+                    .intended_omissions
+                    .push(crate::cache::IntendedOmission {
+                        source: "world database".to_owned(),
+                        record_type: omitted_record_type(category).to_owned(),
+                        class: category.clone(),
+                        count: outcome.count,
+                        first_example: outcome.samples.first().map_or_else(String::new, |sample| {
+                            format!("{:08X}: {}", sample.form_id, sample.reason)
+                        }),
+                    });
+            }
         }
+    }
+}
+
+/// Record signature of an intended projection omission category, for the manifest rows.
+fn omitted_record_type(category: &str) -> &'static str {
+    match category {
+        "land_missing_heights" => "LAND",
+        "worldspace_missing_editor_id" => "WRLD",
+        _ => "unknown",
     }
 }
 
@@ -633,6 +661,7 @@ impl AssetPipeline {
             // A fresh run has no record losses when there are no selected plugins.
             // The authoritative reader replaces this proof when plugins are converted.
             record_data_complete: Some(true),
+            intended_omissions: Vec::new(),
             configuration_hash: expected_configuration.clone(),
             schema_addons: config.schemas()?.identities().to_vec(),
             asset_configuration_hashes: ["nif", "dds", "pex"]
@@ -1221,6 +1250,7 @@ impl AssetPipeline {
                 manifest.record_data_complete = Some(notes.warnings.is_empty());
                 report.warnings.extend(notes.warnings);
                 report.notices.extend(notes.notices);
+                report.intended_omissions.extend(notes.omissions);
                 send(
                     progress_tx,
                     ProgressStage::Database,
@@ -1266,11 +1296,13 @@ impl AssetPipeline {
                     &database_cache::ConversionNotes {
                         warnings: conversion.warnings.clone(),
                         notices: conversion.notices.clone(),
+                        omissions: conversion.omissions.clone(),
                     },
                 )?;
                 manifest.record_data_complete = Some(conversion.warnings.is_empty());
                 report.warnings.extend(conversion.warnings);
                 report.notices.extend(conversion.notices);
+                report.intended_omissions.extend(conversion.omissions);
                 let phases = conversion.phases;
                 let merged = conversion.records;
                 report.database_runtime_records_built = merged.len() as u64;
@@ -1941,6 +1973,8 @@ impl AssetPipeline {
         }
         manifest.complete = conversion_is_complete(&report);
         report.complete = manifest.complete;
+        crate::cache::merge_intended_omissions(&mut report.intended_omissions);
+        manifest.intended_omissions = report.intended_omissions.clone();
         manifest.save(&staging.join("conversion-manifest.json"))?;
         report
             .artifacts
@@ -13070,6 +13104,56 @@ mod tests {
             report.warnings
         );
         assert!(!conversion_is_complete(&report));
+    }
+
+    /// An intended omission (no usable value in the source) is a notice and a listed row. It does
+    /// not warn, so it cannot make the run incomplete (#811).
+    #[test]
+    fn intended_projection_omissions_are_listed_and_do_not_warn() {
+        use crate::esm::projection_omissions::{OmissionCategory, ProjectionOmissions, Severity};
+        assert_eq!(
+            OmissionCategory::LandMissingHeights.severity(),
+            Severity::Omitted
+        );
+        assert_eq!(
+            OmissionCategory::WorldspaceMissingEditorId.severity(),
+            Severity::Omitted
+        );
+        // Present-but-unreadable fields and missing links stay data loss.
+        for category in [
+            OmissionCategory::ReferenceMissingBase,
+            OmissionCategory::ReferenceShortScale,
+            OmissionCategory::ReferenceMissingCell,
+            OmissionCategory::ArmatureMissingRace,
+            OmissionCategory::RoomMarkerUnreadableFlags,
+        ] {
+            assert_eq!(
+                category.severity(),
+                Severity::DataLoss,
+                "{}",
+                category.name()
+            );
+        }
+        let mut omissions = ProjectionOmissions::default();
+        omissions.record(OmissionCategory::LandMissingHeights, 0x20, "no VHGT");
+        omissions.record(OmissionCategory::LandMissingHeights, 0x10, "no VHGT");
+        let mut report = PipelineReport::default();
+        report_projection_omissions(&mut report, &omissions);
+        assert!(report.warnings.is_empty());
+        assert_eq!(report.notices.len(), 1);
+        assert!(conversion_is_complete(&report));
+        assert_eq!(report.intended_omissions.len(), 1);
+        let row = &report.intended_omissions[0];
+        assert_eq!(
+            (
+                row.source.as_str(),
+                row.record_type.as_str(),
+                row.class.as_str(),
+                row.count
+            ),
+            ("world database", "LAND", "land_missing_heights", 2)
+        );
+        assert_eq!(row.first_example, "00000010: no VHGT");
     }
 
     /// Notices never hide failures or affect completeness, regardless of insertion order.

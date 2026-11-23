@@ -18,6 +18,9 @@ pub mod vmad;
 #[cfg(test)]
 pub(crate) mod review_recovery_tests;
 
+#[cfg(test)]
+mod omission_tests;
+
 #[cfg(fuzzing)]
 pub use scanner::{fuzz_inflate, fuzz_scan};
 
@@ -337,9 +340,39 @@ impl DiagnosticSummaryKey {
 }
 
 /// Bounded summaries accompany complete disk-backed diagnostic events.
+/// Count and least example of one intended omission class.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+pub struct OmissionStat {
+    pub count: u64,
+    pub first_example: String,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Reason class of a candidate rejection that is an intended omission, not a reader failure.
+///
+/// Only a record that is present in the source but has no usable value qualifies, and only when
+/// the converter would otherwise have to invent one. Anything else (a parse error, an unexpected
+/// layout, an unknown subrecord) stays a reader failure. The match uses the validator's own
+/// message constant, so the two cannot drift apart.
+pub(crate) fn intended_omission_class(reason: &str) -> Option<&'static str> {
+    reason
+        .contains(crate::esm::cell_cache::LAND_WITHOUT_HEIGHTS)
+        .then_some("land_missing_heights")
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PluginDiagnostics {
     pub skipped_records: u64,
+    /// Records omitted on purpose because the source has no usable value for them (#811).
+    /// Counted apart from `skipped_records`: they are not reader failures.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub omitted_records: u64,
+    /// The same omissions by record type and reason class, with the first example of each.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub intended_omissions: BTreeMap<String, BTreeMap<String, OmissionStat>>,
     pub retired_base_placements: u64,
     pub skipped_fields: u64,
     pub unexpected_subrecords: u64,
@@ -393,6 +426,56 @@ impl PluginDiagnostics {
         lines
     }
 
+    /// Record one intended omission: journal it, count it by record type and class, and keep the
+    /// least example. It never counts as a skipped record, so it does not make the run incomplete.
+    pub(crate) fn note_omission(&mut self, class: &'static str, example: impl FnOnce() -> String) {
+        self.omitted_records += 1;
+        let example = example();
+        let mut context = self.event_context.clone();
+        context.link_value = None;
+        context.occurrence = 0;
+        if context.action.is_none() {
+            context.action = Some("omitted");
+        }
+        self.event_log.append(&context, "omission", &example);
+        let record_type = context
+            .record_type
+            .map(|signature| String::from_utf8_lossy(&signature).into_owned())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let example = diagnostics::bounded_summary(example);
+        let stat = self
+            .intended_omissions
+            .entry(record_type)
+            .or_default()
+            .entry(class.to_owned())
+            .or_default();
+        stat.count += 1;
+        if stat.first_example.is_empty() || example < stat.first_example {
+            stat.first_example = example;
+        }
+    }
+
+    /// The intended omissions of this plugin as manifest rows.
+    pub(crate) fn intended_omission_rows(
+        &self,
+        plugin: &str,
+    ) -> Vec<crate::cache::IntendedOmission> {
+        self.intended_omissions
+            .iter()
+            .flat_map(|(record_type, classes)| {
+                classes
+                    .iter()
+                    .map(move |(class, stat)| crate::cache::IntendedOmission {
+                        source: plugin.to_owned(),
+                        record_type: record_type.clone(),
+                        class: class.clone(),
+                        count: stat.count,
+                        first_example: stat.first_example.clone(),
+                    })
+            })
+            .collect()
+    }
+
     /// Summarize supplier-self remaps and faithfully cleared links as separate bounded notices.
     /// Independent record or field loss still produces its own warning.
     pub(crate) fn notice_summary_lines(&self, plugin: &str) -> Vec<String> {
@@ -403,6 +486,12 @@ impl PluginDiagnostics {
             lines.push(format!(
                 "notice: {plugin}: used supplier-self runtime compatibility for {} headers (original owners unresolved; first: {example})",
                 self.compatibility_headers
+            ));
+        }
+        for row in self.intended_omission_rows(plugin) {
+            lines.push(format!(
+                "notice: {plugin}: in-house reader omitted {} {} record(s), class {}: no usable value in the source, none invented; not a read failure (first: {})",
+                row.count, row.record_type, row.class, row.first_example
             ));
         }
         if let Some(example) = self.first_by_category.get("retired_base") {
@@ -1009,13 +1098,17 @@ fn read_plugins_with_prepared(
                 if result.records.contains_key(&record.form_id) {
                     diagnostics.event_context.action = Some("kept_earlier_version");
                 }
-                diagnostics.note("record", || {
+                let reason = || {
                     format!(
                         "{} {:08X}: unusable runtime candidate: {error}",
                         String::from_utf8_lossy(&record.record_type),
                         record.form_id
                     )
-                });
+                };
+                match intended_omission_class(&error) {
+                    Some(class) => diagnostics.note_omission(class, reason),
+                    None => diagnostics.note("record", reason),
+                }
                 return;
             }
             // A torn override cannot show what its missing tail held, so it never

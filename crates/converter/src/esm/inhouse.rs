@@ -1469,6 +1469,12 @@ fn convert_plugins_with_text_sources_report_impl(
         .iter()
         .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
         .collect::<Vec<_>>();
+    let mut report_omissions = decoded
+        .diagnostics
+        .iter()
+        .flat_map(|(name, diagnostics)| diagnostics.intended_omission_rows(name))
+        .collect::<Vec<_>>();
+    crate::cache::merge_intended_omissions(&mut report_omissions);
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     drop(decoded);
     release_stage.finish(master.len());
@@ -1484,6 +1490,7 @@ fn convert_plugins_with_text_sources_report_impl(
         records: master,
         warnings: report_warnings,
         notices: report_notices,
+        omissions: report_omissions,
     })
 }
 

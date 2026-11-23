@@ -2277,7 +2277,7 @@ and emittance resolution contribute categories. The category code is
 ```sql
 CREATE TABLE IF NOT EXISTS projection_omission_stats (   -- one row per category with omissions
     category TEXT PRIMARY KEY,     -- stable name, see the table below
-    severity TEXT NOT NULL,        -- 'data_loss' or 'fallback'
+    severity TEXT NOT NULL,        -- 'data_loss', 'fallback' or 'omitted'
     count INTEGER NOT NULL         -- exact number of records left out
 );
 CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, at most 8 per category
@@ -2297,8 +2297,8 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `reference_missing_base` | Placed record without a four-byte `NAME`: no placement or spatial row | data loss |
 | `reference_short_scale` | Placed record whose `XSCL` is present but shorter than four bytes: no placement or spatial row | data loss |
 | `reference_missing_cell` | Placed record with no parent cell: no placement or spatial row | data loss |
-| `worldspace_missing_editor_id` | `WRLD` without `EDID`: no `worldspaces` row | data loss |
-| `land_missing_heights` | `LAND` without `VHGT`: no `land` row | data loss |
+| `worldspace_missing_editor_id` | `WRLD` without `EDID`: no `worldspaces` row | omitted |
+| `land_missing_heights` | `LAND` without `VHGT`: no `land` row | omitted |
 | `armature_missing_race` | `ARMA` without a readable `RNAM`: `actor_model_parts.armature_race_id` is NULL | data loss |
 | `room_marker_unreadable_flags` | Room marker whose `XRMR` header is present but short, repeated or unframed: no `room_bounds` row; its cell is incomplete | data loss |
 | `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row and leaves its cell incomplete | data loss |
@@ -2320,6 +2320,13 @@ incomplete. A reference whose emittance target does not resolve keeps the model'
 (section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the
 output stays complete. A severity the reader does not know is read as `data_loss`, so a category
 added by a newer converter cannot pass as success.
+
+An `omitted` category is an intended omission (#811): the record is in the source, an optional or
+required field is absent, and no value is invented. It adds one line to `notices`, adds a row to
+the report's and manifest's `intended_omissions`, and leaves the output complete. Only an absent
+field of an otherwise sound record qualifies. A field that is present but short or unreadable
+(`reference_short_scale`, `room_marker_unreadable_flags`), a missing placement base or cell, and a
+missing armature race stay `data_loss` until retail evidence shows they are authored absences.
 
 Placement omission reasons describe the `DATA` available to the runtime projection.
 An in-house typed-field rejection can make it unavailable there even though the original

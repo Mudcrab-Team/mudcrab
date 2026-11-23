@@ -363,6 +363,47 @@ impl IngestionJournal {
     }
 }
 
+/// A retail record the reader omitted on purpose because it has no usable value (#811).
+///
+/// This is the no-false-data rule at work: the record is in the source, the converter does not
+/// invent a value for it, and it says so here. It is not a reader failure. It never clears
+/// `record_data_complete` or `complete`, and it is never dropped from the report or the log.
+/// A parse error, an unexpected layout or an unknown subrecord is not listed here; those stay
+/// warnings and failures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IntendedOmission {
+    /// Plugin file name, or `world database` for an omission made when the rows were projected.
+    pub source: String,
+    /// Four-letter record signature, for example `LAND`.
+    pub record_type: String,
+    /// Stable reason class, for example `land_missing_heights`.
+    pub class: String,
+    pub count: u64,
+    /// The first example in a stable order, with the form ID and the reason.
+    pub first_example: String,
+}
+
+/// Fold equal `(source, record_type, class)` rows into one: sum the counts, keep the least example.
+pub fn merge_intended_omissions(omissions: &mut Vec<IntendedOmission>) {
+    omissions.sort();
+    let mut merged: Vec<IntendedOmission> = Vec::with_capacity(omissions.len());
+    for omission in omissions.drain(..) {
+        match merged.last_mut() {
+            Some(last)
+                if (&last.source, &last.record_type, &last.class)
+                    == (&omission.source, &omission.record_type, &omission.class) =>
+            {
+                last.count += omission.count;
+                if omission.first_example < last.first_example {
+                    last.first_example = omission.first_example;
+                }
+            }
+            _ => merged.push(omission),
+        }
+    }
+    *omissions = merged;
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversionManifest {
     pub schema_version: u32,
@@ -378,6 +419,10 @@ pub struct ConversionManifest {
     /// Missing historical proof stays unknown; asset repair cannot establish it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_data_complete: Option<bool>,
+    /// Records omitted on purpose because they have no usable value, per plugin, record type
+    /// and reason class. They do not make the conversion incomplete. Absent in older manifests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intended_omissions: Vec<IntendedOmission>,
     #[serde(default)]
     pub configuration_hash: String,
     /// Ordered identities of the runtime schema add-ons used by this pack.

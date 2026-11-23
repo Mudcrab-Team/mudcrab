@@ -60,6 +60,9 @@ pub(super) const CONVERSION_NOTES_FILE: &str = "conversion-notes.json";
 pub(super) struct ConversionNotes {
     pub warnings: Vec<String>,
     pub notices: Vec<String>,
+    /// Intended omissions of the fresh read. Absent in notes written before #811 was fixed.
+    #[serde(default)]
+    pub omissions: Vec<crate::cache::IntendedOmission>,
 }
 
 /// Persist what the fresh reader reported, so a restore cannot mark incomplete data complete.

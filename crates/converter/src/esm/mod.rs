@@ -71,6 +71,8 @@ pub(crate) struct RecordConversion {
     pub(crate) records: HashMap<u32, RawRecord>,
     pub(crate) warnings: Vec<String>,
     pub(crate) notices: Vec<String>,
+    /// Records omitted on purpose because they have no usable value. Not failures (#811).
+    pub(crate) omissions: Vec<crate::cache::IntendedOmission>,
     /// In-house stage seconds for the database profile; legacy exports record none.
     pub(crate) phases: std::collections::BTreeMap<String, f64>,
 }
@@ -644,6 +646,7 @@ impl EsmParser {
                 records: merged,
                 warnings: summaries,
                 notices,
+                omissions: Vec::new(),
                 phases: BTreeMap::new(),
             },
             damaged_cells,
