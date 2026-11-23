@@ -6,6 +6,7 @@
 
 pub mod albedo;
 pub(crate) mod generation;
+pub mod near_match;
 pub mod object_stage;
 pub mod objects;
 pub mod retail;

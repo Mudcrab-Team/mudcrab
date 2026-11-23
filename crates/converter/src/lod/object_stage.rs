@@ -11,6 +11,7 @@ use crate::{
     cache::hash_bytes,
     config::PipelineConfig,
     lod::{
+        near_match::FileIndex,
         objects::{
             MissingObjectUv, ObjectChunk, chunk_key_for_block, compile_object_chunk_shared_atlas,
             object_chunk_input_hash, publish_object_atlas, publish_object_chunk,
@@ -26,6 +27,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
 };
+use log::warn;
 use rusqlite::Connection;
 use shared::lod::{LodOrigin, object_chunk_payload_path};
 use std::{
@@ -46,6 +48,60 @@ pub struct SkippedBlock {
     /// The class of the reason, the key of the counts.
     pub class: &'static str,
     pub detail: String,
+}
+
+/// The class of a world that is skipped because the game data has no object atlas file for it.
+/// This is a world-level class. The block-level classes are on [`SkippedBlock`].
+pub const MISSING_ATLAS: &str = "missing_atlas";
+
+/// The game data has level 16, 8 or 4 object blocks for a world, but no object atlas file under
+/// either name that retail uses (see [`atlas_paths`]).
+///
+/// Only an absent file is this error. An atlas that exists but cannot be read or is not a valid
+/// DDS is a different error and still fails the run. The full pipeline skips a world with this
+/// error. `converter derive-object-lod` names one world on purpose, so it refuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MissingObjectAtlas {
+    /// The atlas paths that were searched, lowercase with forward slashes.
+    pub paths: Vec<String>,
+    /// The absent paths and the near matches in the game data, from [`FileIndex`].
+    pub detail: String,
+}
+
+impl std::fmt::Display for MissingObjectAtlas {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "refused: the game data has {}, the object atlas",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for MissingObjectAtlas {}
+
+/// A world the pipeline did not compile, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedWorld {
+    pub editor_id: String,
+    /// The class of the reason, for example [`MISSING_ATLAS`].
+    pub class: &'static str,
+    /// What is absent and which near matches exist.
+    pub detail: String,
+}
+
+/// The two game-data paths a world's object atlas can have, in the order they are tried.
+///
+/// Retail proves both forms. The 12 worlds of the base game, Dawnguard and Dragonborn that ship
+/// object LOD use `<world>.objects.dds`. The Creation Club worlds `ccbgssse067deadlandsworld` and
+/// `cckrtsse001qnworld` use `<world>objectslod.dds`. In every one of these 14 worlds the archives
+/// hold exactly one of the two, and the texture set inside the world's `.bto` blocks names that
+/// same file. The paths are lowercase with forward slashes.
+pub(crate) fn atlas_paths(world_file: &str) -> [String; 2] {
+    [
+        format!("textures/terrain/{world_file}/objects/{world_file}.objects.dds"),
+        format!("textures/terrain/{world_file}/objects/{world_file}objectslod.dds"),
+    ]
 }
 
 /// One `.bto` block read from the game data, before compilation.
@@ -77,6 +133,14 @@ pub(crate) struct Retail {
     pub skipped: Vec<SkippedBlock>,
 }
 
+/// What reading the retail object LOD of one world found.
+pub(crate) enum RetailRead {
+    Found(Retail),
+    /// The game data has no level 16, 8 or 4 block of this world. Normal for most worldspaces.
+    /// Holds the near-match text for a caller that refuses.
+    NoBlocks(String),
+}
+
 /// Where one game-data file can be read from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Provider {
@@ -100,12 +164,14 @@ fn is_terrain_entry_name(name: &str) -> bool {
 }
 
 /// Finds the files `wanted` accepts in loose files and archives of `data`. Loose files win over
-/// archives; otherwise every archive that has the file is listed.
+/// archives; otherwise every archive that has the file is listed. The index holds every terrain
+/// file that was listed, wanted or not, for near-match reports.
 fn providers(
     data: &Path,
     wanted: &dyn Fn(&str) -> bool,
-) -> Result<BTreeMap<String, Vec<Provider>>> {
+) -> Result<(BTreeMap<String, Vec<Provider>>, FileIndex)> {
     let mut found: BTreeMap<String, Vec<Provider>> = BTreeMap::new();
+    let mut index = FileIndex::default();
     let mut archives: Vec<PathBuf> = fs::read_dir(data)
         .wrap_err_with(|| format!("cannot read the game data folder {}", data.display()))?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -126,8 +192,10 @@ fn providers(
             })?;
         let paths = ArchiveExtractor::list_paths_with_filter(&archive, is_terrain_entry_name)
             .wrap_err_with(|| format!("cannot list archive {name}"))?;
+        index.note_archive();
         for path in paths {
             let key = normal(&path);
+            index.add(&key);
             if wanted(&key) {
                 found.entry(key).or_default().push(Provider::Archive {
                     name: name.clone(),
@@ -151,15 +219,19 @@ fn providers(
                         continue;
                     }
                     stack.push((relative, Some(path)));
-                } else if wanted(&normal(&relative)) {
+                } else {
                     let key = normal(&relative);
+                    index.add(&key);
+                    if !wanted(&key) {
+                        continue;
+                    }
                     // A loose file replaces whatever the archives hold.
                     found.insert(key, vec![Provider::Loose(path)]);
                 }
             }
         }
     }
-    Ok(found)
+    Ok((found, index))
 }
 
 /// The child of `directory` named `name`, compared without case.
@@ -232,15 +304,18 @@ fn describe(provider: &Provider) -> String {
 /// `verify_archive` is called for every archive that provides a wanted file, before it is read; it
 /// returns a record for the receipt, or refuses the archive.
 ///
-/// Returns `Ok(None)` when the game data has no level-16 block of this world at all, which is
-/// normal for most worldspaces. A world with blocks but no usable atlas is an error.
+/// Returns [`RetailRead::NoBlocks`] when the game data has no level-16 block of this world at all,
+/// which is normal for most worldspaces. The atlas is `<world>.objects.dds` or `<world>objectslod.dds`
+/// (see [`atlas_paths`]). A world with blocks but neither atlas file fails with
+/// [`MissingObjectAtlas`], so a caller can tell an absent file from a damaged one. A world with an
+/// atlas that cannot be read or is not a valid DDS fails with another error.
 pub(crate) fn read_retail(
     data: &Path,
     world_file: &str,
     scratch: &Path,
     verify_archive: &mut dyn FnMut(&str, &Path) -> Result<serde_json::Value>,
-) -> Result<Option<Retail>> {
-    let atlas_path = format!("textures/terrain/{world_file}/objects/{world_file}.objects.dds");
+) -> Result<RetailRead> {
+    let atlas_names = atlas_paths(world_file);
     let is_block = |path: &str| {
         parse_lod_file_name(path).is_some_and(|name| {
             name.kind == RetailLodKind::Object
@@ -248,11 +323,37 @@ pub(crate) fn read_retail(
                 && name.level.is_some_and(|level| LEVELS.contains(&level))
         }) && path.starts_with("meshes/")
     };
-    let wanted = |path: &str| path == atlas_path || is_block(path);
-    let found = providers(data, &wanted)?;
+    let wanted = |path: &str| atlas_names.iter().any(|name| name == path) || is_block(path);
+    let (found, index) = providers(data, &wanted)?;
     if !found.keys().any(|path| is_block(path)) {
-        return Ok(None);
+        // The folder, not a file, is what is absent. A block of this world has this shape.
+        let block = format!("meshes/terrain/{world_file}/objects/{world_file}.16.<x>.<y>.bto");
+        return Ok(RetailRead::NoBlocks(
+            index.describe_missing(&[&block], Some(world_file)),
+        ));
     }
+    // The atlas has one of two names. Both at once is not in the retail data and is not guessed.
+    let present: Vec<&String> = atlas_names
+        .iter()
+        .filter(|name| found.contains_key(*name))
+        .collect();
+    let atlas_path = match present.as_slice() {
+        [only] => (*only).clone(),
+        [] => {
+            // An absent atlas is known from the file listing. Fail before any archive is read.
+            let names: Vec<&str> = atlas_names.iter().map(String::as_str).collect();
+            return Err(MissingObjectAtlas {
+                paths: atlas_names.to_vec(),
+                detail: index.describe_missing(&names, Some(world_file)),
+            }
+            .into());
+        }
+        _ => bail!(
+            "refused: the object atlas is ambiguous: the game data has both {} and {}",
+            atlas_names[0],
+            atlas_names[1]
+        ),
+    };
 
     // Every archive that provides a wanted file is checked by the caller before it is read.
     let used: BTreeSet<(String, PathBuf)> = found
@@ -288,9 +389,9 @@ pub(crate) fn read_retail(
     }
 
     // The atlas.
-    let atlas_options = found.get(&atlas_path).ok_or_else(|| {
-        color_eyre::eyre::eyre!("refused: the game data has no {atlas_path}, the object atlas")
-    })?;
+    let atlas_options = found
+        .get(&atlas_path)
+        .ok_or_else(|| color_eyre::eyre::eyre!("{atlas_path} was listed and then lost"))?;
     let (atlas_dds, atlas_providers) =
         match read_provider_bytes(&atlas_path, atlas_options, &extracted)? {
             Ok(read) => read,
@@ -364,7 +465,7 @@ pub(crate) fn read_retail(
         "blocks": blocks.len() + skipped.len(),
         "loose_files_used": loose,
     }));
-    Ok(Some(Retail {
+    Ok(RetailRead::Found(Retail {
         blocks,
         atlas_dds,
         sources,
@@ -481,6 +582,8 @@ pub(crate) struct ObjectLodStage {
     pub notices: Vec<String>,
     /// One line per skipped block or refused world, counted in the LOD warnings.
     pub warnings: Vec<String>,
+    /// The worlds that have object blocks but were skipped, each with its reason class.
+    pub skipped_worlds: Vec<SkippedWorld>,
 }
 
 /// Compiles the retail object LOD of every world that has terrain LOD and publishes it into the
@@ -535,13 +638,34 @@ pub(crate) fn build_object_lod(
             continue;
         }
         let world_scratch = scratch.path().join(format!("world-{id:08x}"));
-        let Some(retail) = read_retail(&config.data_dir, &file_name, &world_scratch, &mut verify)
-            .wrap_err_with(|| {
-            format!("object LOD of worldspace {editor_id} could not be read")
-        })?
-        else {
-            without += 1;
-            continue;
+        let retail = match read_retail(&config.data_dir, &file_name, &world_scratch, &mut verify) {
+            Ok(RetailRead::Found(retail)) => retail,
+            Ok(RetailRead::NoBlocks(_)) => {
+                without += 1;
+                continue;
+            }
+            // Only an absent atlas skips the world. A corrupt or unreadable atlas still fails.
+            Err(error) => match error.downcast::<MissingObjectAtlas>() {
+                Ok(missing) => {
+                    let message = format!(
+                        "object LOD {editor_id}: world skipped: {MISSING_ATLAS}: the game data has {}",
+                        missing.detail
+                    );
+                    warn!("{message}");
+                    stage.warnings.push(message);
+                    stage.skipped_worlds.push(SkippedWorld {
+                        editor_id,
+                        class: MISSING_ATLAS,
+                        detail: missing.detail,
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).wrap_err_with(|| {
+                        format!("object LOD of worldspace {editor_id} could not be read")
+                    });
+                }
+            },
         };
         let world = WorldFacts {
             id,
@@ -603,6 +727,18 @@ pub(crate) fn build_object_lod(
     if without > 0 {
         stage.notices.push(format!(
             "Object LOD: {without} worldspace(s) with terrain LOD have no level 16, 8 or 4 object blocks in the game data"
+        ));
+    }
+    if !stage.skipped_worlds.is_empty() {
+        stage.notices.push(format!(
+            "Object LOD: {} worldspace(s) skipped: {MISSING_ATLAS}: {}",
+            stage.skipped_worlds.len(),
+            stage
+                .skipped_worlds
+                .iter()
+                .map(|world| world.editor_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if !stage.chunks.is_empty() {
@@ -829,20 +965,190 @@ mod tests {
         }));
     }
 
+    const ATLAS_DOTTED: &str = "textures/terrain/tamriel/objects/tamriel.objects.dds";
+    const ATLAS_LOD: &str = "textures/terrain/tamriel/objects/tamrielobjectslod.dds";
+
+    /// The atlas rows, or 0 when the pack has no object tables at all (nothing was published).
+    fn atlas_object_rows(connection: &Connection) -> i64 {
+        let tables: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'lod_object_atlases'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if tables == 0 {
+            return 0;
+        }
+        connection
+            .query_row("SELECT count(*) FROM lod_object_atlases", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
     #[test]
-    fn a_world_with_blocks_but_no_atlas_fails_the_stage() {
+    fn the_atlas_is_found_under_the_dotted_name() {
         let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
-        fs::remove_file(
-            data.path()
-                .join("textures/terrain/tamriel/objects/tamriel.objects.dds"),
-        )
-        .unwrap();
+        assert!(data.path().join(ATLAS_DOTTED).is_file());
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert_eq!(stage.chunks.len(), 1);
+        assert!(stage.skipped_worlds.is_empty());
+        assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
+    }
+
+    #[test]
+    fn the_atlas_is_found_under_the_objectslod_name() {
+        // The Creation Club worlds ship `<world>objectslod.dds` and no dotted atlas.
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        fs::rename(data.path().join(ATLAS_DOTTED), data.path().join(ATLAS_LOD)).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        assert_eq!(stage.chunks.len(), 1, "{:?}", stage.warnings);
+        assert!(stage.skipped_worlds.is_empty());
+        assert!(stage.warnings.is_empty(), "{:?}", stage.warnings);
+        assert_eq!(atlas_object_rows(&connection), 1);
+    }
+
+    #[test]
+    fn both_atlas_names_at_once_are_refused_not_guessed() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        fs::copy(data.path().join(ATLAS_DOTTED), data.path().join(ATLAS_LOD)).unwrap();
         let staging = tempfile::tempdir().unwrap();
         let connection = staged(staging.path());
         let error = build_object_lod(&config(data.path()), staging.path(), &connection)
             .err()
             .unwrap();
-        assert!(format!("{error:#}").contains("atlas"), "{error:#}");
+        assert!(format!("{error:#}").contains("ambiguous"), "{error:#}");
+    }
+
+    #[test]
+    fn a_world_with_blocks_but_no_atlas_is_skipped_and_reported_with_near_matches() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        fs::remove_file(data.path().join(ATLAS_DOTTED)).unwrap();
+        // A file that is near but is not an atlas name: it is listed, never used.
+        let near = data
+            .path()
+            .join("textures/terrain/tamriel/objects/tamriel.objects_n.dds");
+        fs::write(&near, b"normal map").unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let stage = build_object_lod(&config(data.path()), staging.path(), &connection).unwrap();
+        // The world has no object rows. No stand-in atlas exists.
+        assert!(stage.chunks.is_empty() && stage.atlases.is_empty());
+        assert_eq!(atlas_object_rows(&connection), 0);
+        assert_eq!(stage.skipped_worlds.len(), 1);
+        let skipped = &stage.skipped_worlds[0];
+        assert_eq!(skipped.editor_id, "Tamriel");
+        assert_eq!(skipped.class, MISSING_ATLAS);
+        assert!(skipped.detail.contains(ATLAS_DOTTED), "{}", skipped.detail);
+        assert!(skipped.detail.contains(ATLAS_LOD), "{}", skipped.detail);
+        assert!(
+            skipped
+                .detail
+                .contains("near matches: textures/terrain/tamriel/objects/tamriel.objects_n.dds"),
+            "{}",
+            skipped.detail
+        );
+        assert!(
+            stage.warnings.iter().any(|line| {
+                line.contains("Tamriel")
+                    && line.contains("world skipped: missing_atlas")
+                    && line.contains(ATLAS_DOTTED)
+            }),
+            "{:?}",
+            stage.warnings
+        );
+        assert!(
+            stage
+                .notices
+                .iter()
+                .any(|line| line.contains("1 worldspace(s) skipped: missing_atlas: Tamriel")),
+            "{:?}",
+            stage.notices
+        );
+    }
+
+    #[test]
+    fn a_corrupt_atlas_still_fails_the_stage() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        fs::write(data.path().join(ATLAS_DOTTED), b"this is not a dds file").unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let error = build_object_lod(&config(data.path()), staging.path(), &connection)
+            .err()
+            .unwrap();
+        assert!(
+            format!("{error:#}").contains("not a valid DDS"),
+            "{error:#}"
+        );
+        assert!(error.downcast_ref::<MissingObjectAtlas>().is_none());
+    }
+
+    #[test]
+    fn a_corrupt_objectslod_atlas_still_fails_the_stage() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        fs::remove_file(data.path().join(ATLAS_DOTTED)).unwrap();
+        fs::write(data.path().join(ATLAS_LOD), b"this is not a dds file").unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let error = build_object_lod(&config(data.path()), staging.path(), &connection)
+            .err()
+            .unwrap();
+        assert!(
+            format!("{error:#}").contains("not a valid DDS"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_atlas_that_exists_but_cannot_be_read_still_fails_the_stage() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        let atlas = data.path().join(ATLAS_DOTTED);
+        fs::remove_file(&atlas).unwrap();
+        std::os::unix::fs::symlink(data.path().join("missing"), &atlas).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let connection = staged(staging.path());
+        let error = build_object_lod(&config(data.path()), staging.path(), &connection)
+            .err()
+            .unwrap();
+        assert!(error.downcast_ref::<MissingObjectAtlas>().is_none());
+    }
+
+    #[test]
+    fn the_reader_refuses_a_missing_atlas_with_the_typed_error_and_near_matches() {
+        let data = data_with(&[((0, -16), bto(0, -16, &[(0, 0, 1)]))]);
+        fs::remove_file(data.path().join(ATLAS_DOTTED)).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut verify = |_: &str, _: &Path| Ok(serde_json::json!({}));
+        let error = read_retail(data.path(), "tamriel", scratch.path(), &mut verify)
+            .err()
+            .unwrap();
+        let missing = error.downcast_ref::<MissingObjectAtlas>().unwrap();
+        assert_eq!(missing.paths, atlas_paths("tamriel").to_vec());
+        let text = format!("{error:#}");
+        assert!(text.starts_with("refused: the game data has no "), "{text}");
+        assert!(text.ends_with(", the object atlas"), "{text}");
+    }
+
+    #[test]
+    fn a_world_without_blocks_names_near_matches_when_the_reader_refuses() {
+        let data = data_with(&[]);
+        let scratch = tempfile::tempdir().unwrap();
+        let mut verify = |_: &str, _: &Path| Ok(serde_json::json!({}));
+        let RetailRead::NoBlocks(detail) =
+            read_retail(data.path(), "tamriel", scratch.path(), &mut verify).unwrap()
+        else {
+            panic!("the world has no blocks");
+        };
+        assert!(
+            detail.contains("near matches: textures/terrain/tamriel/objects/tamriel.objects.dds"),
+            "{detail}"
+        );
     }
 
     #[test]

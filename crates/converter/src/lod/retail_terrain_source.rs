@@ -7,7 +7,10 @@
 //! or provided with different bytes by several archives is returned as a [`Skipped`] entry with its
 //! reason, for the caller to count and report.
 
-use super::retail::name::{RetailLodKind, parse_lod_file_name};
+use super::{
+    near_match::FileIndex,
+    retail::name::{RetailLodKind, parse_lod_file_name},
+};
 use crate::archive::OpenArchive;
 use color_eyre::{
     Result,
@@ -55,6 +58,8 @@ pub struct BlockProviders {
 pub struct RetailTerrainFiles {
     pub blocks: BTreeMap<BlockId, BlockProviders>,
     pub archive_warnings: Vec<String>,
+    /// Every terrain file listed from the archives and loose folders, for near-match reports.
+    pub index: FileIndex,
     archives: BTreeMap<PathBuf, OpenArchive>,
 }
 
@@ -108,9 +113,14 @@ fn normal(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+/// Whether a canonical path is under a terrain folder, the only place retail LOD files live.
+fn is_terrain_path(path: &str) -> bool {
+    path.starts_with("meshes/terrain/") || path.starts_with("textures/terrain/")
+}
+
 /// What one canonical path is, if it is a terrain LOD mesh or map of a block.
 fn classify(path: &str) -> Option<(BlockId, Kind)> {
-    if !path.starts_with("meshes/terrain/") && !path.starts_with("textures/terrain/") {
+    if !is_terrain_path(path) {
         return None;
     }
     let (kind, stem) = if let Some(stem) = path.strip_suffix(".btr") {
@@ -151,7 +161,8 @@ pub fn list(data: &Path) -> Result<RetailTerrainFiles> {
         .collect();
     archives.sort();
     for (name, archive) in archive_names(archives)? {
-        let opened = match OpenArchive::open(&archive, |path| classify(&normal(path)).is_some()) {
+        // Every terrain entry is listed, so a missing file can name its near matches.
+        let opened = match OpenArchive::open(&archive, |path| is_terrain_path(&normal(path))) {
             Ok(opened) => opened,
             Err(error) => {
                 files
@@ -160,15 +171,20 @@ pub fn list(data: &Path) -> Result<RetailTerrainFiles> {
                 continue;
             }
         };
+        files.index.note_archive();
+        let mut has_block_file = false;
         for path in opened.paths() {
-            if let Some((id, kind)) = classify(&normal(path)) {
+            let path = normal(path);
+            files.index.add(&path);
+            if let Some((id, kind)) = classify(&path) {
+                has_block_file = true;
                 providers(&mut files.blocks, id, kind).push(Provider::Archive {
                     name: name.clone(),
                     path: archive.clone(),
                 });
             }
         }
-        if opened.paths().next().is_some() {
+        if has_block_file {
             files.archives.insert(archive, opened);
         }
     }
@@ -187,6 +203,9 @@ pub fn list(data: &Path) -> Result<RetailTerrainFiles> {
                         let entry = entry?;
                         if entry.path().is_file() {
                             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                            files
+                                .index
+                                .add(&format!("{root}/terrain/{world_name}/{name}"));
                             loose.push((
                                 format!("{root}/terrain/{world_name}/{name}"),
                                 entry.path(),
@@ -284,7 +303,11 @@ impl RetailTerrainFiles {
             if providers.is_empty() {
                 return Err(Skipped {
                     class: missing,
-                    detail: format!("the game data has no {}", canonical_path(id, kind)),
+                    detail: format!(
+                        "the game data has {}",
+                        self.index
+                            .describe_missing(&[&canonical_path(id, kind)], Some(&id.0))
+                    ),
                 });
             }
             let mut copies: Vec<(Vec<u8>, &Provider)> = Vec::new();
@@ -492,6 +515,38 @@ mod tests {
         // Reading it: the colour map is missing and the block is reported, not filled.
         let skipped = files.read(&("tamriel".to_owned(), 4, 0, 0)).err().unwrap();
         assert_eq!(skipped.class, "missing_colour_map");
+    }
+
+    #[test]
+    fn a_missing_map_names_the_near_matches_the_game_data_does_hold() {
+        use dummy_content::{Entry, bsa};
+        let data = tempfile::tempdir().unwrap();
+        let bytes = bsa::v105(
+            &[
+                Entry::new("Meshes/Terrain/W/W.4.0.0.btr", b"mesh"),
+                Entry::new("Textures/Terrain/W/W.4.0.0_n.dds", b"normal"),
+                // The colour map exists under another name. It is listed, not used.
+                Entry::new("Textures/Terrain/W/W.4.0.0.colour.dds", b"colour"),
+            ],
+            bsa::Compression::None,
+        )
+        .unwrap();
+        fs::write(data.path().join("Terrain.bsa"), bytes).unwrap();
+        let files = list(data.path()).unwrap();
+        let gap = files.read(&("w".to_owned(), 4, 0, 0)).err().unwrap();
+        assert_eq!(gap.class, "missing_colour_map");
+        assert!(
+            gap.detail
+                .contains("the game data has no textures/terrain/w/w.4.0.0.dds; near matches: "),
+            "{}",
+            gap.detail
+        );
+        assert!(
+            gap.detail.contains("textures/terrain/w/w.4.0.0.colour.dds"),
+            "{}",
+            gap.detail
+        );
+        assert_eq!(files.index.archives(), 1);
     }
 
     #[test]
