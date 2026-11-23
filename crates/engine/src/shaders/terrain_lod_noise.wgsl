@@ -10,6 +10,8 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var land_noise: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var land_noise_sampler: sampler;
 
+// Ordinary exterior terrain LOD uses the non-projected key 12000005.
+// Key selection: https://github.com/Mudcrab-Team/skyrim_decomp/pull/947, G01.
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var input = pbr_input_from_standard_material(in, is_front);

@@ -2,7 +2,8 @@
 //! https://github.com/Mudcrab-Team/skyrim_decomp/pull/947
 
 use super::{
-    ActiveSpace, MergedTerrainCoverage, StreamingWorld, TerrainCoverage, TerrainPatch,
+    ActiveSpace, MergedTerrainCoverage, StreamingMetrics, StreamingWorld, TerrainCoverage,
+    TerrainPatch,
     lod::{LodStreaming, TerrainLodOverlay},
 };
 use crate::{
@@ -81,12 +82,32 @@ impl GridCentre {
 #[derive(Component)]
 pub(super) struct OwnBlendMaterial;
 
+fn record_missing_blend_bindings(
+    metrics: &mut StreamingMetrics,
+    noise_missing: bool,
+    atlas_missing: bool,
+) {
+    if noise_missing {
+        if metrics.near_terrain_blend_missing_noise == 0 {
+            warn!("Near terrain blend requested without a loaded land noise image");
+        }
+        metrics.near_terrain_blend_missing_noise += 1;
+    }
+    if atlas_missing {
+        if metrics.near_terrain_blend_missing_atlas == 0 {
+            warn!("Near terrain blend requested without a ready terrain LOD atlas");
+        }
+        metrics.near_terrain_blend_missing_atlas += 1;
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn update_near_terrain_blend(
     mut commands: Commands,
     config: Res<EngineConfig>,
     space: Res<ActiveSpace>,
     streaming: Res<StreamingWorld>,
+    mut metrics: ResMut<StreamingMetrics>,
     lod: Res<LodStreaming>,
     clock: Option<Res<GameClock>>,
     asset_server: Res<AssetServer>,
@@ -135,6 +156,7 @@ pub(super) fn update_near_terrain_blend(
             .entry((grid, parent))
             .or_insert_with(|| {
                 let cell = centre?;
+                // #947 G01 covers the technique mask for a 5×5 exterior grid.
                 if config.stream_radius != 2
                     || !uses_distant_blend(grid - cell, transitioning)
                     || streaming.resident_root(CellKey::Exterior {
@@ -145,14 +167,16 @@ pub(super) fn update_near_terrain_blend(
                 {
                     return None;
                 }
-                let noise = noise?;
-                let (image, base, width) = lod.near_terrain_overlay(
+                let overlay = lod.near_terrain_overlay(
                     &overlays,
                     worldspace,
                     cell,
                     grid,
                     &config.terrain_lod,
-                )?;
+                );
+                record_missing_blend_bindings(&mut metrics, noise.is_none(), overlay.is_none());
+                let (image, base, width) = overlay?;
+                let noise = noise?;
                 let local = (position? - grid.as_vec2()) * CELL_SIZE;
                 // #947 G02 gives the quadrant offset as (cell - base + half quadrant) / width.
                 // Both meshes already use cell-wide UVs. Their high quadrants include the half
@@ -224,6 +248,22 @@ mod tests {
         assert!(uses_distant_blend(IVec2::X, true));
         assert!(!uses_distant_blend(IVec2::ZERO, true));
         assert!(!uses_distant_blend(IVec2::new(3, 0), false));
+    }
+
+    #[test]
+    fn near_terrain_blend_counts_missing_bindings_independently() {
+        let mut metrics = StreamingMetrics::default();
+        record_missing_blend_bindings(&mut metrics, false, false);
+        assert_eq!(metrics.near_terrain_blend_missing_noise, 0);
+        assert_eq!(metrics.near_terrain_blend_missing_atlas, 0);
+
+        record_missing_blend_bindings(&mut metrics, true, false);
+        assert_eq!(metrics.near_terrain_blend_missing_noise, 1);
+        assert_eq!(metrics.near_terrain_blend_missing_atlas, 0);
+
+        record_missing_blend_bindings(&mut metrics, true, true);
+        assert_eq!(metrics.near_terrain_blend_missing_noise, 2);
+        assert_eq!(metrics.near_terrain_blend_missing_atlas, 1);
     }
 
     #[test]

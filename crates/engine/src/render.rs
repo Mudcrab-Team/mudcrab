@@ -841,7 +841,7 @@ impl TerrainExtension {
         }
     }
 
-    /// The exact image resources retained by this quadrant's material.
+    /// The layer and normal images, plus the atlas and noise while seam blending is bound.
     pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
         [
             self.layer_0.as_ref(),
@@ -856,6 +856,8 @@ impl TerrainExtension {
             self.normal_3.as_ref(),
             self.normal_4.as_ref(),
             self.normal_5.as_ref(),
+            self.seam_overlay.as_ref(),
+            self.seam_noise.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -1781,10 +1783,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terrain_reservation_observes_all_six_diffuse_and_normal_layers() {
+    fn terrain_reservation_observes_layers_and_bound_seam_images() {
         let mut images = Assets::<Image>::default();
         let handles: [Handle<Image>; 12] = std::array::from_fn(|_| images.add(Image::default()));
-        let extension = TerrainExtension {
+        let mut extension = TerrainExtension {
             layer_0: Some(handles[0].clone()),
             layer_1: Some(handles[1].clone()),
             layer_2: Some(handles[2].clone()),
@@ -1799,10 +1801,18 @@ mod tests {
             normal_5: Some(handles[11].clone()),
             ..default()
         };
-        assert_eq!(
-            extension.image_ids().collect::<Vec<_>>(),
-            handles.iter().map(Handle::id).collect::<Vec<_>>()
-        );
+        let layer_ids: Vec<_> = handles.iter().map(Handle::id).collect();
+        assert_eq!(extension.image_ids().collect::<Vec<_>>(), layer_ids);
+
+        let overlay = images.add(Image::default());
+        let noise = images.add(Image::default());
+        let mut blended_ids = layer_ids.clone();
+        blended_ids.extend([overlay.id(), noise.id()]);
+        extension.set_blend(Some((NearTerrainBlendSettings::default(), overlay, noise)));
+        assert_eq!(extension.image_ids().collect::<Vec<_>>(), blended_ids);
+
+        extension.set_blend(None);
+        assert_eq!(extension.image_ids().collect::<Vec<_>>(), layer_ids);
     }
     use crate::world::components::{StreamingCamera, WaterSurface};
 

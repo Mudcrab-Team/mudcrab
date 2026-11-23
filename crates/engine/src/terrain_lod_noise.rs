@@ -130,18 +130,20 @@ mod tests {
 
     // Evaluate the production functions with Naga. This tests the shader's coefficients
     // and arithmetic on machines without a graphics device.
-    fn evaluate(name: &str, inputs: &str) -> f64 {
+    fn evaluate(name: &str, inputs: &str, component: &str) -> f64 {
         let shader = include_str!("shaders/terrain_blend.wgsl");
         let (_, function) = shader
             .split_once(&format!("fn {name}("))
             .expect("production shader function");
         let (_, body) = function.split_once('{').expect("function body");
         let (body, _) = body.split_once('}').expect("function end");
-        let equations = body
-            .replace("let ", "const ")
-            .replace("return ", "const result = ");
-        let module = wgsl::parse_str(&format!("{inputs} {equations}"))
-            .expect("constant evaluation of terrain blend");
+        let (equations, result) = body.split_once("return ").expect("function result");
+        let equations = equations.replace("let ", "const ");
+        let result = result.trim().trim_end_matches(';');
+        let module = wgsl::parse_str(&format!(
+            "{inputs} {equations} const result = ({result}){component};"
+        ))
+        .expect("constant evaluation of terrain blend");
         let (_, result) = module
             .constants
             .iter()
@@ -163,6 +165,7 @@ mod tests {
             let value = evaluate(
                 "terrain_blend_ramp",
                 &format!("const distance: f32 = {distance};"),
+                "",
             );
             assert!((value - expected).abs() < 0.000002);
         }
@@ -174,7 +177,20 @@ mod tests {
             let value = evaluate(
                 "terrain_blend_weight",
                 &format!("const ramp: f32 = 0.75; const gate: f32 = {gate}.0;"),
+                "",
             );
+            assert!((value - expected).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn terrain_atlas_uv_scales_and_adds_the_cell_offset_before_flipping_v() {
+        let inputs = "
+            const cell_uv = vec2<f32>(0.5, 0.25);
+            const atlas = vec4<f32>(1.0 / 4.0, 2.0 / 4.0, 1.0 / 4.0, 1.0);
+        ";
+        for (component, expected) in [(".x", 0.375), (".y", 0.4375)] {
+            let value = evaluate("terrain_atlas_uv", inputs, component);
             assert!((value - expected).abs() < f64::EPSILON);
         }
     }
@@ -203,6 +219,7 @@ mod tests {
             let value = evaluate(
                 "noise_multiplier",
                 &format!("const base = vec3<f32>({base}); const red: f32 = {red};"),
+                "",
             );
             assert!((value - expected).abs() < 0.000002);
         }

@@ -8,6 +8,8 @@ fn noise_multiplier(base: vec3<f32>, red: f32) -> f32 {
     return 0.37 + 0.833333 * mixed_red;
 }
 
+// Sample at three times the UV and use the non-projected 0.8h weight
+// from https://github.com/Mudcrab-Team/skyrim_decomp/pull/946, G02.
 fn noisy_land_colour(
     base: vec3<f32>, noise: texture_2d<f32>, noise_sampler: sampler, uv: vec2<f32>,
 ) -> vec3<f32> {
