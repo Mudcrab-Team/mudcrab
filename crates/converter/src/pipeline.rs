@@ -5338,6 +5338,7 @@ async fn compile_lod_chunks_inline(
         ));
     }
     // List the retail files once. A listing failure still allows verified checkpoints to resume.
+    let mut terrain_listing_failed = false;
     let retail_files = if retail_terrain {
         let files = match crate::lod::retail_terrain_source::list(&config.data_dir) {
             Ok(files) => {
@@ -5347,6 +5348,7 @@ async fn compile_lod_chunks_inline(
                 files
             }
             Err(error) => {
+                terrain_listing_failed = true;
                 report.lod_warnings.push(format!(
                     "the retail terrain LOD files cannot be listed: {error:#}; no new terrain LOD is imported"
                 ));
@@ -5377,6 +5379,7 @@ async fn compile_lod_chunks_inline(
     .await;
     let mut chunk_hashes: Vec<String> = Vec::new();
     let mut terrain_reconciliation = crate::lod::reconciliation::LodReconciliation::new();
+    terrain_reconciliation.terrain_listing_failed = terrain_listing_failed;
     let mut world_settings = Vec::with_capacity(worlds.len());
     let mut compiled_worlds = 0u64;
     let mut terrain_sources = BTreeMap::new();
@@ -5479,6 +5482,9 @@ async fn compile_lod_chunks_inline(
                 file_name,
                 origin,
             };
+            if !terrain_listing_failed {
+                terrain_reconciliation.record_terrain_world(&world.file_name);
+            }
             let imported = import_world(
                 &connection,
                 checkpoint,
@@ -5933,18 +5939,13 @@ async fn compile_lod_chunks_inline(
     };
     if compiled_worlds > 0 {
         report.artifacts.push(PathBuf::from("lod-manifest.json"));
-        terrain_reconciliation.terrain_recorded = retail_terrain;
-        terrain_reconciliation.objects_recorded = compiled_worlds > 0;
+        terrain_reconciliation.objects_recorded_worlds =
+            object_lod.reconciliation.objects_recorded_worlds;
         terrain_reconciliation.object_skips = object_lod.reconciliation.object_skips;
         terrain_reconciliation.object_world_skips = object_lod.reconciliation.object_world_skips;
-        let reconciliation = if terrain_reconciliation.terrain_skips.is_empty()
-            && terrain_reconciliation.object_skips.is_empty()
-            && terrain_reconciliation.object_world_skips.is_empty()
-        {
-            None
-        } else {
-            Some(terrain_reconciliation)
-        };
+        // Always write the block, even with no skips, so a clean pack says which worlds were
+        // inspected instead of reading as unknown.
+        let reconciliation = Some(terrain_reconciliation);
         let manifest = LodManifest {
             build_identity: identity,
             converter_schema: CONVERTER_SCHEMA_VERSION,
@@ -8730,6 +8731,12 @@ mod tests {
             let manifest: LodManifest =
                 serde_json::from_slice(&fs::read(root.join("lod-manifest.json")).unwrap()).unwrap();
             assert_eq!(manifest.object_chunks, 1);
+            let reconciliation = manifest
+                .reconciliation
+                .as_ref()
+                .expect("a clean conversion still writes the reconciliation block");
+            assert!(reconciliation.terrain_recorded_worlds.contains(&world));
+            assert!(reconciliation.objects_recorded_worlds.contains(&world));
             assert_eq!(report.lod_chunks, 1, "{:?}", report.lod_warnings);
             assert_eq!(manifest.chunks, report.lod_chunks);
             assert_eq!(

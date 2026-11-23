@@ -640,6 +640,7 @@ pub(crate) fn build_object_lod(
             ));
             continue;
         }
+        stage.reconciliation.record_object_world(&file_name);
         let world_scratch = scratch.path().join(format!("world-{id:08x}"));
         let retail = match read_retail(&config.data_dir, &file_name, &world_scratch, &mut verify) {
             Ok(RetailRead::Found(retail)) => retail,
@@ -658,7 +659,7 @@ pub(crate) fn build_object_lod(
                     stage.warnings.push(message);
                     stage
                         .reconciliation
-                        .record_object_world_skip(&editor_id.to_ascii_lowercase(), MISSING_ATLAS);
+                        .record_object_world_skip(&file_name, MISSING_ATLAS);
                     stage.skipped_worlds.push(SkippedWorld {
                         editor_id,
                         class: MISSING_ATLAS,
@@ -689,10 +690,9 @@ pub(crate) fn build_object_lod(
         crate::texture::inspect_ktx2(&atlas, crate::texture::TextureEncoding::ColorSrgb)
             .wrap_err_with(|| format!("the object atlas of {editor_id} is not a valid KTX2"))?;
         let (chunks, skipped) = compile_candidates(world, retail.blocks, &atlas_sha256)?;
-        let world_file = editor_id.to_ascii_lowercase();
         for block in retail.skipped.iter().chain(&skipped) {
             stage.reconciliation.record_object_skip(
-                &world_file,
+                &file_name,
                 block.level,
                 block.class,
                 block.cell,

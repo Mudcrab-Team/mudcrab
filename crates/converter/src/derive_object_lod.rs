@@ -488,7 +488,8 @@ fn stage_generation(
     for block in read_skipped.iter().chain(&skipped) {
         reconciliation.record_object_skip(world_file, block.level, block.class, block.cell);
     }
-    reconciliation.objects_recorded = true;
+    reconciliation.record_object_world(world_file);
+    reconciliation.format = crate::lod::reconciliation::FORMAT.to_owned();
     manifest.reconciliation = Some(reconciliation);
     let manifest = serde_json::to_value(&manifest)?;
     validate_object_generation(transaction, Some(&manifest), &|path| {
@@ -896,6 +897,37 @@ mod tests {
                     chunk_key_for_block(60, WORLD.origin, 16, 0, -16).unwrap()
                 ))
                 .exists()
+        );
+    }
+
+    #[test]
+    fn a_derive_records_its_world_and_skip_classes() {
+        let root = tempfile::tempdir().unwrap();
+        pack(root.path());
+        let report = derive(
+            root.path(),
+            vec![
+                candidate((0, -16), Ok(block(vec![shape(1)]))),
+                candidate((16, -16), Err("bad block".to_owned())),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(report.skipped.len(), 1);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("lod-manifest.json")).unwrap())
+                .unwrap();
+        let reconciliation = &manifest["reconciliation"];
+        assert!(
+            reconciliation["objects_recorded_worlds"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("tamriel")),
+            "{reconciliation}"
+        );
+        assert_eq!(
+            reconciliation["object_skips"]["tamriel"]["16"]["block cannot be read"]["blocks"], 1,
+            "{reconciliation}"
         );
     }
 }

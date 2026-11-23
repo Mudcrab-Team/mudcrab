@@ -1,5 +1,5 @@
 use crate::esm::{
-    extractors::extract_subrecords,
+    extractors::{SubrecordView, extract_subrecords},
     mmap_reader::EsmReader,
     records::RawRecord,
     types::{CELL_CHILD_GROUP_KINDS, GroupHeader, RecordHeader, WorldReference},
@@ -452,13 +452,8 @@ pub fn read_world_rnam(path: &Path) -> Result<Vec<WorldRnam>> {
         if record.record_type != *b"WRLD" || record.is_deleted() {
             return;
         }
-        let editor_id = record.subrecords.iter().find_map(|(tag, data)| {
-            (tag == b"EDID").then(|| {
-                shared::plugin_selection::decode_windows_1252(data)
-                    .trim_end_matches('\0')
-                    .to_owned()
-            })
-        });
+        // Same decode as the exporter's record projection.
+        let editor_id = SubrecordView::new(&record.subrecords).get_string(b"EDID");
         let rnam = record
             .subrecords
             .iter()

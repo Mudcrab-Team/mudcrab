@@ -144,9 +144,9 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     let mut kept = Vec::new();
     // silent-ok: a pack made before the block existed has no recorded skips
     let mut reconciliation = manifest.reconciliation.take().unwrap_or_default();
-    for world in &worlds {
-        reconciliation.remove_terrain_world(&world.file_name);
-    }
+    // This command re-reads the retail listing for every world with terrain LOD. Drop the prior
+    // terrain records so a stale class cannot explain a file it did not record.
+    reconciliation.clear_terrain();
     let mut retail_inputs: BTreeMap<String, String> = BTreeMap::new();
     let mut payload_hashes: Vec<String> = Vec::new();
     let pool = rayon::ThreadPoolBuilder::new()
@@ -159,6 +159,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             .filter(|(name, ..)| *name == world.file_name)
             .cloned()
             .collect();
+        reconciliation.record_terrain_world(&world.file_name);
         let imported = stage_world(
             &transaction,
             &mut staged,
@@ -236,7 +237,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
     });
     manifest.retail_terrain_import_version = IMPORT_VERSION;
     manifest.retail_terrain_inputs.extend(retail_inputs);
-    reconciliation.terrain_recorded = true;
+    reconciliation.format = crate::lod::reconciliation::FORMAT.to_owned();
     manifest.reconciliation = Some(reconciliation);
     if kept.is_empty() {
         // Every world's land texture sources fed only the chunks that were replaced.
@@ -607,6 +608,16 @@ mod tests {
         let manifest: LodManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(manifest.chunks, 3);
+        let reconciliation = manifest
+            .reconciliation
+            .as_ref()
+            .expect("the terrain derive writes the reconciliation block");
+        assert!(reconciliation.terrain_recorded_worlds.contains("first"));
+        assert!(
+            reconciliation.terrain_skips["first"][&16].contains_key("unreadable_mesh"),
+            "{:?}",
+            reconciliation.terrain_skips
+        );
         assert_eq!(
             manifest.retail_terrain_inputs[&failed_relative],
             previous.retail_terrain_inputs[&failed_relative]
