@@ -11,7 +11,9 @@
 //! `meshes/terrain` and `textures/terrain` trees. Terrain files are classified by the same rules
 //! the terrain importer uses ([`crate::lod::retail_terrain_source::classify`]). WRLD `RNAM`
 //! memberships are read from the selected plugins with the existing plugin parser, streamed one
-//! record at a time. Nothing here writes to the game folder or to the pack.
+//! record at a time. Nothing here writes to the game folder or to the pack. The file-name and
+//! atlas rules are documented in
+//! [the LOD compiler spec](../../../docs/specs/converters/lod-compiler.md).
 
 use crate::{
     esm::{
@@ -81,7 +83,7 @@ pub struct CategoryReport {
     pub world: String,
     /// Block level. `None` for an atlas, a large-reference row or a category-wide row.
     pub level: Option<u32>,
-    /// Retail count, or `None` when unknown.
+    /// Count in the game data, or `None` when unknown.
     pub retail: Option<u64>,
     /// Pack count, or `None` when unknown.
     pub pack: Option<u64>,
@@ -421,7 +423,7 @@ impl Retail {
     }
 }
 
-/// The world of an atlas path, if the path is one of the two names retail uses.
+/// The world of an atlas path, if it is one of the two documented name forms.
 fn atlas_world(path: &str) -> Option<String> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() != 5 || parts[0] != "textures" || parts[1] != "terrain" || parts[3] != "objects"

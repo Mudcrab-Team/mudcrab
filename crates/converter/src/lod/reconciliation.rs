@@ -6,10 +6,11 @@
 //! hold without reading the conversion report. A pack without the block gets no invented
 //! explanation: `converter reconcile` reports the count as unknown.
 //!
-//! Counts are per world file name (the lowercase editor id retail uses in LOD file names), per
-//! block level and per reason class. A terrain class also records how many skipped blocks had
-//! each of the three retail files, because one block can be skipped for a missing colour map while
-//! its mesh and normal map exist.
+//! Counts are per world file name (the lowercase editor id used in LOD file names), per block
+//! level and per reason class. A terrain class also records how many skipped blocks had each of
+//! the three source files, because one block can be skipped for a missing colour map while its
+//! mesh and normal map exist. The file names follow
+//! [the LOD compiler spec](../../../../docs/specs/converters/lod-compiler.md).
 
 use super::retail_terrain_source::{BlockId, RetailTerrainFiles};
 use serde::{Deserialize, Serialize};
