@@ -681,6 +681,11 @@ pub(crate) fn export_inhouse_record_archive_to_db(
 
 /// Recreate reader-owned outputs while preserving caller tables and asset-cache proofs.
 /// DDL participates in the export transaction, so an export error restores the old snapshot.
+/// True when the record has a `VHGT` subrecord, even an empty one.
+fn land_vhgt_present(subrecords: &[(Vec<u8>, Vec<u8>)]) -> bool {
+    subrecords.iter().any(|(tag, _)| tag.as_slice() == b"VHGT")
+}
+
 fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         r#"DROP TABLE IF EXISTS record_diagnostics;
@@ -1204,14 +1209,24 @@ fn export_records(
                 let land = extract_land_data(&record.subrecords);
                 // `land.heightmap` is NOT NULL. Without a VHGT there is no row: no empty blob,
                 // no zero heights (#811 F7). A subset update also drops the stale row.
+                // Only an absent VHGT is an intended omission. A present but empty one is an
+                // authored, unusable field and stays data loss.
                 let Some(heightmap) = land.vhgt.filter(|bytes| !bytes.is_empty()) else {
                     tx.prepare_cached("DELETE FROM land WHERE cell_id=?1")?
                         .execute([cell_id])?;
-                    omissions.record(
-                        OmissionCategory::LandMissingHeights,
-                        form_id,
-                        "LAND has no VHGT height field; no land row".to_owned(),
-                    );
+                    if land_vhgt_present(&record.subrecords) {
+                        omissions.record(
+                            OmissionCategory::LandUnusableHeights,
+                            form_id,
+                            "LAND VHGT is present but empty; no land row".to_owned(),
+                        );
+                    } else {
+                        omissions.record(
+                            OmissionCategory::LandMissingHeights,
+                            form_id,
+                            "LAND has no VHGT height field; no land row".to_owned(),
+                        );
+                    }
                     continue;
                 };
                 // VTEX, VCLR and VNML are nullable. An absent field is NULL.
@@ -3597,9 +3612,22 @@ mod tests {
             rows,
             [(0x100, heights, None, None, Some(vec![9; 33 * 33 * 3]))]
         );
+        // Only the absent VHGT is an intended omission. The empty one is authored and unusable.
         assert_eq!(
             omission_ids(&conn),
-            [("land_missing_heights".to_owned(), 2, vec![0x2001, 0x2002])]
+            [
+                ("land_missing_heights".to_owned(), 1, vec![0x2001]),
+                ("land_unusable_heights".to_owned(), 1, vec![0x2002]),
+            ]
+        );
+        let stored = ProjectionOmissions::read(&conn).unwrap();
+        assert_eq!(
+            stored.categories["land_missing_heights"].severity,
+            crate::esm::projection_omissions::Severity::Omitted
+        );
+        assert_eq!(
+            stored.categories["land_unusable_heights"].severity,
+            crate::esm::projection_omissions::Severity::DataLoss
         );
     }
 

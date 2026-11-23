@@ -5711,6 +5711,39 @@ mod tests {
         }
     }
 
+    /// A manifest that lists intended omissions (records with no usable value, #811) is complete
+    /// and loads. The engine reads only `complete`; the added field changes nothing for it.
+    #[test]
+    fn accepts_a_manifest_that_lists_intended_omissions() {
+        let directory = tempfile::tempdir().unwrap();
+        write_runtime_asset_database(&directory.path().join("skyrim_world.db"));
+        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            format!(
+                r#"{{"schema_version":{},"complete":true,"record_data_complete":true,
+                "intended_omissions":[{{"source":"Skyrim.esm","record_type":"LAND",
+                "class":"land_missing_heights","count":154,
+                "first_example":"LAND 000B2797: no VHGT height field"}}]}}"#,
+                converter_schema_version()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ),
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+    }
+
     /// Current, complete assets load, and an integration report newer than the engine is rejected.
     #[test]
     fn accepts_current_complete_runtime_assets() {

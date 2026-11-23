@@ -890,6 +890,7 @@ async fn rebuild_into(
     manifest.record_data_complete = Some(conversion.warnings.is_empty());
     report.warnings.extend(conversion.warnings);
     report.notices.extend(conversion.notices);
+    report.intended_omissions.extend(conversion.omissions);
     let phases = conversion.phases;
     let merged = conversion.records;
     validate_database(&Connection::open(&database)?)?;
@@ -1074,6 +1075,8 @@ async fn rebuild_into(
         )?);
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
+    crate::cache::merge_intended_omissions(&mut report.intended_omissions);
+    manifest.intended_omissions = report.intended_omissions.clone();
     crate::cache::record_grass_artifact(manifest, staging)?;
     manifest.save(&staging.join("conversion-manifest.json"))?;
     fs::write(

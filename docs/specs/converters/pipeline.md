@@ -40,6 +40,23 @@ unusable default land diffuse fails the conversion; no generated white texture r
 `--terrain-default white` still selects white on purpose.
 These advisories alone do not make the report or manifest incomplete or make the CLI exit 1;
 failures that prevent publishing usable output still fail conversion.
+
+**Intended omissions (#811).** A retail record can exist in the source and have no usable
+value, for example a `LAND` without `VHGT`. The converter omits it and invents nothing. This is
+not a reader failure, so it is not a warning. The reader counts it apart from skipped records and
+reports one `notice` per plugin, record type and reason class. The report lists it in
+`intended_omissions`. The manifest lists it in the additive `intended_omissions` array of
+`{source, record_type, class, count, first_example}` rows. The journal keeps each event in
+`record_diagnostics` with category `omission` and action `omitted`. Intended omissions never
+clear `record_data_complete` or `complete`. A parse error, an unexpected layout or an unknown
+subrecord is not an intended omission: it stays a warning and still marks the run incomplete.
+Only the classes in `intended_omission_class` and the `omitted` projection severity
+(`db-schema.md` §19) qualify. A site is listed there only when the field is absent from the record.
+A field that is present but short, empty or unreadable stays data loss (a `VHGT` with no bytes is
+not an absent `VHGT`). Both record readers apply the same boundary for `LAND`. Known gap: a
+`WRLD` with a present but empty `EDID` is not checked yet. It passes framing and gets a worldspace
+row with no data-loss row (unverified whether retail ships one). Older manifests and notes
+without the field read as empty.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
 and `--reuse-assets` use the same severity and completeness rules when they

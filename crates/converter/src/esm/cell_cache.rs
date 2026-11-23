@@ -25,6 +25,10 @@ pub(crate) fn flat_test_vhgt() -> Vec<u8> {
 pub(crate) const LAND_WITHOUT_HEIGHTS: &str =
     "LAND has no VHGT height field; omitted, no heights invented";
 
+/// A `VHGT` field that is present but has no bytes is an unusable authored field, not an absent
+/// one. It stays a reader failure (data loss); only an absent `VHGT` is an intended omission.
+pub(crate) const LAND_EMPTY_HEIGHTS: &str = "LAND VHGT is present but empty";
+
 /// True when the record carries a `VHGT` field with at least one byte.
 pub(crate) fn land_has_heights(view: &SubrecordView<'_>) -> bool {
     view.find(b"VHGT").is_some_and(|bytes| !bytes.is_empty())
@@ -35,7 +39,8 @@ pub(crate) fn land_has_heights(view: &SubrecordView<'_>) -> bool {
 /// A LAND without `VHGT` is rejected: the shared cache has no height to publish for it.
 pub(crate) fn validate_inhouse_land(record: &RawRecord) -> Result<()> {
     let view = SubrecordView::new(&record.subrecords);
-    color_eyre::eyre::ensure!(land_has_heights(&view), LAND_WITHOUT_HEIGHTS);
+    color_eyre::eyre::ensure!(view.find(b"VHGT").is_some(), LAND_WITHOUT_HEIGHTS);
+    color_eyre::eyre::ensure!(land_has_heights(&view), LAND_EMPTY_HEIGHTS);
     let heightmap = view.find(b"VHGT").unwrap_or_default();
     let heights = decode_vhgt(heightmap);
     let count = usize::from(LAND_SIDE).pow(2);
@@ -1176,6 +1181,10 @@ mod tests {
         assert_eq!(error, LAND_WITHOUT_HEIGHTS);
         let empty = record(0x1234, b"LAND", None, &[(b"VHGT", Vec::new())]);
         assert!(!land_has_heights(&SubrecordView::new(&empty.subrecords)));
+        // A present but empty VHGT is its own failure, not the absent-field omission.
+        let error = validate_inhouse_land(&empty).unwrap_err().to_string();
+        assert_eq!(error, LAND_EMPTY_HEIGHTS);
+        assert!(!error.contains(LAND_WITHOUT_HEIGHTS));
     }
 
     /// Reconstructed normals come from authored heights only (retail zero-vector rule unverified).

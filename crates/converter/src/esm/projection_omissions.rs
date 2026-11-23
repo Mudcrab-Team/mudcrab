@@ -49,6 +49,9 @@ pub enum OmissionCategory {
     RoomMarkerUnreadableFlags,
     /// A LAND without a `VHGT` height field gets no `land` row.
     LandMissingHeights,
+    /// A LAND whose `VHGT` is present but empty gets no `land` row. The field is authored and
+    /// unusable, so this is data loss, not an intended omission.
+    LandUnusableHeights,
     /// A PlaneMarker with unusable geometry gets no occluder row.
     OccluderUnusableGeometry,
     /// A PlaneMarker has malformed XORD or an unresolved target in an authored slot.
@@ -84,6 +87,7 @@ impl OmissionCategory {
             Self::ArmatureMissingRace => "armature_missing_race",
             Self::RoomMarkerUnreadableFlags => "room_marker_unreadable_flags",
             Self::LandMissingHeights => "land_missing_heights",
+            Self::LandUnusableHeights => "land_unusable_heights",
             Self::OccluderUnusableGeometry => "occluder_unusable_geometry",
             Self::OccluderUnusableLinks => "occluder_unusable_links",
             Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
@@ -97,9 +101,15 @@ impl OmissionCategory {
     }
 
     /// Lost supported rows or fields warn and mark the conversion incomplete. An unresolved
-    /// emittance target keeps the model's own emission, the documented fallback.
+    /// emittance target keeps the model's own emission, the documented fallback. A record whose
+    /// source has no value to publish is an intended omission (#811): listed, never a failure.
+    ///
+    /// Only an absent field of a record whose other data is sound is intended. A field that is
+    /// present but short or unreadable, a missing placement base or cell, and a missing armature
+    /// race stay data loss until retail evidence shows they are authored absences (unverified).
     pub fn severity(self) -> Severity {
         match self {
+            Self::LandMissingHeights | Self::WorldspaceMissingEditorId => Severity::Omitted,
             Self::LightMissingData
             | Self::LightShortData
             | Self::GrassUnusableData
@@ -107,10 +117,9 @@ impl OmissionCategory {
             | Self::ReferenceMissingBase
             | Self::ReferenceShortScale
             | Self::ReferenceMissingCell
-            | Self::WorldspaceMissingEditorId
             | Self::ArmatureMissingRace
             | Self::RoomMarkerUnreadableFlags
-            | Self::LandMissingHeights
+            | Self::LandUnusableHeights
             | Self::OccluderUnusableGeometry
             | Self::OccluderUnusableLinks
             | Self::LightingTemplateUnusableData
@@ -132,6 +141,9 @@ pub enum Severity {
     DataLoss,
     /// The runtime falls back to authored behaviour: the conversion notes it and stays complete.
     Fallback,
+    /// The source has no usable value, so the record is omitted and none is invented (#811).
+    /// The conversion notes it and stays complete; the manifest lists it.
+    Omitted,
 }
 
 impl Severity {
@@ -139,6 +151,7 @@ impl Severity {
         match self {
             Self::DataLoss => "data_loss",
             Self::Fallback => "fallback",
+            Self::Omitted => "omitted",
         }
     }
 
@@ -146,6 +159,7 @@ impl Severity {
     fn parse(name: &str) -> Self {
         match name {
             "fallback" => Self::Fallback,
+            "omitted" => Self::Omitted,
             _ => Self::DataLoss,
         }
     }

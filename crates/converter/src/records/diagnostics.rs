@@ -109,6 +109,7 @@ impl EventRow {
         let action = context.action.unwrap_or(match category {
             "record" | "field" | "unexpected" => "skipped",
             "compatibility" => "projected",
+            "omission" => "omitted",
             _ => "cleared",
         });
         let mut identity = Sha256::new();
