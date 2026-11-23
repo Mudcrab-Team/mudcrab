@@ -442,10 +442,14 @@ fn model_space_material_keeps_skin_shading_when_depth_state_is_authored() {
     write_model_space_gltf(directory.path(), (1 << 12) | 1);
     let mut app = loader_app(directory.path());
     let mut scene = load_scene_world(&mut app);
-    let mut skins = scene.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
-    assert_eq!(skins.iter(&scene).count(), 1);
-    let mut depth = scene.query::<&MeshMaterial3d<NifDepthMaterial>>();
-    assert_eq!(depth.iter(&scene).count(), 0);
+    let mut skins = scene.query::<(&MeshMaterial3d<SkyrimSkinDepthMaterial>, &NotShadowCaster)>();
+    let (handle, _) = skins.single(&scene).unwrap();
+    let materials = app.world().resource::<Assets<SkyrimSkinDepthMaterial>>();
+    let material = materials.get(&handle.0).unwrap();
+    assert!(material.base.extension.model_space_normal.is_some());
+    let state = material.extension.state;
+    assert!(!state.depth_test && !state.depth_write && !state.decal);
+    assert!(state.excludes_shadow());
 }
 
 /// [`write_model_space_gltf`] turned into a FaceGen head: a `face_tint` material whose detail and
@@ -913,17 +917,55 @@ fn model_space_skin_keeps_its_material_and_tint_with_authored_blend() {
 
     let mut app = loader_app(directory.path());
     let mut scene = load_scene_world(&mut app);
+    use bevy::render::render_resource::{
+        BlendFactor, BlendState, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState,
+        FragmentState, RenderPipelineDescriptor,
+    };
     let mut query = scene.query::<(
-        &MeshMaterial3d<SkyrimSkinMaterial>,
+        &MeshMaterial3d<SkyrimSkinDepthMaterial>,
         &SkinTintSurface,
-        Has<MeshMaterial3d<NifDepthMaterial>>,
+        &NotShadowCaster,
+        Has<MeshMaterial3d<SkyrimSkinMaterial>>,
     )>();
-    let (handle, _, has_depth_material) = query.single(&scene).unwrap();
-    let materials = app.world().resource::<Assets<SkyrimSkinMaterial>>();
+    let (handle, _, _, has_plain_material) = query.single(&scene).unwrap();
+    let materials = app.world().resource::<Assets<SkyrimSkinDepthMaterial>>();
     let material = materials.get(&handle.0).unwrap();
-    assert!(!has_depth_material);
-    assert_eq!(material.base.alpha_mode, AlphaMode::Blend);
-    assert!(material.extension.model_space_normal.is_some());
+    assert!(!has_plain_material);
+    assert_eq!(material.base.base.alpha_mode, AlphaMode::Blend);
+    assert!(material.base.extension.model_space_normal.is_some());
+    assert!(material.base.extension.images.is_some());
+
+    let mut descriptor = RenderPipelineDescriptor {
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(CompareFunction::Always),
+            stencil: default(),
+            bias: default(),
+        }),
+        fragment: Some(FragmentState {
+            targets: vec![Some(ColorTargetState {
+                format: TextureFormat::Rgba8UnormSrgb,
+                blend: Some(BlendState::ALPHA_BLENDING),
+                write_mask: ColorWrites::ALL,
+            })],
+            ..default()
+        }),
+        ..default()
+    };
+    crate::nif_depth::specialize_nif_depth_descriptor(&mut descriptor, material.extension.state);
+    let depth = descriptor.depth_stencil.unwrap();
+    assert_eq!(depth.depth_compare, Some(CompareFunction::GreaterEqual));
+    assert_eq!(depth.depth_write_enabled, Some(true));
+    assert_eq!(depth.bias.constant, crate::nif_depth::DECAL_DEPTH_BIAS);
+    let blend = descriptor.fragment.unwrap().targets[0]
+        .as_ref()
+        .unwrap()
+        .blend
+        .unwrap();
+    assert_eq!(blend.color.src_factor, BlendFactor::SrcAlpha);
+    assert_eq!(blend.color.dst_factor, BlendFactor::One);
+    assert_eq!(blend.alpha, BlendState::ALPHA_BLENDING.alpha);
 }
 
 #[test]
@@ -986,6 +1028,53 @@ fn authored_additive_glow_uses_depth_material_and_ordinary_blend_keeps_stock_rou
             assert!(!has_depth_material);
             assert!(!excludes_shadow);
         }
+    }
+}
+
+#[test]
+fn additive_glow_hides_only_when_its_declared_texture_cannot_be_sampled() {
+    for (decal, texture, uvs, treated, hidden) in [
+        (true, true, true, true, false),
+        (true, true, false, true, true),
+        (true, false, false, false, false),
+        (false, true, false, false, false),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        write_model_space_gltf(directory.path(), 0);
+        let path = directory.path().join("body.gltf");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let flags = (1u32 << 29) | if decal { DEPTH_TEST | DECAL } else { 0 };
+        document["materials"][0] = serde_json::json!({
+            "alphaMode": "BLEND",
+            "emissiveFactor": [0.2, 0.4, 0.6],
+            "extras": {"openSkyrim": {
+                "shaderFamily": "effect", "shaderFlags1": flags, "shaderFlags2": 0,
+                "alphaProperty": shared::nif_alpha::NifAlphaProperty::from_nif(0x0d, 128)
+            }}
+        });
+        if texture {
+            document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] =
+                serde_json::json!({"index": 1});
+        }
+        if !uvs {
+            document["meshes"][0]["primitives"][0]["attributes"]
+                .as_object_mut()
+                .unwrap()
+                .remove("TEXCOORD_0");
+        }
+        fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let mut app = loader_app(directory.path());
+        let mut scene = load_scene_world(&mut app);
+        let mut query = scene.query::<(&MeshMaterial3d<NifDepthMaterial>, Option<&Visibility>)>();
+        let (handle, visibility) = query.single(&scene).unwrap();
+        let materials = app.world().resource::<Assets<NifDepthMaterial>>();
+        let material = materials.get(&handle.0).unwrap();
+        assert_eq!(material.extension.state.uses_effect_emittance, treated);
+        assert_eq!(visibility == Some(&Visibility::Hidden), hidden);
+        assert_eq!(material.base.unlit, treated);
+        assert_eq!(material.base.fog_enabled, !treated);
     }
 }
 

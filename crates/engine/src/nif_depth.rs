@@ -129,7 +129,7 @@ impl MaterialExtension for NifDepthExtension {
     }
 }
 
-fn specialize_nif_depth_descriptor(
+pub(super) fn specialize_nif_depth_descriptor(
     descriptor: &mut RenderPipelineDescriptor,
     state: NifDepthState,
 ) {

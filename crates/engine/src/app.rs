@@ -739,8 +739,13 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // `RenderPlugin` only `init_resource`s its default handler, so this one wins wherever it is
     // inserted.
     app.insert_resource(RenderErrorHandler(handle_render_error));
+    let missing_nif_alpha = app
+        .world()
+        .resource::<crate::nif_material::MissingNifAlphaData>()
+        .clone();
     let exit = app.run();
     drop(app);
+    missing_nif_alpha.report();
     drop(streaming_fixture_dir);
     finished(&exit)
 }
