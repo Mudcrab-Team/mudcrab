@@ -576,6 +576,7 @@ fn shader_files() -> Vec<PathBuf> {
             }
         }
     }
+    files.push(root.join("crates/engine/src/streaming/lod_object.wgsl"));
     files.sort();
     files
 }
@@ -637,6 +638,46 @@ fn every_first_party_and_vendored_shader_composes_and_validates() {
         failures.len(),
         failures.join("\n\n")
     );
+}
+
+#[test]
+fn object_lod_shader_uses_signed_rgb_without_reconstructing_blue() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    let (_, decode) = source
+        .split_once("fn decode_object_atlas(rgb: vec3<f32>) -> vec3<f32> {")
+        .expect("object atlas decode function");
+    let expression = decode
+        .trim_start()
+        .strip_prefix("return ")
+        .and_then(|body| body.split_once(';'))
+        .expect("object atlas decode expression")
+        .0;
+    for (blue, expected_z) in [("0.125", "-0.75"), ("0.875", "0.75")] {
+        let fixture = format!(
+            "const rgb = vec3(0.75, 0.25, {blue});
+             const normal = {expression};
+             const_assert normal.x == 0.5 && normal.y == -0.5 && normal.z == {expected_z};"
+        );
+        wgpu::naga::front::wgsl::parse_str(&fixture)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&fixture)));
+    }
+    assert!(
+        source
+            .contains("decode_object_atlas(textureSample(normal_atlas, atlas_sampler, in.uv).rgb)")
+    );
+    let mut defs = base_defs();
+    for name in [
+        "VERTEX_UVS_B",
+        "VERTEX_TANGENTS",
+        "STANDARD_MATERIAL_BASE_COLOR_UV_B",
+        "STANDARD_MATERIAL_NORMAL_MAP",
+    ] {
+        defs.remove(name);
+    }
+    let mut defs = with_flags(defs, &["MAY_DISCARD", "DISTANCE_FOG"]);
+    compose(source, "lod_object.wgsl", defs.clone()).unwrap_or_else(|error| panic!("{error}"));
+    defs.remove("VERTEX_COLORS");
+    compose(source, "lod_object.wgsl", defs).unwrap_or_else(|error| panic!("{error}"));
 }
 
 /// A broken shader reports its file, its def set and the Naga message with a line. This is the

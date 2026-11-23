@@ -4181,9 +4181,17 @@ pub(crate) fn validate_artifact(
                 path.display()
             );
         }
-        // The shared object LOD atlas (an sRGB base-colour texture, not a converted source texture).
+        // Object LOD atlases have a fixed encoding and no source texture semantics.
         Some("ktx2") if relative.starts_with("lod") => {
-            crate::lod::objects::validate_atlas_ktx2(&fs::read(&path)?)
+            let bytes = fs::read(&path)?;
+            let validate = if relative.file_name()
+                == Some(std::ffi::OsStr::new(shared::lod::OBJECT_NORMAL_ATLAS_FILE))
+            {
+                crate::lod::objects::validate_normal_atlas_ktx2
+            } else {
+                crate::lod::objects::validate_atlas_ktx2
+            };
+            validate(&bytes)
                 .wrap_err_with(|| format!("invalid object LOD atlas {}", path.display()))?;
         }
         Some("ktx2") => {
@@ -5967,6 +5975,12 @@ async fn compile_lod_chunks_inline(
         report
             .artifacts
             .extend(stage.atlases.iter().map(|(path, _)| PathBuf::from(path)));
+        report.artifacts.extend(
+            stage
+                .normal_atlases
+                .iter()
+                .map(|(path, _)| PathBuf::from(path)),
+        );
         stage
     } else {
         crate::lod::object_stage::ObjectLodStage::default()
@@ -6013,6 +6027,7 @@ async fn compile_lod_chunks_inline(
             },
             object_chunk_inputs: object_lod.chunks.iter().cloned().collect(),
             object_atlases: object_lod.atlases.iter().cloned().collect(),
+            object_normal_atlases: object_lod.normal_atlases.iter().cloned().collect(),
             reconciliation,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
@@ -7917,6 +7932,7 @@ mod tests {
                 objects_compiler_version: 0,
                 object_chunk_inputs: BTreeMap::new(),
                 object_atlases: BTreeMap::new(),
+                object_normal_atlases: BTreeMap::new(),
                 reconciliation: None,
             };
             Proof {
@@ -9140,6 +9156,11 @@ mod tests {
         // The Creation Club name: no `<world>.objects.dds`.
         let atlas = object_textures.join(format!("{world}objectslod.dds"));
         fs::write(&atlas, dds(9)).unwrap();
+        fs::write(
+            object_textures.join(format!("{world}objectslod_n.dds")),
+            dds(10),
+        )
+        .unwrap();
         let mut config = cpu_lod_config(&data, &output);
         config.cpu_jobs = 2;
         config.terrain_lod_source = crate::config::TerrainLodSource::Retail;
@@ -9178,6 +9199,7 @@ mod tests {
             serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest.object_chunks, 0);
         assert!(manifest.object_atlases.is_empty());
+        assert!(manifest.object_normal_atlases.is_empty());
         shared::world_assets::validate_lod_build_contract(&output, CONVERTER_SCHEMA_VERSION)
             .unwrap();
     }
@@ -15362,6 +15384,28 @@ mod tests {
             .count();
         assert_eq!(blobs, entries);
         assert_eq!(report.converted, entries as u64);
+    }
+
+    #[test]
+    fn artifact_validation_accepts_a_published_linear_object_normal_atlas() {
+        let root = tempfile::tempdir().unwrap();
+        let relative = shared::lod::object_normal_atlas_path(1);
+        let path = root.path().join(&relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 4, 4),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        let (published, _) =
+            crate::lod::objects::publish_object_normal_atlas(root.path(), 1, &dds).unwrap();
+        assert_eq!(published, relative);
+        let artifacts = [PathBuf::from(relative)];
+        validate_artifacts(root.path(), &artifacts, &BTreeMap::new(), 1).unwrap();
+
+        let srgb = TextureConverter::convert(&dds, TextureEncoding::ColorSrgb).unwrap();
+        fs::write(path, srgb).unwrap();
+        assert!(validate_artifacts(root.path(), &artifacts, &BTreeMap::new(), 1).is_err());
     }
 
     /// The window between the last stage and the publish rename cannot be hit from outside in a

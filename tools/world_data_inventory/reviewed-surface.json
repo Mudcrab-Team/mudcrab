@@ -91,6 +91,7 @@
     "crates/engine/src/route.rs::query_row::c275c54bf961263d::1": null,
     "crates/engine/src/streaming/collision_placement_probe.rs::query_row::5a4a2ae61d3a9d61::1": "9febea42496440c2",
     "crates/engine/src/streaming/lod.rs::prepare::bca3685fea8acd4e::1": null,
+    "crates/engine/src/streaming/lod_object_material.rs::query_row::8040e79299a20b06::1": "05623a2af9473f0c",
     "crates/engine/src/world/actor_catalog.rs::prepare::211e31dd551ea0f3::1": "75e4f829b8d9b97c",
     "crates/engine/src/world/actor_catalog.rs::prepare::9e247fd08ccc965c::1": null,
     "crates/engine/src/world/actor_catalog.rs::prepare::b7739f53c1246c7c::1": null,

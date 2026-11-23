@@ -28,6 +28,8 @@ pub const LARGE_REF_BLOCK_TYPE: &str = "BSDistantObjectLargeRefExtraData";
 pub struct ObjectLodVertex {
     pub position: [f32; 3],
     pub normal: Option<[f32; 3]>,
+    /// Model-space axes for the atlas red and green channels (skyrim_decomp#948 G03).
+    pub atlas_basis: Option<[[f32; 3]; 2]>,
     pub uv: Option<[f32; 2]>,
     /// Vertex colour as stored (`R, G, B, A`).
     pub color: Option<[u8; 4]>,
@@ -98,6 +100,28 @@ impl ObjectLodFile {
     }
 }
 
+fn atlas_basis(x: f32, y: f32, z: f32, green: [u8; 3]) -> [[f32; 3]; 2] {
+    let signed = |value: f32| value * (2.0 / 255.0) - 1.0;
+    [
+        [x, signed(y), signed(z)],
+        green.map(|value| signed(f32::from(value))),
+    ]
+}
+
+#[test]
+fn packed_basis_preserves_float_x_and_decodes_the_signed_bytes() {
+    let [red, green] = atlas_basis(-0.25, 0.0, 255.0, [255, 127, 0]);
+    assert_eq!(
+        red.map(f32::to_bits),
+        [-0.25_f32, -1.0, 1.0].map(f32::to_bits)
+    );
+    assert_eq!(
+        [green[0], green[2]].map(f32::to_bits),
+        [1.0_f32, -1.0].map(f32::to_bits)
+    );
+    assert!((green[1] + 1.0 / 255.0).abs() < 1e-6);
+}
+
 /// Parses the bytes of one `.bto`. `label` only names the file in errors.
 ///
 /// Fails if the NIF is malformed, a shape has no vertex positions, or a triangle indexes past
@@ -121,6 +145,12 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
                 Ok(ObjectLodVertex {
                     position: position.to_array(),
                     normal: vertex.normal.map(|normal| normal.to_array()),
+                    atlas_basis: vertex
+                        .bitangent_x
+                        .zip(vertex.bitangent_y)
+                        .zip(vertex.bitangent_z)
+                        .zip(vertex.tangent)
+                        .map(|(((x, y), z), green)| atlas_basis(x, y, z, green.to_array())),
                     uv: vertex.uv.map(|uv| uv.to_array()),
                     color: vertex.vertex_colors.map(|color| color.to_array()),
                 })
