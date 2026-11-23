@@ -102,7 +102,7 @@ impl OmissionCategory {
     ///
     /// Only an absent field of a record whose other data is sound is intended. A field that is
     /// present but short or unreadable, a missing placement base or cell, and a missing armature
-    /// race stay data loss until retail evidence shows they are authored absences.
+    /// race stay data loss until retail evidence shows they are authored absences (unverified).
     pub fn severity(self) -> Severity {
         match self {
             Self::LandMissingHeights | Self::WorldspaceMissingEditorId => Severity::Omitted,

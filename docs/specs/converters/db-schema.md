@@ -2326,7 +2326,7 @@ required field is absent, and no value is invented. It adds one line to `notices
 the report's and manifest's `intended_omissions`, and leaves the output complete. Only an absent
 field of an otherwise sound record qualifies. A field that is present but short or unreadable
 (`reference_short_scale`, `room_marker_unreadable_flags`), a missing placement base or cell, and a
-missing armature race stay `data_loss` until retail evidence shows they are authored absences.
+missing armature race stay `data_loss` until retail evidence shows they are authored absences (unverified).
 
 Placement omission reasons describe the `DATA` available to the runtime projection.
 An in-house typed-field rejection can make it unavailable there even though the original
