@@ -191,6 +191,7 @@ pub fn run(options: &Options) -> Result<ReconcileReport> {
         compare_terrain(&mut report, retail, &pack, selected);
         compare_objects(&mut report, retail, &pack, selected);
         compare_atlases(&mut report, retail, &pack, selected);
+        compare_unclassified(&mut report, retail, &pack, selected);
     } else {
         for category in [
             "terrain_mesh",
@@ -396,6 +397,8 @@ struct Retail {
     atlases: BTreeMap<String, u64>,
     /// `.bto` files the converter does not read, by world, level and reason.
     object_out_of_scope: BTreeMap<(String, Option<u32>), (u64, &'static str)>,
+    /// Terrain-folder files whose name no LOD parser accepts, by category, world and reason.
+    unclassified: BTreeMap<(&'static str, String, &'static str), BTreeSet<String>>,
 }
 
 impl Retail {
@@ -411,6 +414,7 @@ impl Retail {
             objects: BTreeMap::new(),
             atlases: BTreeMap::new(),
             object_out_of_scope: BTreeMap::new(),
+            unclassified: BTreeMap::new(),
         };
         for path in found.keys() {
             if let Some((id, kind)) = classify(path) {
@@ -463,10 +467,66 @@ impl Retail {
                         .or_default()
                         .insert(cell);
                 }
+                continue;
+            }
+            if let Some((category, world, reason)) = unclassified_kind(path) {
+                retail
+                    .unclassified
+                    .entry((category, world, reason))
+                    .or_default()
+                    .insert(path.clone());
             }
         }
         Ok(retail)
     }
+}
+
+/// The root and world folder of a canonical terrain LOD path.
+fn terrain_world(path: &str) -> Option<(&str, &str)> {
+    let mut parts = path.split('/');
+    let root = parts.next()?;
+    if root != "meshes" && root != "textures" {
+        return None;
+    }
+    if parts.next()? != "terrain" {
+        return None;
+    }
+    let world = parts.next()?;
+    (!world.is_empty()).then_some((root, world))
+}
+
+/// The category and reason of a terrain-folder file that no LOD name parser accepts.
+/// `trees/` holds tree LOD, which is outside phase 1.
+fn unclassified_kind(path: &str) -> Option<(&'static str, String, &'static str)> {
+    let (root, world) = terrain_world(path)?;
+    let world = world.to_owned();
+    let parts: Vec<&str> = path.split('/').collect();
+    // `trees/` holds phase 1 out-of-scope tree LOD textures. A mesh there is not a tree LOD
+    // type and is still reported.
+    if parts.get(3) == Some(&"trees") && path.ends_with(".dds") {
+        return None;
+    }
+    if path.ends_with(".btr") {
+        return Some(("terrain_mesh", world, "unrecognised_terrain_name"));
+    }
+    if path.ends_with(".bto") {
+        if root == "meshes" {
+            return Some(("object_block", world, "unrecognised_object_name"));
+        }
+        return Some(("object_block", world, "object_block_outside_meshes"));
+    }
+    if path.ends_with(".dds") {
+        if parts.get(3) == Some(&"objects") {
+            return Some(("object_atlas", world, "unrecognised_atlas_name"));
+        }
+        // A map at the world root is a terrain map. A map in an unknown subfolder is still a
+        // terrain-folder file the check must not ignore.
+        if path.ends_with("_n.dds") {
+            return Some(("terrain_normal", world, "unrecognised_terrain_name"));
+        }
+        return Some(("terrain_colour", world, "unrecognised_terrain_name"));
+    }
+    None
 }
 
 /// The world of an atlas path, if it is one of the two documented name forms.
@@ -598,7 +658,12 @@ impl Pack {
             .map_or_else(BTreeSet::new, |counts| {
                 counts.objects_recorded_worlds.clone()
             });
-        let objects = match object_state(root, &connection, &worlds_by_id) {
+        let declared_object_atlases = match &manifest {
+            Ok(Some(manifest)) => manifest.object_atlases.clone(),
+            _ => BTreeMap::new(),
+        };
+        let objects = match object_state(root, &connection, &worlds_by_id, &declared_object_atlases)
+        {
             Ok(state) => state,
             Err(error) => {
                 eprintln!("Object LOD pack counts cannot be read: {error:#}");
@@ -796,6 +861,7 @@ fn object_state(
     root: &Path,
     connection: &Connection,
     worlds_by_id: &BTreeMap<u32, PackWorld>,
+    declared_atlases: &BTreeMap<String, String>,
 ) -> Result<ObjectState> {
     if !has_table(connection, "lod_object_chunks")? {
         return Ok(ObjectState::Unknown("no_object_lod_tables"));
@@ -838,6 +904,7 @@ fn object_state(
     // The package validator returns early when there are no object chunks, so it can miss an
     // orphan or wrongly named atlas row. Check the atlas rows here as well.
     let mut atlases = BTreeSet::new();
+    let mut declared = declared_atlases.clone();
     if has_table(connection, "lod_object_atlases")? {
         let mut statement = connection.prepare(
             "SELECT worldspace_id, payload_path, content_hash FROM lod_object_atlases \
@@ -860,8 +927,22 @@ fn object_state(
                 crate::cache::hash_file(&root.join(&path))? == hash,
                 "object atlas {path} does not match its recorded SHA-256"
             );
+            let Some(declared_hash) = declared.remove(&path) else {
+                return Err(color_eyre::eyre::eyre!(
+                    "object atlas row {path} is not listed in lod-manifest.json"
+                ));
+            };
+            ensure!(
+                declared_hash == hash,
+                "object atlas {path} has a different SHA-256 in lod-manifest.json"
+            );
             atlases.insert(world);
         }
+    }
+    if let Some(path) = declared.keys().next() {
+        return Err(color_eyre::eyre::eyre!(
+            "lod-manifest.json lists object atlas {path} with no database row"
+        ));
     }
     for world in chunks.keys() {
         ensure!(
@@ -1936,6 +2017,59 @@ fn compare_atlases(
         && !pack_failure_reported
     {
         report.push(unknown_row("object_atlas", "*", None, reason));
+    }
+}
+
+/// Reports terrain-folder files whose name no LOD parser accepts. They have no pack counterpart,
+/// so silence would hide the exact #931 failure class.
+fn compare_unclassified(
+    report: &mut ReconcileReport,
+    retail: &Retail,
+    pack: &Pack,
+    selected: Option<&BTreeSet<String>>,
+) {
+    for ((category, world_file, reason), paths) in &retail.unclassified {
+        let match_ = world_match(world_file, pack, selected);
+        let label = match &match_ {
+            WorldMatch::Pack(world) => world.editor_id.clone(),
+            _ => world_file.clone(),
+        };
+        let (status, row_reason) = match &match_ {
+            WorldMatch::NotSelected => {
+                (Status::OutOfScope, "unrecognised_name_in_unselected_world")
+            }
+            WorldMatch::SelectionUnknown => (Status::Unknown, "plugin_selection_unknown"),
+            _ => (Status::Unexplained, *reason),
+        };
+        let count = u64::try_from(paths.len()).unwrap_or(u64::MAX);
+        let unexplained =
+            (status == Status::Unexplained).then(|| i64::try_from(count).unwrap_or(i64::MAX));
+        let mut row = report_row(
+            category,
+            &label,
+            None,
+            (Some(count), Some(0), Some(0), unexplained),
+            BTreeMap::new(),
+            status,
+            Some(row_reason.to_owned()),
+        );
+        row.examples = paths
+            .iter()
+            .take(5)
+            .map(|path| {
+                let near = retail.index.near(&[path], Some(world_file));
+                let listed: Vec<&str> = near.iter().take(5).copied().collect();
+                if listed.is_empty() {
+                    format!("unrecognised source file {path}; no near matches")
+                } else {
+                    format!(
+                        "unrecognised source file {path}; near matches: {}",
+                        listed.join(", ")
+                    )
+                }
+            })
+            .collect();
+        report.push(row);
     }
 }
 
@@ -3223,6 +3357,196 @@ mod tests {
         assert_eq!(object.status, Status::Unexplained);
         let atlas = row(&report, "object_atlas", "W", None);
         assert_eq!(atlas.status, Status::Unexplained);
+    }
+
+    #[test]
+    fn an_old_pack_without_a_terrain_source_is_unknown_even_when_source_is_unselected() {
+        let data = tempfile::tempdir().unwrap();
+        terrain_block(data.path(), "v", 4, (0, 0), true, true, true);
+        object_block(data.path(), "v", 16, (0, 0), Some("v.objects.dds"));
+        write_plugin(data.path());
+        let pack = pack_with(&[(1, "W")]);
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .remove("terrain_lod_source");
+        write_manifest(pack.path(), &manifest);
+        let connection = Connection::open(pack.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE lod_object_chunks;
+                 DROP TABLE lod_object_atlases;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let report = check(data.path(), pack.path());
+        assert!(
+            report
+                .categories
+                .iter()
+                .any(|row| row.world == "v" && row.status == Status::OutOfScope)
+        );
+        for category in [
+            "terrain_mesh",
+            "terrain_colour",
+            "terrain_normal",
+            "object_block",
+            "object_atlas",
+        ] {
+            let row = report
+                .categories
+                .iter()
+                .find(|row| row.category == category && row.world == "*")
+                .unwrap_or_else(|| {
+                    panic!("no category-wide {category} row: {:#?}", report.categories)
+                });
+            assert_eq!(row.status, Status::Unknown, "{row:#?}");
+        }
+        assert!(!report.passed());
+    }
+
+    #[test]
+    fn an_unreadable_lod_chunks_table_is_unknown_even_when_source_is_unselected() {
+        let data = tempfile::tempdir().unwrap();
+        terrain_block(data.path(), "v", 4, (0, 0), true, true, true);
+        write_plugin(data.path());
+        let pack = pack_with(&[(1, "W")]);
+        add_plugin(pack.path());
+        let manifest = retail_manifest(&["w"]);
+        write_manifest(pack.path(), &manifest);
+        let connection = Connection::open(pack.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE lod_chunks;
+                 CREATE TABLE lod_chunks (wrong TEXT);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let report = check(data.path(), pack.path());
+        let row = report
+            .categories
+            .iter()
+            .find(|row| row.category == "terrain_mesh" && row.world == "*")
+            .expect("a category-wide terrain row");
+        assert_eq!(row.status, Status::Unknown);
+        assert_eq!(row.reason.as_deref(), Some("lod_chunks_unreadable"));
+        assert!(!report.passed());
+    }
+
+    #[test]
+    fn a_third_atlas_name_form_is_unexplained() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (0, 0), Some("w.objectslod.dds"));
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let manifest = retail_manifest(&["w"]);
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let row = report
+            .categories
+            .iter()
+            .find(|row| {
+                row.category == "object_atlas"
+                    && row.reason.as_deref() == Some("unrecognised_atlas_name")
+            })
+            .expect("an unclassified atlas row");
+        assert_eq!(row.status, Status::Unexplained);
+        assert_eq!(row.retail, Some(1));
+        assert!(
+            row.examples
+                .iter()
+                .any(|example| example.contains("w.objectslod.dds")),
+            "{:?}",
+            row.examples
+        );
+    }
+
+    #[test]
+    fn unrecognised_terrain_files_are_unexplained() {
+        let data = tempfile::tempdir().unwrap();
+        let meshes = data.path().join("meshes/terrain/w");
+        let textures = data.path().join("textures/terrain/w");
+        fs::create_dir_all(&meshes).unwrap();
+        fs::create_dir_all(&textures).unwrap();
+        fs::write(meshes.join("w.04.0.0.btr"), b"mesh").unwrap();
+        fs::write(textures.join("w.4.0.0.colour.dds"), b"colour").unwrap();
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let manifest = retail_manifest(&["w"]);
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        for (category, reason, path) in [
+            ("terrain_mesh", "unrecognised_terrain_name", "w.04.0.0.btr"),
+            (
+                "terrain_colour",
+                "unrecognised_terrain_name",
+                "w.4.0.0.colour.dds",
+            ),
+        ] {
+            let row = report
+                .categories
+                .iter()
+                .find(|row| row.category == category && row.reason.as_deref() == Some(reason))
+                .unwrap_or_else(|| {
+                    panic!("no {category} unclassified row: {:#?}", report.categories)
+                });
+            assert_eq!(row.status, Status::Unexplained);
+            assert_eq!(row.retail, Some(1));
+            assert!(
+                row.examples.iter().any(|example| example.contains(path)),
+                "{:?}",
+                row.examples
+            );
+        }
+    }
+
+    #[test]
+    fn tree_lod_files_are_not_reported_as_unclassified() {
+        let data = tempfile::tempdir().unwrap();
+        let trees = data.path().join("textures/terrain/w/trees");
+        fs::create_dir_all(&trees).unwrap();
+        fs::write(trees.join("w.treelod.dds"), b"tree lod").unwrap();
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let manifest = retail_manifest(&["w"]);
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        assert!(
+            report
+                .categories
+                .iter()
+                .all(|row| { row.reason.as_deref() != Some("unrecognised_terrain_name") }),
+            "{:#?}",
+            report.categories
+        );
+    }
+
+    #[test]
+    fn a_stale_manifest_atlas_without_a_row_is_unknown() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (0, 0), Some("w.objects.dds"));
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        manifest["object_atlases"] = json!({ "lod/00000001/objects_atlas.opensky-srgb.ktx2": "h" });
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let row = row(&report, "object_atlas", "W", None);
+        assert_eq!(row.status, Status::Unknown);
+        assert_eq!(row.reason.as_deref(), Some("object_lod_package_invalid"));
+        assert!(!report.passed());
     }
 
     #[test]
