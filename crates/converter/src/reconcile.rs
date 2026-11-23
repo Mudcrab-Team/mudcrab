@@ -42,6 +42,7 @@ use shared::lod::{ChunkAnchor, ChunkKey, LodTier, chunk_payload_path};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -271,10 +272,22 @@ fn status(status: Status) -> &'static str {
     }
 }
 
-/// Writes the JSON report. Counts and reason classes only; `examples` is not serialized.
+/// Writes the JSON report. Counts and reason classes only; `examples` is not serialized. The
+/// destination must not exist, so a hard link outside the pack cannot truncate a pack file.
 pub fn write_json(path: &Path, report: &ReconcileReport) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(report).wrap_err("cannot serialize the report")?;
-    fs::write(path, bytes).wrap_err_with(|| format!("cannot write {}", path.display()))
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .wrap_err_with(|| {
+            format!(
+                "cannot create {}; the report path must not exist",
+                path.display()
+            )
+        })?;
+    file.write_all(&bytes)
+        .wrap_err_with(|| format!("cannot write {}", path.display()))
 }
 
 /// Refuses an output file inside an input tree. The check must not change the pack or the game
@@ -956,11 +969,10 @@ enum RnamWorld {
 
 struct RnamRetail {
     worlds: BTreeMap<RnamWorld, RnamUnits>,
+    /// Runtime FormID to display name, from the first record that carries an EDID.
+    labels: BTreeMap<u32, String>,
     unattributed: u64,
     selected: BTreeSet<String>,
-    selected_ids: BTreeSet<u32>,
-    /// Runtime ids already represented by an EDID key, so the id pass does not report them twice.
-    edid_ids: BTreeSet<u32>,
 }
 
 /// Counts the WRLD `RNAM` memberships of the selected plugins, in the same units the converter's
@@ -982,39 +994,42 @@ fn retail_rnam(data: &Path, plugins: &[(String, i64)]) -> Result<RnamRetail> {
     let order = LoadOrder::from_metadata(names, metadata)?;
     let mut worlds: BTreeMap<RnamWorld, RnamUnits> = BTreeMap::new();
     let mut memberships: BTreeMap<RnamWorld, BTreeSet<(i32, i32, u32)>> = BTreeMap::new();
+    let mut labels: BTreeMap<u32, String> = BTreeMap::new();
     let mut unattributed = 0u64;
     let mut selected = BTreeSet::new();
-    let mut selected_ids = BTreeSet::new();
-    let mut edid_ids = BTreeSet::new();
     for (supplier, path) in paths.iter().enumerate() {
         let defining_name = normalize_plugin_name(&order.names[supplier]);
-        for record in read_world_rnam(path)? {
+        let scan = read_world_rnam(path)?;
+        if scan.incomplete {
+            color_eyre::eyre::bail!(
+                "the WRLD RNAM scan of a selected plugin is incomplete: {}",
+                scan.warnings.join("; ")
+            );
+        }
+        for record in scan.worlds {
             let defining = resolve(b"WRLD", record.form_id, supplier, &order)
                 .original_owner
                 .as_deref()
                 == Some(defining_name.as_str());
             let runtime = header_runtime_id(b"WRLD", record.form_id, supplier, &order);
-            let world = match record.editor_id {
-                Some(editor_id) => {
-                    if let Some(id) = runtime {
-                        edid_ids.insert(id);
-                    }
-                    let world = editor_id.to_ascii_lowercase();
-                    selected.insert(world.clone());
-                    RnamWorld::EditorId(world)
+            let editor_id = record.editor_id.map(|id| id.to_ascii_lowercase());
+            let world = match (runtime, editor_id) {
+                (Some(id), Some(label)) => {
+                    labels.entry(id).or_insert_with(|| label.clone());
+                    selected.insert(label);
+                    RnamWorld::RuntimeId(id)
                 }
-                None => match runtime {
-                    Some(id) => {
-                        selected_ids.insert(id);
-                        RnamWorld::RuntimeId(id)
+                (Some(id), None) => RnamWorld::RuntimeId(id),
+                (None, Some(label)) => {
+                    selected.insert(label.clone());
+                    RnamWorld::EditorId(label)
+                }
+                (None, None) => {
+                    for rnam in &record.rnam {
+                        unattributed += units_for(rnam, defining);
                     }
-                    None => {
-                        for rnam in &record.rnam {
-                            unattributed += units_for(rnam, defining);
-                        }
-                        continue;
-                    }
-                },
+                    continue;
+                }
             };
             let entry = worlds.entry(world.clone()).or_default();
             for rnam in &record.rnam {
@@ -1043,10 +1058,9 @@ fn retail_rnam(data: &Path, plugins: &[(String, i64)]) -> Result<RnamRetail> {
     }
     Ok(RnamRetail {
         worlds,
+        labels,
         unattributed,
         selected,
-        selected_ids,
-        edid_ids,
     })
 }
 
@@ -1222,6 +1236,9 @@ fn compare_terrain(
                     .unwrap_or_default();
                 let shown = match &match_ {
                     WorldMatch::MissingFromPack => {
+                        if retail_set.is_empty() {
+                            continue;
+                        }
                         compare_missing_world(key, &label, Some(*level), retail_set, |cell| {
                             terrain_example(&retail.index, &world_file, *level, cell, kind)
                         })
@@ -1259,6 +1276,13 @@ fn compare_terrain(
             }
         }
     }
+    if retail.terrain.is_empty()
+        && let TerrainState::Unknown(reason) = &pack.terrain
+    {
+        for category in ["terrain_mesh", "terrain_colour", "terrain_normal"] {
+            report.push(unknown_row(category, "*", None, reason));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1293,7 +1317,7 @@ fn terrain_row(
     let recorded = pack.terrain_recorded_worlds.contains(world_file);
     let bit = kind_bit(kind);
     let mut explained: BTreeSet<(i32, i32)> = BTreeSet::new();
-    let mut classes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut class_cells: BTreeMap<String, BTreeSet<(i32, i32)>> = BTreeMap::new();
     let mut unknown_reason = None;
     if pack.terrain_listing_failed {
         unknown_reason = Some("terrain_listing_failed");
@@ -1301,10 +1325,7 @@ fn terrain_row(
         // A level with no runtime tier cannot be in the pack. This is a converter rule, not a
         // recorded skip, so a file that appeared after the conversion is still explained.
         explained.extend(retail_set.iter().copied());
-        let count = u64::try_from(explained.len()).unwrap_or(u64::MAX);
-        if count > 0 {
-            classes.insert(NO_RUNTIME_TIER.to_owned(), count);
-        }
+        class_cells.insert(NO_RUNTIME_TIER.to_owned(), retail_set.clone());
     } else if recorded
         && let Some(counts) = &pack.reconciliation
         && let Some(levels) = counts.terrain_skips.get(world_file)
@@ -1327,10 +1348,7 @@ fn terrain_row(
                 .map(|(x, y, _)| (*x, *y))
                 .collect();
             if !cells.is_empty() {
-                classes.insert(
-                    class.clone(),
-                    u64::try_from(cells.len()).unwrap_or(u64::MAX),
-                );
+                class_cells.insert(class.clone(), cells.clone());
                 explained.extend(cells);
             }
         }
@@ -1352,6 +1370,7 @@ fn terrain_row(
         return Ok(row);
     }
     let explained_only: BTreeSet<(i32, i32)> = explained.difference(pack_cells).copied().collect();
+    let classes = class_counts(&class_cells, &explained_only);
     let difference = i64::try_from(missing.len()).unwrap_or(i64::MAX)
         - i64::try_from(excess.len()).unwrap_or(i64::MAX);
     let mut examples: Vec<String> = missing
@@ -1385,6 +1404,27 @@ fn terrain_row(
     );
     row.examples = examples;
     Ok(row)
+}
+
+/// Counts each explained cell under exactly one class. The first class in map order wins, so the
+/// class counts sum to `explained_only` and never include a cell that the pack holds.
+fn class_counts(
+    class_cells: &BTreeMap<String, BTreeSet<(i32, i32)>>,
+    explained_only: &BTreeSet<(i32, i32)>,
+) -> BTreeMap<String, u64> {
+    let mut classes = BTreeMap::new();
+    let mut assigned = BTreeSet::new();
+    for (class, cells) in class_cells {
+        let count = cells
+            .iter()
+            .filter(|cell| explained_only.contains(*cell) && !assigned.contains(*cell))
+            .count();
+        if count > 0 {
+            classes.insert(class.clone(), u64::try_from(count).unwrap_or(u64::MAX));
+        }
+        assigned.extend(cells.iter().copied());
+    }
+    classes
 }
 
 fn current_presence(
@@ -1578,13 +1618,18 @@ fn compare_objects(
                 // silent-ok: a world with no retail object block at this level has none
                 .unwrap_or_default();
             let shown = match &match_ {
-                WorldMatch::MissingFromPack => compare_missing_world(
-                    "object_block",
-                    &label,
-                    Some(*level),
-                    retail_set,
-                    |cell| object_example(&retail.index, &world_file, *level, cell),
-                ),
+                WorldMatch::MissingFromPack => {
+                    if retail_set.is_empty() {
+                        continue;
+                    }
+                    compare_missing_world(
+                        "object_block",
+                        &label,
+                        Some(*level),
+                        retail_set,
+                        |cell| object_example(&retail.index, &world_file, *level, cell),
+                    )
+                }
                 _ => object_row(
                     &label,
                     &world_file,
@@ -1602,6 +1647,11 @@ fn compare_objects(
                 report.push(shown);
             }
         }
+    }
+    if retail.objects.is_empty()
+        && let ObjectState::Unknown(reason) = &pack.objects
+    {
+        report.push(unknown_row("object_block", "*", None, reason));
     }
 }
 
@@ -1624,22 +1674,30 @@ fn object_row(
     };
     let recorded = pack.objects_recorded_worlds.contains(world_file);
     let mut explained: BTreeSet<(i32, i32)> = BTreeSet::new();
-    let mut classes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut class_cells: BTreeMap<String, BTreeSet<(i32, i32)>> = BTreeMap::new();
     let mut unknown_reason = None;
     if tier_for_level(level).is_none() {
         explained.extend(retail_set.iter().copied());
-        let count = u64::try_from(retail_set.len()).unwrap_or(u64::MAX);
-        if count > 0 {
-            classes.insert(NO_RUNTIME_TIER.to_owned(), count);
-        }
+        class_cells.insert(NO_RUNTIME_TIER.to_owned(), retail_set.clone());
     } else if recorded && let Some(counts) = &pack.reconciliation {
         if let Some(skipped) = counts.object_world_skips.get(world_file)
             && skipped == crate::lod::object_stage::MISSING_ATLAS
         {
-            explained.extend(retail_set.iter().copied());
-            let count = u64::try_from(retail_set.len()).unwrap_or(u64::MAX);
-            if count > 0 {
-                classes.insert(skipped.clone(), count);
+            match counts.object_world_skip_blocks.get(world_file) {
+                Some(blocks) if !blocks.is_empty() => {
+                    let covered: BTreeSet<(i32, i32)> = blocks
+                        .iter()
+                        .filter(|(recorded_level, x, y)| {
+                            *recorded_level == level && retail_set.contains(&(*x, *y))
+                        })
+                        .map(|(_, x, y)| (*x, *y))
+                        .collect();
+                    if !covered.is_empty() {
+                        explained.extend(covered.iter().copied());
+                        class_cells.insert(skipped.clone(), covered);
+                    }
+                }
+                _ => unknown_reason = Some("missing_atlas_coverage_unknown"),
             }
         }
         if explained.is_empty()
@@ -1658,10 +1716,7 @@ fn object_row(
                 let cells: BTreeSet<(i32, i32)> =
                     skip.cells.intersection(retail_set).copied().collect();
                 if !cells.is_empty() {
-                    classes.insert(
-                        class.clone(),
-                        u64::try_from(cells.len()).unwrap_or(u64::MAX),
-                    );
+                    class_cells.insert(class.clone(), cells.clone());
                     explained.extend(cells);
                 }
             }
@@ -1683,6 +1738,7 @@ fn object_row(
         return row;
     }
     let explained_only: BTreeSet<(i32, i32)> = explained.difference(&pack_cells).copied().collect();
+    let classes = class_counts(&class_cells, &explained_only);
     let difference = i64::try_from(missing.len()).unwrap_or(i64::MAX)
         - i64::try_from(excess.len()).unwrap_or(i64::MAX);
     let mut examples: Vec<String> = missing
@@ -1818,7 +1874,8 @@ fn compare_atlases(
             && pack_count == 0
             && has_blocks
             && object_chunk_count(pack, &world_file) == 0
-            && has_object_skips(pack, &world_file)
+            && retail_count == 1
+            && all_object_blocks_skipped(pack, &world_file, retail.objects.get(&world_file))
         {
             // The stage publishes an atlas only when at least one object block compiled. Every
             // source block was skipped, so the absent atlas is explained by that outcome.
@@ -1859,6 +1916,11 @@ fn compare_atlases(
         }
         report.push(row);
     }
+    if retail.atlases.is_empty()
+        && let ObjectState::Unknown(reason) = &pack.objects
+    {
+        report.push(unknown_row("object_atlas", "*", None, reason));
+    }
 }
 
 fn atlas_pack_count(pack: &Pack, world_file: &str) -> bool {
@@ -1882,19 +1944,40 @@ fn object_chunk_count(pack: &Pack, world_file: &str) -> usize {
         .count()
 }
 
-fn has_object_skips(pack: &Pack, world_file: &str) -> bool {
-    pack.reconciliation
-        .as_ref()
-        .and_then(|counts| counts.object_skips.get(world_file))
-        .is_some_and(|levels| {
-            levels.values().any(|classes| {
-                classes.values().any(|skip| {
-                    // silent-ok: an incomplete record cannot explain the absent atlas
-                    let consistent = u64::try_from(skip.cells.len()).ok() == Some(skip.blocks);
-                    skip.blocks > 0 && consistent
-                })
-            })
-        })
+fn all_object_blocks_skipped(
+    pack: &Pack,
+    world_file: &str,
+    blocks: Option<&BTreeMap<u32, BTreeSet<(i32, i32)>>>,
+) -> bool {
+    let Some(blocks) = blocks else {
+        return false;
+    };
+    let current: BTreeSet<(u32, i32, i32)> = blocks
+        .iter()
+        .flat_map(|(level, cells)| cells.iter().map(|cell| (*level, cell.0, cell.1)))
+        .collect();
+    if current.is_empty() {
+        return false;
+    }
+    let Some(counts) = &pack.reconciliation else {
+        return false;
+    };
+    let Some(by_level) = counts.object_skips.get(world_file) else {
+        return false;
+    };
+    let mut covered = BTreeSet::new();
+    for (level, classes) in by_level {
+        for skip in classes.values() {
+            // silent-ok: an incomplete record cannot explain the absent atlas
+            let consistent = u64::try_from(skip.cells.len()).ok() == Some(skip.blocks);
+            if skip.blocks > 0 && consistent {
+                for cell in &skip.cells {
+                    covered.insert((*level, cell.0, cell.1));
+                }
+            }
+        }
+    }
+    current.is_subset(&covered)
 }
 
 fn compare_large_references(
@@ -1922,71 +2005,67 @@ fn compare_large_references(
     };
     let mut reported_ids = BTreeSet::new();
     for (world, units) in &retail.worlds {
-        let RnamWorld::EditorId(world_file) = world else {
-            continue;
-        };
-        let match_ = world_match(world_file, pack, Some(&retail.selected));
-        let label = match &match_ {
-            WorldMatch::Pack(world) => world.editor_id.clone(),
-            _ => world_file.clone(),
-        };
-        if matches!(match_, WorldMatch::NotSelected) {
-            if units.total() > 0 {
-                report.push(out_of_scope_row(
-                    "large_reference",
-                    &label,
-                    None,
-                    units.total(),
-                    "world_not_in_selected_plugins",
-                ));
+        let (label, counts) = match world {
+            RnamWorld::RuntimeId(id) => {
+                reported_ids.insert(*id);
+                // silent-ok: a world without large-reference rows has none
+                let counts = pack_counts.get(id).copied().unwrap_or_default();
+                let label = pack
+                    .worlds_by_id
+                    .get(id)
+                    .map(|world| world.editor_id.clone())
+                    .or_else(|| retail.labels.get(id).cloned())
+                    .unwrap_or_else(|| format!("world {id:08x}"));
+                (label, counts)
             }
-            continue;
-        }
-        let pack_world = pack.worlds.get(world_file);
-        if let Some(world) = pack_world {
-            reported_ids.insert(world.id);
-        }
-        let counts = pack_world
-            .and_then(|world| pack_counts.get(&world.id))
-            .copied()
-            // silent-ok: a world without large-reference rows has none
-            .unwrap_or_default();
+            RnamWorld::EditorId(editor_id) => {
+                let match_ = world_match(editor_id, pack, Some(&retail.selected));
+                let label = match &match_ {
+                    WorldMatch::Pack(world) => world.editor_id.clone(),
+                    _ => editor_id.clone(),
+                };
+                if matches!(match_, WorldMatch::NotSelected) {
+                    if units.total() > 0 {
+                        report.push(out_of_scope_row(
+                            "large_reference",
+                            &label,
+                            None,
+                            units.total(),
+                            "world_not_in_selected_plugins",
+                        ));
+                    }
+                    continue;
+                }
+                let pack_world = pack.worlds.get(editor_id);
+                if let Some(world) = pack_world {
+                    reported_ids.insert(world.id);
+                }
+                let counts = pack_world
+                    .and_then(|world| pack_counts.get(&world.id))
+                    .copied()
+                    // silent-ok: a world without large-reference rows has none
+                    .unwrap_or_default();
+                (label, counts)
+            }
+        };
         if units.total() == 0 && counts.projected == 0 && counts.explained() == 0 {
             continue;
         }
         report.push(rnam_row(&label, units.total(), counts));
     }
-    let mut ids: BTreeSet<u32> = retail.selected_ids.clone();
-    ids.extend(pack_counts.keys().copied());
-    ids.retain(|id| !retail.edid_ids.contains(id) && !reported_ids.contains(id));
+    let mut ids: BTreeSet<u32> = pack_counts.keys().copied().collect();
+    ids.retain(|id| !reported_ids.contains(id));
     for world_id in ids {
-        let units = retail
-            .worlds
-            .get(&RnamWorld::RuntimeId(world_id))
-            .map_or(0, |units| units.total());
         // silent-ok: a world without large-reference rows has none
         let counts = pack_counts.get(&world_id).copied().unwrap_or_default();
-        if units == 0 && counts.projected == 0 && counts.explained() == 0 {
+        if counts.projected == 0 && counts.explained() == 0 {
             continue;
         }
-        reported_ids.insert(world_id);
         let label = pack.worlds_by_id.get(&world_id).map_or_else(
             || format!("world {world_id:08x}"),
             |world| world.editor_id.clone(),
         );
-        report.push(rnam_row(&label, units, counts));
-    }
-    for (world_id, counts) in pack_counts {
-        if retail.selected_ids.contains(world_id) || reported_ids.contains(world_id) {
-            continue;
-        }
-        let Some(world) = pack.worlds_by_id.get(world_id) else {
-            continue;
-        };
-        if counts.projected == 0 && counts.explained() == 0 {
-            continue;
-        }
-        report.push(rnam_row(&world.editor_id, 0, *counts));
+        report.push(rnam_row(&label, 0, counts));
     }
     if retail.unattributed > 0 {
         let mut row = report_row(
@@ -2356,6 +2435,26 @@ mod tests {
         write_plugin_with(data, Some(b"W\0"), &[(7, [0; 4])]);
     }
 
+    /// A master WLRD with an EDID and an override of the same FormID without one.
+    fn write_override_plugin_pair(data: &Path) {
+        let master_world = record(
+            b"WRLD",
+            1,
+            &[
+                (b"EDID", b"W\0".to_vec()),
+                (b"RNAM", rnam([0; 4], &[(7, [0; 4])])),
+            ],
+        );
+        fs::write(
+            data.join("Test.esm"),
+            [record(b"TES4", 0, &[]), master_world].concat(),
+        )
+        .unwrap();
+        let override_world = record(b"WRLD", 1, &[(b"RNAM", rnam([0; 4], &[(7, [0; 4])]))]);
+        let header = record(b"TES4", 0, &[(b"MAST", b"Test.esm\0".to_vec())]);
+        fs::write(data.join("Override.esm"), [header, override_world].concat()).unwrap();
+    }
+
     fn check(data: &Path, pack: &Path) -> ReconcileReport {
         let report = run(&Options {
             data: data.to_owned(),
@@ -2383,6 +2482,43 @@ mod tests {
                     report.categories
                 )
             })
+    }
+
+    #[test]
+    fn rnam_overrides_aggregate_under_one_runtime_world() {
+        let data = full_data();
+        write_override_plugin_pair(data.path());
+        let pack = pack_dir();
+        let connection = Connection::open(pack.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute(
+                "INSERT INTO plugins(id, name, priority, checksum) VALUES \
+                 (0, 'Test.esm', 0, X'00'), (1, 'Override.esm', 1, X'00')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO large_references VALUES (1, 0, 0, 7)", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO large_reference_omissions VALUES (1, NULL, NULL, 1, 0)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let mut manifest = retail_manifest(&["w"]);
+        add_terrain_chunk(pack.path(), &mut manifest, 1, 4, (0, 0));
+        add_object_chunk(pack.path(), &mut manifest, 1, 16, (0, 0));
+        add_atlas(pack.path(), &mut manifest, 1);
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let row = row(&report, "large_reference", "W", None);
+        assert_eq!(row.retail, Some(2), "{:#?}", row);
+        assert_eq!(row.pack, Some(1));
+        assert_eq!(row.explained, Some(1));
+        assert_eq!(row.status, Status::Balanced);
     }
 
     #[test]
@@ -2711,7 +2847,7 @@ mod tests {
     #[test]
     fn a_selected_world_missing_from_the_pack_is_unexplained() {
         let data = tempfile::tempdir().unwrap();
-        terrain_block(data.path(), "w", 4, (0, 0), true, true, true);
+        terrain_block(data.path(), "w", 4, (0, 0), true, false, false);
         write_plugin(data.path());
         let pack = pack_with(&[(2, "V")]);
         add_plugins(pack.path());
@@ -2724,6 +2860,13 @@ mod tests {
         assert_eq!(
             row.reason.as_deref(),
             Some("world_is_selected_but_absent_from_the_pack")
+        );
+        assert!(
+            report.categories.iter().all(|row| {
+                row.category != "terrain_colour" && row.category != "terrain_normal"
+            }),
+            "{:#?}",
+            report.categories
         );
     }
 
@@ -2751,6 +2894,60 @@ mod tests {
             row.reason.as_deref(),
             Some("incomplete_terrain_reconciliation")
         );
+    }
+
+    #[test]
+    fn a_skip_does_not_count_a_packed_cell_as_explained() {
+        let data = tempfile::tempdir().unwrap();
+        terrain_block(data.path(), "w", 4, (0, 0), true, true, true);
+        terrain_block(data.path(), "w", 4, (4, 0), true, true, true);
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        add_terrain_chunk(pack.path(), &mut manifest, 1, 4, (0, 0));
+        add_terrain_chunk(pack.path(), &mut manifest, 1, 4, (4, 0));
+        manifest["reconciliation"]["terrain_skips"] = json!({
+            "w": { "4": { "block cannot be read": {
+                "blocks": 1, "mesh": 1, "colour": 1, "normal": 1, "cells": [[4, 0, 7]]
+            }}}
+        });
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let mesh = row(&report, "terrain_mesh", "W", Some(4));
+        assert_eq!(mesh.explained, Some(0));
+        assert!(mesh.explained_by_class.is_empty(), "{mesh:#?}");
+        assert_eq!(mesh.status, Status::Balanced);
+    }
+
+    #[test]
+    fn a_cell_is_credited_to_one_reason_class() {
+        let data = tempfile::tempdir().unwrap();
+        terrain_block(data.path(), "w", 4, (0, 0), true, true, true);
+        terrain_block(data.path(), "w", 4, (4, 0), true, false, false);
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        add_terrain_chunk(pack.path(), &mut manifest, 1, 4, (0, 0));
+        manifest["reconciliation"]["terrain_skips"] = json!({
+            "w": { "4": {
+                "block cannot be read": {
+                    "blocks": 1, "mesh": 1, "colour": 0, "normal": 0, "cells": [[4, 0, 1]]
+                },
+                "missing_colour_map": {
+                    "blocks": 1, "mesh": 1, "colour": 0, "normal": 0, "cells": [[4, 0, 1]]
+                }
+            }}
+        });
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let mesh = row(&report, "terrain_mesh", "W", Some(4));
+        assert_eq!(mesh.explained, Some(1));
+        assert_eq!(mesh.explained_by_class.values().sum::<u64>(), 1);
+        assert_eq!(mesh.status, Status::Balanced);
     }
 
     #[test]
@@ -2809,12 +3006,54 @@ mod tests {
         add_plugin(pack.path());
         let mut manifest = retail_manifest(&["w"]);
         manifest["reconciliation"]["object_world_skips"] = json!({ "w": "missing_atlas" });
+        manifest["reconciliation"]["object_world_skip_blocks"] = json!({ "w": [[16, 0, 0]] });
         write_manifest(pack.path(), &manifest);
 
         let report = check(data.path(), pack.path());
         let row = row(&report, "object_block", "W", Some(16));
         assert_eq!(row.status, Status::Balanced);
         assert_eq!(row.explained_by_class["missing_atlas"], 1);
+    }
+
+    #[test]
+    fn a_missing_atlas_does_not_explain_a_new_block() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (0, 0), None);
+        object_block(data.path(), "w", 16, (4, 0), None);
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        manifest["reconciliation"]["object_world_skips"] = json!({ "w": "missing_atlas" });
+        manifest["reconciliation"]["object_world_skip_blocks"] = json!({ "w": [[16, 0, 0]] });
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let row = row(&report, "object_block", "W", Some(16));
+        assert_eq!(row.status, Status::Unexplained);
+        assert_eq!(row.retail, Some(2));
+        assert_eq!(row.explained, Some(1));
+        assert_eq!(row.unexplained, Some(1));
+    }
+
+    #[test]
+    fn a_legacy_missing_atlas_coverage_is_unknown() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (0, 0), None);
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        manifest["reconciliation"]["object_world_skips"] = json!({ "w": "missing_atlas" });
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let row = row(&report, "object_block", "W", Some(16));
+        assert_eq!(row.status, Status::Unknown);
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("missing_atlas_coverage_unknown")
+        );
     }
 
     #[test]
@@ -2903,6 +3142,71 @@ mod tests {
         let row = row(&report, "object_atlas", "W", None);
         assert_eq!(row.status, Status::Unknown);
         assert_eq!(row.reason.as_deref(), Some("object_lod_package_invalid"));
+    }
+
+    #[test]
+    fn a_pack_validation_failure_without_source_files_is_unknown() {
+        let data = tempfile::tempdir().unwrap();
+        let pack = pack_dir();
+        let mut manifest = retail_manifest(&["w"]);
+        let terrain = add_terrain_chunk(pack.path(), &mut manifest, 1, 4, (0, 0));
+        let object = add_object_chunk(pack.path(), &mut manifest, 1, 16, (0, 0));
+        add_atlas(pack.path(), &mut manifest, 1);
+        fs::remove_file(pack.path().join(&terrain)).unwrap();
+        fs::remove_file(pack.path().join(&object)).unwrap();
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        for category in ["terrain_mesh", "object_block", "object_atlas"] {
+            let row = report
+                .categories
+                .iter()
+                .find(|row| row.category == category && row.world == "*")
+                .unwrap_or_else(|| panic!("no category-wide {category} row"));
+            assert_eq!(row.status, Status::Unknown, "{row:#?}");
+        }
+        assert!(!report.passed());
+    }
+
+    #[test]
+    fn both_atlas_forms_with_all_blocks_skipped_are_unexplained() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (0, 0), Some("w.objects.dds"));
+        object_block(data.path(), "w", 16, (0, 0), Some("wobjectslod.dds"));
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        manifest["reconciliation"]["object_skips"] = json!({
+            "w": { "16": { "block cannot be read": { "blocks": 1, "cells": [[0, 0]] } } }
+        });
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let atlas = row(&report, "object_atlas", "W", None);
+        assert_eq!(atlas.status, Status::Unexplained);
+        assert_eq!(atlas.retail, Some(2));
+        assert_eq!(atlas.explained, Some(0));
+    }
+
+    #[test]
+    fn a_removed_block_skip_does_not_explain_a_new_block_atlas() {
+        let data = tempfile::tempdir().unwrap();
+        object_block(data.path(), "w", 16, (4, 0), Some("w.objects.dds"));
+        write_plugin(data.path());
+        let pack = pack_dir();
+        add_plugin(pack.path());
+        let mut manifest = retail_manifest(&["w"]);
+        manifest["reconciliation"]["object_skips"] = json!({
+            "w": { "16": { "block cannot be read": { "blocks": 1, "cells": [[0, 0]] } } }
+        });
+        write_manifest(pack.path(), &manifest);
+
+        let report = check(data.path(), pack.path());
+        let object = row(&report, "object_block", "W", Some(16));
+        assert_eq!(object.status, Status::Unexplained);
+        let atlas = row(&report, "object_atlas", "W", None);
+        assert_eq!(atlas.status, Status::Unexplained);
     }
 
     #[test]
@@ -3108,6 +3412,23 @@ mod tests {
         assert_eq!(row.retail, Some(1));
         assert_eq!(row.explained, Some(1));
         assert_eq!(row.status, Status::Balanced);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hard_link_to_a_pack_file_is_not_overwritten() {
+        let pack = pack_dir();
+        let manifest_path = pack.path().join("lod-manifest.json");
+        fs::write(&manifest_path, b"pack manifest").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = outside.path().join("report.json");
+        fs::hard_link(&manifest_path, &link).unwrap();
+        let report = ReconcileReport::new();
+        let error = write_json(&link, &report).unwrap_err();
+        assert!(error.to_string().contains("must not exist"), "{error}");
+        assert_eq!(fs::read(&manifest_path).unwrap(), b"pack manifest");
+        // A new path outside both inputs still works.
+        write_json(&outside.path().join("fresh.json"), &report).unwrap();
     }
 
     #[test]

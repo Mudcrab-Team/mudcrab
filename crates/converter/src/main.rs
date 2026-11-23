@@ -1761,8 +1761,8 @@ reconcile reads the Skyrim Data folder and an existing pack, and writes to neith
 block level it counts retail terrain LOD meshes, colour maps and normal maps, object LOD blocks and atlases,
 and WRLD RNAM memberships, and compares them with the pack's LOD tables and lod-manifest.json. Every difference
 must be explained by a converter skip class. A count it cannot compute is unknown, never zero. --json writes
-counts and reason classes only; local paths stay on the terminal. Exit code 1: an unexplained difference or an
-unknown count."
+counts and reason classes only; local paths stay on the terminal. The report path must not exist, so the check
+cannot overwrite a pack file through a hard link. Exit code 1: an unexplained difference or an unknown count."
 }
 
 #[cfg(test)]

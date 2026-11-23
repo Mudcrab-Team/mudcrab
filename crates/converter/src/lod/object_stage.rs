@@ -67,6 +67,9 @@ pub(crate) struct MissingObjectAtlas {
     pub paths: Vec<String>,
     /// The absent paths and the near matches in the game data, from [`FileIndex`].
     pub detail: String,
+    /// The level and south-west cell of every source block the listing found. A later block
+    /// outside this set is not covered by this world-level skip.
+    pub blocks: BTreeSet<(u32, i32, i32)>,
 }
 
 impl std::fmt::Display for MissingObjectAtlas {
@@ -343,9 +346,19 @@ pub(crate) fn read_retail(
         [] => {
             // An absent atlas is known from the file listing. Fail before any archive is read.
             let names: Vec<&str> = atlas_names.iter().map(String::as_str).collect();
+            let blocks = found
+                .keys()
+                .filter(|path| is_block(path))
+                .filter_map(|path| {
+                    let name = parse_lod_file_name(path)?;
+                    let (level, (x, y)) = (name.level?, name.cell?);
+                    Some((level, x, y))
+                })
+                .collect();
             return Err(MissingObjectAtlas {
                 paths: atlas_names.to_vec(),
                 detail: index.describe_missing(&names, Some(world_file)),
+                blocks,
             }
             .into());
         }
@@ -657,9 +670,11 @@ pub(crate) fn build_object_lod(
                     );
                     warn!("{message}");
                     stage.warnings.push(message);
-                    stage
-                        .reconciliation
-                        .record_object_world_skip(&file_name, MISSING_ATLAS);
+                    stage.reconciliation.record_object_world_skip(
+                        &file_name,
+                        MISSING_ATLAS,
+                        missing.blocks.clone(),
+                    );
                     stage.skipped_worlds.push(SkippedWorld {
                         editor_id,
                         class: MISSING_ATLAS,

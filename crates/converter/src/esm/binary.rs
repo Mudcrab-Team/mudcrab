@@ -441,11 +441,34 @@ pub struct WorldRnam {
     pub rnam: Vec<Vec<u8>>,
 }
 
+/// The `WRLD` `RNAM` records of one plugin, with the parser's recovery state.
+#[derive(Debug, Clone)]
+pub struct WorldRnamScan {
+    pub worlds: Vec<WorldRnam>,
+    /// Parser warnings. Some can hide a WRLD record, so the caller must not treat the subset as
+    /// complete when [`Self::incomplete`] is true.
+    pub warnings: Vec<String>,
+    /// Whether a lost frame, group or untyped record could have hidden a WRLD.
+    pub incomplete: bool,
+}
+
+/// Whether a parser warning can hide a `WRLD` record. A damaged record of another type is safe:
+/// the warning names its type. A truncated frame or an untyped record is not.
+fn warnings_may_hide_worlds(warning: &str) -> bool {
+    warning.contains("WRLD")
+        || warning.contains("truncated record payload")
+        || warning.contains("trailing ")
+        || warning.contains("bounded record frame")
+        || warning.contains("invalid record header")
+        || warning.contains("invalid GRUP")
+        || warning.contains("truncated GRUP")
+}
+
 /// Reads the `WRLD` `RNAM` subrecords of one plugin. Every other record is dropped as it is read,
 /// so the retail large-reference count does not need a second record parser or a full merge.
-pub fn read_world_rnam(path: &Path) -> Result<Vec<WorldRnam>> {
+pub fn read_world_rnam(path: &Path) -> Result<WorldRnamScan> {
     let mut worlds = Vec::new();
-    parse_plugin_file_inner(path, |candidate| {
+    let warnings = parse_plugin_file_inner(path, |candidate| {
         let ParsedRecord::Usable(record) = candidate else {
             return;
         };
@@ -467,7 +490,14 @@ pub fn read_world_rnam(path: &Path) -> Result<Vec<WorldRnam>> {
         });
     })
     .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
-    Ok(worlds)
+    let incomplete = warnings
+        .iter()
+        .any(|warning| warnings_may_hide_worlds(warning));
+    Ok(WorldRnamScan {
+        worlds,
+        warnings,
+        incomplete,
+    })
 }
 
 /// Parse usable records once, retaining the existing terminal skip summaries.
@@ -630,6 +660,43 @@ mod tests {
         .unwrap()
     }
 
+    fn record_bytes(tag: &[u8; 4], form_id: u32, payload: &[u8]) -> Vec<u8> {
+        [
+            tag.as_slice(),
+            &u32::try_from(payload.len()).unwrap().to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &form_id.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &44u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            payload,
+        ]
+        .concat()
+    }
+
+    fn subrecord_bytes(tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        [
+            tag.as_slice(),
+            &u16::try_from(data.len()).unwrap().to_le_bytes(),
+            data,
+        ]
+        .concat()
+    }
+
+    fn rnam_bytes() -> Vec<u8> {
+        let mut rnam = vec![0u8; 4];
+        rnam.extend(1u32.to_le_bytes());
+        rnam.extend(7u32.to_le_bytes());
+        rnam.extend([0u8; 4]);
+        rnam
+    }
+
+    fn write_plugin(bytes: &[u8]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("Test.esm"), bytes).unwrap();
+        directory
+    }
+
     /// Mirrors `parse_plugin_file` without file IO so prefixes can be swept.
     fn parse_prefix(bytes: &[u8]) -> Result<()> {
         let (rest, header) = parse_record_header(bytes).map_err(|error| eyre!("{error}"))?;
@@ -638,6 +705,59 @@ mod tests {
         }
         let mut records = Vec::new();
         parse_group(&rest[header.data_size as usize..], None, None, &mut records)
+    }
+
+    #[test]
+    fn world_edids_use_the_exporter_string_decode() {
+        let world = record_bytes(
+            b"WRLD",
+            1,
+            &[
+                subrecord_bytes(b"EDID", &[b'W', 0xE9, 0]),
+                subrecord_bytes(b"RNAM", &rnam_bytes()),
+            ]
+            .concat(),
+        );
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), world].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert_eq!(scan.worlds.len(), 1);
+        assert!(!scan.incomplete, "{:?}", scan.warnings);
+        assert_eq!(
+            scan.worlds[0].editor_id.as_deref(),
+            Some("W\u{FFFD}"),
+            "the exporter decodes invalid UTF-8 with String::from_utf8_lossy"
+        );
+    }
+
+    #[test]
+    fn a_truncated_world_record_marks_the_scan_incomplete() {
+        let mut truncated = record_bytes(b"WRLD", 1, b"");
+        let declared = u32::try_from(64).unwrap().to_le_bytes();
+        truncated[4..8].copy_from_slice(&declared);
+        truncated.extend(b"x");
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), truncated].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert!(scan.incomplete, "{:?}", scan.warnings);
+    }
+
+    #[test]
+    fn a_damaged_non_world_record_keeps_the_scan_complete() {
+        // A STAT payload declares more subrecord bytes than it holds. The warning names STAT, so
+        // it cannot have hidden a WRLD.
+        let damaged = record_bytes(b"STAT", 2, &[b'E', b'D', b'I', b'D', 10, 0, b'x', b'y']);
+        let world = record_bytes(
+            b"WRLD",
+            1,
+            &[
+                subrecord_bytes(b"EDID", b"W\0"),
+                subrecord_bytes(b"RNAM", &rnam_bytes()),
+            ]
+            .concat(),
+        );
+        let directory = write_plugin(&[record_bytes(b"TES4", 0, &[]), damaged, world].concat());
+        let scan = read_world_rnam(&directory.path().join("Test.esm")).unwrap();
+        assert!(!scan.incomplete, "{:?}", scan.warnings);
+        assert_eq!(scan.worlds.len(), 1);
     }
 
     #[test]

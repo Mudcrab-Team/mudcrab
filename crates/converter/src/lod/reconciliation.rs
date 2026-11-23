@@ -127,6 +127,10 @@ pub(crate) struct LodReconciliation {
     /// reason class. The only class the object stage produces is `missing_atlas`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub object_world_skips: BTreeMap<String, String>,
+    /// Source blocks the world-level skip actually inspected, as `[level, x, y]`. A later block
+    /// outside this set is not explained by the older skip.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub object_world_skip_blocks: BTreeMap<String, BTreeSet<(u32, i32, i32)>>,
 }
 
 impl Default for LodReconciliation {
@@ -146,6 +150,7 @@ impl LodReconciliation {
             terrain_skips: BTreeMap::new(),
             object_skips: BTreeMap::new(),
             object_world_skips: BTreeMap::new(),
+            object_world_skip_blocks: BTreeMap::new(),
         }
     }
 
@@ -210,16 +215,25 @@ impl LodReconciliation {
         entry.cells.insert(cell);
     }
 
-    /// Records a world whose object LOD was skipped at the world level.
-    pub(crate) fn record_object_world_skip(&mut self, world: &str, class: &str) {
+    /// Records a world whose object LOD was skipped at the world level, and the blocks the
+    /// producer inspected under that skip.
+    pub(crate) fn record_object_world_skip(
+        &mut self,
+        world: &str,
+        class: &str,
+        blocks: BTreeSet<(u32, i32, i32)>,
+    ) {
         self.object_world_skips
             .insert(world.to_owned(), class.to_owned());
+        self.object_world_skip_blocks
+            .insert(world.to_owned(), blocks);
     }
 
     /// Removes the object entries of one world, before a derive replaces them.
     pub(crate) fn remove_object_world(&mut self, world: &str) {
         self.object_skips.remove(world);
         self.object_world_skips.remove(world);
+        self.object_world_skip_blocks.remove(world);
         self.objects_recorded_worlds.remove(world);
     }
 }
@@ -286,12 +300,16 @@ mod tests {
     fn object_blocks_and_world_skips_are_separate() {
         let mut counts = LodReconciliation::new();
         counts.record_object_skip("w", 16, "block cannot be read", (0, 0));
-        counts.record_object_world_skip("v", "missing_atlas");
+        counts.record_object_world_skip("v", "missing_atlas", BTreeSet::from([(16, 0, 0)]));
         assert_eq!(
             counts.object_skips["w"][&16]["block cannot be read"].blocks,
             1
         );
         assert_eq!(counts.object_world_skips["v"], "missing_atlas");
+        assert_eq!(
+            counts.object_world_skip_blocks["v"],
+            BTreeSet::from([(16, 0, 0)])
+        );
         assert_eq!(counts.format, FORMAT);
     }
 
