@@ -82,7 +82,7 @@ impl EmittingMaterial for NifDepthMaterial {
     }
 
     fn uses_additive_source_colour(&self) -> bool {
-        self.extension.state.source_alpha_additive
+        self.extension.state.uses_effect_emittance
     }
 }
 
@@ -334,7 +334,8 @@ mod tests {
             decal: true,
             alpha_mask: false,
             cast_shadows: false,
-            source_alpha_additive: false,
+            blend_factors: None,
+            uses_effect_emittance: false,
         };
         let glow = LinearRgba::new(2.0, 2.0, 2.0, 1.0);
         let material = app
@@ -377,7 +378,7 @@ mod tests {
         let mut state =
             crate::nif_depth::NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Blend)
                 .unwrap();
-        state.source_alpha_additive = true;
+        state.uses_effect_emittance = true;
         let material = depth_material(
             StandardMaterial {
                 base_color: Color::linear_rgba(2.0, 2.0, 2.0, 0.5),

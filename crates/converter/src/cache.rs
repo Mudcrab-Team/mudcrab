@@ -493,6 +493,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "non-finite-uv-repair-v1",
     "verified-static-drawable-spheres",
     "collision-body-node-rebind",
+    "nif-alpha-property-v1",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

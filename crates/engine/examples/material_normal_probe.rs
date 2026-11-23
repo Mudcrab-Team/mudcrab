@@ -96,6 +96,7 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
                 shader_block: index as u32,
                 texture_set_block: None,
                 alpha_property_block: None,
+                alpha_property: None,
                 shader_flags_1: engine::nif_depth::DEPTH_TEST,
                 shader_flags_2: engine::nif_depth::DEPTH_WRITE,
                 base_color: [0.5, 0.5, 0.5, 1.0],

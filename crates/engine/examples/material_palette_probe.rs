@@ -292,6 +292,7 @@ fn effect_material(index: usize, case: &Case, palette: &str) -> NifShapeMaterial
         shader_block: index as u32,
         texture_set_block: None,
         alpha_property_block: None,
+        alpha_property: None,
         shader_flags_1: case.flags,
         shader_flags_2: 0,
         base_color: case.base,

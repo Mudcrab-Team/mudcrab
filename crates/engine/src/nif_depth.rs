@@ -9,6 +9,9 @@ use bevy::{
     },
 };
 
+// nif.xml AlphaFunction: SRC_ALPHA (6), ONE (0).
+pub const SOURCE_ALPHA_ADDITIVE: [u8; 2] = [6, 0];
+
 pub const DEPTH_TEST: u32 = 1 << 31;
 pub const DEPTH_WRITE: u32 = 1;
 pub const DECAL: u32 = 1 << 26;
@@ -35,17 +38,31 @@ pub struct NifDepthState {
     pub decal: bool,
     pub alpha_mask: bool,
     pub cast_shadows: bool,
-    pub source_alpha_additive: bool,
+    pub blend_factors: Option<[u8; 2]>,
+    pub uses_effect_emittance: bool,
 }
 
 impl NifDepthState {
     pub fn from_flags(flags_1: u32, flags_2: u32, alpha_mode: AlphaMode) -> Option<Self> {
+        Self::from_material(flags_1, flags_2, alpha_mode, None)
+    }
+
+    pub fn from_material(
+        flags_1: u32,
+        flags_2: u32,
+        alpha_mode: AlphaMode,
+        blend_factors: Option<[u8; 2]>,
+    ) -> Option<Self> {
         let depth_test = flags_1 & DEPTH_TEST != 0;
         let depth_write = depth_test && flags_2 & DEPTH_WRITE != 0;
         let decal = flags_1 & (DECAL | DYNAMIC_DECAL) != 0;
         // Stock blending already avoids depth writes. Ordinary depth-writing surfaces keep
         // their existing opaque/cutout/prepass path.
-        if !decal && depth_test && (depth_write || matches!(alpha_mode, AlphaMode::Blend)) {
+        if blend_factors.is_none()
+            && !decal
+            && depth_test
+            && (depth_write || matches!(alpha_mode, AlphaMode::Blend))
+        {
             return None;
         }
         Some(Self {
@@ -54,7 +71,8 @@ impl NifDepthState {
             decal,
             alpha_mask: matches!(alpha_mode, AlphaMode::Mask(_)),
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
-            source_alpha_additive: false,
+            blend_factors,
+            uses_effect_emittance: false,
         })
     }
 
@@ -134,27 +152,50 @@ fn specialize_nif_depth_descriptor(
             fragment.shader_defs.push("MAY_DISCARD".into());
         }
     }
-    if state.source_alpha_additive
+    if let Some([source, destination]) = state.blend_factors
+        && let Some(color) = blend_component(source, destination, false)
+        && let Some(alpha) = blend_component(source, destination, true)
         && let Some(fragment) = descriptor.fragment.as_mut()
     {
         for target in fragment.targets.iter_mut().flatten() {
-            target.blend = Some(BlendState {
-                color: BlendComponent {
-                    src_factor: BlendFactor::SrcAlpha,
-                    dst_factor: BlendFactor::One,
-                    operation: BlendOperation::Add,
-                },
-                alpha: BlendComponent {
-                    src_factor: BlendFactor::Zero,
-                    dst_factor: BlendFactor::One,
-                    operation: BlendOperation::Add,
-                },
-            });
+            target.blend = Some(BlendState { color, alpha });
         }
     }
     if color_pass && let Some(depth) = descriptor.depth_stencil.as_mut() {
         state.apply(depth);
     }
+}
+
+// nif.xml AlphaFunction, documented in vendor/project-wormhole-nif/src/nif_enum.rs.
+fn blend_factor(value: u8, alpha: bool) -> Option<BlendFactor> {
+    use BlendFactor::*;
+    Some(match value {
+        0 => One,
+        1 => Zero,
+        2 if !alpha => Src,
+        3 if !alpha => OneMinusSrc,
+        4 if !alpha => Dst,
+        5 if !alpha => OneMinusDst,
+        2 | 6 => SrcAlpha,
+        3 | 7 => OneMinusSrcAlpha,
+        4 | 8 => DstAlpha,
+        5 | 9 => OneMinusDstAlpha,
+        10 if alpha => One,
+        10 => SrcAlphaSaturated,
+        _ => return None,
+    })
+}
+
+pub fn valid_blend_factors([source, destination]: [u8; 2]) -> bool {
+    blend_component(source, destination, false).is_some()
+}
+
+fn blend_component(source: u8, destination: u8, alpha: bool) -> Option<BlendComponent> {
+    Some(BlendComponent {
+        src_factor: blend_factor(source, alpha)?,
+        dst_factor: blend_factor(destination, alpha)?,
+        operation: BlendOperation::Add,
+    })
 }
 
 fn shader_def_name(def: &bevy::shader::ShaderDefVal) -> &str {
@@ -259,9 +300,9 @@ mod tests {
     }
 
     #[test]
-    fn additive_decal_preserves_the_receiver_colour_and_alpha() {
+    fn additive_decal_uses_authored_blend_factors() {
         let mut state = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Blend).unwrap();
-        state.source_alpha_additive = true;
+        state.blend_factors = Some(SOURCE_ALPHA_ADDITIVE);
         let mut color = descriptor(vec![color_target()]);
 
         specialize_nif_depth_descriptor(&mut color, state);
@@ -270,7 +311,7 @@ mod tests {
         let blend = fragment.targets[0].as_ref().unwrap().blend.unwrap();
         assert_eq!(blend.color.src_factor, BlendFactor::SrcAlpha);
         assert_eq!(blend.color.dst_factor, BlendFactor::One);
-        assert_eq!(blend.alpha.src_factor, BlendFactor::Zero);
+        assert_eq!(blend.alpha.src_factor, BlendFactor::SrcAlpha);
         assert_eq!(blend.alpha.dst_factor, BlendFactor::One);
         assert_eq!(
             color.depth_stencil.unwrap().depth_write_enabled,

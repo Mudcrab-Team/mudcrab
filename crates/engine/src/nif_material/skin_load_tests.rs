@@ -903,6 +903,41 @@ fn a_loaded_masked_hair_card_keeps_its_cutoff_and_specialises_as_hair() {
 }
 
 #[test]
+fn nif_blend_extras_bind_an_arbitrary_mesh_to_the_authored_depth_material() {
+    let directory = tempfile::tempdir().unwrap();
+    write_model_space_gltf(directory.path(), 0);
+    let path = directory.path().join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["materials"][0] = serde_json::json!({
+        "name": "arbitrary fixture",
+        "alphaMode": "BLEND",
+        "extras": {"openSkyrim": {
+            "shaderFlags1": crate::nif_depth::DEPTH_TEST,
+            "shaderFlags2": 0,
+            "alphaProperty": {
+                "blendEnabled": true, "sourceFactor": 6, "destinationFactor": 0,
+                "testEnabled": false, "testFunction": 4, "threshold": 128
+            }
+        }}
+    });
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    let mut app = loader_app(directory.path());
+    let mut scene = load_scene_world(&mut app);
+    let mut query = scene.query::<(
+        &MeshMaterial3d<NifDepthMaterial>,
+        Has<MeshMaterial3d<StandardMaterial>>,
+    )>();
+    let (handle, has_stock_material) = query.single(&scene).unwrap();
+    let materials = app.world().resource::<Assets<NifDepthMaterial>>();
+    let material = materials.get(&handle.0).unwrap();
+    assert!(!has_stock_material);
+    assert_eq!(material.extension.state.blend_factors, Some([6, 0]));
+    assert!(!material.extension.state.uses_effect_emittance);
+}
+
+#[test]
 fn palette_scenes_keep_labeled_image_dependencies_alive() {
     for depth_wrapped in [false, true] {
         let directory = tempfile::tempdir().unwrap();

@@ -5330,6 +5330,7 @@ mod tests {
                         shader_block: 0,
                         texture_set_block: None,
                         alpha_property_block: None,
+                        alpha_property: None,
                         shader_flags_1: if alpha_mode == NifAlphaMode::Opaque {
                             1 << 3
                         } else {

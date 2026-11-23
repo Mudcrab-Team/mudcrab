@@ -54,6 +54,7 @@ fn fixture(output: &Path) {
         shader_block: 0,
         texture_set_block: None,
         alpha_property_block: None,
+        alpha_property: None,
         shader_flags_1: (1 << 31) | (1 << 22),
         shader_flags_2: 1,
         base_color: [1.0; 4],

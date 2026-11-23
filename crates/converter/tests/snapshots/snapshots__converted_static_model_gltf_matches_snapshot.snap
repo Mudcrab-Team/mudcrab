@@ -111,6 +111,7 @@ expression: document
       },
       "extras": {
         "openSkyrim": {
+          "alphaProperty": null,
           "lightingShaderType": "default",
           "normalConvention": "directx",
           "shaderBlock": 2,
