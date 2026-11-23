@@ -95,8 +95,9 @@ impl LodStreaming {
             let anchor = origin.chunk_for_cell(tier, cell.x, cell.y);
             let key = ChunkKey::new(worldspace, tier, anchor);
             if let Some(LodChunkStatus::Ready { root, .. }) = self.chunks.get(&key) {
-                // silent-ok: A chunk without a retail atlas cannot supply a near blend.
-                let atlas = overlays.get(*root).ok()?;
+                let Ok(atlas) = overlays.get(*root) else {
+                    continue;
+                };
                 let relative = anchor.min_cell(tier);
                 let base = self.grid_origin + IVec2::new(relative.0, relative.1);
                 return Some((&atlas.0, base, tier.side_cells() as f32));
@@ -2025,6 +2026,49 @@ fn update_counts(
 mod tests {
     use super::*;
     use crate::world::database::LodChunkBounds;
+
+    #[test]
+    fn near_terrain_overlay_skips_a_ready_tier_without_an_atlas() {
+        use bevy::ecs::system::SystemState;
+
+        let mut world = World::new();
+        let mut images = Assets::<Image>::default();
+        let fine_atlas = images.add(Image::default());
+        let coarse_atlas = images.add(Image::default());
+        let fine_root = world.spawn_empty().id();
+        let coarse_root = world.spawn(TerrainLodOverlay(coarse_atlas.clone())).id();
+        let origin = LodOrigin::new(1, -3);
+        let centre = IVec2::new(origin.grid_x, origin.grid_y);
+        let cell = centre + IVec2::splat(4);
+        let worldspace = 1;
+        let distances = TerrainLodDistances::default();
+        let mut streaming = LodStreaming {
+            grid_origin: centre,
+            ..default()
+        };
+        for (tier, root) in [(LodTier::Tier4, fine_root), (LodTier::Tier8, coarse_root)] {
+            let anchor = origin.chunk_for_cell(tier, cell.x, cell.y);
+            streaming.chunks.insert(
+                ChunkKey::new(worldspace, tier, anchor),
+                LodChunkStatus::Ready { root, origin },
+            );
+        }
+        let mut state = SystemState::<Query<&TerrainLodOverlay>>::new(&mut world);
+        let overlays = state.get(&world).expect("the overlay query is valid");
+        assert_eq!(
+            streaming.near_terrain_overlay(&overlays, worldspace, centre, cell, &distances),
+            Some((&coarse_atlas, centre, 8.0))
+        );
+
+        world
+            .entity_mut(fine_root)
+            .insert(TerrainLodOverlay(fine_atlas.clone()));
+        let overlays = state.get(&world).expect("the overlay query is valid");
+        assert_eq!(
+            streaming.near_terrain_overlay(&overlays, worldspace, centre, cell, &distances),
+            Some((&fine_atlas, cell, 4.0))
+        );
+    }
 
     /// A quadrant mesh the way the `.btr` importer writes it: any vertex count, a reference
     /// normal and tangent for the normal map, and no vertex colours.
