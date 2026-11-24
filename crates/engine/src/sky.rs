@@ -701,9 +701,9 @@ fn drive_sky_palette(
 /// Follows the game clock: sets the exterior sun colour and ambient colour from the active weather
 /// at the clock's hour (#653).
 ///
-/// Retail has no sun/moon switch and no night fade. The night look comes from the record's
-/// `NAM0` Sunlight colour and the `DALC` cube in their night slots, mixed by the same day-part
-/// weights as the sky (`WeatherSky::lighting_at`). Only the colours change here. The sun's
+/// Retail has no sun/moon switch and no night fade (RF-SUN-005, `skyrim_decomp#1003` G02). The night
+/// look comes from the record's `NAM0` Sunlight colour and the `DALC` cube in their night slots,
+/// mixed by the same day-part weights as the sky (`WeatherSky::lighting_at`). Only the colours change here. The sun's
 /// illuminance and the ambient brightness keep the scene's scale (`SUN_ILLUMINANCE`,
 /// `AMBIENT_ILLUMINANCE`), so the record's colour carries the darkness and no night factor exists.
 ///

@@ -263,7 +263,11 @@ impl WeatherSky {
                 });
             }
         }
-        let lighting = <[SlotLighting; 4]>::try_from(lighting).ok();
+        // All four slots are present exactly when no value was omitted.
+        let lighting = match lighting.as_slice() {
+            &[sunrise, day, sunset, night] => Some([sunrise, day, sunset, night]),
+            _ => None,
+        };
         Ok(Self {
             form_id,
             editor_id: weather.editor_id.clone(),
