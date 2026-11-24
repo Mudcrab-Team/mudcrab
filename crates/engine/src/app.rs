@@ -110,7 +110,11 @@ fn prepare_start_camera(
         config.worldspace_id = worldspace;
     }
     if let Some((settings, settings_file)) = preferences {
-        settings_file.apply_start_shot(settings, file.shots[0].hfov, (file.width, file.height));
+        settings_file.apply_start_shot(
+            settings,
+            crate::settings::retail_fov_for_frame(file.shots[0].hfov, file.aspect()),
+            (file.width, file.height),
+        );
     }
     Ok(Some(InitialWorldCameraPose {
         shot: file.shots[0].clone(),
@@ -5358,8 +5362,8 @@ mod tests {
         let Projection::Perspective(projection) = query.single(app.world()).unwrap() else {
             panic!("perspective camera")
         };
-        // `fov` is the horizontal angle, as the settings hold it (#904).
-        let vertical = crate::settings::vertical_fov_radians(fov, projection.aspect_ratio);
+        // `fov` is the retail-convention angle the settings hold: across 16:9, held vertically.
+        let vertical = crate::settings::retail_vertical_fov_radians(fov);
         assert!((projection.fov - vertical).abs() < 1e-6);
         let mut query = app
             .world_mut()
@@ -5401,7 +5405,8 @@ mod tests {
             let bytes = serde_json::to_vec(&saved).unwrap();
             std::fs::write(&settings_path, &bytes).unwrap();
             let mut app = interactive_framing_app(&settings_path, Some(shot_path.clone()));
-            let fov = 18.0;
+            // The pose's 18 degrees hold across its own 1379x911 frame.
+            let fov = crate::settings::retail_fov_for_frame(18.0, 1379.0 / 911.0);
             app.update();
             assert_interactive_framing(&mut app, fov, (1379, 911));
             app.world_mut().resource_mut::<RenderingSettings>().hud = false;

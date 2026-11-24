@@ -98,9 +98,11 @@ pub struct RenderingSettings {
     /// Multiplier on retail fMouseHeadingSensitivity; 1 preserves the movement-type defaults.
     pub mouse_sensitivity: f32,
     /// Horizontal field of view in degrees, as retail's `fDefaultWorldFOV` and
-    /// `fDefault1stPersonFOV` are (#904). The camera's vertical angle follows from the window's
-    /// aspect ratio. The field was a vertical angle named `fov_degrees` until #904; an older
-    /// settings file keeps that key, which is ignored, so the retail default applies.
+    /// `fDefault1stPersonFOV` are (#904): the angle across a 16:9 window. Retail holds the
+    /// matching vertical angle at every window shape ([`RETAIL_FOV_REFERENCE_ASPECT`],
+    /// `docs/research/retail/q7a-camera-states.md`). The field was a vertical angle named
+    /// `fov_degrees` until #904; an older settings file keeps that key, which is ignored, so the
+    /// retail default applies.
     pub horizontal_fov_degrees: f32,
     pub vsync: bool,
     pub window_mode: usize,
@@ -1140,9 +1142,6 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
         With<StreamingCamera>,
     >,
     reflections: Query<'w, 's, (Entity, Ref<'static, crate::render::WaterReflectionCamera>)>,
-    /// The aspect ratio the cameras had when the settings were last applied. The vertical angle
-    /// follows it (#904), so a resized window applies them again.
-    last_aspect: Local<'s, f32>,
     /// The game clock, for the hour of the weather-driven sky palette.
     clock: Option<Res<'w, crate::sun::GameClock>>,
     /// The sun and the "a sun light appeared since the last apply" check need conflicting
@@ -1288,6 +1287,27 @@ pub fn vertical_fov_radians(horizontal_degrees: f32, aspect: f32) -> f32 {
     crate::shots::vertical_fov_degrees(horizontal_degrees, aspect).to_radians()
 }
 
+/// The window shape retail's field of view keys are defined at. Retail holds the vertical angle
+/// and shows more at the sides of a wider window (Hor+): FOV 80 is 80 degrees across a 16:9
+/// window, and a 4:3 window of the same height shows the scene at the same size
+/// (`docs/research/retail/q7a-camera-states.md`, "Window shape").
+pub const RETAIL_FOV_REFERENCE_ASPECT: f32 = 16.0 / 9.0;
+
+/// Bevy's vertical angle for a retail field of view key, the same at every window shape.
+pub fn retail_vertical_fov_radians(horizontal_degrees: f32) -> f32 {
+    vertical_fov_radians(horizontal_degrees, RETAIL_FOV_REFERENCE_ASPECT)
+}
+
+/// The retail-convention angle that frames a `--shots` pose. A pose's `hfov` is the angle across
+/// its own frame, so its vertical angle is expressed again as the angle across 16:9.
+pub fn retail_fov_for_frame(hfov_degrees: f32, aspect: f32) -> f32 {
+    let half_vertical = vertical_fov_radians(hfov_degrees, aspect) * 0.5;
+    (half_vertical.tan() * RETAIL_FOV_REFERENCE_ASPECT)
+        .atan()
+        .to_degrees()
+        * 2.0
+}
+
 /// Apply only on preference changes. Weather, light budgets and water read the same resource.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_render_settings(
@@ -1325,19 +1345,7 @@ pub(crate) fn apply_render_settings(
     // against the snapshot left by the previous run, and also run when the engine config or the
     // renderer changed underneath it, or when a render target appeared since the last run.
     // A settled frame returns here and does none of the work below.
-    // The vertical angle follows the aspect ratio, so a resized window needs the pass too.
-    let aspect = targets
-        .cameras
-        .iter()
-        .find_map(|(.., projection, _)| match projection {
-            Projection::Perspective(p) if p.aspect_ratio.is_finite() && p.aspect_ratio > 0.0 => {
-                Some(p.aspect_ratio)
-            }
-            _ => None,
-        });
-    let aspect_changed = aspect.is_some_and(|aspect| (aspect - *targets.last_aspect).abs() > 1e-4);
-    let preferences_changed = aspect_changed
-        || settings.is_changed()
+    let preferences_changed = settings.is_changed()
         || previous.as_ref() != Some(&*settings)
         || config.is_changed()
         || adapter.as_ref().is_some_and(|adapter| adapter.is_changed())
@@ -1345,9 +1353,6 @@ pub(crate) fn apply_render_settings(
         || !targets.sun.p1().is_empty();
     if !preferences_changed {
         return;
-    }
-    if let Some(aspect) = aspect {
-        *targets.last_aspect = aspect;
     }
     let before_coverage = (settings.stream_radius, settings.unload_radius);
     retain_live_grass_coverage(settings.reborrow(), &config);
@@ -1500,7 +1505,7 @@ pub(crate) fn apply_render_settings(
         *msaa = MSAA_MODES[settings.msaa];
         // A shots or matched-route run frames each pose itself, from that pose's own angle.
         if !shot_driven && let Projection::Perspective(p) = &mut *projection {
-            p.fov = vertical_fov_radians(settings.horizontal_fov_degrees, p.aspect_ratio);
+            p.fov = retail_vertical_fov_radians(settings.horizontal_fov_degrees);
         }
         apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
@@ -3650,7 +3655,7 @@ mod tests {
         else {
             panic!("expected perspective");
         };
-        assert!((projection.fov.to_degrees() - 70.0).abs() < 0.001);
+        assert!((projection.fov - retail_vertical_fov_radians(70.0)).abs() < 1e-6);
         assert_eq!(
             app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
             None
@@ -3658,7 +3663,7 @@ mod tests {
         assert_eq!(app.world().resource::<EngineConfig>().io_threads, 0);
     }
 
-    /// #904: retail's field of view is horizontal, so the vertical angle depends on the window.
+    /// The vertical angle that gives a horizontal angle across a window of each shape.
     #[test]
     fn horizontal_field_of_view_converts_by_aspect_ratio() {
         for (name, aspect, vertical) in [
@@ -3764,10 +3769,11 @@ mod tests {
         assert_eq!(settings.horizontal_fov_degrees, 100.0);
     }
 
-    /// The vertical angle follows the window: a resize applies the field of view again, and a
-    /// shots run keeps the angle of its own pose.
+    /// Retail holds the vertical angle (Hor+, `docs/research/retail/q7a-camera-states.md`): a
+    /// resized window keeps it and shows more or less at the sides. A shots run keeps the angle of
+    /// its own pose.
     #[test]
-    fn a_resized_window_keeps_the_horizontal_field_of_view() {
+    fn a_resized_window_keeps_the_vertical_field_of_view() {
         for (shots, resized) in [(None, true), (Some(PathBuf::from("shots.json")), false)] {
             let mut app = App::new();
             app.add_plugins(MinimalPlugins)
@@ -3814,8 +3820,39 @@ mod tests {
                 p.aspect_ratio = 21.0 / 9.0;
             }
             app.update();
-            assert!((fov(&app).to_degrees() - 39.57).abs() < 0.1);
+            assert!((fov(&app).to_degrees() - 50.54).abs() < 0.1, "Hor+");
         }
+    }
+
+    /// Measured on retail: FOV 80 is 80 degrees across 16:9 and the vertical angle is held, so a
+    /// 4:3 window shows 64.4 degrees across and a 21:9 window 95.5.
+    #[test]
+    fn retail_field_of_view_is_horizontal_at_16_9_and_held_vertically() {
+        let vertical = retail_vertical_fov_radians(80.0);
+        assert!((vertical.to_degrees() - 50.534).abs() < 1e-2);
+        for (name, aspect, across) in [
+            ("16:9", 16.0 / 9.0, 80.0),
+            ("4:3", 4.0 / 3.0, 64.37),
+            ("21:9", 21.0_f32 / 9.0, 95.52),
+        ] {
+            let shown = ((vertical * 0.5).tan() * aspect).atan().to_degrees() * 2.0;
+            assert!((shown - across).abs() < 0.05, "{name}: {shown}");
+        }
+        // A shots pose holds its own angle across its own frame; its retail-convention angle gives
+        // back the same vertical angle.
+        for (hfov, aspect) in [
+            (80.0, 16.0 / 9.0),
+            (18.0, 1379.0 / 911.0),
+            (75.0, 4.0 / 3.0),
+        ] {
+            let retail = retail_fov_for_frame(hfov, aspect);
+            assert!(
+                (retail_vertical_fov_radians(retail) - vertical_fov_radians(hfov, aspect)).abs()
+                    < 1e-5,
+                "{hfov} at {aspect}"
+            );
+        }
+        assert!((retail_fov_for_frame(80.0, 16.0 / 9.0) - 80.0).abs() < 1e-3);
     }
 
     #[test]
