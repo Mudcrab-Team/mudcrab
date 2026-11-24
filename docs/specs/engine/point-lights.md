@@ -5,7 +5,9 @@ how many of them are enabled at once. The code is `crates/engine/src/lights.rs` 
 scale and the budget), `crates/engine/src/world/database.rs` (the row it is built from) and
 `crates/engine/src/streaming.rs` (where the light is spawned).
 
-Lights are **opt-in**: nothing in this document happens unless the engine is run with `--lights`.
+Lights are **on by default**, as in retail (#955): retail lights every placed `LIGH` reference and no INI key turns
+them off (`RF-LIGHT-GPU-007`, [retail registry](../../research/retail/registry.md); the GPU rows are private, see section 5; unverified for lights placed by scripts).
+`--no-lights` turns them off, for example for profiling.
 
 ---
 
@@ -65,11 +67,12 @@ world with, and `None` otherwise:
 - `range` is the effective radius in Creation units. This engine renders one Creation unit as one
   Bevy world unit, so no conversion is applied.
 - `color` is the record's colour, read as sRGB like every other colour of the game.
-- `intensity` comes from unit-fade backend conversion times evaluated FNAM plus XLIG fade (§4).
+- `intensity` is the retail unit times the evaluated FNAM plus XLIG fade (§4). The vendored `bevy_pbr`
+  shades the light with retail's attenuation, because every `SkyrimLight` carries `RetailPointFalloff`.
 - `shadow_maps_enabled` is **false** when the light spawns. The budget (§6) later gives a cube
   shadow map to the nearest few lights when the Point-light shadows setting is on. This does not
-  implement Skyrim's authored shadow modes or attenuation. The record's own shadow flags
-  (`RF-LIGHT-GPU-009`) are not read yet.
+  implement Skyrim's authored shadow modes (spot and hemisphere cones). Only a light whose record
+  carries a shadow flag (`DATA` flags `0x1c00`, `RF-LIGHT-GPU-009`) can take a slot (§6).
 - the area `radius` stays 0, so there is no oversized specular highlight.
 
 `streaming::spawn_cell` places the light as a **child of its reference**, which is what makes it sit
@@ -130,26 +133,43 @@ clustered light. This clamp and saturation are marked backend-limited, not nativ
 With base FNAM 1, the observed house offsets 0.5 and 2 evaluate to 1.5 and 3; consuming them alone
 cannot justify dimming those houses or claim their brightness is fixed.
 
-Transform identity: `bevy-point-legacy-normalization-v1`:
+Transform identity: `bevy-point-retail-falloff-v1`. Retail's equations (registry rows
+`RF-LIGHT-GPU-004` and `RF-LIGHT-GPU-008`, Lighting pixel shader bytecode, high confidence):
 
 ```text
-legacy_radiance = 12000 / (PI * 2.8) * 10  (frozen b5259d33 input normalization)
-reference_distance = min(backend_range / 2, 256)
-unit_fade_lumens = 4 * PI^2 * legacy_radiance * reference_distance^2 / (225/256)
-intensity = min(unit_fade_lumens * effective_fade, f32::MAX)
+PointLightColor = LIGH colour/255 x fade x dimmer      (no exposure, no pi, no other multiplier)
+att             = 1 - saturate(d / radius)^2           (zero at the radius, no 1/d^2)
+diffuse         = albedo x PointLightColor x att x saturate(N.L)
 ```
 
-The frozen coefficient preserves this checkout's baseline scale; it is not a new dimming control or
-physical unit calibration. It no longer reads `AMBIENT_ILLUMINANCE`, `SUN_ILLUMINANCE` or environment
-state. **The inherited unmeasured normalization remains a legacy fallback.** This slice cannot claim
-to resolve the observed house overbrightness, close #264/#364, or establish a Skyrim rendered ratio.
-The earlier ambient change multiplied configured inputs by 8.526157665637252; that is not a visual ratio.
+Mudcrab reproduces them in two parts:
 
-Bevy divides lumens by `4*PI` and its diffuse BRDF supplies `1/PI`. Its attenuation remains
-`window(d)/d²`, with `window(d) = max(1-(d/range)^4,0)^2`. The 256-unit anchor and 8192-unit range
-cap are inherited backend safeguards, not native semantics. The formula matches its stated target
-at half range only at ranges <=512; it does not match Skyrim's whole attenuation curve. Brightness
-above `f32::MAX` is explicitly backend-limited; raw fade/radius remain available for diagnosis.
+1. **Falloff.** `vendor/bevy_pbr` (patch row in `vendor/BEVY_PATCHES.md`) adds the `RetailPointFalloff`
+   marker. A point light with it gets the `RETAIL_FALLOFF` flag, and `getRetailDistanceAttenuation` in
+   `pbr_lighting.wgsl` returns `saturate(1 - d^2 / range^2)` in place of Bevy's `window(d) / d^2`. `range`
+   is the light's backend range, which is the retail radius (§1). This is a Mudcrab addition: Bevy has no
+   such mode.
+2. **Intensity.** `retail_intensity(fade) = 4 pi^2 x AMBIENT_ILLUMINANCE x fade` lumens. Bevy divides lumens
+   by `4 pi` and the diffuse BRDF supplies `1 / pi`, so a unit-fade light puts `albedo x colour x
+   AMBIENT_ILLUMINANCE` nits on a surface at its centre. The scene already shades one retail unit as
+   `AMBIENT_ILLUMINANCE` nits: the interior ambient light is that brightness times the DALC mean, and the key
+   light is `pi x AMBIENT_ILLUMINANCE x SunlightScale` lux. A point light on the same scale keeps retail's scalar
+   ratios between point, ambient and sun light. The result does not depend on the radius.
+
+`AMBIENT_ILLUMINANCE` (12,000 lux / (pi x 2.8) = 1,364 nits) is Mudcrab's scene scale, not a retail number. A
+retail unit is 1.0 in display-encoded colour. This scale, the Bevy exposure (EV100 9.7) and the tone mapper
+are the adapter between retail's clamped 0..1 output and Mudcrab's HDR pipeline. It is shared by the sun, the
+ambient light and the point lights. The retail output stage (`x 1/FramebufferRange`, then a clamp at 1.0;
+`RF-LIGHT-GPU-005`) and the retail Lighting path (#706) belong to the image-space work and are not part of this slice.
+
+**Why the old lights saturated (measured, #955).** The retired transform, `bevy-point-legacy-normalization-v1`,
+set the lumens from the radius so that the surface brightness at half the radius was
+`12000 / (pi x 2.8) x 10 x fade` nits, with Bevy's inverse square falling off towards the light. At the
+scene's exposure (`2^-9.7 / 1.2 = 1.0019e-3`) that is 13.7 x fade of albedo-linear radiance at half the radius and
+92.6 x 1.5 at a quarter of it for a window light. Retail gives `0.75 x fade` at half the radius and at most `fade`
+at the centre. Ysolda's House (cell 91564, ambient about 0.06) therefore went white: each of its five lights added
+7 to 66 times retail's value. The factor `10` (`LIGHT_EXPOSURE`) and the inverse square have no retail
+counterpart (`RF-LIGHT-GPU-008`).
 
 Native constructor flags `0x1c00` select the spot/hemi/omni shadow modes. Only that branch reads
 DATA falloff; the ordinary point-light branch supplies 1 regardless of the stored exponent.
@@ -161,6 +181,11 @@ unsupported. Malformed XLIG is counted separately. No global ambient policy, int
 resolver, raw-colour Skyrim profile, shadow, flicker, pulse or camera/exposure change is included.
 
 ## 5. Evidence and remaining gates
+
+**Registry rows.** The `RF-LIGHT-GPU-*` rows cited in this document are in the maintainers' private
+retail-facts registry. The public [registry](../../research/retail/registry.md) holds the
+`RF-LIGHT-CPU-*` rows only. Ask in #264 for a GPU row. Each use in this document states the fact it
+relies on.
 
 Pinned upstream sources (format/community implementation evidence, not a retail measurement):
 
@@ -198,10 +223,12 @@ in private shared evidence, outside Git. No executable was launched. Cobb API's 
 independently uses base-plus-reference fade in classic Skyrim; it is supporting evidence, not the
 version-matched authority.
 
-Remaining qualification: independent attenuation/unit measurements and fixed-camera interior
-comparison after the separate environment resolver lands. Tests prove authored field sensitivity,
-storage and the actual CPU light consumer, not rendered brightness, performance or Skyrim parity.
-The frozen normalization must be replaced only with that evidence.
+Remaining qualification: a fixed-camera comparison with a retail capture of the same cell. Tests prove
+the authored field sensitivity, the intensity equation, the shader flag chain (as source pins) and the CPU
+light consumer. They do not prove rendered brightness or Skyrim parity. Three retail inputs are untraced and
+tracked in the research lane as NEEDS 20: the per-geometry choice of the 7 lights, flicker and pulse, and the
+distance dimmer (BSLight `+0x14`, `RF-LIGHT-CPU-003`). Mudcrab applies none of them, so a room with more than
+7 overlapping lights can be brighter than retail, and a distant light is not dimmed by the XCLL light fade.
 
 ## 6. The budget: 64 enabled lights by default
 
@@ -243,26 +270,32 @@ limit.
 
 The shadow set is not cached with the 64-light choice. It is ranked again among the enabled lights
 after every camera move, with the entity as the tie-break, so the light the player walks up to takes
-a shadow at once and the light left behind gives it up. The set is never larger than the cap. The
-record's shadow flags (`RF-LIGHT-GPU-009`) are not read yet, so the nearest lights are shadowed
-whatever their flags.
+a shadow at once and the light left behind gives it up. The set is never larger than the cap. Only
+lights whose record carries a shadow flag (`DATA` flags `0x1c00`, `RF-LIGHT-GPU-009`) are ranked, as
+described above.
 
-## 7. The `--lights` flag
+## 7. The `--no-lights` and `--lights` flags
 
-`EngineConfig::lights` (`crates/engine/src/config.rs`) is false by default and set by `--lights`.
-`LightsPlugin` is registered for every run - it owns the budget, not the spawning - but
-`streaming::spawn_cell` creates the light child while the flag is on. Otherwise it retains the
+`EngineConfig::lights` (`crates/engine/src/config.rs`) is true by default (#955) and set false by
+`--no-lights`; `--lights` states the default. `RenderingSettings::point_lights` follows it, and an explicit
+launch flag wins over a saved setting. `LightsPlugin` is registered for every run - it owns the budget, not the
+spawning - but `streaming::spawn_cell` creates the light child while the flag is on. Otherwise it retains the
 evaluated light as deferred data and activates it when the flag is enabled in the resident cell.
-A default run therefore renders
-exactly as it did before this feature, and the acceptance, profiling and benchmark baselines that
-`scripts/phase2-*.ps1` take do not move.
+Runs that must not move, such as an acceptance or benchmark baseline taken before #955, now need
+`--no-lights`.
 
 ## 8. Scope limits
 
-Native attenuation/units, XLIG end-distance cap, shadow modes, cone/near clip, flicker/pulse and full raw
-colour/exposure handling remain open under #133/#264/#364. The legacy normalization is visible and
-bounded, not qualified as a native solution. Interior environment selection is separately owned.
+XLIG end-distance cap, shadow-mode cone angles and DATA falloff, cone/near clip, flicker/pulse, the distance
+dimmer, the per-geometry 7-light choice, the retail output stage and the retail Lighting path (#706) remain open
+under #133/#264/#364. Light colours stay sRGB-decoded, as the sun and ambient colours are: the raw-colour
+Lighting path of the `skyrim` profile (#362, #706) owns that change. Interior environment selection is
+separately owned.
 
-- **Shadow flags.** Only the nearest 4 enabled lights cast shadows, whatever the record's shadow
-  flags say (§6, `RF-LIGHT-GPU-009`). A light without a shadow map also lights the far side of the
-  wall it is mounted on.
+- **Shadow modes.** A shadow-flagged light is shadowed as an omnidirectional point light. Retail uses a spot
+  or hemisphere shadow light for flags `0x400` and `0x800` (`RF-LIGHT-GPU-015`, [retail registry](../../research/retail/registry.md); the GPU rows are private, see section 5).
+  A light without a shadow map also lights the far side of the wall it is mounted on, as in retail
+  (`RF-LIGHT-GPU-009`, [retail registry](../../research/retail/registry.md)).
+- **Object LOD.** Retail's stock object LOD (BTO, techniques 13 and 15) receives no point lights
+  ([skyrim_decomp PR 1003](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003), NEEDS 14; `RF-LIGHT-GPU-004`). `lod_object.wgsl` therefore has no point-light
+  loop, and placed lights light the full-detail mesh only.
