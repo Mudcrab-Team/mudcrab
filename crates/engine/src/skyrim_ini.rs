@@ -24,8 +24,12 @@
 //! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
-//! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
-//! | `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
+//! | `[TerrainManager]` | `fBlockLevel0Distance` | object LOD rule: level 8 hands over to level 4 (default 60,000, `Ultra.ini`); does not affect terrain |
+//! | `[TerrainManager]` | `fBlockLevel1Distance` | object LOD rule: level 16 hands over to level 8 (default 90,000, `Ultra.ini`); does not affect terrain |
+//! | `[TerrainManager]` | `fTreeLoadDistance` | parsed and kept for tree LOD (default 75,000, `Ultra.ini`); changes nothing on screen until tree LOD draws (#736, #901) |
+//! | `[LOD]` | `fLODFadeOutMultObjects`, `fLODFadeOutMultActors`, `fLODFadeOutMultItems` | parsed and kept (defaults 30 / 15 / 10, `Ultra.ini`); changes nothing on screen until LOD fade-out exists (#716) |
+//! | `[Display]` | `fMeshLODLevel1FadeDist`, `fMeshLODLevel2FadeDist` | parsed and kept (defaults 999999, `Ultra.ini`); changes nothing on screen until mesh LOD exists |
+//! | `[General]` | `uLargeRefLODGridSize` | side of the large-reference grid in cells, an odd number (default 11, `Ultra.ini`) |
 //! | `[Grass]` | `iMinGrassSize` | candidate-count spacing |
 //! | `[Grass]` | `iMaxGrassTypesPerTexure` | species cap per texture |
 //! | `[Grass]` | `fTexturePctThreshold` | minimum blended texture weight |
@@ -73,6 +77,17 @@ fn parse_grids(raw: &str) -> Option<i32> {
         .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
         .filter(|grids| *grids >= 1 && grids % 2 == 1 && (grids - 1) / 2 <= MAX_STREAM_RADIUS)
+}
+
+/// The largest `uLargeRefLODGridSize` accepted. The retail presets use 5 to 11; a larger grid
+/// asks for more large-reference rows than the admission bound is sized for.
+const MAX_LARGE_REF_GRID_SIZE: i32 = 31;
+
+/// An odd whole grid side: the large-reference grid is centred on the camera's cell.
+fn parse_large_ref_grid_size(raw: &str) -> Option<i32> {
+    raw.parse::<i32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|size| *size >= 1 && size % 2 == 1 && *size <= MAX_LARGE_REF_GRID_SIZE)
 }
 
 /// A shadow distance the cascade builder accepts.
@@ -156,7 +171,14 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
         ("terrainmanager", "fblocklevel0distance")
         | ("terrainmanager", "fblocklevel1distance")
         | ("terrainmanager", "fblockmaximumdistance")
-        | ("terrainmanager", "fsplitdistancemult") => Some(parse_positive(raw).is_some()),
+        | ("terrainmanager", "fsplitdistancemult")
+        | ("terrainmanager", "ftreeloaddistance")
+        | ("lod", "flodfadeoutmultobjects")
+        | ("lod", "flodfadeoutmultactors")
+        | ("lod", "flodfadeoutmultitems")
+        | ("display", "fmeshlodlevel1fadedist")
+        | ("display", "fmeshlodlevel2fadedist") => Some(parse_positive(raw).is_some()),
+        ("general", "ulargereflodgridsize") => Some(parse_large_ref_grid_size(raw).is_some()),
         ("sky", _) => crate::sun::SUN_KEYS
             .iter()
             .position(|name| name.eq_ignore_ascii_case(key))
@@ -357,6 +379,7 @@ impl SkyrimIni {
             ("fBlockLevel1Distance", &mut lod.block_level1_distance),
             ("fBlockMaximumDistance", &mut lod.block_maximum_distance),
             ("fSplitDistanceMult", &mut lod.split_distance_mult),
+            ("fTreeLoadDistance", &mut lod.tree_load_distance),
         ] {
             let Some(raw) = self.get("TerrainManager", key) else {
                 continue;
@@ -367,6 +390,54 @@ impl SkyrimIni {
                     config.settings_overrides.push(format!("ini:{key}"));
                 }
                 None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
+            }
+        }
+        let fade = &mut config.lod_fade;
+        for (section, key, setting) in [
+            (
+                "LOD",
+                "fLODFadeOutMultObjects",
+                &mut fade.fade_out_mult_objects,
+            ),
+            (
+                "LOD",
+                "fLODFadeOutMultActors",
+                &mut fade.fade_out_mult_actors,
+            ),
+            ("LOD", "fLODFadeOutMultItems", &mut fade.fade_out_mult_items),
+            (
+                "Display",
+                "fMeshLODLevel1FadeDist",
+                &mut fade.mesh_lod_level1_fade_distance,
+            ),
+            (
+                "Display",
+                "fMeshLODLevel2FadeDist",
+                &mut fade.mesh_lod_level2_fade_distance,
+            ),
+        ] {
+            let Some(raw) = self.get(section, key) else {
+                continue;
+            };
+            match parse_positive(raw) {
+                Some(value) => {
+                    *setting = value;
+                    config.settings_overrides.push(format!("ini:{key}"));
+                }
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
+            }
+        }
+        if let Some(raw) = self.get("General", "uLargeRefLODGridSize") {
+            match parse_large_ref_grid_size(raw) {
+                Some(size) => {
+                    config.large_ref_grid_size = size;
+                    config
+                        .settings_overrides
+                        .push("ini:uLargeRefLODGridSize".into());
+                }
+                None => eprintln!(
+                    "warning: ignoring uLargeRefLODGridSize={raw:?}; expected an odd whole number from 1 to {MAX_LARGE_REF_GRID_SIZE}"
+                ),
             }
         }
         self.apply_grass(config);
@@ -594,6 +665,47 @@ mod tests {
             LodTier::ALL.map(|tier| lod.reach_cells(tier)),
             [20, 39, 146]
         );
+    }
+
+    /// #949: an INI value replaces each Ultra default, and an unusable value leaves it alone.
+    #[test]
+    fn ini_overrides_each_lod_and_view_distance_default() {
+        let config = apply(
+            "[TerrainManager]\nfBlockLevel0Distance=35000\nfBlockLevel1Distance=70000\n\
+             fTreeLoadDistance=12500\n[LOD]\nfLODFadeOutMultObjects=5\nfLODFadeOutMultActors=6\n\
+             fLODFadeOutMultItems=3\n[Display]\nfMeshLODLevel1FadeDist=4000\n\
+             fMeshLODLevel2FadeDist=1600\n[General]\nuLargeRefLODGridSize=9\n",
+        );
+        assert_eq!(config.terrain_lod.block_level0_distance, 35_000.0);
+        assert_eq!(config.terrain_lod.block_level1_distance, 70_000.0);
+        assert_eq!(config.terrain_lod.tree_load_distance, 12_500.0);
+        assert_eq!(config.lod_fade.fade_out_mult_objects, 5.0);
+        assert_eq!(config.lod_fade.fade_out_mult_actors, 6.0);
+        assert_eq!(config.lod_fade.fade_out_mult_items, 3.0);
+        assert_eq!(config.lod_fade.mesh_lod_level1_fade_distance, 4_000.0);
+        assert_eq!(config.lod_fade.mesh_lod_level2_fade_distance, 1_600.0);
+        assert_eq!(config.large_ref_grid_size, 9);
+        assert_eq!(config.large_ref_grid_radius(), 4);
+
+        let defaults = EngineConfig::default();
+        for text in [
+            "[TerrainManager]\nfTreeLoadDistance=0\n",
+            "[LOD]\nfLODFadeOutMultObjects=-1\n",
+            "[Display]\nfMeshLODLevel1FadeDist=nan\n",
+            "[General]\nuLargeRefLODGridSize=10\n",
+            "[General]\nuLargeRefLODGridSize=0\n",
+            "[General]\nuLargeRefLODGridSize=33\n",
+            // Keys outside their section change nothing.
+            "[Display]\nfLODFadeOutMultObjects=5\n",
+        ] {
+            let config = apply(text);
+            assert_eq!(config.terrain_lod, defaults.terrain_lod, "{text}");
+            assert_eq!(config.lod_fade, defaults.lod_fade, "{text}");
+            assert_eq!(
+                config.large_ref_grid_size, defaults.large_ref_grid_size,
+                "{text}"
+            );
+        }
     }
 
     #[test]

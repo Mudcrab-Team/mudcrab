@@ -1471,7 +1471,10 @@ fn collect_cells(
                     config.lights,
                     config.interactive_world_physics(),
                     requests::enabled(&config),
-                    large_references::window_enabled(config.stream_radius),
+                    large_references::window_enabled(
+                        config.stream_radius,
+                        config.large_ref_grid_radius(),
+                    ),
                     payload,
                     terrain,
                     merged,

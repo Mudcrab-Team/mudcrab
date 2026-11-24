@@ -32,10 +32,11 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 ///
 /// What each key does today: `fSplitDistanceMult` and `fBlockMaximumDistance` drive terrain (the
 /// split rule, and the outer reach of tier 16 as an engineering guard, see
-/// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` are parsed and kept
-/// for the object LOD rule.
+/// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` drive the object
+/// LOD rule ([`Self::object_tier`]). `fTreeLoadDistance` is parsed and kept until tree LOD draws
+/// (#736, #901).
 ///
-/// `--ini` reads these from a `SkyrimPrefs.ini`.
+/// The defaults are the Ultra preset (#949). `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
     /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4.
@@ -48,19 +49,91 @@ pub struct TerrainLodDistances {
     pub block_maximum_distance: f32,
     /// `fSplitDistanceMult`: the terrain split multiplier (RF-LOD-003).
     pub split_distance_mult: f32,
+    /// `fTreeLoadDistance`: tree LOD (`.btt`) loads within this distance. No consumer until tree
+    /// LOD draws (#736, #901).
+    pub tree_load_distance: f32,
 }
 
-impl Default for TerrainLodDistances {
-    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults (High preset, RF-LOD-002).
-    fn default() -> Self {
+impl TerrainLodDistances {
+    /// `[TerrainManager] fBlockLevel0Distance` in `Ultra.ini` line 39 (#949).
+    pub const ULTRA_BLOCK_LEVEL0_DISTANCE: f32 = 60_000.0;
+    /// `[TerrainManager] fBlockLevel1Distance` in `Ultra.ini` line 40 (#949).
+    pub const ULTRA_BLOCK_LEVEL1_DISTANCE: f32 = 90_000.0;
+    /// `[TerrainManager] fBlockMaximumDistance` in `Ultra.ini` line 41 (#949).
+    pub const ULTRA_BLOCK_MAXIMUM_DISTANCE: f32 = 250_000.0;
+    /// `[TerrainManager] fSplitDistanceMult` in `Ultra.ini` line 42 (#949).
+    pub const ULTRA_SPLIT_DISTANCE_MULT: f32 = 1.5;
+    /// `[TerrainManager] fTreeLoadDistance` in `Ultra.ini` line 38 (#949).
+    pub const ULTRA_TREE_LOAD_DISTANCE: f32 = 75_000.0;
+}
+
+#[cfg(test)]
+impl TerrainLodDistances {
+    /// The High preset's `[TerrainManager]` values, the default before #949. Tests that pin the
+    /// rule at 35,000 / 70,000 / 250,000 use it so they do not move with the default preset.
+    pub(crate) fn high_preset() -> Self {
         Self {
             block_level0_distance: 35_000.0,
             block_level1_distance: 70_000.0,
             block_maximum_distance: 250_000.0,
             split_distance_mult: 1.5,
+            tree_load_distance: 75_000.0,
         }
     }
 }
+
+impl Default for TerrainLodDistances {
+    /// The Ultra preset's `[TerrainManager]` values, from `Ultra.ini` (#949). The High preset
+    /// (35,000 / 70,000 / 250,000 / 1.5 / 75,000) was the previous default (RF-LOD-002).
+    fn default() -> Self {
+        Self {
+            block_level0_distance: Self::ULTRA_BLOCK_LEVEL0_DISTANCE,
+            block_level1_distance: Self::ULTRA_BLOCK_LEVEL1_DISTANCE,
+            block_maximum_distance: Self::ULTRA_BLOCK_MAXIMUM_DISTANCE,
+            split_distance_mult: Self::ULTRA_SPLIT_DISTANCE_MULT,
+            tree_load_distance: Self::ULTRA_TREE_LOAD_DISTANCE,
+        }
+    }
+}
+
+/// Skyrim's LOD fade settings that have no consumer yet: object, actor and item fade-out
+/// multipliers (`[LOD]`) and the mesh LOD fade distances (`[Display]`).
+///
+/// The defaults are the Ultra preset (#949), read from `Ultra.ini`. Nothing reads these values
+/// until object LOD fade (#716) and mesh LOD (no issue yet) exist; the engine parses and keeps them so
+/// `--ini` can override them and so a later change starts from the cited default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LodFadeSettings {
+    /// `[LOD] fLODFadeOutMultObjects`.
+    pub fade_out_mult_objects: f32,
+    /// `[LOD] fLODFadeOutMultActors`.
+    pub fade_out_mult_actors: f32,
+    /// `[LOD] fLODFadeOutMultItems`.
+    pub fade_out_mult_items: f32,
+    /// `[Display] fMeshLODLevel1FadeDist`.
+    pub mesh_lod_level1_fade_distance: f32,
+    /// `[Display] fMeshLODLevel2FadeDist`.
+    pub mesh_lod_level2_fade_distance: f32,
+}
+
+impl Default for LodFadeSettings {
+    /// `Ultra.ini` `[LOD]` lines 32-34 and `[Display]` lines 17-18 (#949). The compiled defaults
+    /// are 5 / 6 / 3 and 9999999 / 9999999 (community dump, unverified for 1.7.104).
+    fn default() -> Self {
+        Self {
+            fade_out_mult_objects: 30.0,
+            fade_out_mult_actors: 15.0,
+            fade_out_mult_items: 10.0,
+            mesh_lod_level1_fade_distance: 999_999.0,
+            mesh_lod_level2_fade_distance: 999_999.0,
+        }
+    }
+}
+
+/// `[General] uLargeRefLODGridSize` in `Ultra.ini` line 2 (#949): the side, in cells, of the square around
+/// the camera whose large references promote to full models. The compiled default is 9 (community
+/// dump, unverified for 1.7.104); the presets use 5, 7, 9 and 11.
+pub const ULTRA_LARGE_REF_LOD_GRID_SIZE: i32 = 11;
 
 /// The block levels the terrain rule tests, coarse to fine, with the tier that draws when a block
 /// of that level is not split. Level 32 is absent: no level-32 tier is compiled.
@@ -286,6 +359,10 @@ pub struct EngineConfig {
     /// Explicit `[Sky]` overrides in `sun::SUN_KEYS` order; absent keys retain winning GMST values.
     pub sun_settings_overrides: [Option<f32>; 5],
     pub terrain_lod: TerrainLodDistances,
+    /// Object, actor and item LOD fade-out multipliers and the mesh LOD fade distances (#949).
+    pub lod_fade: LodFadeSettings,
+    /// `[General] uLargeRefLODGridSize`: an odd side in cells (#949).
+    pub large_ref_grid_size: i32,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
     /// Cells outside the unload radius a frame may despawn. `0` despawns every one at once, which
@@ -578,6 +655,8 @@ impl Default for EngineConfig {
             timescale: 20.0,
             sun_settings_overrides: [None; 5],
             terrain_lod: TerrainLodDistances::default(),
+            lod_fade: LodFadeSettings::default(),
+            large_ref_grid_size: ULTRA_LARGE_REF_LOD_GRID_SIZE,
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
             max_cell_unloads_per_frame: 2,
@@ -981,6 +1060,12 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    /// Cells from the camera's cell to the edge of the large-reference grid:
+    /// `uLargeRefLODGridSize` is the side, so the radius is half of it, rounded down.
+    pub fn large_ref_grid_radius(&self) -> i32 {
+        self.large_ref_grid_size.max(1) / 2
+    }
+
     /// The horizontal field of view this run's camera starts with, in degrees. Retail uses the
     /// first-person value in the first-person state and the world value otherwise
     /// (`0x1408fb1e0`, [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md)).
@@ -5632,7 +5717,7 @@ mod tests {
     /// the cells of its level-8 block.
     #[test]
     fn terrain_tier_walks_the_retail_block_tree() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
         // Block [0, 8) holds the camera.
         assert_eq!(tier(7), Some(LodTier::Tier4));
@@ -5651,7 +5736,7 @@ mod tests {
     /// 70,000 units and are dropped at 250,000. Camera cell 0, origin 0, cells to the east.
     #[test]
     fn object_tier_follows_the_retail_object_distances() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         let tier = |x: i32, nama: f32| {
             high.object_tier(
                 DVec2::splat(f64::from(CELL_SIZE) / 2.0),
@@ -5680,9 +5765,57 @@ mod tests {
         assert_eq!(tier(70, 0.25), None);
     }
 
+    /// #949: with no INI the LOD and view-distance defaults are the cited Ultra values.
+    /// Sources: `Ultra.ini` `[TerrainManager]` lines 38-42, `[LOD]` lines 32-34, `[Display]`
+    /// lines 17-18 and `[General]` line 2.
+    #[test]
+    fn lod_defaults_are_the_ultra_values_without_an_ini() {
+        let config = EngineConfig::default();
+        let lod = config.terrain_lod;
+        assert_eq!(lod.block_level0_distance, 60_000.0, "fBlockLevel0Distance");
+        assert_eq!(lod.block_level1_distance, 90_000.0, "fBlockLevel1Distance");
+        assert_eq!(
+            lod.block_maximum_distance, 250_000.0,
+            "fBlockMaximumDistance"
+        );
+        assert_eq!(lod.split_distance_mult, 1.5, "fSplitDistanceMult");
+        assert_eq!(lod.tree_load_distance, 75_000.0, "fTreeLoadDistance");
+        let fade = config.lod_fade;
+        assert_eq!(fade.fade_out_mult_objects, 30.0, "fLODFadeOutMultObjects");
+        assert_eq!(fade.fade_out_mult_actors, 15.0, "fLODFadeOutMultActors");
+        assert_eq!(fade.fade_out_mult_items, 10.0, "fLODFadeOutMultItems");
+        assert_eq!(
+            fade.mesh_lod_level1_fade_distance, 999_999.0,
+            "fMeshLODLevel1FadeDist"
+        );
+        assert_eq!(
+            fade.mesh_lod_level2_fade_distance, 999_999.0,
+            "fMeshLODLevel2FadeDist"
+        );
+        assert_eq!(config.large_ref_grid_size, 11, "uLargeRefLODGridSize");
+        assert_eq!(config.large_ref_grid_radius(), 5);
+        assert!(config.settings_overrides.is_empty());
+    }
+
+    /// The Ultra object distances move the object LOD hand-over: the level-8 block that starts
+    /// at cell 8 is 42,768 units from this camera, so it is tier 4 under Ultra (60,000) and
+    /// tier 8 under High (35,000).
+    #[test]
+    fn ultra_object_distances_hand_over_later_than_high() {
+        let camera = DVec2::new(-10_000.0, f64::from(CELL_SIZE) / 2.0);
+        let cell = IVec2::new(8, 0).as_dvec2();
+        let tier =
+            |distances: &TerrainLodDistances| distances.object_tier(camera, cell, IVec2::ZERO, 1.0);
+        assert_eq!(tier(&TerrainLodDistances::default()), Some(LodTier::Tier4));
+        assert_eq!(
+            tier(&TerrainLodDistances::high_preset()),
+            Some(LodTier::Tier8)
+        );
+    }
+
     #[test]
     fn object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         for (cell, threshold, near, at) in [
             (16, 35_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
             (32, 70_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
@@ -5707,11 +5840,39 @@ mod tests {
         }
     }
 
+    /// The same strict crossings at the Ultra defaults (#949): 60,000, 90,000 and 250,000.
+    #[test]
+    fn ultra_object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
+        let ultra = TerrainLodDistances::default();
+        for (cell, threshold, near, at) in [
+            (16, 60_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
+            (32, 90_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
+            (64, 250_000.0, Some(LodTier::Tier16), None),
+        ] {
+            let x = f64::from(cell) * f64::from(CELL_SIZE) - threshold;
+            let tier = |x| {
+                ultra.object_tier(
+                    DVec2::new(x, 0.0),
+                    IVec2::new(cell, 0).as_dvec2(),
+                    IVec2::ZERO,
+                    1.0,
+                )
+            };
+            assert_eq!(
+                (x / f64::from(CELL_SIZE)).floor(),
+                ((x + 1.0) / f64::from(CELL_SIZE)).floor()
+            );
+            assert_eq!(tier(x + 1.0), near);
+            assert_eq!(tier(x), at);
+            assert_eq!(tier(x - 1.0), at);
+        }
+    }
+
     /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
     /// `nama` never scales it.
     #[test]
     fn object_tier_applies_the_outer_cut_to_each_visited_block() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         // NAMA 16 scales the split distances by 4: level 16 splits under 280,000 and level 8 under
         // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
         // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
@@ -5770,7 +5931,7 @@ mod tests {
     /// block distances times `fSplitDistanceMult`; retail splits at the block half-diagonal.
     #[test]
     fn terrain_tier_boundaries_sit_at_the_split_distances() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         // Camera cell 0; the level-8 block [8, 16) is split while 7.5 cells (30,720) < 34,756 and
         // the block [16, 24) is not (15.5 cells = 63,488 > 34,756). So, east of the camera and with the camera cell at the start of its block, tier 4 stops at cell 15.
         let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
