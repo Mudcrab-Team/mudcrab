@@ -2685,7 +2685,7 @@ fn setup_world(
         Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
-        crate::room_culling::RoomCullingNear::SKYRIM,
+        crate::room_culling::RoomCullingNear::new(config.near_distance),
         IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
@@ -5309,6 +5309,14 @@ mod tests {
                 panic!("perspective camera")
             };
             assert_eq!(projection.near, near);
+            let mut lookups = app
+                .world_mut()
+                .query_filtered::<&crate::room_culling::RoomCullingNear, With<StreamingCamera>>();
+            assert_eq!(
+                lookups.single(app.world()).unwrap().distance(),
+                near,
+                "the room lookup follows the render near plane"
+            );
         }
     }
 

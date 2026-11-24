@@ -267,12 +267,28 @@ pub(crate) fn mark_reference_exemptions(
 pub struct RoomCullingView;
 
 /// Distance along the camera axis used only to locate its starting rooms.
-/// The Skyrim world camera uses the 15 Creation units measured in Treva's Watch.
+/// The Skyrim world camera uses the 15 Creation units measured in Treva's Watch. The world camera
+/// takes its distance from the same setting as its render near plane
+/// ([`crate::config::EngineConfig::near_distance`]), so the two cannot differ.
 #[derive(Component, Clone, Copy)]
 pub struct RoomCullingNear(f32);
 
 impl RoomCullingNear {
-    pub(crate) const SKYRIM: Self = Self(15.0);
+    /// The retail distance, 15 Creation units ([`crate::config::RETAIL_NEAR_DISTANCE`]). Only the
+    /// retail-capture tests ask for it; the world camera uses [`Self::new`].
+    #[cfg(test)]
+    pub(crate) const SKYRIM: Self = Self(crate::config::RETAIL_NEAR_DISTANCE);
+
+    /// A lookup distance that follows the camera's near plane.
+    pub(crate) const fn new(distance: f32) -> Self {
+        Self(distance)
+    }
+
+    /// The distance, in Creation units.
+    #[cfg(test)]
+    pub(crate) const fn distance(self) -> f32 {
+        self.0
+    }
 
     fn world_point(self, view: &GlobalTransform) -> Vec3 {
         view.translation() + view.forward() * self.0

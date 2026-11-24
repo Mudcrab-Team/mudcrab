@@ -15,9 +15,9 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
-//! | `[Display]` | `fDefaultWorldFOV` | horizontal field of view of every camera but the first-person one, in degrees (retail 80); converted to Bevy's vertical angle at the window's aspect ratio |
+//! | `[Display]` | `fDefaultWorldFOV` | horizontal field of view of every camera but the first-person one, in degrees (retail 80; accepted 30 to 140, a Mudcrab-only bound); converted to Bevy's vertical angle at the window's aspect ratio |
 //! | `[Display]` | `fDefault1stPersonFOV` | horizontal field of view of the first-person (walking) camera, in degrees (retail 80) |
-//! | `[Display]` | `fNearDistance` | camera near plane, in Creation units (retail 15) |
+//! | `[Display]` | `fNearDistance` | camera near plane and room-lookup distance, in Creation units (retail 15 is observed; the key name is from the community default dump, unverified; accepted above 0 up to 1000, a Mudcrab-only bound) |
 //! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
@@ -87,6 +87,31 @@ fn parse_fov(raw: &str) -> Option<f32> {
         .filter(|value| value.is_finite() && (low..=high).contains(value))
 }
 
+/// A near-plane distance the engine accepts: above zero and at most
+/// [`crate::config::MAX_NEAR_DISTANCE`] (a Mudcrab-only sanity bound, to keep the frustum valid).
+fn parse_near_distance(raw: &str) -> Option<f32> {
+    raw.parse::<f32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|value| {
+            value.is_finite() && *value > 0.0 && *value <= crate::config::MAX_NEAR_DISTANCE
+        })
+}
+
+/// What a key accepts, for the warning about a value it rejects.
+fn expected_range(section: &str, key: &str) -> Option<String> {
+    match (section, key) {
+        ("display", "fdefaultworldfov") | ("display", "fdefault1stpersonfov") => {
+            let (low, high) = crate::config::FOV_RANGE_DEGREES;
+            Some(format!("degrees from {low} to {high}"))
+        }
+        ("display", "fneardistance") => Some(format!(
+            "a distance above 0 and at most {}",
+            crate::config::MAX_NEAR_DISTANCE
+        )),
+        _ => None,
+    }
+}
+
 /// A finite number above zero.
 fn parse_positive(raw: &str) -> Option<f32> {
     raw.parse::<f32>()
@@ -107,7 +132,7 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
         ("display", "fdefaultworldfov") | ("display", "fdefault1stpersonfov") => {
             Some(parse_fov(raw).is_some())
         }
-        ("display", "fneardistance") => Some(parse_positive(raw).is_some()),
+        ("display", "fneardistance") => Some(parse_near_distance(raw).is_some()),
         ("terrainmanager", "fblocklevel0distance")
         | ("terrainmanager", "fblocklevel1distance")
         | ("terrainmanager", "fblockmaximumdistance")
@@ -173,10 +198,12 @@ impl SkyrimIni {
                 } else {
                     "leaving the setting unchanged"
                 };
+                let expected = expected_range(&slot.0, &slot.1)
+                    .map_or_else(String::new, |range| format!(" (expected {range})"));
                 eprintln!(
-                    "warning: {source}:{}: ignoring {}={value:?}; {outcome}",
+                    "warning: {source}:{}: ignoring {}={value:?}{expected}; {outcome}",
                     index + 1,
-                    slot.1
+                    key.trim()
                 );
                 continue;
             }
@@ -247,11 +274,12 @@ impl SkyrimIni {
             }
         }
         if let Some(raw) = self.get("Display", "fNearDistance") {
-            match parse_positive(raw) {
+            match parse_near_distance(raw) {
                 Some(value) => config.near_distance = value,
-                None => {
-                    eprintln!("warning: ignoring fNearDistance={raw:?}; expected a positive number")
-                }
+                None => eprintln!(
+                    "warning: ignoring fNearDistance={raw:?}; expected a distance above 0 and at most {}",
+                    crate::config::MAX_NEAR_DISTANCE
+                ),
             }
         }
         if let Some(raw) = self.get("Display", "bDrawLandShadows") {
@@ -402,6 +430,19 @@ mod tests {
         assert_eq!(config.world_fov_degrees, 80.0);
         assert_eq!(config.first_person_fov_degrees, 80.0);
         assert_eq!(config.near_distance, 15.0);
+        // A near plane past the sanity bound is rejected, and the bound itself is accepted.
+        assert_eq!(
+            apply("[Display]\nfNearDistance=1000.5\n").near_distance,
+            15.0
+        );
+        assert_eq!(
+            apply("[Display]\nfNearDistance=1000\n").near_distance,
+            1000.0
+        );
+        assert!(expected_range("display", "fneardistance").is_some_and(|r| r.contains("1000")));
+        assert!(
+            expected_range("display", "fdefaultworldfov").is_some_and(|r| r.contains("30 to 140"))
+        );
         let mut ini = SkyrimIni::default();
         ini.merge_str("[Display]\nfDefaultWorldFOV=90\n");
         ini.merge_str("[Display]\nfDefaultWorldFOV=0\n");

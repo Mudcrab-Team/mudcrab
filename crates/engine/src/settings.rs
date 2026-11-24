@@ -995,6 +995,21 @@ pub(crate) fn prepare_settings_at(
                                     && raw.get("occlusion_culling").is_none()
                             });
                         settings.retain_explicit_launch_values(config);
+                        if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                            && raw.get("fov_degrees").is_some()
+                            && raw.get("horizontal_fov_degrees").is_none()
+                        {
+                            // The old key held a vertical angle (#904). It cannot be read as a
+                            // horizontal one, so the retail default applies until the next Save.
+                            let default = settings.horizontal_fov_degrees;
+                            warn!(
+                                default,
+                                "saved vertical field of view ignored; the horizontal default applies"
+                            );
+                            file.status = format!(
+                                "The saved vertical field of view was replaced by the horizontal default of {default} degrees."
+                            );
+                        }
                         if settings.color_grade
                             == crate::color_pipeline::SceneGradeMode::RecordSrgb.index()
                             && config.image_space_selection().ok().flatten().is_none()
@@ -3707,8 +3722,23 @@ mod tests {
         let path = directory.path().join("settings.json");
         std::fs::write(&path, br#"{"version":1,"fov_degrees":45.0}"#).unwrap();
         let mut config = EngineConfig::default();
-        let (settings, _) = prepare_settings_at(&mut config, Some(path));
+        let (settings, file) = prepare_settings_at(&mut config, Some(path));
         assert_eq!(settings.horizontal_fov_degrees, 80.0);
+        assert_eq!(
+            file.status,
+            "The saved vertical field of view was replaced by the horizontal default of 80 degrees."
+        );
+        // A file that already holds the new key says nothing about the old one.
+        let path = directory.path().join("current.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"fov_degrees":45.0,"horizontal_fov_degrees":90.0}"#,
+        )
+        .unwrap();
+        let mut config = EngineConfig::default();
+        let (settings, file) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(settings.horizontal_fov_degrees, 90.0);
+        assert!(!file.status.contains("vertical"));
     }
 
     /// An INI field of view owns the menu value; a saved value does not override it.
