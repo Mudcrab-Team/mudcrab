@@ -1289,7 +1289,7 @@ pub fn vertical_fov_radians(horizontal_degrees: f32, aspect: f32) -> f32 {
 
 /// The window shape retail's field of view keys are defined at. Retail holds the vertical angle
 /// and shows more at the sides of a wider window (Hor+): FOV 80 is 80 degrees across a 16:9
-/// window, and a 4:3 window of the same height shows the scene at the same size
+/// window, and 4:3 and 21:9 windows show the scene at the size the held vertical angle gives
 /// (`docs/research/retail/q7a-camera-states.md`, "Window shape").
 pub const RETAIL_FOV_REFERENCE_ASPECT: f32 = 16.0 / 9.0;
 
