@@ -1877,16 +1877,41 @@ mod tests {
             .unwrap();
         validate_object_glb(&chunk.glb).unwrap();
 
-        let root_matrix =
-            "\"matrix\":[1.0,0.0,0.0,0.0,0.0,0.0,-1.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,0.0,1.0]";
-        let identity =
-            "\"matrix\":[1.0,0.0,0.0,0.0,0.0,1.0, 0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]";
-        let sideways = patch(&chunk.glb, root_matrix, identity);
+        let expected: Vec<f64> = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            .into_iter()
+            .flat_map(|axis| {
+                let [x, y, z] = shared::coordinates::creation_to_runtime_vector(axis);
+                [f64::from(x), f64::from(y), f64::from(z), 0.0]
+            })
+            .chain([0.0, 0.0, 0.0, 1.0])
+            .collect();
+        let mut document = json_of(&chunk.glb);
+        assert_eq!(document["nodes"][0]["matrix"], serde_json::json!(expected));
+
+        document["nodes"][0]["matrix"] = serde_json::json!([
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]);
+        let sideways = assemble_glb(&document, binary(&chunk.glb)).unwrap();
         let error = validate_object_glb(&sideways).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("Creation-to-glTF axis conversion")
+        );
+    }
+
+    #[test]
+    fn object_glb_rejects_a_transform_on_a_mesh_node() {
+        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
+            .unwrap();
+        let mut document = json_of(&chunk.glb);
+        document["nodes"][2]["translation"] = serde_json::json!([10.0, 0.0, 0.0]);
+        let translated = assemble_glb(&document, binary(&chunk.glb)).unwrap();
+        let error = validate_object_glb(&translated).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("transforms below the scene root")
         );
     }
 
