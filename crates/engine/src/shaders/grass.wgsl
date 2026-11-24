@@ -10,7 +10,7 @@
 @group(0) @binding(0) var<uniform> view: View;
 #endif
 #ifdef DISTANCE_FOG
-#import bevy_pbr::{mesh_view_bindings::fog, pbr_functions::apply_fog}
+#import bevy_pbr::{mesh_view_bindings::fog, mesh_view_types::FOG_MODE_POWER_RAMP_BLENDED, pbr_functions::apply_fog}
 #endif
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
@@ -281,6 +281,11 @@ fn mapped_normal(input:Varyings) -> vec3<f32> {
 // Lighting already includes exposure; Bevy applies fog in this same HDR space.
 fn grass_fog(input_color:vec4<f32>, world_position:vec3<f32>, frag_coord:vec2<f32>) -> vec4<f32> {
 #ifdef DISTANCE_FOG
+    // Grass is drawn in the alpha-mask pass, so the `skyrim` profile fogs it in the full-screen
+    // pass after the opaque stage (`retail_fog.rs`, #891) and not here.
+    if fog.mode == FOG_MODE_POWER_RAMP_BLENDED {
+        return input_color;
+    }
     return apply_fog(fog,input_color,world_position,view.world_position,frag_coord);
 #else
     return input_color;

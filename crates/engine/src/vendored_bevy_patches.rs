@@ -213,6 +213,38 @@ fn check_patches(pbr: &Path, render: &Path) {
             .contains("min(exp2(log2(s) * power), far_color.a)"),
         "the power ramp fog shader no longer computes min(s^power, max)"
     );
+
+    // The blended-only mode of the `skyrim` profile (#891): the full-screen opaque fog
+    // (`retail_fog.rs`) fogs the opaque scene, so Bevy's shader fog must skip those draws and keep
+    // fogging the draws in the blended and transmissive passes.
+    for (file, needed) in [
+        ("src/fog.rs", "PowerRampBlended {"),
+        ("src/render/fog.rs", "GPU_FOG_MODE_POWER_RAMP_BLENDED"),
+        (
+            "src/render/mesh_view_types.wgsl",
+            "FOG_MODE_POWER_RAMP_BLENDED",
+        ),
+        (
+            "src/render/pbr_functions.wgsl",
+            "fn fogged_by_opaque_composite(",
+        ),
+    ] {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(needed),
+            "{file} lost the blended-only power ramp fog (`{needed}` or its `{MARKER_POWER_RAMP}` marker)"
+        );
+    }
+    let functions = code(&required_source(pbr, "src/render/pbr_functions.wgsl"));
+    assert!(
+        functions.contains("view_bindings::fog.mode == mesh_view_types::FOG_MODE_POWER_RAMP_BLENDED && fogged_by_opaque_composite(pbr_input.material)"),
+        "main_pass_post_lighting_processing no longer skips the shader fog of opaque draws \
+         under the blended-only mode"
+    );
+    assert!(
+        functions.contains("return opaque_pass && material.specular_transmission == 0.0;"),
+        "fogged_by_opaque_composite no longer keeps transmissive draws (water) fogged in the shader"
+    );
 }
 
 #[test]

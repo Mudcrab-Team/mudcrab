@@ -376,24 +376,42 @@ pub fn fog_for(palette: &SkyPalette) -> Option<DistanceFog> {
     exterior_fog(palette, 1.0, FogLook::Mudcrab)
 }
 
-/// [`fog_for`] with the player's fog-density multiplier and the look. The density scales divide
-/// the distances, so a larger scale draws a denser fog. The floor keeps a zero multiplier finite.
-fn exterior_fog(palette: &SkyPalette, user_multiplier: f32, look: FogLook) -> Option<DistanceFog> {
+/// The weather's fog fields for one frame, scaled by the density scales, in the fog colours. The
+/// density scales divide the distances, so a larger scale draws a denser fog; the floor keeps a
+/// zero multiplier finite. `None` when the palette has no ramp (the record omitted a fog field).
+/// The result may still be a ramp that draws nothing; see `RetailFogParams::is_drawn`.
+///
+/// The far colour is the clear colour - the Fog Far colour the dome's transparent band lets
+/// through - so fogged terrain runs into the band without a seam.
+fn exterior_params(
+    palette: &SkyPalette,
+    user_multiplier: f32,
+) -> Option<crate::retail_fog::RetailFogParams> {
     let ramp = palette.fog_ramp?;
     let scale = (palette.fog_density_scale * user_multiplier).max(1.0e-3);
-    let (near, far) = (ramp.near / scale, ramp.far / scale);
-    let drawn = near.is_finite()
-        && far.is_finite()
-        && far > near
-        && ramp.max > 0.0
-        && ramp.power.is_finite()
-        && ramp.power > 0.0;
-    if !drawn {
-        return None;
-    }
-    // The far colour is the clear colour - the Fog Far colour the dome's transparent band lets
-    // through - so fogged terrain runs into the band without a seam. The cap is the colour's alpha.
-    let cap = ramp.max.clamp(0.0, 1.0);
+    let linear = |colour: Color| {
+        let linear = colour.to_linear();
+        [linear.red, linear.green, linear.blue]
+    };
+    let params = crate::retail_fog::RetailFogParams {
+        near: ramp.near / scale,
+        far: ramp.far / scale,
+        power: ramp.power,
+        max: ramp.max.clamp(0.0, 1.0),
+        near_rgb: linear(palette.fog_near_colour()),
+        far_rgb: linear(palette.clear_colour(CameraSpace::Exterior)),
+    };
+    Some(params)
+}
+
+/// [`fog_for`] with the player's fog-density multiplier and the look.
+///
+/// Under [`FogLook::Retail`] the falloff is `FogFalloff::PowerRampBlended`: the same ramp, which
+/// Bevy's shaders apply only to draws that are not in the opaque pass (water, effects and other
+/// blended draws). The opaque scene takes its fog from the full-screen pass of [`retail_fog_pass`].
+fn exterior_fog(palette: &SkyPalette, user_multiplier: f32, look: FogLook) -> Option<DistanceFog> {
+    let params = exterior_params(palette, user_multiplier).filter(|params| params.is_drawn())?;
+    // The cap is the colour's alpha.
     let (glow, exponent) = match look {
         FogLook::Mudcrab => (FOG_DIRECTIONAL_LIGHT_COLOR, FOG_DIRECTIONAL_LIGHT_EXPONENT),
         FogLook::Retail => (
@@ -401,17 +419,47 @@ fn exterior_fog(palette: &SkyPalette, user_multiplier: f32, look: FogLook) -> Op
             DistanceFog::default().directional_light_exponent,
         ),
     };
+    let (start, end, power) = (params.near, params.far, params.power);
+    let near_color = palette.fog_near_colour();
     Some(DistanceFog {
-        color: palette.clear_colour(CameraSpace::Exterior).with_alpha(cap),
+        color: palette
+            .clear_colour(CameraSpace::Exterior)
+            .with_alpha(params.max),
         directional_light_color: glow,
         directional_light_exponent: exponent,
-        falloff: FogFalloff::PowerRamp {
-            start: near,
-            end: far,
-            power: ramp.power,
-            near_color: palette.fog_near_colour(),
+        falloff: match look {
+            FogLook::Mudcrab => FogFalloff::PowerRamp {
+                start,
+                end,
+                power,
+                near_color,
+            },
+            FogLook::Retail => FogFalloff::PowerRampBlended {
+                start,
+                end,
+                power,
+                near_color,
+            },
         },
     })
+}
+
+/// The retail fog composite for one palette (`retail_fog.rs`), from the same weather fog fields as
+/// [`exterior_fog`]. `None` for [`FogLook::Mudcrab`], which fogs in its materials, and when the
+/// palette has no ramp because the record omitted a fog field: no composite and no `k` scale, and
+/// nothing invented. A ramp that draws nothing keeps the pass, with `Fc = 0` (retail's fallback).
+fn retail_fog_pass(
+    palette: &SkyPalette,
+    user_multiplier: f32,
+    look: FogLook,
+) -> Option<crate::retail_fog::RetailFogPass> {
+    match look {
+        FogLook::Mudcrab => None,
+        FogLook::Retail => Some(crate::retail_fog::RetailFogPass::new(exterior_params(
+            palette,
+            user_multiplier,
+        )?)),
+    }
 }
 
 /// Marks a camera that gets a sky dome and whose clear colour the sky controls.
@@ -741,6 +789,11 @@ fn sync_water_sky(
 /// cell fog of sky modes 1 and 2 (`InteriorFog`), or no fog when there is none. Under water it
 /// gives neither (RF-WATER-031). The component is written only when the wanted fog differs from
 /// the camera's.
+///
+/// Under the `skyrim` profile the exterior fog is two parts (#891): the camera's `DistanceFog`
+/// holds Bevy's `PowerRampBlended` mode, which fogs the blended draws in their own shaders, and a
+/// [`crate::retail_fog::RetailFogPass`] fogs the opaque scene in one full-screen pass. Under
+/// `mudcrab` the camera has `DistanceFog` with `PowerRamp` for every draw and no pass.
 #[allow(
     clippy::too_many_arguments,
     reason = "a Bevy system: each argument is a resource or query it reads"
@@ -749,13 +802,14 @@ fn apply_fog(
     mut commands: Commands,
     palette: Res<SkyPalette>,
     space: Res<CameraSpace>,
-    cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
+    cameras: crate::retail_fog::FogCameraQuery,
     settings: Option<Res<crate::settings::RenderingSettings>>,
     interior_fog: Option<Res<crate::world::environment::interior::InteriorFog>>,
     underwater: Res<crate::underwater::UnderwaterState>,
     profile: Option<Res<crate::visual_profile::VisualProfile>>,
 ) {
     let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
+    let mut wanted_pass = None;
     let wanted = match (*space, fog_on) {
         // Below the surface retail replaces the view with the water's own fog (RF-WATER-031), which
         // the underwater post-pass draws over the whole frame; the exterior fog would fog it twice.
@@ -770,6 +824,7 @@ fn apply_fog(
             let look = profile
                 .as_deref()
                 .map_or(FogLook::Mudcrab, |profile| FogLook::of(*profile));
+            wanted_pass = retail_fog_pass(&scaled, user_multiplier, look);
             exterior_fog(&scaled, user_multiplier, look)
         }
         // Sky modes 1 and 2 fog an interior with the cell's own fog (RF-LIGHT-CPU-013).
@@ -779,7 +834,15 @@ fn apply_fog(
             .map(|fog| fog.distance_fog()),
         _ => None,
     };
-    for (camera, current) in &cameras {
+    for (camera, current, current_pass) in &cameras {
+        if current_pass != wanted_pass.as_ref() {
+            match wanted_pass {
+                Some(pass) => commands.entity(camera).insert(pass),
+                None => commands
+                    .entity(camera)
+                    .remove::<crate::retail_fog::RetailFogPass>(),
+            };
+        }
         let up_to_date = match (&wanted, current) {
             (Some(fog), Some(current)) => same_fog(current, fog),
             (None, None) => true,
@@ -822,6 +885,20 @@ fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
                 near_color: current_near,
             },
             FogFalloff::PowerRamp {
+                start: wanted_start,
+                end: wanted_end,
+                power: wanted_power,
+                near_color: wanted_near,
+            },
+        )
+        | (
+            FogFalloff::PowerRampBlended {
+                start: current_start,
+                end: current_end,
+                power: current_power,
+                near_color: current_near,
+            },
+            FogFalloff::PowerRampBlended {
                 start: wanted_start,
                 end: wanted_end,
                 power: wanted_power,
@@ -1613,8 +1690,10 @@ mod tests {
         matches!(
             (&a.falloff, &b.falloff),
             (
-                FogFalloff::PowerRamp { start: a0, end: a1, power: a2, .. },
-                FogFalloff::PowerRamp { start: b0, end: b1, power: b2, .. },
+                FogFalloff::PowerRamp { start: a0, end: a1, power: a2, .. }
+                    | FogFalloff::PowerRampBlended { start: a0, end: a1, power: a2, .. },
+                FogFalloff::PowerRamp { start: b0, end: b1, power: b2, .. }
+                    | FogFalloff::PowerRampBlended { start: b0, end: b1, power: b2, .. },
             ) if a0 == b0 && a1 == b1 && a2 == b2
         )
     }
@@ -1729,6 +1808,150 @@ mod tests {
             fog,
             &exterior_fog(&SkyPalette::SKYRIM_CLEAR_DAY, 1.0, FogLook::Retail).unwrap()
         ));
+    }
+
+    fn skyrim_fog_app(profile: crate::visual_profile::VisualProfile) -> (App, Entity) {
+        let mut app = sky_app();
+        app.insert_resource(profile);
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default(), FogCamera))
+            .id();
+        (app, camera)
+    }
+
+    /// Profile gating (#891): only `skyrim` gets the full-screen composite, and its camera fog
+    /// is the mode that skips the opaque draws the composite covers. `mudcrab` keeps Bevy's fog
+    /// for every draw, with no composite.
+    #[test]
+    fn only_the_skyrim_profile_gets_the_opaque_fog_composite() {
+        use crate::retail_fog::RetailFogPass;
+        use crate::visual_profile::VisualProfile;
+        let (mut app, camera) = skyrim_fog_app(VisualProfile::Mudcrab);
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        assert!(matches!(
+            app.world().get::<DistanceFog>(camera).unwrap().falloff,
+            FogFalloff::PowerRamp { .. }
+        ));
+
+        let (mut app, camera) = skyrim_fog_app(VisualProfile::Skyrim);
+        app.update();
+        assert!(matches!(
+            app.world().get::<DistanceFog>(camera).unwrap().falloff,
+            FogFalloff::PowerRampBlended { .. }
+        ));
+        let pass = app.world().get::<RetailFogPass>(camera).unwrap();
+        // `SkyrimClear` by day: near 0, far 80,000, power 0.4, max 0.85.
+        assert_eq!((pass.near(), pass.far()), (0.0, 80_000.0));
+        assert!((pass.power() - 0.4).abs() < 1e-6);
+        assert_eq!(pass.max(), 0.85);
+        assert_eq!(
+            pass.output_scale(),
+            crate::output_scale::framebuffer_output_scale(true)
+        );
+
+        // No resource (a fixture without a profile) is the `mudcrab` look.
+        let mut app = sky_app();
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default(), FogCamera))
+            .id();
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+    }
+
+    /// The pass follows the same gates as the camera fog: interiors, the fog setting and water.
+    #[test]
+    fn the_composite_is_removed_inside_with_fog_off_and_under_water() {
+        use crate::retail_fog::RetailFogPass;
+        let (mut app, camera) = skyrim_fog_app(crate::visual_profile::VisualProfile::Skyrim);
+        app.insert_resource(crate::settings::RenderingSettings::default());
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_some());
+
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Interior;
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        // The interior keeps the cell's own fog path, which is not the composite.
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Exterior;
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_some());
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog = false;
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+    }
+
+    /// The pass takes the weather's fields and colours as the palette blends them, the density
+    /// scales divide the distances, and the colours are the near and far fog colours.
+    #[test]
+    fn the_composite_takes_the_weather_fields() {
+        use crate::retail_fog::RetailFogPass;
+        let (mut app, camera) = skyrim_fog_app(crate::visual_profile::VisualProfile::Skyrim);
+        let palette = SkyPalette {
+            fog_ramp: Some(FogRamp {
+                near: 100.0,
+                far: 900.0,
+                power: 0.5,
+                max: 0.6,
+            }),
+            fog_density_scale: 2.0,
+            ..SkyPalette::SKYRIM_CLEAR_DAY
+        };
+        *app.world_mut().resource_mut::<SkyPalette>() = palette;
+        app.update();
+        let pass = app.world().get::<RetailFogPass>(camera).unwrap();
+        assert_eq!((pass.near(), pass.far()), (50.0, 450.0));
+        assert_eq!((pass.power(), pass.max()), (0.5, 0.6));
+        let near = palette.fog_near_colour().to_linear();
+        let far = palette.clear_colour(CameraSpace::Exterior).to_linear();
+        assert_eq!(pass.near_rgb(), [near.red, near.green, near.blue]);
+        assert_eq!(pass.far_rgb(), [far.red, far.green, far.blue]);
+        // It is the same ramp the camera fog holds for the blended draws.
+        let fog = app.world().get::<DistanceFog>(camera).unwrap();
+        assert!(matches!(
+            fog.falloff,
+            FogFalloff::PowerRampBlended { start, end, power, .. }
+                if start == 50.0 && end == 450.0 && power == 0.5
+        ));
+    }
+
+    /// A record that omitted a fog field has no fog property: no composite and no `k` scale, and
+    /// nothing is invented. A record whose ramp draws nothing keeps the composite with `Fc = 0`
+    /// (retail's fallback for far equal to near), so `k` still applies.
+    #[test]
+    fn a_missing_fog_field_makes_no_pass_and_an_empty_ramp_keeps_k() {
+        use crate::retail_fog::RetailFogPass;
+        let (mut app, camera) = skyrim_fog_app(crate::visual_profile::VisualProfile::Skyrim);
+        *app.world_mut().resource_mut::<SkyPalette>() = SkyPalette {
+            fog_ramp: None,
+            ..SkyPalette::SKYRIM_CLEAR_DAY
+        };
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+
+        *app.world_mut().resource_mut::<SkyPalette>() = SkyPalette {
+            fog_ramp: Some(FogRamp {
+                near: 500.0,
+                far: 500.0,
+                power: 1.0,
+                max: 0.85,
+            }),
+            ..SkyPalette::SKYRIM_CLEAR_DAY
+        };
+        app.update();
+        let pass = app.world().get::<RetailFogPass>(camera).unwrap();
+        assert_eq!(pass.max(), 0.0);
+        assert_eq!(
+            pass.output_scale(),
+            crate::output_scale::framebuffer_output_scale(true)
+        );
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
     }
 
     /// A palette with no ramp (a record that omitted a fog field) leaves the camera unfogged.

@@ -101,6 +101,7 @@ struct Fog {
     // For Power Ramp Fog (mudcrab):
     //     be.x = start, be.y = end, be.z = power
     //     bi = near colour (linear RGB)
+    // For Power Ramp Blended Fog (mudcrab): the same allocation as Power Ramp.
     be: vec3<f32>,
     directional_light_exponent: f32,
     bi: vec3<f32>,
@@ -115,6 +116,8 @@ const FOG_MODE_EXPONENTIAL_SQUARED: u32   = 3u;
 const FOG_MODE_ATMOSPHERIC: u32           = 4u;
 // mudcrab: the power ramp mode of the weather's exterior fog (#891).
 const FOG_MODE_POWER_RAMP: u32            = 5u;
+// mudcrab: the power ramp for draws the full-screen opaque fog does not cover (#891).
+const FOG_MODE_POWER_RAMP_BLENDED: u32    = 6u;
 
 #if AVAILABLE_STORAGE_BUFFER_BINDINGS >= 3
 struct ClusteredLights {
