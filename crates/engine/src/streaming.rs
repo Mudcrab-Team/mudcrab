@@ -12488,10 +12488,10 @@ mod tests {
         );
     }
 
-    /// The flag is the whole switch: the same cell places no light at all without `--lights`, and
-    /// the references themselves are spawned exactly as before.
+    /// The setting is the whole switch: the same cell places no light at all with lights off
+    /// (`--no-lights`), and the references themselves are spawned exactly as before.
     #[test]
-    fn places_no_light_without_the_lights_flag() {
+    fn places_no_light_with_lights_off() {
         let mut app = spawn_reference_cell_app(
             vec![lit_reference(
                 0x100,

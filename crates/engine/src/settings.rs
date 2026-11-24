@@ -97,7 +97,11 @@ pub struct RenderingSettings {
     pub grade_override_mask: u16,
     /// Multiplier on retail fMouseHeadingSensitivity; 1 preserves the movement-type defaults.
     pub mouse_sensitivity: f32,
-    pub fov_degrees: f32,
+    /// Horizontal field of view in degrees, as retail's `fDefaultWorldFOV` and
+    /// `fDefault1stPersonFOV` are (#904). The camera's vertical angle follows from the window's
+    /// aspect ratio. The field was a vertical angle named `fov_degrees` until #904; an older
+    /// settings file keeps that key, which is ignored, so the retail default applies.
+    pub horizontal_fov_degrees: f32,
     pub vsync: bool,
     pub window_mode: usize,
     pub window_size: usize,
@@ -180,7 +184,7 @@ impl Default for RenderingSettings {
             grade_pivot: 0.18,
             grade_override_mask: 0,
             mouse_sensitivity: 1.0,
-            fov_degrees: PerspectiveProjection::default().fov.to_degrees(),
+            horizontal_fov_degrees: config.camera_fov_degrees(),
             vsync: true,
             window_mode: 0,
             window_size: 1,
@@ -360,7 +364,7 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
             "Khronos PBR neutral",
         ]
     ),
-    number!(Graphics, "Image", "Vertical field of view (degrees)", fov_degrees; 30.0, 110.0, 5.0),
+    number!(Graphics, "Image", "Horizontal field of view (degrees)", horizontal_fov_degrees; crate::config::FOV_RANGE_DEGREES.0 as f64, crate::config::FOV_RANGE_DEGREES.1 as f64, 5.0),
     choice!(
         "Image",
         "Visual profile (restart)",
@@ -631,6 +635,7 @@ impl RenderingSettings {
             self.grade_override_mask = 0;
         }
         self.point_lights = config.lights;
+        self.horizontal_fov_degrees = config.camera_fov_degrees();
         (self.stream_radius, self.unload_radius) = config
             .grass_terrain_radii
             .unwrap_or((config.stream_radius, config.unload_radius));
@@ -668,6 +673,7 @@ impl RenderingSettings {
                 "--grass" | "--no-grass" | "ini:grass" => self.grass = source.grass,
                 "--grass-radius" | "ini:grass-radius" => self.grass_radius = source.grass_radius,
                 "--lights" | "--no-lights" => self.point_lights = source.point_lights,
+                "ini:fov" => self.horizontal_fov_degrees = source.horizontal_fov_degrees,
                 "--stream-radius" => {
                     self.stream_radius = source.stream_radius;
                     self.unload_radius = source.unload_radius;
@@ -792,10 +798,10 @@ impl SettingsFile {
     pub(crate) fn apply_start_shot(
         &mut self,
         settings: &mut RenderingSettings,
-        fov_degrees: f32,
+        horizontal_fov_degrees: f32,
         dimensions: (u32, u32),
     ) {
-        settings.fov_degrees = fov_degrees;
+        settings.horizontal_fov_degrees = horizontal_fov_degrees;
         settings.window_mode = 0;
         settings.window_size_override = Some(dimensions);
         if !self
@@ -903,7 +909,7 @@ impl SettingsFile {
             .iter()
             .any(|flag| flag == "--start-shot")
         {
-            persisted.fov_degrees = self.stored.fov_degrees;
+            persisted.horizontal_fov_degrees = self.stored.horizontal_fov_degrees;
             persisted.window_mode = self.stored.window_mode;
             persisted.window_size = self.stored.window_size;
         }
@@ -990,6 +996,21 @@ pub(crate) fn prepare_settings_at(
                                     && raw.get("occlusion_culling").is_none()
                             });
                         settings.retain_explicit_launch_values(config);
+                        if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                            && raw.get("fov_degrees").is_some()
+                            && raw.get("horizontal_fov_degrees").is_none()
+                        {
+                            // The old key held a vertical angle (#904). It cannot be read as a
+                            // horizontal one, so the retail default applies until the next Save.
+                            let default = settings.horizontal_fov_degrees;
+                            warn!(
+                                default,
+                                "saved vertical field of view ignored; the horizontal default applies"
+                            );
+                            file.status = format!(
+                                "The saved vertical field of view was replaced by the horizontal default of {default} degrees."
+                            );
+                        }
                         if settings.color_grade
                             == crate::color_pipeline::SceneGradeMode::RecordSrgb.index()
                             && config.image_space_selection().ok().flatten().is_none()
@@ -1120,6 +1141,9 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
         With<StreamingCamera>,
     >,
     reflections: Query<'w, 's, (Entity, Ref<'static, crate::render::WaterReflectionCamera>)>,
+    /// The aspect ratio the cameras had when the settings were last applied. The vertical angle
+    /// follows it (#904), so a resized window applies them again.
+    last_aspect: Local<'s, f32>,
     /// The game clock, for the hour of the weather-driven sky palette.
     clock: Option<Res<'w, crate::sun::GameClock>>,
     /// The sun and the "a sun light appeared since the last apply" check need conflicting
@@ -1252,6 +1276,19 @@ fn apply_metal_direct_default(
     }
 }
 
+/// The vertical field of view in radians that gives `horizontal_degrees` across a window of
+/// `aspect` (width over height). Retail's field of view keys are horizontal angles; Bevy's
+/// projection takes the vertical one (#904). An aspect ratio that is not a positive finite number
+/// is the one a camera has before its first frame; it is taken as square.
+pub fn vertical_fov_radians(horizontal_degrees: f32, aspect: f32) -> f32 {
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        1.0
+    };
+    crate::shots::vertical_fov_degrees(horizontal_degrees, aspect).to_radians()
+}
+
 /// Apply only on preference changes. Weather, light budgets and water read the same resource.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_render_settings(
@@ -1289,7 +1326,19 @@ pub(crate) fn apply_render_settings(
     // against the snapshot left by the previous run, and also run when the engine config or the
     // renderer changed underneath it, or when a render target appeared since the last run.
     // A settled frame returns here and does none of the work below.
-    let preferences_changed = settings.is_changed()
+    // The vertical angle follows the aspect ratio, so a resized window needs the pass too.
+    let aspect = targets
+        .cameras
+        .iter()
+        .find_map(|(.., projection, _)| match projection {
+            Projection::Perspective(p) if p.aspect_ratio.is_finite() && p.aspect_ratio > 0.0 => {
+                Some(p.aspect_ratio)
+            }
+            _ => None,
+        });
+    let aspect_changed = aspect.is_some_and(|aspect| (aspect - *targets.last_aspect).abs() > 1e-4);
+    let preferences_changed = aspect_changed
+        || settings.is_changed()
         || previous.as_ref() != Some(&*settings)
         || config.is_changed()
         || adapter.as_ref().is_some_and(|adapter| adapter.is_changed())
@@ -1297,6 +1346,9 @@ pub(crate) fn apply_render_settings(
         || !targets.sun.p1().is_empty();
     if !preferences_changed {
         return;
+    }
+    if let Some(aspect) = aspect {
+        *targets.last_aspect = aspect;
     }
     let before_coverage = (settings.stream_radius, settings.unload_radius);
     retain_live_grass_coverage(settings.reborrow(), &config);
@@ -1438,6 +1490,7 @@ pub(crate) fn apply_render_settings(
         fade.start = start;
         fade.end = end;
     }
+    let shot_driven = config.shots.is_some() || config.matched_route.is_some();
     for (entity, mut exposure, mut tone_map, mut msaa, mut projection, camera) in
         &mut targets.cameras
     {
@@ -1446,8 +1499,9 @@ pub(crate) fn apply_render_settings(
             *tone_map = TONE_MAPS[settings.tone_map];
         }
         *msaa = MSAA_MODES[settings.msaa];
-        if let Projection::Perspective(p) = &mut *projection {
-            p.fov = settings.fov_degrees.to_radians();
+        // A shots or matched-route run frames each pose itself, from that pose's own angle.
+        if !shot_driven && let Projection::Perspective(p) = &mut *projection {
+            p.fov = vertical_fov_radians(settings.horizontal_fov_degrees, p.aspect_ratio);
         }
         apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
@@ -3587,7 +3641,7 @@ mod tests {
             settings.indirect_drawing = false;
             settings.cpu_frustum_culling = false;
             settings.exposure_ev100 = 8.5;
-            settings.fov_degrees = 70.0;
+            settings.horizontal_fov_degrees = 70.0;
             settings.upload_mib = 0;
             settings.io_threads = 4;
         }
@@ -3607,6 +3661,166 @@ mod tests {
             None
         );
         assert_eq!(app.world().resource::<EngineConfig>().io_threads, 0);
+    }
+
+    /// #904: retail's field of view is horizontal, so the vertical angle depends on the window.
+    #[test]
+    fn horizontal_field_of_view_converts_by_aspect_ratio() {
+        for (name, aspect, vertical) in [
+            ("16:9", 16.0 / 9.0, 50.54),
+            ("16:10", 16.0 / 10.0, 55.34),
+            ("21:9", 21.0 / 9.0, 39.57),
+            ("4:3", 4.0 / 3.0, 64.4),
+        ] {
+            let got = vertical_fov_radians(80.0, aspect).to_degrees();
+            assert!((got - vertical).abs() < 0.1, "{name}: {got} vs {vertical}");
+            // The defining relation of a rectilinear projection.
+            let horizontal = ((got.to_radians() * 0.5).tan() * aspect).atan() * 2.0;
+            assert!((horizontal.to_degrees() - 80.0).abs() < 1e-3, "{name}");
+        }
+        // A square window shows the same angle both ways; a camera that has not seen a window yet
+        // reports an aspect ratio that is not usable and is taken as square.
+        assert!((vertical_fov_radians(80.0, 1.0).to_degrees() - 80.0).abs() < 1e-3);
+        for unusable in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                vertical_fov_radians(80.0, unusable),
+                vertical_fov_radians(80.0, 1.0)
+            );
+        }
+    }
+
+    /// #904, #949: with no INI the camera starts at retail's 80 degrees horizontal, and the
+    /// walking camera and the automated cameras take their own key.
+    #[test]
+    fn field_of_view_defaults_to_retail_without_an_ini() {
+        assert_eq!(RenderingSettings::default().horizontal_fov_degrees, 80.0);
+        let config = EngineConfig::default();
+        assert_eq!(config.world_fov_degrees, 80.0);
+        assert_eq!(config.first_person_fov_degrees, 80.0);
+        let mut settings = RenderingSettings::default();
+        settings.take_launch_values(&config);
+        assert_eq!(settings.horizontal_fov_degrees, 80.0);
+
+        let walking = EngineConfig {
+            world_fov_degrees: 90.0,
+            first_person_fov_degrees: 70.0,
+            ..EngineConfig::default()
+        };
+        assert!(walking.interactive_world_physics());
+        let automated = EngineConfig {
+            headless: true,
+            ..walking.clone()
+        };
+        assert!(!automated.interactive_world_physics());
+        let mut settings = RenderingSettings::default();
+        settings.take_launch_values(&walking);
+        assert_eq!(settings.horizontal_fov_degrees, 70.0, "first person");
+        settings.take_launch_values(&automated);
+        assert_eq!(settings.horizontal_fov_degrees, 90.0, "world");
+    }
+
+    /// An older settings file holds the vertical angle under `fov_degrees`. The key is ignored, so
+    /// 45 vertical is never read as 45 horizontal.
+    #[test]
+    fn an_older_vertical_field_of_view_is_ignored() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, br#"{"version":1,"fov_degrees":45.0}"#).unwrap();
+        let mut config = EngineConfig::default();
+        let (settings, file) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(settings.horizontal_fov_degrees, 80.0);
+        assert_eq!(
+            file.status,
+            "The saved vertical field of view was replaced by the horizontal default of 80 degrees."
+        );
+        // A file that already holds the new key says nothing about the old one.
+        let path = directory.path().join("current.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"fov_degrees":45.0,"horizontal_fov_degrees":90.0}"#,
+        )
+        .unwrap();
+        let mut config = EngineConfig::default();
+        let (settings, file) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(settings.horizontal_fov_degrees, 90.0);
+        assert!(!file.status.contains("vertical"));
+    }
+
+    /// An INI field of view owns the menu value; a saved value does not override it.
+    #[test]
+    fn an_ini_field_of_view_owns_the_menu_value() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = RenderingSettings {
+            horizontal_fov_degrees: 100.0,
+            ..RenderingSettings::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut config = EngineConfig {
+            first_person_fov_degrees: 75.0,
+            settings_overrides: vec!["ini:fov".into()],
+            ..EngineConfig::default()
+        };
+        let (settings, _) = prepare_settings_at(&mut config, Some(path.clone()));
+        assert_eq!(settings.horizontal_fov_degrees, 75.0);
+        // Without the INI the saved value stands.
+        let mut config = EngineConfig::default();
+        let (settings, _) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(settings.horizontal_fov_degrees, 100.0);
+    }
+
+    /// The vertical angle follows the window: a resize applies the field of view again, and a
+    /// shots run keeps the angle of its own pose.
+    #[test]
+    fn a_resized_window_keeps_the_horizontal_field_of_view() {
+        for (shots, resized) in [(None, true), (Some(PathBuf::from("shots.json")), false)] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(EngineConfig {
+                    grass: false,
+                    shots,
+                    ..Default::default()
+                })
+                .insert_resource(RenderingSettings::default())
+                .insert_resource(RenderAssetBytesPerFrame::default())
+                .add_systems(Update, apply_render_settings);
+            let camera = app
+                .world_mut()
+                .spawn((
+                    Camera3d::default(),
+                    crate::color_pipeline::SceneColorPipeline::default(),
+                    StreamingCamera,
+                    Msaa::Off,
+                    Projection::Perspective(PerspectiveProjection {
+                        fov: 0.5,
+                        aspect_ratio: 16.0 / 9.0,
+                        ..default()
+                    }),
+                ))
+                .id();
+            app.update();
+            let fov = |app: &App| match app.world().get::<Projection>(camera).unwrap() {
+                Projection::Perspective(p) => p.fov,
+                _ => panic!("expected perspective"),
+            };
+            if !resized {
+                assert_eq!(fov(&app), 0.5, "a shots run keeps its own angle");
+                continue;
+            }
+            assert!(
+                (fov(&app).to_degrees() - 50.54).abs() < 0.1,
+                "{}",
+                fov(&app).to_degrees()
+            );
+            let Some(mut projection) = app.world_mut().get_mut::<Projection>(camera) else {
+                panic!("projection")
+            };
+            if let Projection::Perspective(p) = &mut *projection {
+                p.aspect_ratio = 21.0 / 9.0;
+            }
+            app.update();
+            assert!((fov(&app).to_degrees() - 39.57).abs() < 0.1);
+        }
     }
 
     #[test]

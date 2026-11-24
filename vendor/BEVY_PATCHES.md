@@ -59,7 +59,7 @@ grep -c "Invalid Metal usage" <run.log>
 
 Add `--release` for a faithful comparison. Do not set `MTL_DEBUG_LAYER=1`: it writes about 700 MB
 of warnings per minute. The engine reads Point-light shadows from `settings.json`, not from a flag.
-For the flicker class (bevy#26095), run the same command with `--lights` and a `settings.json`
+For the flicker class (bevy#26095), run the same command (lights are on by default; `--no-lights` turns them off) and a `settings.json`
 that has `"point_lights": true` and `"point_light_shadows": true`, kept in a scratch `HOME`
 so a personal settings file stays untouched. A run with no error lines is evidence, not proof:
 a hidden run without validation did not fault even before the fix.

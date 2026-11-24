@@ -3,7 +3,7 @@
 //! module implements.
 //!
 //! `streaming::spawn_cell` gives every reference whose base record has a row in the converter's
-//! `lights` table a [`PointLight`] child, and only while the engine is run with `--lights`. The
+//! `lights` table a [`PointLight`] child, unless the engine is run with `--no-lights`. The
 //! light entity is a descendant of the cell root, so it follows the render-origin rebases and the
 //! cell unloads that move the cell hierarchy, and it is despawned with the cell that placed it.
 //!
@@ -296,8 +296,7 @@ pub const ENABLED_LIGHT_BUDGET: usize = 64;
 /// it draws (registry row `RF-LIGHT-GPU-004`, traced from the shader bytecode, confidence high).
 /// The row gives the limit and not the order of the "first", so the engine takes the nearest to
 /// the camera, which is the order of the budget. Retail also shadows only a light whose record
-/// carries a shadow flag (`RF-LIGHT-GPU-009`); this engine does not read that flag yet, so it
-/// shadows the nearest budgeted lights whatever their flags.
+/// carries a shadow flag (`RF-LIGHT-GPU-009`), and this engine ranks only such lights.
 ///
 /// The cap is also what keeps a frame under a hard GPU limit. wgpu's Metal backend refuses to open
 /// a new command encoder once 4096 are outstanding and reports the device as lost
@@ -383,8 +382,10 @@ pub const LIGHT_FLAG_SHADOW_MODES: u32 = 0x1c00;
 /// only sets where the falloff reaches zero.
 ///
 /// `AMBIENT_ILLUMINANCE` is Mudcrab's own scene scale (12,000 lux / (pi x 2.8)), not a retail
-/// number, because retail shades display-encoded values with no lux. It keeps the ratios between
-/// point, ambient and sun light retail's, so that no light is tuned by eye.
+/// number, because retail shades display-encoded values with no lux. It keeps the scalar ratios
+/// between point, ambient and sun light retail's, so that no light is tuned by eye. Per-channel
+/// ratios differ for saturated colours, because all three colours are sRGB-decoded here and retail
+/// uses the raw bytes (#706).
 pub fn retail_intensity(fade: f32) -> f32 {
     retail_intensity_f64(fade).min(f64::from(f32::MAX)) as f32
 }

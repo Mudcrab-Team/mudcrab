@@ -77,8 +77,9 @@ use tracing::{error, warn};
 /// mudcrab: retail point-light falloff. Put this on a [`PointLight`] to shade it with Skyrim's
 /// attenuation `1 - saturate(d / range)^2` instead of Bevy's `window(d) / d^2`.
 ///
-/// The light's `color * intensity / (4 * PI)` is then its radiance scale at the light's centre
-/// (there is no `1 / d^2`), so the caller sets `intensity` for that meaning. Only point lights read
+/// There is no `1 / d^2`, so the light's `color * intensity / (4 * PI^2)` is the radiance that an
+/// albedo-1 surface facing the light receives at its centre (`intensity / (4 * PI)` is the luminous
+/// intensity and the diffuse BRDF supplies `1 / PI`). The caller sets `intensity` for that meaning. Only point lights read
 /// the marker; spot lights keep Bevy's falloff. Mudcrab's own addition, not a Bevy change.
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RetailPointFalloff;

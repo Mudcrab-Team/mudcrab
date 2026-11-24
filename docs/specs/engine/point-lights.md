@@ -6,7 +6,7 @@ scale and the budget), `crates/engine/src/world/database.rs` (the row it is buil
 `crates/engine/src/streaming.rs` (where the light is spawned).
 
 Lights are **on by default**, as in retail (#955): retail lights every placed `LIGH` reference and no INI key turns
-them off (`RF-LIGHT-GPU-007`, [registry](../../research/retail/registry.md); unverified for lights placed by scripts).
+them off (`RF-LIGHT-GPU-007`, [sources](#5-evidence-and-remaining-gates); unverified for lights placed by scripts).
 `--no-lights` turns them off, for example for profiling.
 
 ---
@@ -71,8 +71,8 @@ world with, and `None` otherwise:
   shades the light with retail's attenuation, because every `SkyrimLight` carries `RetailPointFalloff`.
 - `shadow_maps_enabled` is **false** when the light spawns. The budget (§6) later gives a cube
   shadow map to the nearest few lights when the Point-light shadows setting is on. This does not
-  implement Skyrim's authored shadow modes or attenuation. The record's own shadow flags
-  (`RF-LIGHT-GPU-009`) are not read yet.
+  implement Skyrim's authored shadow modes (spot and hemisphere cones). Only a light whose record
+  carries a shadow flag (`DATA` flags `0x1c00`, `RF-LIGHT-GPU-009`) can take a slot (§6).
 - the area `radius` stays 0, so there is no oversized specular highlight.
 
 `streaming::spawn_cell` places the light as a **child of its reference**, which is what makes it sit
@@ -153,7 +153,7 @@ Mudcrab reproduces them in two parts:
    by `4 pi` and the diffuse BRDF supplies `1 / pi`, so a unit-fade light puts `albedo x colour x
    AMBIENT_ILLUMINANCE` nits on a surface at its centre. The scene already shades one retail unit as
    `AMBIENT_ILLUMINANCE` nits: the interior ambient light is that brightness times the DALC mean, and the key
-   light is `pi x AMBIENT_ILLUMINANCE x SunlightScale` lux. A point light on the same scale keeps retail's
+   light is `pi x AMBIENT_ILLUMINANCE x SunlightScale` lux. A point light on the same scale keeps retail's scalar
    ratios between point, ambient and sun light. The result does not depend on the radius.
 
 `AMBIENT_ILLUMINANCE` (12,000 lux / (pi x 2.8) = 1,364 nits) is Mudcrab's scene scale, not a retail number. A
@@ -181,6 +181,11 @@ unsupported. Malformed XLIG is counted separately. No global ambient policy, int
 resolver, raw-colour Skyrim profile, shadow, flicker, pulse or camera/exposure change is included.
 
 ## 5. Evidence and remaining gates
+
+**Registry rows.** The `RF-LIGHT-GPU-*` rows cited in this document are in the maintainers' private
+retail-facts registry. The public [registry](../../research/retail/registry.md) holds the
+`RF-LIGHT-CPU-*` rows only. Ask in #264 for a GPU row. Each use in this document states the fact it
+relies on.
 
 Pinned upstream sources (format/community implementation evidence, not a retail measurement):
 
@@ -265,11 +270,11 @@ limit.
 
 The shadow set is not cached with the 64-light choice. It is ranked again among the enabled lights
 after every camera move, with the entity as the tie-break, so the light the player walks up to takes
-a shadow at once and the light left behind gives it up. The set is never larger than the cap. The
-record's shadow flags (`RF-LIGHT-GPU-009`) are not read yet, so the nearest lights are shadowed
-whatever their flags.
+a shadow at once and the light left behind gives it up. The set is never larger than the cap. Only
+lights whose record carries a shadow flag (`DATA` flags `0x1c00`, `RF-LIGHT-GPU-009`) are ranked, as
+described above.
 
-## 7. The `--lights` flag
+## 7. The `--no-lights` and `--lights` flags
 
 `EngineConfig::lights` (`crates/engine/src/config.rs`) is true by default (#955) and set false by
 `--no-lights`; `--lights` states the default. `RenderingSettings::point_lights` follows it, and an explicit
@@ -288,6 +293,9 @@ Lighting path of the `skyrim` profile (#362, #706) owns that change. Interior en
 separately owned.
 
 - **Shadow modes.** A shadow-flagged light is shadowed as an omnidirectional point light. Retail uses a spot
-  or hemisphere shadow light for flags `0x400` and `0x800` (`RF-LIGHT-GPU-015`, [registry](../../research/retail/registry.md)).
+  or hemisphere shadow light for flags `0x400` and `0x800` (`RF-LIGHT-GPU-015`, [sources](#5-evidence-and-remaining-gates)).
   A light without a shadow map also lights the far side of the wall it is mounted on, as in retail
   (`RF-LIGHT-GPU-009`).
+- **Object LOD.** Retail's stock object LOD (BTO, techniques 13 and 15) receives no point lights
+  (skyrim_decomp PR 1003, NEEDS 14; `RF-LIGHT-GPU-004`). `lod_object.wgsl` therefore has no point-light
+  loop, and placed lights light the full-detail mesh only.
