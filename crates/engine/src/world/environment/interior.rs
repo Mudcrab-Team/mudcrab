@@ -752,7 +752,7 @@ fn select_environment(
 ///   unchanged (RF-LIGHT-GPU-004 has no exposure term).
 /// - Shadows: OFF. Retail interior directional shadowing is UNRESOLVED (RF-LIGHT-GPU-010; the
 ///   light is wired as the shadow light with a 3000-unit range). This is a Mudcrab interim
-///   decision: the exterior cascades (8000 range) would let the roof and floor shadow the room.
+///   decision: the exterior cascades (10000 default range) would let the roof and floor shadow the room.
 /// - Ambient: the DALC mean, brightness unchanged (`AMBIENT_ILLUMINANCE`).
 /// - Fog: the cell fog.
 ///

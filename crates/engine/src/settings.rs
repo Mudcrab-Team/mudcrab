@@ -3096,6 +3096,47 @@ mod tests {
         );
     }
 
+    /// The menu path and the start-up path build the sun's cascades with one function, and nothing
+    /// else writes them: with default settings `apply_render_settings` gives the start-up bounds,
+    /// and the menu's cascade count and distance multiplier change them as asked.
+    #[test]
+    fn menu_apply_gives_the_start_up_cascade_bounds() {
+        let config = EngineConfig::default();
+        let startup = crate::app::sun_shadow_cascades(&config);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(RenderingSettings::default())
+            .insert_resource(SettingsFile::session_only())
+            .insert_resource(config)
+            .add_systems(Update, apply_render_settings);
+        // Start from Bevy's own default so that only the system can produce the expected bounds.
+        let sun = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), CascadeShadowConfig::default()))
+            .id();
+        app.update();
+        let applied = app.world().get::<CascadeShadowConfig>(sun).unwrap();
+        assert_eq!(applied.bounds, startup.bounds);
+        assert_eq!(applied.minimum_distance, startup.minimum_distance);
+        assert_eq!(applied.overlap_proportion, startup.overlap_proportion);
+
+        {
+            let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
+            settings.shadow_cascades = 3;
+            settings.shadow_distance_scale = 2.0;
+        }
+        app.update();
+        let applied = app.world().get::<CascadeShadowConfig>(sun).unwrap();
+        assert_eq!(applied.bounds.len(), 3);
+        // The range is the 10000-unit distance (the grid is wider), doubled by the multiplier.
+        assert!(
+            (applied.bounds[2] - 20_000.0).abs() < 0.01,
+            "{:?}",
+            applied.bounds
+        );
+        assert!(applied.bounds.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
     /// An INI value replaces the default and beats a saved preference; with no INI, a saved
     /// preference beats the default.
     #[test]

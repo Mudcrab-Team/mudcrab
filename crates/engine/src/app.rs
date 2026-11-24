@@ -2610,8 +2610,7 @@ pub(crate) fn sun_shadow_cascades_for(
 }
 
 /// The far bound of each sun shadow cascade, from retail's split (verified by static reading of
-/// 1.7.104, high confidence; see
-/// <https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#2-split-calculation-and-far-fade>).
+/// 1.7.104, high confidence; skyrim_decomp PR 806, section 2).
 ///
 /// `count` is `N` (`iNumSplits`), `first_slice` is `fFirstSliceDistance`, `distance` is `D`
 /// (`fShadowDistance`), `range` is `F` (the farthest distance shadowed) and `near` is `n`. The

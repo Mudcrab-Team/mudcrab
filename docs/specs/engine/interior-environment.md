@@ -46,7 +46,7 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
      (RF-LIGHT-CPU-008).
    - Shadows OFF. **Mudcrab interim decision.** Retail is UNRESOLVED (RF-LIGHT-GPU-010: the light
      is wired as the shadow light with `fInteriorShadowDistance` 3000, and one interior gate is
-     not decoded). The exterior cascades (8000 range) would let the roof and floor shadow the
+     not decoded). The exterior cascades (10000 default range) would let the roof and floor shadow the
      room.
    - `crate::sun::update_sun` skips the sun while `ExteriorSunState` holds it.
 6. **Ambient**: `GlobalAmbientLight.color` is the mean of the six DALC colours, with the same

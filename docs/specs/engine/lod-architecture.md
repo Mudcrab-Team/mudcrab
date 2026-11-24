@@ -224,8 +224,8 @@ cumulative diagnostics and the unrecovered gauge.
 
 Camera far is currently `CELL_SIZE * (stream_radius + 2) * 2` (`app.rs`),
 32,768 units at the default radius 2. Once terrain LOD chunks arrive it
-extends to cover the largest configured tier reach (`streaming/lod.rs`). Sun shadow cascades derive from the
-same radius. LOD range must be fitted with the far plane and fog; distant
+extends to cover the largest configured tier reach (`streaming/lod.rs`). The sun shadow range is `[Display] fShadowDistance`
+(default 10000, from Ultra), limited by the drawn grid where that is smaller. LOD range must be fitted with the far plane and fog; distant
 shadow coverage needs its own quality and cost decision. `SkyrimClear` fog
 reaches its maximum amount of 0.85 at 53,289 units (`sky.rs`), so it does not
 make geometry beyond that distance invisible. See the
