@@ -4,10 +4,7 @@ use crate::{config::EngineConfig, world::components::StreamingCamera};
 use bevy::{
     camera::{Exposure, visibility::NoCpuCulling},
     core_pipeline::{prepass::DepthPrepass, tonemapping::Tonemapping},
-    light::{
-        CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap,
-        PointLightShadowMap,
-    },
+    light::{CascadeShadowConfig, DirectionalLightShadowMap, PointLightShadowMap},
     prelude::*,
     render::{
         occlusion_culling::OcclusionCulling, render_asset::RenderAssetBytesPerFrame,
@@ -35,6 +32,19 @@ pub const TONE_MAPS: [Tonemapping; 9] = [
 ];
 pub const MSAA_MODES: [Msaa; 4] = [Msaa::Off, Msaa::Sample2, Msaa::Sample4, Msaa::Sample8];
 pub const SHADOW_SIZES: [usize; 4] = [512, 1024, 2048, 4096];
+
+/// The index of `size` in [`SHADOW_SIZES`], or of the Ultra size where it is not a menu choice.
+pub(crate) fn shadow_size_index(size: usize) -> usize {
+    SHADOW_SIZES
+        .iter()
+        .position(|candidate| *candidate == size)
+        .unwrap_or_else(|| {
+            SHADOW_SIZES
+                .iter()
+                .position(|candidate| *candidate == crate::config::ULTRA_SUN_SHADOW_MAP_SIZE)
+                .unwrap_or(SHADOW_SIZES.len() - 1)
+        })
+}
 pub const WINDOW_SIZES: [(u32, u32); 4] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)];
 
 #[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,8 +160,11 @@ impl Default for RenderingSettings {
             ambient_brightness: crate::lights::AMBIENT_ILLUMINANCE,
             ambient_color: [ambient.red, ambient.green, ambient.blue],
             shadows: true,
-            shadow_size: 2,
-            shadow_cascades: 4,
+            // Ultra's 4096 and the compiled two cascades (`config.rs`, #949).
+            shadow_size: shadow_size_index(config.sun_shadow_map_size),
+            shadow_cascades: config.sun_shadow_cascades,
+            // Mudcrab-only: a multiplier on the whole sun shadow range, with no retail key.
+            // Mudcrab uses 1.0 so that `fShadowDistance` is unchanged.
             shadow_distance_scale: 1.0,
             sky: true,
             sky_brightness_scale: 1.0,
@@ -651,6 +664,8 @@ impl RenderingSettings {
         self.io_threads = config.io_threads;
         self.diagnostic_asset_fallbacks = config.diagnostic_asset_fallbacks;
         self.visual_profile = config.visual_profile.index();
+        self.shadow_size = shadow_size_index(config.sun_shadow_map_size);
+        self.shadow_cascades = config.sun_shadow_cascades;
     }
 
     fn retain_explicit_launch_values(&mut self, config: &EngineConfig) {
@@ -690,6 +705,8 @@ impl RenderingSettings {
                     self.lod_maximum_distance = source.lod_maximum_distance
                 }
                 "ini:fSplitDistanceMult" => self.lod_multiplier = source.lod_multiplier,
+                "ini:iShadowMapResolution" => self.shadow_size = source.shadow_size,
+                "ini:iNumSplits" => self.shadow_cascades = source.shadow_cascades,
                 "--max-commit-ms" => self.commit_ms = source.commit_ms,
                 "--max-unloads-per-frame" => self.cell_unloads = source.cell_unloads,
                 "--max-model-spawns-per-frame" => self.model_spawns = source.model_spawns,
@@ -1521,17 +1538,11 @@ pub(crate) fn apply_render_settings(
             settings.sun_color[2],
         );
         light.shadow_maps_enabled = settings.sun && settings.shadows;
-        let base = crate::app::sun_shadow_cascades(&config);
-        let maximum =
-            base.bounds.last().copied().unwrap_or(1000.0) * settings.shadow_distance_scale;
-        *cascades = CascadeShadowConfigBuilder {
-            minimum_distance: 7.0,
-            maximum_distance: maximum,
-            first_cascade_far_bound: 700.0_f32.min(maximum * 0.5),
-            num_cascades: settings.shadow_cascades,
-            ..default()
-        }
-        .into();
+        *cascades = crate::app::sun_shadow_cascades_for(
+            &config,
+            settings.shadow_cascades,
+            settings.shadow_distance_scale,
+        );
     }
     if let Some(ambient) = targets.ambient.as_deref_mut() {
         ambient.brightness = settings.ambient_brightness;
@@ -3126,6 +3137,89 @@ mod tests {
         assert_eq!(active.color_grade, saved.color_grade);
         assert_eq!(active.visual_preset, 0);
         assert_eq!(active.grade_override_mask, saved.grade_override_mask);
+    }
+
+    /// The sun shadow menu defaults are Ultra's 4096 map and retail's two cascades (#949, #857),
+    /// and the multiplier keeps retail's `fShadowDistance`.
+    #[test]
+    fn sun_shadow_menu_defaults_are_the_retail_values() {
+        let defaults = RenderingSettings::default();
+        assert_eq!(SHADOW_SIZES[defaults.shadow_size], 4096);
+        assert_eq!(defaults.shadow_cascades, 2);
+        assert_eq!(defaults.shadow_distance_scale, 1.0);
+        assert_eq!(shadow_size_index(1024), 1);
+        assert_eq!(
+            SHADOW_SIZES[shadow_size_index(3000)],
+            4096,
+            "a size the menu does not offer falls back to Ultra's"
+        );
+    }
+
+    /// The menu path and the start-up path build the sun's cascades with one function, and nothing
+    /// else writes them: with default settings `apply_render_settings` gives the start-up bounds,
+    /// and the menu's cascade count and distance multiplier change them as asked.
+    #[test]
+    fn menu_apply_gives_the_start_up_cascade_bounds() {
+        let config = EngineConfig::default();
+        let startup = crate::app::sun_shadow_cascades(&config);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(RenderingSettings::default())
+            .insert_resource(SettingsFile::session_only())
+            .insert_resource(config)
+            .add_systems(Update, apply_render_settings);
+        // Start from Bevy's own default so that only the system can produce the expected bounds.
+        let sun = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), CascadeShadowConfig::default()))
+            .id();
+        app.update();
+        let applied = app.world().get::<CascadeShadowConfig>(sun).unwrap();
+        assert_eq!(applied.bounds, startup.bounds);
+        assert_eq!(applied.minimum_distance, startup.minimum_distance);
+        assert_eq!(applied.overlap_proportion, startup.overlap_proportion);
+
+        {
+            let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
+            settings.shadow_cascades = 3;
+            settings.shadow_distance_scale = 2.0;
+        }
+        app.update();
+        let applied = app.world().get::<CascadeShadowConfig>(sun).unwrap();
+        assert_eq!(applied.bounds.len(), 3);
+        // The range is the 10000-unit distance (the grid is wider), doubled by the multiplier.
+        assert!(
+            (applied.bounds[2] - 20_000.0).abs() < 0.01,
+            "{:?}",
+            applied.bounds
+        );
+        assert!(applied.bounds.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    /// An INI value replaces the default and beats a saved preference; with no INI, a saved
+    /// preference beats the default.
+    #[test]
+    fn ini_sun_shadow_values_own_the_menu_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = RenderingSettings {
+            shadow_size: 0,
+            shadow_cascades: 4,
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+
+        let mut no_ini = EngineConfig::default();
+        let (active, _) = prepare_settings_at(&mut no_ini, Some(path.clone()));
+        assert_eq!((active.shadow_size, active.shadow_cascades), (0, 4));
+
+        let mut ini = crate::skyrim_ini::SkyrimIni::default();
+        ini.merge_str("[Display]\niShadowMapResolution=1024\niNumSplits=3\n");
+        let mut config = EngineConfig::default();
+        ini.apply(&mut config);
+        let (active, _) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(SHADOW_SIZES[active.shadow_size], 1024);
+        assert_eq!(active.shadow_cascades, 3);
     }
 
     #[test]
