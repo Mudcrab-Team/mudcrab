@@ -224,6 +224,10 @@ fn compose_module(
             "terrain_blend.wgsl",
             include_str!("../shaders/terrain_blend.wgsl"),
         ),
+        (
+            "terrain_normal.wgsl",
+            include_str!("../shaders/terrain_normal.wgsl"),
+        ),
         ("pbr_types.wgsl", PBR_TYPES),
         ("forward_io.wgsl", FORWARD_IO),
         ("mesh_functions.wgsl", MESH_FUNCTIONS),
@@ -585,6 +589,14 @@ fn sampled_alpha(
                 }
             }
             Statement::Emit(_) => {}
+            // The normal's xyz is rebuilt by the shared decode, which never touches alpha.
+            Statement::Call {
+                function: callee, ..
+            } // Imported functions carry a module suffix after composition.
+            if module.functions[*callee]
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("terrain_tangent_normal")) => {}
             other => panic!("unsupported alpha control flow {other:?}"),
         }
     }
