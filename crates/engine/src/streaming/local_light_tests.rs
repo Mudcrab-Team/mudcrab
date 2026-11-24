@@ -103,7 +103,7 @@ fn stored_authored_light_inputs_reach_immediate_and_deferred_point_lights() {
             assert_eq!(children.len(), 1);
             let child = children[0];
             let light = app.world().get::<PointLight>(child).unwrap();
-            let expected_intensity = crate::lights::intensity_for_radius(256.0) * expected_fade;
+            let expected_intensity = crate::lights::retail_intensity(expected_fade);
             assert_eq!(light.range, 256.0);
             assert!(
                 (f64::from(light.intensity) - f64::from(expected_intensity)).abs()
@@ -257,7 +257,7 @@ fn stored_light_fallbacks_and_invalid_radius_reach_spawn_dispositions() {
             if let Some(range) = range {
                 assert_eq!(lights.len(), 1, "{sql}");
                 assert_eq!(lights[0].range, range, "{sql}");
-                let expected = crate::lights::intensity_for_radius(range) * fade;
+                let expected = crate::lights::retail_intensity(fade);
                 assert!(
                     (lights[0].intensity - expected).abs() <= expected.abs() * 1e-6,
                     "{sql}"
@@ -310,7 +310,7 @@ fn malformed_xlig_keeps_valid_fade_and_reports_rejected_fields_at_spawn() {
             let child = app.world().get::<Children>(parent).unwrap()[0];
             let light = app.world().get::<PointLight>(child).unwrap();
             assert_eq!(light.range, 256.0);
-            let expected = crate::lights::intensity_for_radius(256.0) * expected_fade;
+            let expected = crate::lights::retail_intensity(expected_fade);
             assert!((light.intensity - expected).abs() < expected * 1e-6);
             let coverage = app.world().resource::<crate::lights::LightInputCoverage>();
             assert_eq!(coverage.malformed_reference_data, 1);

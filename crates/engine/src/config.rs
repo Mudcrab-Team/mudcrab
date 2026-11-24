@@ -255,8 +255,20 @@ pub struct EngineConfig {
     pub unload_radius: i32,
     /// Terrain radii before optional grass coverage, restored if its startup cache is unavailable.
     pub grass_terrain_radii: Option<(i32, i32)>,
-    /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
+    /// Upper bound for sun-shadow cascades from `[Display] fShadowDistance`, in Creation units.
+    /// The default is [`ULTRA_SUN_SHADOW_DISTANCE`]. `None` (code only) fits the range to the
+    /// drawn grid.
     pub sun_shadow_distance_limit: Option<f32>,
+    /// Sun shadow map edge in texels from `[Display] iShadowMapResolution`. The default is
+    /// [`ULTRA_SUN_SHADOW_MAP_SIZE`]. It must be one of [`crate::settings::SHADOW_SIZES`].
+    pub sun_shadow_map_size: usize,
+    /// Sun shadow cascade count from `[Display] iNumSplits`, 1 to 4. The default is
+    /// [`RETAIL_SUN_SHADOW_CASCADES`].
+    pub sun_shadow_cascades: usize,
+    /// `[Display] fFirstSliceDistance`, in Creation units. The default is
+    /// [`RETAIL_FIRST_SLICE_DISTANCE`]. It is an input to the cascade split, not the first cascade's
+    /// end: see `app::retail_cascade_bounds` (skyrim_decomp PR 806, section 2).
+    pub sun_first_slice_distance: f32,
     /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
     /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way. In retail the
     /// setting affects near land only; until a later change limits it, it also affects LOD land here.
@@ -453,10 +465,9 @@ pub struct EngineConfig {
     pub transform_bounds_fixture: bool,
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
-    /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
-    /// every run that does not ask for lights renders exactly as it did before. Retail lights every
-    /// placed reference, but the light intensity is not calibrated yet, so "on" blows interiors
-    /// out (#955, #364).
+    /// Whether a streamed `LIGH` reference places a point light. On by default: retail lights every
+    /// placed `LIGH` reference and no INI key turns them off (#955, `RF-LIGHT-GPU-007`).
+    /// `--no-lights` turns them off, for example for profiling; `--lights` is the explicit default.
     pub lights: bool,
     /// The horizontal field of view of every camera that is not the first-person camera, in
     /// degrees: `[Display] fDefaultWorldFOV` (#904, #949). Retail default
@@ -480,6 +491,24 @@ pub struct EngineConfig {
 
 /// Retail's default for `[Display] bDrawLandShadows` is off. See Mudcrab #949.
 pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
+
+/// `[Display] iShadowMapResolution=4096`, from the shipped `Ultra.ini` (line 4). Mudcrab defaults
+/// to the Ultra preset (#949). The compiled default is 2048, and Low / Medium / High set
+/// 1024 / 2048 / 2048.
+pub const ULTRA_SUN_SHADOW_MAP_SIZE: usize = 4096;
+
+/// `[Display] fShadowDistance=10000`, from the shipped `Ultra.ini` (line 6). Mudcrab defaults to
+/// the Ultra preset (#949). The compiled default is 8000, and Low / Medium / High set
+/// 3000 / 3000 / 8000.
+pub const ULTRA_SUN_SHADOW_DISTANCE: f32 = 10_000.0;
+
+/// `[Display] iNumSplits=2`. No shipped INI sets it, so this is the compiled default (the
+/// skyrim_decomp sun-shadow finding, PR 806, verified; the community dump agrees, unverified).
+pub const RETAIL_SUN_SHADOW_CASCADES: usize = 2;
+
+/// `[Display] fFirstSliceDistance=2000`, from the shipped `Skyrim_Default.ini` (line 17). It wins
+/// over the compiled 1250 because a shipped template outranks a compiled default (#949).
+pub const RETAIL_FIRST_SLICE_DISTANCE: f32 = 2_000.0;
 
 /// Retail's default for `[Display] fDefaultWorldFOV`: 80 degrees, **horizontal** (#904, #949).
 ///
@@ -539,7 +568,10 @@ impl Default for EngineConfig {
             stream_radius: 2,
             unload_radius: 3,
             grass_terrain_radii: None,
-            sun_shadow_distance_limit: None,
+            sun_shadow_distance_limit: Some(ULTRA_SUN_SHADOW_DISTANCE),
+            sun_shadow_map_size: ULTRA_SUN_SHADOW_MAP_SIZE,
+            sun_shadow_cascades: RETAIL_SUN_SHADOW_CASCADES,
+            sun_first_slice_distance: RETAIL_FIRST_SLICE_DISTANCE,
             land_shadows: RETAIL_DRAW_LAND_SHADOWS,
             sun_position: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
@@ -654,7 +686,7 @@ impl Default for EngineConfig {
             transform_bounds_fixture: false,
             renderer_fixture: false,
             streaming_fixture: false,
-            lights: false,
+            lights: true,
             world_fov_degrees: RETAIL_DEFAULT_WORLD_FOV_DEGREES,
             first_person_fov_degrees: RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES,
             near_distance: RETAIL_NEAR_DISTANCE,
@@ -691,7 +723,8 @@ Assets and start position:
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
   --background-window                   open the window behind other windows without taking focus
-  --lights                              place a point light for each streamed LIGH reference
+  --lights                              place a point light for each streamed LIGH reference (the default)
+  --no-lights                           place no point lights, for example for profiling
   --papyrus-scripts                     run the first slice of converted Papyrus scripts
 
 Streaming:
@@ -1847,6 +1880,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--no-lights" => config.lights = false,
                 "--papyrus-scripts" => config.papyrus_scripts = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
@@ -4119,16 +4153,21 @@ mod tests {
         assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
     }
 
-    /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
-    /// acceptance or benchmark baseline taken from one - is unchanged.
+    /// Retail lights every placed `LIGH` reference and has no INI key to turn them off, so the
+    /// default is on (#955). `--no-lights` is the profiling switch, `--lights` the explicit default,
+    /// and the last of the two wins.
     #[test]
-    fn lights_are_off_until_the_flag_is_given() {
-        assert!(!EngineConfig::default().lights);
+    fn lights_are_on_until_no_lights_is_given() {
+        assert!(EngineConfig::default().lights);
         assert!(
-            !run_config(&["--headless"]).lights,
-            "another flag does not turn lights on"
+            run_config(&["--headless"]).lights,
+            "another flag does not turn lights off"
         );
         assert!(run_config(&["--lights"]).lights);
+        assert!(!run_config(&["--no-lights"]).lights);
+        assert!(!run_config(&["--lights", "--no-lights"]).lights);
+        assert!(run_config(&["--no-lights", "--lights"]).lights);
+        assert!(HELP_TEXT.contains("--no-lights"));
     }
 
     #[test]
@@ -4518,6 +4557,7 @@ mod tests {
             "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
+            "--no-lights",
             "--papyrus-scripts",
             "--physics-fixture",
         ] {

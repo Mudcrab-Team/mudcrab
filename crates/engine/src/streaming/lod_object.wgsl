@@ -156,7 +156,9 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
         lighting.mean.rgb, in.ambient_r, in.ambient_g, in.ambient_b, normal,
     );
     let sun = object_sun(normal, in.sun_direction, lighting.sun_rgb.rgb);
-    // The ordinary exterior light assignment skips the stock object LOD root (G04).
+    // The ordinary exterior light assignment skips the stock object LOD root (G04). This shader
+    // has no point-light loop, so placed `LIGH` lights (#955) light the full-detail mesh only.
+    // Registry `RF-LIGHT-GPU-004`.
     // STAND-IN(#946): use the stock zero property emission and omit shader-object additive
     // colour. Native projected detail and auxiliary outputs have no matching engine inputs.
     // Technique 13 has no vertex colour attribute: its vertex shader supplies white (G01).
