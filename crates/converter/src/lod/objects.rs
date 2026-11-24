@@ -553,7 +553,7 @@ fn emit_object_glb(
     let mut nodes_json = vec![
         serde_json::json!({
             "name": chunk_name,
-            "matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            "matrix": OBJECT_ROOT_MATRIX,
             "children": [1],
         }),
         serde_json::json!({
@@ -748,9 +748,13 @@ fn le_u32(bytes: &[u8], offset: usize) -> Result<u32> {
     Ok(u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
 }
 
+const OBJECT_ROOT_MATRIX: [f64; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
+
 /// Checks a written object chunk GLB end to end, so a damaged file never passes for a chunk:
 /// the GLB container lengths, every buffer view and accessor range, the vertex formats, finite
-/// vertex data, every triangle index, the single material and the embedded KTX2 atlas (read back
+/// vertex data, every triangle index, the scene transform, the single material and the embedded KTX2 atlas (read back
 /// with the texture stage's own inspector). The `objects` group must list exactly the meshes.
 pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
     let document = crate::mesh::glb_json_from_bytes(bytes)?;
@@ -844,9 +848,28 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("no nodes"))?;
     let group = nodes_json
-        .iter()
-        .find(|node| node["name"] == nodes::objects_group())
+        .get(1)
+        .filter(|node| node["name"] == nodes::objects_group())
         .ok_or_else(|| color_eyre::eyre::eyre!("object chunk has no `objects` group"))?;
+    let root = &nodes_json[0];
+    ensure!(
+        document["scene"] == 0
+            && document["scenes"][0]["nodes"] == serde_json::json!([0])
+            && root["children"] == serde_json::json!([1])
+            && root["matrix"] == serde_json::json!(OBJECT_ROOT_MATRIX)
+            && ["translation", "rotation", "scale"]
+                .iter()
+                .all(|field| root.get(field).is_none()),
+        "object chunk scene root must apply the Creation-to-glTF axis conversion"
+    );
+    for node in &nodes_json[1..] {
+        ensure!(
+            ["matrix", "translation", "rotation", "scale"]
+                .iter()
+                .all(|field| node.get(field).is_none()),
+            "object chunk transforms below the scene root must be baked into vertices"
+        );
+    }
     let children = group["children"]
         .as_array()
         .filter(|children| !children.is_empty())
@@ -1846,6 +1869,25 @@ mod tests {
             .unwrap();
         out[at..at + from.len()].copy_from_slice(to.as_bytes());
         out
+    }
+
+    #[test]
+    fn object_glb_requires_the_creation_to_gltf_axis_conversion() {
+        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
+            .unwrap();
+        validate_object_glb(&chunk.glb).unwrap();
+
+        let root_matrix =
+            "\"matrix\":[1.0,0.0,0.0,0.0,0.0,0.0,-1.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,0.0,1.0]";
+        let identity =
+            "\"matrix\":[1.0,0.0,0.0,0.0,0.0,1.0, 0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]";
+        let sideways = patch(&chunk.glb, root_matrix, identity);
+        let error = validate_object_glb(&sideways).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Creation-to-glTF axis conversion")
+        );
     }
 
     #[test]
