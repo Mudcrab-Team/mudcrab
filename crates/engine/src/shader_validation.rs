@@ -935,8 +935,52 @@ fn object_lod_sun_and_lit_follow_the_retail_term_order() {
     );
 }
 
+/// The retail pixel-shader tail for frame flags (S,T) = (1,0) is kept as a pure function. It is not
+/// called. A bright channel loses `k M - B`; a channel with `M` at most 1.2 is unchanged.
+#[test]
+fn object_lod_retail_fog_tail_matches_the_reviewed_example() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    // L = 2.0, Cf = 0.6, F = 0.5: M = 1.3, k M = 1.0833, out = 2.0 - 0.0833 = 1.9167.
+    let mut fixture = const_call(
+        source,
+        "retail_fog_tail",
+        "bright",
+        &["vec3(2.0)", "vec3(0.6)", "0.5", "0.8333333", "1.0"],
+    );
+    fixture.push_str("const_assert abs(bright_result.x - 1.9166667) < 0.0001;\n");
+    // LDR: L = 0.5, Cf = 0.6, F = 0.5 gives k M < B, so the output is exactly L.
+    fixture.push_str(&const_call(
+        source,
+        "retail_fog_tail",
+        "ldr",
+        &["vec3(0.5)", "vec3(0.6)", "0.5", "0.8333333", "1.0"],
+    ));
+    fixture.push_str("const_assert ldr_result.x == 0.5 && ldr_result.y == 0.5;\n");
+    // M = 1.2 is the boundary: k M = 1.0 exactly in real numbers, so nothing is subtracted.
+    fixture.push_str(&const_call(
+        source,
+        "retail_fog_tail",
+        "edge",
+        &["vec3(1.2)", "vec3(1.2)", "1.0", "0.8333333", "1.0"],
+    ));
+    fixture.push_str("const_assert abs(edge_result.x - 1.2) < 0.0001;\n");
+    // Full fog strength toward a dark colour never pushes the result above L.
+    fixture.push_str(&const_call(
+        source,
+        "retail_fog_tail",
+        "dark",
+        &["vec3(3.0)", "vec3(0.0)", "1.0", "0.8333333", "1.0"],
+    ));
+    fixture.push_str("const_assert dark_result.x == 3.0;\n");
+    assert_const_fixture(&fixture);
+    assert!(
+        !source.contains("= retail_fog_tail(") && !source.contains(" retail_fog_tail(lit"),
+        "the retail tail stays uncalled until the fog composite exists"
+    );
+}
+
 /// Fog and output use Bevy's post-lighting processing, as near objects and terrain LOD do, until
-/// the retail frame flags are known (NEEDS 17). The fragment calls it once with the lit RGB and
+/// the engine has the retail depth-composite fog (#946). The fragment calls it once with the lit RGB and
 /// the diffuse alpha, with and without distance fog.
 #[test]
 fn object_lod_output_uses_the_bevy_post_lighting_stand_in() {

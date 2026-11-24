@@ -83,6 +83,15 @@ fn object_lit(
     return (sun + ambient) * diffuse * vertex_rgb;
 }
 
+// skyrim_decomp NEEDS 17 answer (PR pending). The retail pixel-shader tail for frame flags
+// (S,T) = (1,0): `M = L + F (Cf - L)`, `out = L - max(0, k M - B)` per channel, with k = 0.8333
+// and B = 1.0. It equals `L` while every channel of `M` is at most 1.2. Not called yet.
+fn retail_fog_tail(
+    lit: vec3<f32>, fog_colour: vec3<f32>, fog_strength: f32, k: f32, b: f32,
+) -> vec3<f32> {
+    return lit - max(vec3(0.0), k * (lit + fog_strength * (fog_colour - lit)) - vec3(b));
+}
+
 @vertex
 fn vertex(in: ObjectVertex) -> ObjectFragment {
     let world = mesh_functions::get_world_from_local(in.instance_index);
@@ -156,11 +165,12 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     vertex_rgb = in.color.rgb;
 #endif
     let lit = object_lit(sun, ambient, diffuse.rgb, vertex_rgb);
-    // STAND-IN(#946): fog and output use Bevy's distance fog, as terrain LOD and near objects do.
-    // The retail equation is `M = L + F(Cf - L)`, `Q = L - kM`, `E = SQ`,
-    // `out = min(L, QS + B) - TE`. The frame flags S and T are unverified (NEEDS 17 in the
-    // research lane): with S=1 and T=0 the fog has almost no effect on colour, and with
-    // S=1 and T=1 it is `min(kM, B)`. Do not choose between them until a source settles it.
+    // STAND-IN(#946): fog uses Bevy's distance fog, as near objects and terrain LOD do. Retail
+    // draws exterior object LOD with frame flags (S,T) = (1,0) and no fog colour in this
+    // pixel shader (skyrim_decomp NEEDS 17 answer, PR pending). Its haze is a full-screen depth
+    // composite after the opaque stage. The engine has no such composite yet. When it exists,
+    // this fog and the stand-in leave the shader. `retail_fog_tail` above is the (1,0) tail,
+    // kept as a tested pure function and not called.
     var out: FragmentOutput;
     // STAND-IN(#946): alpha omits the retail `b2[3].z` factor (G05), the property alpha times
     // the pass fade. No engine input supplies it. Its value for stock object LOD is unverified.
