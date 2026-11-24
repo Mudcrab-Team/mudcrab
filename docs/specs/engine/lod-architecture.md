@@ -170,10 +170,11 @@ Defaults are the Ultra preset's `[TerrainManager]` values from the game's `Ultra
 250000, `fSplitDistanceMult` 1.5 and `fTreeLoadDistance` 75000. The High preset (35000, 70000,
 250000, 1.5) was the default before #949. `--ini` overrides each key. The retail terrain rule
 uses only `fSplitDistanceMult` and the outer reach; the two block distances drive object LOD.
-Other Ultra defaults with no consumer yet: `[LOD] fLODFadeOutMultObjects` 30,
-`fLODFadeOutMultActors` 15, `fLODFadeOutMultItems` 10, `[Display] fMeshLODLevel1FadeDist` and
-`fMeshLODLevel2FadeDist` 999999, and `[General] uLargeRefLODGridSize` 11 (the large-reference
-grid; the compiled default 9 is the earlier fixed width). The initial terrain slice was measured and
+`[General] uLargeRefLODGridSize` sets the width of the large-reference grid: 11 by default (an odd
+number from 1 to 31; the compiled default 9 was the earlier fixed width). Other Ultra defaults
+with no consumer yet: `[LOD] fLODFadeOutMultObjects` 30, `fLODFadeOutMultActors` 15,
+`fLODFadeOutMultItems` 10, and `[Display] fMeshLODLevel1FadeDist` and `fMeshLODLevel2FadeDist`
+999999. The initial terrain slice was measured and
 accepted at a 4/8/16-cell reach under the earlier rule (block distances times
 `fSplitDistanceMult`, compared by Chebyshev cell distance). The
 [`cb617fc0` candidate](../../research/lod-rc-20261002.md) was approved visually
@@ -185,7 +186,7 @@ The camera far plane follows the largest configured reach.
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
 (Phase 3), the `[LOD]` fade-out multipliers, the mesh LOD fade distances and retail's
 flag 0x8000, RF-LOD-006, which forces level 4 in blocks touching that square: no
-difference at the default High preset, but at Low, `fSplitDistanceMult` 0.5,
+difference at the High preset, but at Low, `fSplitDistanceMult` 0.5,
 retail would force level 4 out to about 18,000 units and Mudcrab does not), and the
 Skyrim quality presets themselves. The engine does not search for the user's
 `My Games` INI files; a launcher or script passes them explicitly.

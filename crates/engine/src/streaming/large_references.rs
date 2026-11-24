@@ -857,8 +857,15 @@ mod tests {
     const FIXTURE_GRID_SIZE: i32 = 9;
 
     fn streaming_fixture(catalog: AssetCatalog) -> (App, Receiver<DatabaseRequest>) {
+        streaming_fixture_with_width(catalog, FIXTURE_GRID_SIZE)
+    }
+
+    fn streaming_fixture_with_width(
+        catalog: AssetCatalog,
+        grid_size: i32,
+    ) -> (App, Receiver<DatabaseRequest>) {
         let (database, inbox, _responses) =
-            WorldDatabase::channel_fixture(max_buckets(FIXTURE_GRID_SIZE / 2));
+            WorldDatabase::channel_fixture(max_buckets(grid_size / 2));
         let mut app = App::new();
         app.add_plugins(bevy::asset::AssetPlugin::default())
             .insert_resource(database)
@@ -867,7 +874,7 @@ mod tests {
                 worldspace_id: 60,
                 stream_radius: 2,
                 max_scene_loads: 1,
-                large_ref_grid_size: FIXTURE_GRID_SIZE,
+                large_ref_grid_size: grid_size,
                 ..default()
             })
             .insert_resource(StreamingWorld {
@@ -1312,11 +1319,26 @@ mod tests {
 
     #[test]
     fn repeated_teleports_cancel_stale_work_and_bound_retained_buckets() {
+        // Width 9: 81 cells, 25 of them ordinary, so 56 requests; then the retained roots use up
+        // the cap.
+        repeated_teleports_bound_retained_buckets(9, [56, 26, 1, 1]);
+    }
+
+    /// The Ultra default width (#949): 121 cells, 25 ordinary, so 96 requests, and the same
+    /// 121-cell cap bounds the retained roots.
+    #[test]
+    fn repeated_teleports_bound_retained_buckets_at_the_default_width() {
+        assert_eq!(EngineConfig::default().large_ref_grid_size, 11);
+        repeated_teleports_bound_retained_buckets(11, [96, 26, 1, 1]);
+    }
+
+    fn repeated_teleports_bound_retained_buckets(grid_size: i32, expected: [usize; 4]) {
+        let radius = grid_size / 2;
         let centers = [0, 20, 40, 60];
         let mut catalog = AssetCatalog::default();
         for x in centers {
-            for dx in -4..=4 {
-                for dy in -4..=4 {
+            for dx in -radius..=radius {
+                for dy in -radius..=radius {
                     catalog
                         .large_references
                         .members
@@ -1324,9 +1346,9 @@ mod tests {
                 }
             }
         }
-        let (mut app, inbox) = streaming_fixture(catalog);
+        let (mut app, inbox) = streaming_fixture_with_width(catalog, grid_size);
         let mut stale: Option<Arc<AtomicBool>> = None;
-        for (x, admitted) in centers.into_iter().zip([56, 26, 1, 1]) {
+        for (x, admitted) in centers.into_iter().zip(expected) {
             app.world_mut()
                 .resource_mut::<StreamingWorld>()
                 .planned_center = Some(IVec2::new(x, 0));
@@ -1360,10 +1382,7 @@ mod tests {
                 // These visible roots are waiting for an outgoing LOD replacement.
                 large.owners.insert(key, Owner::Promoted);
             }
-            assert!(
-                app.world().resource::<LargeReferences>().cells.len()
-                    <= max_buckets(FIXTURE_GRID_SIZE / 2)
-            );
+            assert!(app.world().resource::<LargeReferences>().cells.len() <= max_buckets(radius));
         }
     }
 }

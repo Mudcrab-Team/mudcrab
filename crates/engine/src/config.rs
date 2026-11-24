@@ -55,15 +55,15 @@ pub struct TerrainLodDistances {
 }
 
 impl TerrainLodDistances {
-    /// `[TerrainManager] fBlockLevel0Distance` in `Ultra.ini` (#949).
+    /// `[TerrainManager] fBlockLevel0Distance` in `Ultra.ini` line 39 (#949).
     pub const ULTRA_BLOCK_LEVEL0_DISTANCE: f32 = 60_000.0;
-    /// `[TerrainManager] fBlockLevel1Distance` in `Ultra.ini` (#949).
+    /// `[TerrainManager] fBlockLevel1Distance` in `Ultra.ini` line 40 (#949).
     pub const ULTRA_BLOCK_LEVEL1_DISTANCE: f32 = 90_000.0;
-    /// `[TerrainManager] fBlockMaximumDistance` in `Ultra.ini` (#949).
+    /// `[TerrainManager] fBlockMaximumDistance` in `Ultra.ini` line 41 (#949).
     pub const ULTRA_BLOCK_MAXIMUM_DISTANCE: f32 = 250_000.0;
-    /// `[TerrainManager] fSplitDistanceMult` in `Ultra.ini` (#949).
+    /// `[TerrainManager] fSplitDistanceMult` in `Ultra.ini` line 42 (#949).
     pub const ULTRA_SPLIT_DISTANCE_MULT: f32 = 1.5;
-    /// `[TerrainManager] fTreeLoadDistance` in `Ultra.ini` (#949).
+    /// `[TerrainManager] fTreeLoadDistance` in `Ultra.ini` line 38 (#949).
     pub const ULTRA_TREE_LOAD_DISTANCE: f32 = 75_000.0;
 }
 
@@ -100,7 +100,7 @@ impl Default for TerrainLodDistances {
 /// multipliers (`[LOD]`) and the mesh LOD fade distances (`[Display]`).
 ///
 /// The defaults are the Ultra preset (#949), read from `Ultra.ini`. Nothing reads these values
-/// until object LOD fade (#716) and mesh LOD (#949) exist; the engine parses and keeps them so
+/// until object LOD fade (#716) and mesh LOD (no issue yet) exist; the engine parses and keeps them so
 /// `--ini` can override them and so a later change starts from the cited default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LodFadeSettings {
@@ -130,7 +130,7 @@ impl Default for LodFadeSettings {
     }
 }
 
-/// `[General] uLargeRefLODGridSize` in `Ultra.ini` (#949): the side, in cells, of the square around
+/// `[General] uLargeRefLODGridSize` in `Ultra.ini` line 2 (#949): the side, in cells, of the square around
 /// the camera whose large references promote to full models. The compiled default is 9 (community
 /// dump, unverified for 1.7.104); the presets use 5, 7, 9 and 11.
 pub const ULTRA_LARGE_REF_LOD_GRID_SIZE: i32 = 11;
@@ -5707,6 +5707,34 @@ mod tests {
             let x = f64::from(cell) * f64::from(CELL_SIZE) - threshold;
             let tier = |x| {
                 high.object_tier(
+                    DVec2::new(x, 0.0),
+                    IVec2::new(cell, 0).as_dvec2(),
+                    IVec2::ZERO,
+                    1.0,
+                )
+            };
+            assert_eq!(
+                (x / f64::from(CELL_SIZE)).floor(),
+                ((x + 1.0) / f64::from(CELL_SIZE)).floor()
+            );
+            assert_eq!(tier(x + 1.0), near);
+            assert_eq!(tier(x), at);
+            assert_eq!(tier(x - 1.0), at);
+        }
+    }
+
+    /// The same strict crossings at the Ultra defaults (#949): 60,000, 90,000 and 250,000.
+    #[test]
+    fn ultra_object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
+        let ultra = TerrainLodDistances::default();
+        for (cell, threshold, near, at) in [
+            (16, 60_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
+            (32, 90_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
+            (64, 250_000.0, Some(LodTier::Tier16), None),
+        ] {
+            let x = f64::from(cell) * f64::from(CELL_SIZE) - threshold;
+            let tier = |x| {
+                ultra.object_tier(
                     DVec2::new(x, 0.0),
                     IVec2::new(cell, 0).as_dvec2(),
                     IVec2::ZERO,
