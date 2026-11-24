@@ -680,6 +680,310 @@ fn object_lod_shader_uses_signed_rgb_without_reconstructing_blue() {
     compose(source, "lod_object.wgsl", defs).unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// Replace whole-word occurrences of `from`, so `x` does not change `max` or `x_ray`.
+fn replace_word(text: &str, from: &str, to: &str) -> String {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(from) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + from.len()..].chars().next();
+        out.push_str(&rest[..at]);
+        if before.is_some_and(is_word) || after.is_some_and(is_word) {
+            out.push_str(from);
+        } else {
+            out.push_str(to);
+        }
+        rest = &rest[at + from.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// One call of a single-`return` WGSL function, as const declarations. Each parameter becomes
+/// `const <prefix>_<name> = <argument>;` and the result `const <prefix>_result = <expression>;`.
+/// Naga evaluates const expressions and `const_assert` at parse time, so a fixture built from these
+/// checks the arithmetic of the shipped function body without a GPU.
+fn const_call(source: &str, function: &str, prefix: &str, arguments: &[&str]) -> String {
+    let (_, rest) = source
+        .split_once(&format!("fn {function}("))
+        .unwrap_or_else(|| panic!("{function} is not in the shader"));
+    let (parameters, rest) = rest.split_once(") ->").expect("function signature");
+    let body = rest.split_once('{').expect("function body").1;
+    let expression = body
+        .trim_start()
+        .strip_prefix("return ")
+        .and_then(|body| body.split_once(';'))
+        .unwrap_or_else(|| panic!("{function} must be a single return"))
+        .0;
+    let names: Vec<&str> = parameters
+        .split(',')
+        .filter_map(|parameter| parameter.split(':').next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert_eq!(names.len(), arguments.len(), "{function} parameters");
+    let mut expression = expression.to_owned();
+    let mut declarations = String::new();
+    for (name, argument) in names.iter().zip(arguments) {
+        expression = replace_word(&expression, name, &format!("{prefix}_{name}"));
+        declarations.push_str(&format!("const {prefix}_{name} = {argument};\n"));
+    }
+    declarations.push_str(&format!("const {prefix}_result = {expression};\n"));
+    declarations
+}
+
+fn assert_const_fixture(fixture: &str) {
+    wgpu::naga::front::wgsl::parse_str(fixture)
+        .unwrap_or_else(|error| panic!("{}", error.emit_to_string(fixture)));
+}
+
+/// The ambient rows follow the retail path: creation-axis slopes become runtime axes, rotate into
+/// model space, and dot with the model-space normal plus the mean. At the identity rotation an
+/// upward normal (runtime +Y, creation +Z) returns `mean + z_slope`, with no clamp.
+#[test]
+fn object_lod_ambient_is_mean_plus_the_rotated_slope_dot() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    let identity = [
+        "vec3(1.0, 0.0, 0.0)",
+        "vec3(0.0, 1.0, 0.0)",
+        "vec3(0.0, 0.0, 1.0)",
+    ];
+    // The red row: creation slopes x 0.25, y 0.5, z 0.125 and mean 0.5. Green and blue are zero.
+    let mut fixture = const_call(source, "runtime_slope", "slope", &["0.25", "0.5", "0.125"]);
+    fixture.push_str(&const_call(
+        source,
+        "to_model_space",
+        "row",
+        &[identity[0], identity[1], identity[2], "slope_result"],
+    ));
+    for (name, normal) in [
+        ("up", "vec3(0.0, 1.0, 0.0)"),
+        ("east", "vec3(1.0, 0.0, 0.0)"),
+        ("south", "vec3(0.0, 0.0, 1.0)"),
+    ] {
+        fixture.push_str(&const_call(
+            source,
+            "object_ambient",
+            name,
+            &[
+                "vec3(0.5, 0.0, 0.0)",
+                "row_result",
+                "vec3(0.0)",
+                "vec3(0.0)",
+                normal,
+            ],
+        ));
+    }
+    // Runtime +Y is creation +Z (slope 0.125). Runtime +X is creation +X (0.25). Runtime +Z is
+    // creation -Y, so it reads minus the creation Y slope (0.5).
+    fixture.push_str(
+        "const_assert up_result.x == 0.625 && up_result.y == 0.0 && up_result.z == 0.0;
+         const_assert east_result.x == 0.75;
+         const_assert south_result.x == 0.0;
+",
+    );
+    assert_const_fixture(&fixture);
+
+    // A model turned so its x axis points along world -Z and its z axis along world +X. A world +X
+    // vector reads as model +Z. World +Y stays model +Y.
+    let turned = [
+        "vec3(0.0, 0.0, -1.0)",
+        "vec3(0.0, 1.0, 0.0)",
+        "vec3(1.0, 0.0, 0.0)",
+    ];
+    let mut fixture = const_call(
+        source,
+        "to_model_space",
+        "turn",
+        &[turned[0], turned[1], turned[2], "vec3(1.0, 0.0, 0.0)"],
+    );
+    fixture.push_str(
+        "const_assert turn_result.x == 0.0 && turn_result.y == 0.0 && turn_result.z == 1.0;\n",
+    );
+    assert_const_fixture(&fixture);
+
+    // The dot is not clamped: a negative slope term can pull the ambient below the mean.
+    let mut fixture = const_call(
+        source,
+        "object_ambient",
+        "dark",
+        &[
+            "vec3(0.125)",
+            "vec3(0.0, -0.5, 0.0)",
+            "vec3(0.0)",
+            "vec3(0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+        ],
+    );
+    fixture.push_str("const_assert dark_result.x == -0.375;\n");
+    assert_const_fixture(&fixture);
+}
+
+/// The sun term is the saturated normal dot times the RGB. The light sum multiplies diffuse and
+/// then vertex RGB. A mesh without vertex colour (technique 13) supplies white.
+#[test]
+fn object_lod_sun_and_lit_follow_the_retail_term_order() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    let mut fixture = String::new();
+    fixture.push_str(&const_call(
+        source,
+        "object_sun",
+        "lit_face",
+        &[
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.5, 0.0)",
+            "vec3(2.0, 1.0, 0.5)",
+        ],
+    ));
+    fixture.push_str(&const_call(
+        source,
+        "object_sun",
+        "back_face",
+        &[
+            "vec3(0.0, -1.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(2.0, 1.0, 0.5)",
+        ],
+    ));
+    fixture.push_str(&const_call(
+        source,
+        "object_sun",
+        "over_unit",
+        &["vec3(0.0, 1.0, 0.0)", "vec3(0.0, 2.0, 0.0)", "vec3(1.0)"],
+    ));
+    // Saturated: the dot never exceeds 1 (over-unit direction) and never goes below 0.
+    fixture.push_str(
+        "const_assert lit_face_result.x == 1.0 && lit_face_result.y == 0.5 && lit_face_result.z == 0.25;
+         const_assert back_face_result.x == 0.0 && back_face_result.z == 0.0;
+         const_assert over_unit_result.x == 1.0;
+",
+    );
+    fixture.push_str(&const_call(
+        source,
+        "object_lit",
+        "tinted",
+        &[
+            "vec3(1.0, 0.5, 0.0)",
+            "vec3(0.25, 0.25, 0.25)",
+            "vec3(0.5, 1.0, 0.5)",
+            "vec3(0.5, 0.5, 1.0)",
+        ],
+    ));
+    // (1.25, 0.75, 0.25) * (0.5, 1, 0.5) * (0.5, 0.5, 1) = (0.3125, 0.375, 0.125)
+    fixture.push_str(
+        "const_assert tinted_result.x == 0.3125 && tinted_result.y == 0.375 && tinted_result.z == 0.125;
+",
+    );
+    fixture.push_str(&const_call(
+        source,
+        "object_lit",
+        "white",
+        &[
+            "vec3(1.0, 0.5, 0.0)",
+            "vec3(0.25, 0.25, 0.25)",
+            "vec3(0.5, 1.0, 0.5)",
+            "vec3(1.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert white_result.x == 0.625 && white_result.y == 0.75 && white_result.z == 0.125;
+",
+    );
+    assert_const_fixture(&fixture);
+
+    // Technique 13 has no vertex colour attribute. Without VERTEX_COLORS the fragment input has no
+    // location 5, and the shader's white default is the multiplier.
+    let mut defs = base_defs();
+    for name in [
+        "VERTEX_UVS_B",
+        "VERTEX_TANGENTS",
+        "STANDARD_MATERIAL_BASE_COLOR_UV_B",
+        "STANDARD_MATERIAL_NORMAL_MAP",
+    ] {
+        defs.remove(name);
+    }
+    let with_colour = with_flags(defs, &["MAY_DISCARD", "DISTANCE_FOG"]);
+    let mut without_colour = with_colour.clone();
+    without_colour.remove("VERTEX_COLORS");
+    let colour_inputs = |defs: &Definitions| {
+        let module = compose(source, "lod_object.wgsl", defs.clone())
+            .unwrap_or_else(|error| panic!("{error}"));
+        let (_, fragment_input) = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("ObjectFragment"))
+            .expect("ObjectFragment");
+        let wgpu::naga::TypeInner::Struct { members, .. } = &fragment_input.inner else {
+            panic!("ObjectFragment is a struct")
+        };
+        members
+            .iter()
+            .filter(|member| {
+                matches!(
+                    member.binding,
+                    Some(wgpu::naga::Binding::Location { location: 5, .. })
+                )
+            })
+            .count()
+    };
+    assert_eq!(colour_inputs(&with_colour), 1);
+    assert_eq!(colour_inputs(&without_colour), 0);
+    assert!(
+        source.contains("var vertex_rgb = vec3(1.0);\n#ifdef VERTEX_COLORS\n    vertex_rgb = in.color.rgb;\n#endif"),
+        "the vertex multiplier must default to white and take mesh colour only when present"
+    );
+}
+
+/// Fog and output use Bevy's post-lighting processing, as near objects and terrain LOD do, until
+/// the retail frame flags are known (NEEDS 17). The fragment calls it once with the lit RGB and
+/// the diffuse alpha, with and without distance fog.
+#[test]
+fn object_lod_output_uses_the_bevy_post_lighting_stand_in() {
+    use wgpu::naga::Statement;
+    let source = include_str!("streaming/lod_object.wgsl");
+    assert!(source.contains("main_pass_post_lighting_processing(input, vec4(lit, diffuse.a))"));
+    let mut defs = base_defs();
+    for name in [
+        "VERTEX_UVS_B",
+        "VERTEX_TANGENTS",
+        "STANDARD_MATERIAL_BASE_COLOR_UV_B",
+        "STANDARD_MATERIAL_NORMAL_MAP",
+    ] {
+        defs.remove(name);
+    }
+    for flags in [&["MAY_DISCARD"][..], &["MAY_DISCARD", "DISTANCE_FOG"][..]] {
+        let module = compose(source, "lod_object.wgsl", with_flags(defs.clone(), flags))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let post_lighting = module
+            .functions
+            .iter()
+            .find(|(_, function)| {
+                // naga_oil appends a module-specific suffix to imported function names.
+                function
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("main_pass_post_lighting_processing"))
+            })
+            .map(|(handle, _)| handle)
+            .expect("the post-lighting function is composed into the shader");
+        let fragment = module
+            .entry_points
+            .iter()
+            .find(|entry| entry.name == "fragment")
+            .expect("fragment entry point");
+        let calls = fragment
+            .function
+            .body
+            .iter()
+            .filter(|statement| {
+                matches!(statement, Statement::Call { function, .. } if *function == post_lighting)
+            })
+            .count();
+        assert_eq!(calls, 1, "flags {flags:?}");
+    }
+}
+
 /// A broken shader reports its file, its def set and the Naga message with a line. This is the
 /// fail case of the gate: the same report the test prints for a real shader.
 #[test]

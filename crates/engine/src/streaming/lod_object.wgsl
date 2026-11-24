@@ -1,9 +1,8 @@
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     mesh_functions,
-    mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::alpha_discard,
+    pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
     view_transformations::position_world_to_clip,
 }
 
@@ -14,10 +13,6 @@ struct ObjectLighting {
     z: vec4<f32>,
     sun_direction: vec4<f32>,
     sun_rgb: vec4<f32>,
-    fog_ramp: vec4<f32>,
-    fog_near: vec4<f32>,
-    fog_far: vec4<f32>,
-    output_controls: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var normal_atlas: texture_2d<f32>;
@@ -53,7 +48,39 @@ struct ObjectFragment {
     @location(11) @interpolate(flat) ambient_g: vec3<f32>,
     @location(12) @interpolate(flat) ambient_b: vec3<f32>,
     @location(13) @interpolate(flat) sun_direction: vec3<f32>,
-    @location(14) fog: vec4<f32>,
+}
+
+// skyrim_decomp#1003 G02. Creation axes (X,Y,Z) become runtime axes (X,Z,-Y). The inputs are
+// one directional ambient slope per creation axis for one colour channel.
+fn runtime_slope(x: f32, y: f32, z: f32) -> vec3<f32> {
+    return vec3(x, z, -y);
+}
+
+// skyrim_decomp#1003 G02. `Rᵀ × v` for model axes expressed in world space. Component i is
+// the projection of `v` on model axis i.
+fn to_model_space(
+    axis_x: vec3<f32>, axis_y: vec3<f32>, axis_z: vec3<f32>, v: vec3<f32>,
+) -> vec3<f32> {
+    return vec3(dot(axis_x, v), dot(axis_y, v), dot(axis_z, v));
+}
+
+// skyrim_decomp#1003 G02 and G05. The mean is the intercept. Each row dots with (N,1). No clamp.
+fn object_ambient(
+    mean: vec3<f32>, row_r: vec3<f32>, row_g: vec3<f32>, row_b: vec3<f32>, n: vec3<f32>,
+) -> vec3<f32> {
+    return mean + vec3(dot(n, row_r), dot(n, row_g), dot(n, row_b));
+}
+
+// skyrim_decomp#1003 G03 and G05. The dot is saturated. The RGB already holds the sunlight scale.
+fn object_sun(n: vec3<f32>, sun_direction: vec3<f32>, sun_rgb: vec3<f32>) -> vec3<f32> {
+    return saturate(dot(n, sun_direction)) * sun_rgb;
+}
+
+// skyrim_decomp#1003 G05. Diffuse RGB multiplies the light sum, then vertex RGB.
+fn object_lit(
+    sun: vec3<f32>, ambient: vec3<f32>, diffuse: vec3<f32>, vertex_rgb: vec3<f32>,
+) -> vec3<f32> {
+    return (sun + ambient) * diffuse * vertex_rgb;
 }
 
 @vertex
@@ -67,27 +94,22 @@ fn vertex(in: ObjectVertex) -> ObjectFragment {
     out.green = in.green;
     out.blue = in.normal;
 
-    // https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003 G02 and G03.
-    // Object LOD uses uniform scale. Rotate the world inputs into the atlas basis space.
-    let model_from_world = transpose(mat3x3(
-        normalize(world[0].xyz), normalize(world[1].xyz), normalize(world[2].xyz),
-    ));
-    // Creation axes (X,Y,Z) become runtime axes (X,Z,-Y).
-    let world_slopes = transpose(mat3x3(lighting.x.rgb, lighting.z.rgb, -lighting.y.rgb));
-    out.ambient_r = model_from_world * world_slopes[0];
-    out.ambient_g = model_from_world * world_slopes[1];
-    out.ambient_b = model_from_world * world_slopes[2];
-    out.sun_direction = model_from_world * lighting.sun_direction.xyz;
+    // skyrim_decomp#1003 G02 and G03. Object LOD uses uniform scale. Rotate the world inputs
+    // into the atlas basis space. Axis i of the model is the normalised column i of `world`.
+    let axis_x = normalize(world[0].xyz);
+    let axis_y = normalize(world[1].xyz);
+    let axis_z = normalize(world[2].xyz);
+    out.ambient_r = to_model_space(
+        axis_x, axis_y, axis_z, runtime_slope(lighting.x.r, lighting.y.r, lighting.z.r),
+    );
+    out.ambient_g = to_model_space(
+        axis_x, axis_y, axis_z, runtime_slope(lighting.x.g, lighting.y.g, lighting.z.g),
+    );
+    out.ambient_b = to_model_space(
+        axis_x, axis_y, axis_z, runtime_slope(lighting.x.b, lighting.y.b, lighting.z.b),
+    );
+    out.sun_direction = to_model_space(axis_x, axis_y, axis_z, lighting.sun_direction.xyz);
 
-    out.fog = vec4(0.0);
-    if lighting.fog_ramp.y > 0.0 {
-        // STAND-IN(#946): reconstruct forward depth from Bevy's reversed clip depth.
-        // The exact retail projection is unverified. See #1003 G05.
-        let clip_xyz = vec3(out.position.xy, out.position.w - out.position.z);
-        let ramp = lighting.fog_ramp;
-        let strength = min(pow(saturate(length(clip_xyz) * ramp.y - ramp.x), ramp.z), ramp.w);
-        out.fog = vec4(mix(lighting.fog_near.rgb, lighting.fog_far.rgb, strength), strength);
-    }
 #ifdef VERTEX_COLORS
     out.color = in.color;
 #endif
@@ -118,30 +140,30 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     let input = pbr_input_from_standard_material(mesh, is_front);
     let diffuse = alpha_discard(input.material, input.material.base_color);
 
-    // https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003 G02–G05.
+    // skyrim_decomp#1003 G02 to G05.
     let tangent_normal = decode_object_atlas(textureSample(normal_atlas, atlas_sampler, in.uv).rgb);
     let normal = normalize(mat3x3(in.red, in.green, in.blue) * tangent_normal);
-    let ambient = lighting.mean.rgb + vec3(
-        dot(normal, in.ambient_r), dot(normal, in.ambient_g), dot(normal, in.ambient_b),
+    let ambient = object_ambient(
+        lighting.mean.rgb, in.ambient_r, in.ambient_g, in.ambient_b, normal,
     );
-    let sun = saturate(dot(normal, in.sun_direction)) * lighting.sun_rgb.rgb;
+    let sun = object_sun(normal, in.sun_direction, lighting.sun_rgb.rgb);
     // The ordinary exterior light assignment skips the stock object LOD root (G04).
     // STAND-IN(#946): use the stock zero property emission and omit shader-object additive
     // colour. Native projected detail and auxiliary outputs have no matching engine inputs.
+    // Technique 13 has no vertex colour attribute: its vertex shader supplies white (G01).
     var vertex_rgb = vec3(1.0);
 #ifdef VERTEX_COLORS
     vertex_rgb = in.color.rgb;
 #endif
-    let lit = (sun + ambient) * diffuse.rgb * vertex_rgb;
-    var fogged = lit;
-#ifdef DISTANCE_FOG
-    if view_bindings::fog.mode != 0u {
-        fogged = mix(lit, in.fog.rgb, in.fog.a);
-    }
-#endif
-    let controls = lighting.output_controls;
-    let scaled = controls.z * (lit - controls.x * fogged);
+    let lit = object_lit(sun, ambient, diffuse.rgb, vertex_rgb);
+    // STAND-IN(#946): fog and output use Bevy's distance fog, as terrain LOD and near objects do.
+    // The retail equation is `M = L + F(Cf - L)`, `Q = L - kM`, `E = SQ`,
+    // `out = min(L, QS + B) - TE`. The frame flags S and T are unverified (NEEDS 17 in the
+    // research lane): with S=1 and T=0 the fog has almost no effect on colour, and with
+    // S=1 and T=1 it is `min(kM, B)`. Do not choose between them until a source settles it.
     var out: FragmentOutput;
-    out.color = vec4(min(lit, scaled + vec3(controls.y)) - controls.w * scaled, diffuse.a);
+    // STAND-IN(#946): alpha omits the retail `b2[3].z` factor (G05), the property alpha times
+    // the pass fade. No engine input supplies it. Its value for stock object LOD is unverified.
+    out.color = main_pass_post_lighting_processing(input, vec4(lit, diffuse.a));
     return out;
 }

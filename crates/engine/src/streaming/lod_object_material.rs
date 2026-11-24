@@ -3,7 +3,6 @@
 use super::lod_objects::{LodObjectRoot, ObjectSceneReady};
 use crate::{
     config::EngineConfig,
-    sky::SkyPalette,
     sun::{GameClock, world_sun_direction},
     weather_sky::{DEFAULT_WEATHER_FORM_ID, slot_weights},
     world::{
@@ -38,11 +37,12 @@ pub(crate) const RED_AXIS: MeshVertexAttribute =
     MeshVertexAttribute::new("ObjectAtlasRed", 41_501, VertexFormat::Float32x3);
 pub(crate) const GREEN_AXIS: MeshVertexAttribute =
     MeshVertexAttribute::new("ObjectAtlasGreen", 41_502, VertexFormat::Float32x3);
-// https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003 G03 and G05.
-// Ultra.ini and Skyrim_Default.ini supply neither setting. SunlightScale is
-// authored in IMGS.HNAM. The clamp is the compiled fLightingOutputColourClampPostLit default.
+// skyrim_decomp#1003 G03. SunlightScale is authored in IMGS.HNAM. Neither Ultra.ini nor
+// Skyrim_Default.ini sets it. The constructor default is "about 1.8" in G03. The exact float is
+// unverified, so this value is a STAND-IN(#946) for that default. It applies only when the
+// pack's image space for a day part has no sunlight scale. The engine's near path uses its own
+// `SUNLIGHT_SCALE` (2.8) for the directional light. That constant does not feed this material.
 const DEFAULT_SUNLIGHT_SCALE: f32 = 1.8;
-const POST_LIT_CLAMP: f32 = 1.0;
 const SHADER: &str = "embedded://engine/streaming/lod_object.wgsl";
 
 type ObjectMaterial = ExtendedMaterial<StandardMaterial, ObjectAtlas>;
@@ -55,10 +55,6 @@ struct ObjectLighting {
     z: Vec4,
     sun_direction: Vec4,
     sun_rgb: Vec4,
-    fog_ramp: Vec4,
-    fog_near: Vec4,
-    fog_far: Vec4,
-    output_controls: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -297,96 +293,16 @@ fn update_object_lighting(
     clock: Option<Res<GameClock>>,
     catalog: Option<Res<EnvironmentCatalog>>,
     config: Res<EngineConfig>,
-    palette: Option<Res<SkyPalette>>,
-    settings: Option<Res<crate::settings::RenderingSettings>>,
     mut materials: ResMut<Assets<ObjectMaterial>>,
     atlases: Res<Atlases>,
 ) {
     let (Some(clock), Some(catalog)) = (clock, catalog) else {
         return;
     };
-    let Some(weather) = catalog.weather(DEFAULT_WEATHER_FORM_ID) else {
-        return;
-    };
     for (world, handle) in &atlases.materials {
-        let Some(timing) = catalog
-            .worldspace_climate(*world)
-            .and_then(|id| catalog.sun_timing(id))
-        else {
+        let Some(lighting) = object_lighting(&catalog, &config, clock.hour, *world) else {
             continue;
         };
-        let mut lighting = ObjectLighting::default();
-        let mut sunlight_scale = 0.0;
-        // STAND-IN(#946): use the engine's single exterior weather and base image space.
-        // Weather transitions, flashes, image-space overrides and modifiers are unmodeled.
-        // Use the constructor default when the pack lacks a resolved IMSP slot.
-        for (index, (time, weight)) in TimeOfDay::ALL
-            .into_iter()
-            .zip(slot_weights(clock.hour, timing))
-            .enumerate()
-        {
-            if weight == 0.0 {
-                continue;
-            }
-            // https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003 G02 and G03.
-            if let Some(dalc) = weather.directional_ambient.get(&time) {
-                let cube = AmbientCube::from_dalc(dalc);
-                let weighted = |rgb| (Vec3::from_array(rgb) * weight).extend(0.0);
-                lighting.mean += weighted(cube.mean);
-                lighting.x += weighted(cube.half_difference_x);
-                lighting.y += weighted(cube.half_difference_y);
-                lighting.z += weighted(cube.half_difference_z);
-            }
-            if let Some(sunlight) = weather.color("sunlight", time) {
-                lighting.sun_rgb +=
-                    (Vec3::from_array(sunlight.map(f32::from)) * (weight / 255.0)).extend(0.0);
-            }
-            sunlight_scale += weight
-                * weather.image_spaces[index]
-                    .and_then(|id| catalog.image_space(id))
-                    .and_then(|image_space| image_space.sunlight_scale)
-                    .unwrap_or(DEFAULT_SUNLIGHT_SCALE);
-        }
-        // STAND-IN(#946): use the initialized sun fade of 1 and DALC intercept operand of 0.
-        // The effective fade and any runtime writes to the intercept operand are unverified.
-        lighting.sun_rgb *= sunlight_scale;
-        let direction = world_sun_direction(&config, clock.hour, Some(&catalog), *world);
-        lighting.sun_direction = if config.sun_position.is_some() {
-            crate::app::sun_rotation(&config, direction) * Vec3::Z
-        } else {
-            direction.unwrap_or(Vec3::ZERO)
-        }
-        .extend(0.0);
-
-        // STAND-IN(#946): use the engine's active sky palette and density preference.
-        // The retail scene fog property and exact projection are unverified at runtime.
-        if let Some(palette) = palette.as_deref()
-            && let Some(ramp) = palette.fog_ramp
-        {
-            let scale = (palette.fog_density_scale
-                * settings.as_deref().map_or(1.0, |s| s.fog_density_scale))
-            .max(1.0e-3);
-            let (near, far) = (ramp.near / scale, ramp.far / scale);
-            let width = far - near;
-            if width.is_finite() && width > 0.0 && ramp.power > 0.0 {
-                lighting.fog_ramp = Vec4::new(near / width, 1.0 / width, ramp.power, ramp.max);
-                let rgb = |color: Color| {
-                    let color = color.to_srgba();
-                    Vec4::new(color.red, color.green, color.blue, 0.0)
-                };
-                lighting.fog_near = rgb(palette.fog_near);
-                lighting.fog_far = rgb(palette.fog_far);
-            }
-        }
-        // STAND-IN(#946): use the initialized frame flags S=1, T=0.
-        // The active frame-flag inputs at the distant pose are unverified.
-        lighting.output_controls = Vec4::new(
-            crate::output_scale::framebuffer_output_scale(true),
-            POST_LIT_CLAMP,
-            1.0,
-            0.0,
-        );
-
         if materials
             .get(handle)
             .is_some_and(|material| material.extension.lighting != lighting)
@@ -397,9 +313,73 @@ fn update_object_lighting(
     }
 }
 
+/// The retail directional ambient rows, sun RGB and sun direction for one worldspace and hour.
+/// Fog and output use Bevy's distance fog in the shader, so no fog input is built here.
+fn object_lighting(
+    catalog: &EnvironmentCatalog,
+    config: &EngineConfig,
+    hour: f64,
+    world: u32,
+) -> Option<ObjectLighting> {
+    let weather = catalog.weather(DEFAULT_WEATHER_FORM_ID)?;
+    let timing = catalog
+        .worldspace_climate(world)
+        .and_then(|id| catalog.sun_timing(id))?;
+    let mut lighting = ObjectLighting::default();
+    let mut sunlight_scale = 0.0;
+    // STAND-IN(#946): use the engine's single exterior weather and base image space.
+    // Weather transitions, flashes, image-space overrides and modifiers are unmodeled.
+    // Use the constructor default when the pack lacks a resolved IMSP slot.
+    for (index, (time, weight)) in TimeOfDay::ALL
+        .into_iter()
+        .zip(slot_weights(hour, timing))
+        .enumerate()
+    {
+        if weight == 0.0 {
+            continue;
+        }
+        // skyrim_decomp#1003 G02. A day part without a DALC row adds nothing, so its share of the
+        // ambient is dark. Retail's constructor default is white. The engine omits it instead of
+        // inventing a row for a weather that lacks one (no invented data).
+        if let Some(dalc) = weather.directional_ambient.get(&time) {
+            let cube = AmbientCube::from_dalc(dalc);
+            let weighted = |rgb| (Vec3::from_array(rgb) * weight).extend(0.0);
+            lighting.mean += weighted(cube.mean);
+            lighting.x += weighted(cube.half_difference_x);
+            lighting.y += weighted(cube.half_difference_y);
+            lighting.z += weighted(cube.half_difference_z);
+        }
+        // skyrim_decomp#1003 G03. A day part without a NAM0 sunlight row adds no sun.
+        if let Some(sunlight) = weather.color("sunlight", time) {
+            lighting.sun_rgb +=
+                (Vec3::from_array(sunlight.map(f32::from)) * (weight / 255.0)).extend(0.0);
+        }
+        sunlight_scale += weight
+            * weather.image_spaces[index]
+                .and_then(|id| catalog.image_space(id))
+                .and_then(|image_space| image_space.sunlight_scale)
+                .unwrap_or(DEFAULT_SUNLIGHT_SCALE);
+    }
+    // STAND-IN(#946): use the initialized sun fade of 1 and DALC intercept operand of 0.
+    // The effective fade and any runtime writes to the intercept operand are unverified.
+    // The colour and the scale are each blended by the day-part weights, then multiplied. The
+    // product of the two sums differs from the sum of the products. Retail takes the scale from
+    // the active image space after its own blend (G03). Whether the two agree is unverified.
+    lighting.sun_rgb *= sunlight_scale;
+    let direction = world_sun_direction(config, hour, Some(catalog), world);
+    lighting.sun_direction = if config.sun_position.is_some() {
+        crate::app::sun_rotation(config, direction) * Vec3::Z
+    } else {
+        direction.unwrap_or(Vec3::ZERO)
+    }
+    .extend(0.0);
+    Some(lighting)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::environment::{DirectionalAmbient, ImageSpace, Weather};
     use bevy::{
         asset::{AssetPlugin, RenderAssetUsages},
         ecs::schedule::SingleThreadedExecutor,
@@ -635,5 +615,223 @@ mod tests {
             1,
             "{messages:?}"
         );
+    }
+    // The lighting fixture. Red face bytes 51,153,0,204,102,255 give mean 0.5 and slopes 0.2,
+    // 0.4 and 0.3. Green is all 255 (mean 1, no slope). Blue is all 0.
+    const WORLD: u32 = 7;
+    const TIMING: crate::sun::SunTiming = crate::sun::SunTiming([33, 60, 96, 123]);
+    const DAY_SPACE: u32 = 0x77;
+    const SUNSET_SPACE: u32 = 0x78;
+
+    fn dalc(red: [u8; 6], green: [u8; 6], blue: [u8; 6]) -> DirectionalAmbient {
+        DirectionalAmbient {
+            colors: std::array::from_fn(|face| [red[face], green[face], blue[face]]),
+            ..default()
+        }
+    }
+
+    fn day_weather() -> Weather {
+        let mut weather = Weather::default();
+        weather.directional_ambient.insert(
+            TimeOfDay::Day,
+            dalc([51, 153, 0, 204, 102, 255], [255; 6], [0; 6]),
+        );
+        weather
+            .colors
+            .insert(("sunlight".to_owned(), TimeOfDay::Day), [255, 51, 0]);
+        weather
+    }
+
+    fn space(sunlight_scale: f32) -> ImageSpace {
+        ImageSpace {
+            sunlight_scale: Some(sunlight_scale),
+            ..default()
+        }
+    }
+
+    fn catalog(weather: Weather, spaces: Vec<(u32, ImageSpace)>) -> EnvironmentCatalog {
+        EnvironmentCatalog::with_sun_for_tests(
+            WORLD,
+            1,
+            TIMING,
+            [
+                Some(400.0),
+                Some(40.0),
+                Some(-150.0),
+                Some(200.0),
+                Some(0.5),
+            ],
+        )
+        .with_weather_for_tests(DEFAULT_WEATHER_FORM_ID, weather, spaces)
+    }
+
+    fn assert_near(actual: Vec4, expected: [f32; 4]) {
+        for (a, e) in actual.to_array().into_iter().zip(expected) {
+            assert!((a - e).abs() < 1.0e-5, "{actual:?} != {expected:?}");
+        }
+    }
+
+    #[test]
+    fn noon_lighting_is_the_day_dalc_rows_and_the_image_space_sun() {
+        let mut weather = day_weather();
+        weather.image_spaces[1] = Some(DAY_SPACE);
+        let catalog = catalog(weather, vec![(DAY_SPACE, space(2.5))]);
+        let config = EngineConfig::default();
+        let lighting = object_lighting(&catalog, &config, 12.0, WORLD).unwrap();
+        // Mean is the face average. Slopes are half the face differences, unclamped and unscaled.
+        assert_near(lighting.mean, [0.5, 1.0, 0.0, 0.0]);
+        assert_near(lighting.x, [0.2, 0.0, 0.0, 0.0]);
+        assert_near(lighting.y, [0.4, 0.0, 0.0, 0.0]);
+        assert_near(lighting.z, [0.3, 0.0, 0.0, 0.0]);
+        // Sun RGB is the NAM0 row over 255 times the image-space scale. No engine multiplier.
+        assert_near(lighting.sun_rgb, [2.5, 0.5, 0.0, 0.0]);
+        let sun = world_sun_direction(&config, 12.0, Some(&catalog), WORLD).unwrap();
+        assert_near(lighting.sun_direction, [sun.x, sun.y, sun.z, 0.0]);
+        assert!(sun.y > 0.0, "the noon sun is above the horizon: {sun:?}");
+    }
+
+    #[test]
+    fn a_fixed_sun_position_gives_the_rotated_to_sun_vector() {
+        let catalog = catalog(day_weather(), Vec::new());
+        let config = EngineConfig {
+            sun_position: Some((90.0, 35.0)),
+            ..default()
+        };
+        let lighting = object_lighting(&catalog, &config, 12.0, WORLD).unwrap();
+        let expected = crate::app::sun_rotation(&config, None) * Vec3::Z;
+        assert_near(
+            lighting.sun_direction,
+            [expected.x, expected.y, expected.z, 0.0],
+        );
+        assert!((expected.y - 35.0_f32.to_radians().sin()).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn a_missing_image_space_uses_the_labelled_constructor_default() {
+        let lighting = object_lighting(
+            &catalog(day_weather(), Vec::new()),
+            &EngineConfig::default(),
+            12.0,
+            WORLD,
+        )
+        .unwrap();
+        assert_near(
+            lighting.sun_rgb,
+            [
+                DEFAULT_SUNLIGHT_SCALE,
+                0.2 * DEFAULT_SUNLIGHT_SCALE,
+                0.0,
+                0.0,
+            ],
+        );
+    }
+
+    #[test]
+    fn the_day_part_blend_weights_rows_colour_and_scale_separately() {
+        let hour = 17.0;
+        let weights = slot_weights(hour, TIMING);
+        let (day, sunset) = (weights[1], weights[2]);
+        assert!(
+            day > 0.0 && sunset > 0.0,
+            "day and sunset share the blend at hour {hour}: {weights:?}"
+        );
+        let mut weather = day_weather();
+        weather
+            .directional_ambient
+            .insert(TimeOfDay::Sunset, dalc([102; 6], [0; 6], [255; 6]));
+        weather
+            .colors
+            .insert(("sunlight".to_owned(), TimeOfDay::Sunset), [0, 255, 51]);
+        weather.image_spaces[1] = Some(DAY_SPACE);
+        weather.image_spaces[2] = Some(SUNSET_SPACE);
+        let catalog = catalog(
+            weather,
+            vec![(DAY_SPACE, space(3.0)), (SUNSET_SPACE, space(1.0))],
+        );
+        let lighting = object_lighting(&catalog, &EngineConfig::default(), hour, WORLD).unwrap();
+        // The weights sum to 1. Day mean is (0.5, 1, 0). Sunset mean is (0.4, 0, 1).
+        assert_near(lighting.mean, [0.5 * day + 0.4 * sunset, day, sunset, 0.0]);
+        assert_near(lighting.x, [0.2 * day, 0.0, 0.0, 0.0]);
+        // Colour and scale are blended separately, then multiplied: (sum w c) * (sum w s).
+        let scale = 3.0 * day + 1.0 * sunset;
+        assert_near(
+            lighting.sun_rgb,
+            [
+                day * scale,
+                (0.2 * day + sunset) * scale,
+                0.2 * sunset * scale,
+                0.0,
+            ],
+        );
+    }
+
+    #[test]
+    fn a_missing_dalc_row_or_sun_colour_adds_nothing() {
+        let mut weather = day_weather();
+        weather.directional_ambient.clear();
+        weather.colors.clear();
+        let lighting = object_lighting(
+            &catalog(weather, Vec::new()),
+            &EngineConfig::default(),
+            12.0,
+            WORLD,
+        )
+        .unwrap();
+        for value in [
+            lighting.mean,
+            lighting.x,
+            lighting.y,
+            lighting.z,
+            lighting.sun_rgb,
+        ] {
+            assert_eq!(value, Vec4::ZERO);
+        }
+    }
+
+    #[test]
+    fn lighting_needs_the_default_weather_and_a_worldspace_climate() {
+        let config = EngineConfig::default();
+        let catalog = catalog(day_weather(), Vec::new());
+        assert!(object_lighting(&catalog, &config, 12.0, WORLD + 1).is_none());
+        assert!(object_lighting(&EnvironmentCatalog::default(), &config, 12.0, WORLD).is_none());
+    }
+
+    #[test]
+    fn the_system_writes_the_lighting_into_the_world_material() {
+        let mut weather = day_weather();
+        weather.image_spaces[1] = Some(DAY_SPACE);
+        let catalog = catalog(weather, vec![(DAY_SPACE, space(2.5))]);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<ObjectMaterial>()
+            .init_resource::<Atlases>()
+            .insert_resource(EngineConfig::default())
+            .insert_resource(GameClock {
+                hour: 12.0,
+                timescale: 0.0,
+            })
+            .insert_resource(catalog)
+            .add_systems(Update, update_object_lighting);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<ObjectMaterial>>()
+            .add(ObjectMaterial {
+                base: StandardMaterial::default(),
+                extension: ObjectAtlas {
+                    normal: Handle::default(),
+                    lighting: ObjectLighting::default(),
+                },
+            });
+        app.world_mut()
+            .resource_mut::<Atlases>()
+            .materials
+            .insert(WORLD, handle.clone());
+        app.update();
+        let materials = app.world().resource::<Assets<ObjectMaterial>>();
+        let lighting = materials.get(&handle).unwrap().extension.lighting;
+        assert_near(lighting.mean, [0.5, 1.0, 0.0, 0.0]);
+        assert_near(lighting.sun_rgb, [2.5, 0.5, 0.0, 0.0]);
     }
 }
