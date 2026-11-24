@@ -1049,9 +1049,10 @@ fn unnamed_skin_joint_is_a_typed_error() {
         panic!("fixture joint must be a NiNode");
     };
     node.av.object.name = u32::MAX;
-    let error = resolved_skin_error(&nif);
-    // The skeleton check rejects the nameless joint before the skin reader sees it.
-    assert!(error.contains("name"), "{error}");
+    // No skeleton: the self-contained path reaches the skin reader's joint-name check.
+    let error = nif_to_model_with_skin_fallback(&nif, None, None)
+        .expect_err("a nameless joint must give a typed error, not a model");
+    assert!(error.contains("has no name"), "{error}");
 }
 
 /// A block type index outside the header's type table is a parse error, not a panic.
