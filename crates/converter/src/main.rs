@@ -1071,13 +1071,14 @@ fn derive_terrain_lod(args: &[OsString], command_line: Vec<String>) -> Result<()
     );
     for world in &report.worlds {
         println!(
-            "{}: found {:?}, wrote {:?}, removed {} self-built, skipped {:?}, kept {} retail chunks from previous generation",
+            "{}: found {:?}, wrote {:?}, removed {} self-built, skipped {:?}, kept {} retail chunks from previous generation, dropped {} collapsed fan triangles",
             world.editor_id,
             world.found,
             world.compiled,
             world.old_chunks_removed,
             world.skipped_by_class,
-            world.kept_from_previous_generation
+            world.kept_from_previous_generation,
+            world.collapsed_triangles
         );
     }
     if !report.kept_self_built.is_empty() {

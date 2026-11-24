@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, HashMap};
 /// `asset.generator` of a chunk written by this module. The terrain GLB validator dispatches on it.
 pub const GENERATOR: &str = "Mudcrab retail terrain LOD import";
 /// Revision of this importer's output. It goes into the LOD manifest.
-pub const IMPORT_VERSION: u32 = 1;
+pub const IMPORT_VERSION: u32 = 2;
 
 /// Exterior cells of 4096 Creation units.
 const CELL_SIZE: f64 = 4096.0;
@@ -153,7 +153,7 @@ fn clip_half(polygon: &[Point], axis: usize, bound: f64, upper: bool) -> Vec<Poi
 /// Positions are the stored positions times the stored scale (which must equal `level`). A
 /// quadrant that no retail triangle reaches gets no patch: the retail mesh has no terrain there
 /// (the edge of a worldspace), and nothing is invented to fill it. A block with no terrain at all
-/// is an error.
+/// is an error. The second return value counts collapsed triangles discarded during triangulation.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -161,7 +161,7 @@ fn clip_half(polygon: &[Point], axis: usize, bound: f64, upper: bool) -> Vec<Poi
     clippy::float_cmp,
     reason = "geometry is cut in f64 and stored as f32 on purpose; quadrant indices are bounded by the block level; the stored scale is compared exactly"
 )]
-pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
+pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<(BlockPatches, usize)> {
     if let Some(ancestor) = land.transformed_ancestor {
         bail!("land shape ancestor block {ancestor} has a non-identity transform");
     }
@@ -205,7 +205,7 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                 .map(|p| p[axis])
                 .fold(f64::NEG_INFINITY, f64::max);
             (
-                ((low / QUADRANT_SIZE).floor() as i64).max(0),
+                ((low / QUADRANT_SIZE).floor() as i64).clamp(0, quadrants_per_side - 1),
                 ((high / QUADRANT_SIZE).floor() as i64).min(quadrants_per_side - 1),
             )
         };
@@ -233,22 +233,13 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                 if polygon.len() < 3 {
                     continue;
                 }
-                let doubled_area: f64 = (0..polygon.len())
-                    .map(|i| {
-                        let (a, b) = (&polygon[i], &polygon[(i + 1) % polygon.len()]);
-                        a[0] * b[1] - b[0] * a[1]
-                    })
-                    .sum();
-                // A piece with no area is a sliver along a boundary, not terrain.
-                if doubled_area.abs() < 1.0e-6 {
-                    continue;
-                }
                 pieces.entry((qx, qy)).or_default().push(polygon);
             }
         }
     }
 
     let mut patches = BlockPatches::new();
+    let mut collapsed_triangles = 0;
     for cell_y in 0..level {
         for cell_x in 0..level {
             for (quadrant, (_, _, column, row)) in QUADRANTS.iter().enumerate() {
@@ -262,11 +253,24 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                 let mut patch = QuadrantPatch::default();
                 let mut seen: HashMap<[u32; 5], u32> = HashMap::new();
                 for polygon in polygons {
-                    let ids: Vec<u32> = polygon
-                        .iter()
-                        .map(|p| {
+                    for fan in 1..polygon.len() - 1 {
+                        let points = [polygon[0], polygon[fan], polygon[fan + 1]];
+                        let positions = points.map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]);
+                        let [a, b, c] = positions.map(|p| p.map(f64::from));
+                        let ab = std::array::from_fn::<_, 3, _>(|i| b[i] - a[i]);
+                        let ac = std::array::from_fn::<_, 3, _>(|i| c[i] - a[i]);
+                        // Retail BTR land includes vertical faces (Mudcrab #948).
+                        // Test the stored triangle in 3D, including faces on a block boundary.
+                        if (0..3).all(|i| {
+                            let j = (i + 1) % 3;
+                            let k = (i + 2) % 3;
+                            ab[j] * ac[k] == ab[k] * ac[j]
+                        }) {
+                            collapsed_triangles += 1;
+                            continue;
+                        }
+                        for (p, position) in points.into_iter().zip(positions) {
                             let uv = [p[3].clamp(0.0, 1.0) as f32, p[4].clamp(0.0, 1.0) as f32];
-                            let position = [p[0] as f32, p[1] as f32, p[2] as f32];
                             let bits = [
                                 position[0].to_bits(),
                                 position[1].to_bits(),
@@ -274,23 +278,26 @@ pub fn cut_land(land: &TerrainLodShape, level: u32) -> Result<BlockPatches> {
                                 uv[0].to_bits(),
                                 uv[1].to_bits(),
                             ];
-                            *seen.entry(bits).or_insert_with(|| {
+                            let index = *seen.entry(bits).or_insert_with(|| {
                                 patch.positions.push(position);
                                 patch.uvs.push(uv);
                                 (patch.positions.len() - 1) as u32
-                            })
-                        })
-                        .collect();
-                    for fan in 1..ids.len() - 1 {
-                        patch.indices.extend([ids[0], ids[fan], ids[fan + 1]]);
+                            });
+                            patch.indices.push(index);
+                        }
                     }
                 }
-                patches.insert((cell_x, cell_y, quadrant as u8), patch);
+                if !patch.indices.is_empty() {
+                    patches.insert((cell_x, cell_y, quadrant as u8), patch);
+                }
             }
         }
     }
-    ensure!(!patches.is_empty(), "the block has no terrain");
-    Ok(patches)
+    ensure!(
+        !patches.is_empty(),
+        "the block has no terrain after clipping ({collapsed_triangles} collapsed fan triangles)"
+    );
+    Ok((patches, collapsed_triangles))
 }
 
 /// Moves the channels of a retail object-space normal map texel into the glTF tangent frame
@@ -368,6 +375,8 @@ pub struct BlockStats {
     pub partial_cells: usize,
     pub vertices: usize,
     pub triangles: usize,
+    /// Fan triangles with exactly collinear stored positions, dropped because they have no surface.
+    pub collapsed_triangles: usize,
     pub bytes: usize,
 }
 
@@ -416,7 +425,7 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
     };
     let anchor = ChunkAnchor::new(anchor_axis(rel_x)?, anchor_axis(rel_y)?);
     let key = ChunkKey::new(block.world, tier, anchor);
-    let patches = cut_land(block.land, block.level)?;
+    let (patches, collapsed_triangles) = cut_land(block.land, block.level)?;
     let colour = convert_first_mip(block.colour_dds, TextureEncoding::ColorSrgb, None)
         .wrap_err("the colour map cannot be converted")?;
     let normal = convert_normal_map(block.normal_dds, RETAIL_NORMAL_AXES)?;
@@ -462,6 +471,7 @@ pub fn compile_block(block: &RetailBlock<'_>) -> Result<(TerrainChunk, BlockStat
         partial_cells,
         vertices: patches.values().map(|patch| patch.positions.len()).sum(),
         triangles: patches.values().map(|patch| patch.indices.len() / 3).sum(),
+        collapsed_triangles,
         bytes: glb.len(),
     };
     Ok((
@@ -1032,7 +1042,7 @@ mod tests {
         // A level 4 block: 4096 local units times 4 is 16384, so a quadrant is 512 local units.
         // A 5x5 grid with shifted lines puts triangle edges across the quadrant boundaries.
         let shape = land(4, 5, |x, y| 100.0 + 0.5 * x - 0.25 * y, 37.0);
-        let patches = cut_land(&shape, 4).unwrap();
+        let (patches, _) = cut_land(&shape, 4).unwrap();
         assert_eq!(patches.len(), 4 * 4 * 4);
         // The whole block is covered exactly once.
         let area: f64 = patches.values().map(QuadrantPatch::area_xy).sum();
@@ -1069,9 +1079,77 @@ mod tests {
     }
 
     #[test]
+    fn cutting_preserves_vertical_faces_on_quadrant_and_block_boundaries() {
+        let mut shape = land(4, 1, |_, _| 0.0, 0.0);
+        // Each face spans two quadrants along its horizontal axis.
+        for (axis, boundary) in [(0, 512.0), (0, 4096.0), (1, 4096.0)] {
+            let start = u16::try_from(shape.vertices.len()).unwrap();
+            for (along, z) in [(0.0, 0.0), (1024.0, 0.0), (0.0, -128.0)] {
+                let [x, y] = if axis == 0 {
+                    [boundary, along]
+                } else {
+                    [along, boundary]
+                };
+                shape.vertices.push(vertex(x, y, z, 4096.0));
+            }
+            shape.triangles.push([start, start + 1, start + 2]);
+        }
+        let (patches, _) = cut_land(&shape, 4).unwrap();
+        for (axis, boundary) in [(0, 2048.0), (0, 16384.0), (1, 16384.0)] {
+            let mut area = 0.0;
+            let mut quadrants = 0;
+            for patch in patches.values() {
+                let mut contains_face = false;
+                for triangle in patch.indices.as_chunks::<3>().0 {
+                    let [a, b, c] = std::array::from_fn(|i| patch.positions[triangle[i] as usize]);
+                    if [a, b, c].iter().all(|p| p[axis] == boundary) {
+                        let along = 1 - axis;
+                        let doubled_area = (b[along] - a[along]) * (c[2] - a[2])
+                            - (c[along] - a[along]) * (b[2] - a[2]);
+                        assert!(doubled_area < 0.0);
+                        area -= doubled_area / 2.0;
+                        contains_face = true;
+                    }
+                }
+                quadrants += usize::from(contains_face);
+            }
+            assert_eq!(quadrants, 2);
+            assert_eq!(area, 4096.0 * 512.0 / 2.0);
+        }
+    }
+
+    #[test]
+    fn cutting_keeps_an_interior_vertical_face_and_counts_a_collapsed_triangle() {
+        let mut shape = land(4, 1, |_, _| 0.0, 0.0);
+        shape.vertices = [
+            (128.0, 128.0, 0.0),
+            (128.0, 256.0, 0.0),
+            (128.0, 128.0, -128.0),
+            (128.0, 192.0, 0.0),
+        ]
+        .map(|(x, y, z)| vertex(x, y, z, 4096.0))
+        .to_vec();
+        shape.triangles = vec![[0, 1, 2], [0, 3, 1]];
+        let (patches, collapsed_triangles) = cut_land(&shape, 4).unwrap();
+
+        assert_eq!(collapsed_triangles, 1);
+        assert_eq!(patches.len(), 1);
+        let patch = &patches[&(0, 0, 0)];
+        assert_eq!(patch.indices, [0, 1, 2]);
+        assert_eq!(
+            patch.positions,
+            [
+                [512.0, 512.0, 0.0],
+                [512.0, 1024.0, 0.0],
+                [512.0, 512.0, -512.0]
+            ]
+        );
+    }
+
+    #[test]
     fn neighbouring_patches_share_their_boundary_points_exactly() {
         let shape = land(4, 5, |x, y| (x * 0.37).sin() * 50.0 + y * 0.1, 41.0);
-        let patches = cut_land(&shape, 4).unwrap();
+        let (patches, _) = cut_land(&shape, 4).unwrap();
         // Quadrant sw of cell (0,0) meets se along x = 2048; compare the points on that line.
         let on_line = |key: (u32, u32, u8), side_x: f32| {
             let mut points: Vec<[u32; 3]> = patches[&key]
@@ -1097,7 +1175,7 @@ mod tests {
         let mut shape = land(4, 4, |_, _| 0.0, 0.0);
         // Drop every triangle of the first grid row: no terrain in the south of the block.
         shape.triangles.drain(0..8);
-        let patches = cut_land(&shape, 4).unwrap();
+        let (patches, _) = cut_land(&shape, 4).unwrap();
         assert_eq!(patches.len(), 4 * 4 * 4 - 4 * 2 * 2);
         assert!(patches.keys().all(|(_, cell_y, _)| *cell_y >= 1));
         // The chunk lists only the cells that have terrain, and validates.

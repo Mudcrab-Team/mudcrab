@@ -531,8 +531,24 @@ pub struct EngineConfig {
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
-    /// every run that does not ask for lights renders exactly as it did before.
+    /// every run that does not ask for lights renders exactly as it did before. Retail lights every
+    /// placed reference, but the light intensity is not calibrated yet, so "on" blows interiors
+    /// out (#955, #364).
     pub lights: bool,
+    /// The horizontal field of view of every camera that is not the first-person camera, in
+    /// degrees: `[Display] fDefaultWorldFOV` (#904, #949). Retail default
+    /// [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]; source:
+    /// [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md).
+    pub world_fov_degrees: f32,
+    /// The horizontal field of view of the first-person (walking) camera, in degrees:
+    /// `[Display] fDefault1stPersonFOV` (#904, #949). Retail default
+    /// [`RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES`]; source:
+    /// [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md).
+    pub first_person_fov_degrees: f32,
+    /// The distance of the camera's near plane, in Creation units: `[Display] fNearDistance`
+    /// (#949). Retail default [`RETAIL_NEAR_DISTANCE`]; source:
+    /// [skyrim-culling-rea-parity.md](../../../docs/research/skyrim-culling-rea-parity.md).
+    pub near_distance: f32,
     /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
     /// small vetted set to the references that carry them. Off by default.
     pub papyrus_scripts: bool,
@@ -541,6 +557,48 @@ pub struct EngineConfig {
 
 /// Retail's default for `[Display] bDrawLandShadows` is off. See Mudcrab #949.
 pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
+
+/// Retail's default for `[Display] fDefaultWorldFOV`: 80 degrees, **horizontal** (#904, #949).
+///
+/// Source tier: compiled executable default. No shipped INI (`Ultra.ini`, `Skyrim_Default.ini`)
+/// sets the key. `PlayerCamera` reads it at construction (SkyrimSE 1.7.104.0, `0x1408f79f0`;
+/// `docs/research/retail/q7a-camera-states.md`, "FOV", confidence high). The community default
+/// dump lists the same 80 (unverified for 1.7.104; a cross-check only). A retail capture at 16:9
+/// confirms the value and that it is horizontal: 80 degrees horizontal, 50.534 vertical
+/// ([gpu_state.md](../../../research_notes/Skyrim%20native%20tone%20mapping/gpu_state.md)).
+pub const RETAIL_DEFAULT_WORLD_FOV_DEGREES: f32 = 80.0;
+
+/// Retail's default for `[Display] fDefault1stPersonFOV`: 80 degrees, **horizontal** (#904, #949).
+/// Same source and tier as [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]
+/// ([q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md)). Retail uses it
+/// only while the camera is in the first-person state (`0x1408fb1e0`).
+pub const RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES: f32 = 80.0;
+
+/// Retail's default for `[Display] fNearDistance`: 15 Creation units (#949).
+///
+/// Source tier: observed retail value. A read-only capture of the main camera on SkyrimSE
+/// 1.7.104.0 holds the frustum near distance 15 (`docs/research/skyrim-culling-rea-parity.md`,
+/// "Gallows Rock west doorway"; `crates/engine/tests/fixtures/gallows-rock-seam.json`). Only the
+/// value 15 is observed. The key name `fNearDistance` and its link to this value come from the
+/// community default dump (unverified for 1.7.104, which also lists 15). Nothing traces that the
+/// executable reads the camera's near distance from this key. No shipped INI sets it.
+///
+/// Room culling uses the same distance to find the player's starting room
+/// ([`crate::room_culling::RoomCullingNear`]), so the render near plane and the room lookup cannot
+/// differ.
+pub const RETAIL_NEAR_DISTANCE: f32 = 15.0;
+
+/// The smallest and largest horizontal field of view the engine accepts, in degrees. They bound
+/// the settings slider and the two `[Display]` INI keys. **A Mudcrab-only bound**, set to keep
+/// the slider usable and the projection valid. The slider used to span 30 to 110 vertical degrees
+/// (about 51 to 133 horizontal at 16:9), and this range keeps a similar reach for a horizontal
+/// angle.
+pub const FOV_RANGE_DEGREES: (f32, f32) = (30.0, 140.0);
+
+/// The largest `fNearDistance` the engine accepts, in Creation units. **A Mudcrab-only sanity bound**, set
+/// to keep an INI value from inverting the frustum: it is far below the smallest far plane the
+/// camera starts with (24,576 units at a stream radius of 1).
+pub const MAX_NEAR_DISTANCE: f32 = 1000.0;
 
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
@@ -676,6 +734,9 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            world_fov_degrees: RETAIL_DEFAULT_WORLD_FOV_DEGREES,
+            first_person_fov_degrees: RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES,
+            near_distance: RETAIL_NEAR_DISTANCE,
             papyrus_scripts: false,
             physics_fixture: false,
         }
@@ -970,6 +1031,21 @@ impl EngineConfig {
     /// `uLargeRefLODGridSize` is the side, so the radius is half of it, rounded down.
     pub fn large_ref_grid_radius(&self) -> i32 {
         self.large_ref_grid_size.max(1) / 2
+    }
+
+    /// The horizontal field of view this run's camera starts with, in degrees. Retail uses the
+    /// first-person value in the first-person state and the world value otherwise
+    /// (`0x1408fb1e0`, [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md)).
+    /// The walking camera is the first-person one; every automated run (shots, benchmarks,
+    /// fixtures, auto-fly and route runs) uses a world camera. Mudcrab picks the key once at
+    /// launch. Retail picks it by camera state at run time, so a switch while playing (such as
+    /// toggling noclip) is not modelled.
+    pub fn camera_fov_degrees(&self) -> f32 {
+        if self.interactive_world_physics() {
+            self.first_person_fov_degrees
+        } else {
+            self.world_fov_degrees
+        }
     }
 
     /// Test the configured GNAM limit after admission (default 2 admits three).
@@ -1861,6 +1937,7 @@ impl EngineConfig {
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
         }
+        ini.claim_active_fov(&mut config);
         if config.terrain_water_fixture_msaa != Msaa::Off && !config.terrain_water_fixture {
             return Err(ConfigError::MissingRequirement {
                 option: "--terrain-water-fixture-msaa",

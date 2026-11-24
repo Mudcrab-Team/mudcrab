@@ -280,6 +280,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             "chunks": chunks,
             "skipped": reports.iter().map(|r| r.skipped.len()).sum::<usize>(),
             "kept_from_previous_generation": reports.iter().map(|r| r.kept_from_previous_generation).sum::<usize>(),
+            "collapsed_triangles": reports.iter().map(|r| r.collapsed_triangles).sum::<usize>(),
         },
         "kept_self_built_worlds": kept,
         "worlds": reports.iter().map(|report| serde_json::json!({
@@ -287,6 +288,7 @@ pub fn run(options: &DeriveTerrainLodOptions) -> Result<DeriveTerrainLodReport> 
             "blocks_found_by_level": report.found,
             "chunks_by_tier": report.compiled,
             "triangles": report.triangles,
+            "collapsed_triangles": report.collapsed_triangles,
             "vertices": report.vertices,
             "chunk_bytes": report.bytes,
             "old_chunks_removed": report.old_chunks_removed,
