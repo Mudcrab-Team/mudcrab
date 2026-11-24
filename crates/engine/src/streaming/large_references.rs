@@ -32,13 +32,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-// STAND-IN(#913): Use the reviewed default width across Mudcrab's profiles. Mudcrab has no
-// reviewed mapping to retail's Low, Medium, High and Ultra presets.
-const LARGE_GRID_RADIUS: i32 = 9 / 2;
+// The grid width is `EngineConfig::large_ref_grid_size`: `[General] uLargeRefLODGridSize`, 11 in
+// `Ultra.ini` (#949), overridden by `--ini`. STAND-IN(#913): Mudcrab has no reviewed mapping from
+// retail's Low, Medium, High and Ultra presets to the other widths, so every profile uses the
+// configured width.
 const DEMOTIONS_PER_FRAME: usize = 1;
 const LOD_DELAY: Duration = Duration::from_millis(2_000);
 // STAND-IN(#913): Bound admission by one large window, including roots waiting to retire.
-const MAX_BUCKETS: usize = 9 * 9;
+fn max_buckets(grid_radius: i32) -> usize {
+    let width = 2 * grid_radius.unsigned_abs() as usize + 1;
+    width * width
+}
 
 type Response = Result<LargeReferenceRows, String>;
 
@@ -197,7 +201,7 @@ enum Owner {
     Promoted,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub(super) struct LargeReferences {
     cells: HashMap<CellKey, Cell>,
     window: Option<(u32, IVec2)>,
@@ -205,9 +209,26 @@ pub(super) struct LargeReferences {
     owners: HashMap<CellKey, Owner>,
     held_ordinary: HashSet<CellKey>,
     ordinary_radius: i32,
+    /// Cells from the camera's cell to the edge of the large-reference grid, from
+    /// `EngineConfig::large_ref_grid_radius`. `update` refreshes it every frame.
+    grid_radius: i32,
 }
 
-fn in_window(key: CellKey, window: Option<(u32, IVec2)>) -> bool {
+impl Default for LargeReferences {
+    fn default() -> Self {
+        Self {
+            cells: HashMap::new(),
+            window: None,
+            now: Duration::ZERO,
+            owners: HashMap::new(),
+            held_ordinary: HashSet::new(),
+            ordinary_radius: 0,
+            grid_radius: crate::config::ULTRA_LARGE_REF_LOD_GRID_SIZE / 2,
+        }
+    }
+}
+
+fn in_window(key: CellKey, window: Option<(u32, IVec2)>, grid_radius: i32) -> bool {
     let (
         CellKey::Exterior {
             worldspace_id,
@@ -220,12 +241,12 @@ fn in_window(key: CellKey, window: Option<(u32, IVec2)>) -> bool {
         return false;
     };
     worldspace_id == world
-        && grid_x.abs_diff(center.x) <= LARGE_GRID_RADIUS.unsigned_abs()
-        && grid_y.abs_diff(center.y) <= LARGE_GRID_RADIUS.unsigned_abs()
+        && grid_x.abs_diff(center.x) <= grid_radius.unsigned_abs()
+        && grid_y.abs_diff(center.y) <= grid_radius.unsigned_abs()
 }
 
-pub(super) fn window_enabled(ordinary_radius: i32) -> bool {
-    ordinary_radius < LARGE_GRID_RADIUS
+pub(super) fn window_enabled(ordinary_radius: i32, grid_radius: i32) -> bool {
+    ordinary_radius < grid_radius
 }
 
 impl LargeReferences {
@@ -234,7 +255,9 @@ impl LargeReferences {
         self.cells
             .keys()
             .copied()
-            .filter(|&key| !in_window(key, self.window) && self.owner(key) != Owner::Promoted)
+            .filter(|&key| {
+                !in_window(key, self.window, self.grid_radius) && self.owner(key) != Owner::Promoted
+            })
             .min_by_key(|&key| cell_order_key(key))
     }
 
@@ -254,9 +277,9 @@ impl LargeReferences {
     }
 
     fn cancel_outside(&mut self, commands: &mut Commands) {
-        let window = self.window;
+        let (window, grid_radius) = (self.window, self.grid_radius);
         self.cells.retain(|&key, cell| {
-            if in_window(key, window)
+            if in_window(key, window, grid_radius)
                 || matches!(
                     cell,
                     Cell::Promoted {
@@ -276,7 +299,7 @@ impl LargeReferences {
     }
 
     fn can_admit(&self) -> bool {
-        self.cells.len() < MAX_BUCKETS
+        self.cells.len() < max_buckets(self.grid_radius)
     }
 }
 
@@ -295,8 +318,10 @@ pub(super) fn update(
     mut profiler: ResMut<ProfilingState>,
 ) {
     let world = space.exterior_worldspace(config.worldspace_id);
+    let grid_radius = config.large_ref_grid_radius();
+    large.grid_radius = grid_radius;
     // STAND-IN(#913): Mudcrab uses its camera-planned grid. Retail's normal caller uses the player.
-    let window = (space.interior.is_none() && window_enabled(config.stream_radius))
+    let window = (space.interior.is_none() && window_enabled(config.stream_radius, grid_radius))
         .then_some(streaming.planned_center)
         .flatten()
         .map(|center| (world, center));
@@ -324,8 +349,8 @@ pub(super) fn update(
         }
     }
     let mut outstanding = 0;
-    for dx in -LARGE_GRID_RADIUS..=LARGE_GRID_RADIUS {
-        for dy in -LARGE_GRID_RADIUS..=LARGE_GRID_RADIUS {
+    for dx in -grid_radius..=grid_radius {
+        for dy in -grid_radius..=grid_radius {
             let (Some(grid_x), Some(grid_y)) = (center.x.checked_add(dx), center.y.checked_add(dy))
             else {
                 continue;
@@ -673,7 +698,7 @@ pub(super) fn resolve_visibility(
             }
             _ => false,
         };
-        let in_large_grid = in_window(key, large.window);
+        let in_large_grid = in_window(key, large.window, large.grid_radius);
         let ordinary_incomplete = near
             && ordinary_bucket.is_some()
             && (expected_ordinary.is_none()
@@ -740,9 +765,9 @@ pub(super) fn set_deadlines(
     // STAND-IN(#913): Bevy virtual time supplies the reviewed engine-clock delay.
     let now = time.elapsed();
     large.now = now;
-    let window = large.window;
+    let (window, grid_radius) = (large.window, large.grid_radius);
     for (&key, cell) in &mut large.cells {
-        if !in_window(key, window) {
+        if !in_window(key, window, grid_radius) {
             continue;
         }
         let Cell::Promoted {
@@ -787,12 +812,12 @@ mod tests {
     #[test]
     fn width_nine_includes_both_edges_and_demotes_one_outside_cell() {
         let origin = Some((60, IVec2::new(-2, 3)));
-        assert!(window_enabled(2));
-        assert!(!window_enabled(4));
-        assert!(in_window(key(-6, -1), origin));
-        assert!(in_window(key(2, 7), origin));
-        assert!(!in_window(key(3, 7), origin));
-        assert!(!in_window(key(2, 8), origin));
+        assert!(window_enabled(2, 4));
+        assert!(!window_enabled(4, 4));
+        assert!(in_window(key(-6, -1), origin, 4));
+        assert!(in_window(key(2, 7), origin, 4));
+        assert!(!in_window(key(3, 7), origin, 4));
+        assert!(!in_window(key(2, 8), origin, 4));
 
         let mut large = LargeReferences {
             window: Some((60, IVec2::new(-1, 3))),
@@ -802,6 +827,7 @@ mod tests {
                 (key(2, 7), Cell::Failed),
             ]
             .into(),
+            grid_radius: 4,
             ..default()
         };
         assert_eq!(large.demotion(), Some(key(-6, -1)));
@@ -809,8 +835,30 @@ mod tests {
         assert_eq!(large.demotion(), Some(key(-6, 0)));
     }
 
+    #[test]
+    fn the_default_grid_is_the_ultra_width_and_includes_both_edges() {
+        let config = EngineConfig::default();
+        assert_eq!(config.large_ref_grid_size, 11);
+        let radius = config.large_ref_grid_radius();
+        assert_eq!(radius, 5);
+        assert_eq!(LargeReferences::default().grid_radius, radius);
+        assert_eq!(max_buckets(radius), 11 * 11);
+        let origin = Some((60, IVec2::new(-2, 3)));
+        assert!(in_window(key(-7, -2), origin, radius));
+        assert!(in_window(key(3, 8), origin, radius));
+        assert!(!in_window(key(4, 8), origin, radius));
+        assert!(!in_window(key(3, 9), origin, radius));
+        assert!(window_enabled(4, radius));
+        assert!(!window_enabled(5, radius));
+    }
+
+    /// The width the fixtures below were written for: the compiled-default width 9, so a cell
+    /// at the edge of a width-11 grid stays outside it.
+    const FIXTURE_GRID_SIZE: i32 = 9;
+
     fn streaming_fixture(catalog: AssetCatalog) -> (App, Receiver<DatabaseRequest>) {
-        let (database, inbox, _responses) = WorldDatabase::channel_fixture(MAX_BUCKETS);
+        let (database, inbox, _responses) =
+            WorldDatabase::channel_fixture(max_buckets(FIXTURE_GRID_SIZE / 2));
         let mut app = App::new();
         app.add_plugins(bevy::asset::AssetPlugin::default())
             .insert_resource(database)
@@ -819,6 +867,7 @@ mod tests {
                 worldspace_id: 60,
                 stream_radius: 2,
                 max_scene_loads: 1,
+                large_ref_grid_size: FIXTURE_GRID_SIZE,
                 ..default()
             })
             .insert_resource(StreamingWorld {
@@ -1018,13 +1067,17 @@ mod tests {
             app.insert_resource(catalog)
                 .init_resource::<StreamingWorld>()
                 .init_resource::<LodObjects>()
-                .init_resource::<EngineConfig>()
+                .insert_resource(EngineConfig {
+                    large_ref_grid_size: FIXTURE_GRID_SIZE,
+                    ..default()
+                })
                 .init_resource::<StreamingMetrics>()
                 .init_resource::<ProfilingState>()
                 .init_resource::<super::super::TerrainContinuity>()
                 .insert_resource(LargeReferences {
                     window: Some((60, IVec2::ZERO)),
                     ordinary_radius: 2,
+                    grid_radius: FIXTURE_GRID_SIZE / 2,
                     now: LOD_DELAY,
                     ..default()
                 })
@@ -1307,7 +1360,10 @@ mod tests {
                 // These visible roots are waiting for an outgoing LOD replacement.
                 large.owners.insert(key, Owner::Promoted);
             }
-            assert!(app.world().resource::<LargeReferences>().cells.len() <= MAX_BUCKETS);
+            assert!(
+                app.world().resource::<LargeReferences>().cells.len()
+                    <= max_buckets(FIXTURE_GRID_SIZE / 2)
+            );
         }
     }
 }

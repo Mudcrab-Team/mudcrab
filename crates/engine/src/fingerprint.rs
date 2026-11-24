@@ -137,10 +137,9 @@ pub struct RendererFingerprint {
 pub struct GraphicsFingerprint {
     pub stream_radius: i32,
     pub unload_radius: i32,
-    /// `fBlockLevel0Distance` in Creation units: the object LOD level-8 handover. Unused until
-    /// object LOD lands.
+    /// `fBlockLevel0Distance` in Creation units: the object LOD level-8 handover.
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: the object LOD level-16 handover. Unused until object LOD lands.
+    /// `fBlockLevel1Distance`: the object LOD level-16 handover.
     pub block_level1_distance: f32,
     /// `fBlockMaximumDistance`: with `fSplitDistanceMult`, the outer reach of terrain tier 16.
     pub block_maximum_distance: f32,
@@ -263,6 +262,7 @@ mod tests {
                 block_level1_distance: 2000.0,
                 block_maximum_distance: 3000.0,
                 split_distance_mult: 1.25,
+                ..crate::config::TerrainLodDistances::default()
             },
             lights: true,
             ..EngineConfig::default()

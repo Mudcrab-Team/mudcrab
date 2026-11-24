@@ -10,9 +10,10 @@
 //! and is cleared only when the pack changes.
 //!
 //! Which chunks draw follows the retail object rule (RF-LOD-004): a chunk of tier `t` draws when
-//! [`TerrainLodDistances::object_tier`] picks `t` for its cells. With the High defaults tier 4
-//! draws out to `fBlockLevel0Distance` (35,000), tier 8 from there to `fBlockLevel1Distance`
-//! (70,000) and tier 16 from there to `fBlockMaximumDistance` (250,000), by the distance from the
+//! [`TerrainLodDistances::object_tier`] picks `t` for its cells. With the Ultra defaults (#949)
+//! tier 4 draws out to `fBlockLevel0Distance` (60,000), tier 8 from there to
+//! `fBlockLevel1Distance` (90,000) and tier 16 from there to `fBlockMaximumDistance` (250,000),
+//! by the distance from the
 //! continuous camera position to the block rectangle (strict comparisons).
 //!
 //! **Hand-over.** Incoming scenes stay hidden until all replacements in an outgoing block have
@@ -855,7 +856,7 @@ mod tests {
 
     #[test]
     fn a_level_16_chunk_draws_between_the_level_1_distance_and_the_maximum() {
-        let distances = TerrainLodDistances::default();
+        let distances = TerrainLodDistances::high_preset();
         // Camera cell (5, -12), Riverwood. Anchors are 16-cell blocks from origin -96.
         let camera = DVec2::new(5.5, -11.5) * f64::from(CELL_SIZE);
         let chunks: Vec<_> = [(6, 5), (7, 5), (6, 6), (12, 12), (-2, 5), (4, 4)]
@@ -926,7 +927,7 @@ mod tests {
     #[test]
     fn the_selection_follows_distance_changes_and_movement_within_a_cell() {
         let mut objects = LodObjects::default();
-        let distances = TerrainLodDistances::default();
+        let distances = TerrainLodDistances::high_preset();
         let camera = DVec2::new(5.5, -11.5) * f64::from(CELL_SIZE);
         assert!(
             objects.selection_changed(camera, &distances),
@@ -1002,7 +1003,8 @@ mod tests {
     #[test]
     fn nothing_is_wanted_without_chunks() {
         assert!(
-            wanted_object_chunks(&[], DVec2::ZERO, &TerrainLodDistances::default(), 1.0).is_empty()
+            wanted_object_chunks(&[], DVec2::ZERO, &TerrainLodDistances::high_preset(), 1.0)
+                .is_empty()
         );
     }
 
@@ -1016,7 +1018,7 @@ mod tests {
 
     #[test]
     fn every_tier_is_selected_by_the_object_rule() {
-        let distances = TerrainLodDistances::default();
+        let distances = TerrainLodDistances::high_preset();
         let camera = DVec2::new(5.5, -11.5) * f64::from(CELL_SIZE);
         // The object rule picks tier 8 for cell (24, -16) and tier 4 for cell (8, -12) from this
         // camera, and tier 16 for the block of chunk (4, 4).
@@ -1190,6 +1192,8 @@ mod tests {
             assets_dir: assets.path().into(),
             worldspace_id: 60,
             headless: true,
+            // These fixtures place chunks for the High object distances (35,000 / 70,000).
+            terrain_lod: TerrainLodDistances::high_preset(),
             ..default()
         })
         .insert_resource(database)
