@@ -22,7 +22,7 @@ struct Grass {
     model_normal: mat4x4<f32>,
     color: vec4<f32>,
     height_wind: vec4<f32>,
-    // x fade start, y fade end, z output scale cb2[16].w (RF-SHADER-004, RF-SHADER-001), w fade disabled.
+    // x fade start, y fade end, z output scale (RF-SHADER-001, RF-SHADER-004), w fade disabled.
     fade: vec4<f32>,
     absolute_grid: vec4<f32>,
     sun_direction: vec4<f32>,
@@ -85,16 +85,20 @@ fn tuning_diffuse(normal:vec3<f32>, sun:vec3<f32>, light:vec4<f32>, surface:vec4
     return mix(1.0,wrapped,light.w) + surface.w * max(-cosine,0.0);
 }
 fn tuning_illumination(ambient:vec3<f32>, direct:vec3<f32>, shadow:f32, exposure:f32, light:vec4<f32>, surface:vec4<f32>, specular:vec4<f32>) -> vec3<f32> {
-    // RF-GRASS-005: surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
+    // Retail value (RF-GRASS-005): surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
     let visibility = surface.z + (1.0-surface.z) * mix(1.0,shadow,surface.y);
+    // Not retail: retail applies grass ambient at factor 1.0 (RF-GRASS-024); MudCrab keeps 1/pi until the
+    // raw-domain lighting work (#362).
     return (ambient*light.y + direct*light.z*visibility) * exposure / 3.14159265;
 }
 fn tuning_finish(color:vec3<f32>, root_fraction:f32, light:vec4<f32>, tint:vec4<f32>) -> vec3<f32> {
+    // Not retail: Rec.709 luma (0.2126, 0.7152, 0.0722); retail uses 0.31/0.37/0.32 on the CPU
+    // (RF-GRASS-021).
     let luminance = dot(color,vec3(0.2126,0.7152,0.0722));
     return max(mix(vec3(luminance),color,tint.x),vec3(0.0)) * light.x * (1.0-tint.w*root_fraction);
 }
-// Bevy 0.19 pbr_lighting.wgsl: D_GGX, V_SmithGGXCorrelated and F_Schlick.
-// Dielectric F0=.04; perceptual roughness squared to alpha, clamped away from zero.
+// Not retail: Bevy GGX specular because retail grass has no specular term. Dielectric F0=.04;
+// perceptual roughness squared to alpha, clamped at 0.007921.
 fn tuning_ggx(ndh:f32, ndv:f32, ndl:f32, vdh:f32, perceptual_roughness:f32) -> f32 {
     let roughness = max(perceptual_roughness*perceptual_roughness,0.007921);
     let a = ndh * roughness;
@@ -135,8 +139,8 @@ fn vertex(input: Vertex) -> Varyings {
 #ifdef NORMAL
     n = normalize((grass.model_normal * vec4(input.normal,0.0)).xyz);
 #endif
-    // Retail grass lights each vertex with the instance's up axis, not the mesh normal
-    // (RF-SHADER-003): the terrain normal with Fit to Slope, else straight up.
+    // Retail grass lights each vertex with the instance's up axis, not the mesh normal:
+    // the terrain normal with Fit to Slope, else straight up.
     var instance_normal = vec3(0.0,1.0,0.0);
     var t = vec3(1.0,0.0,0.0);
     var handedness = 0.0;
@@ -202,6 +206,10 @@ fn vertex(input: Vertex) -> Varyings {
 // discard avoids dynamic sample_mask exports, which crash AMD's Vulkan shader
 // compiler on the tested RX 9070 XT driver. The surviving sample prefix is
 // identical to the original (1 << count) - 1 mask; MSAA remains enabled.
+// Retail value (RF-GRASS-025): retail multiplies the per-vertex distance fade by a CPU-uploaded
+// fade-in factor per draw-group slot and tests texture alpha times that product; MudCrab fades by
+// whole-instance prefix culling and tests texture/material alpha only, so that grass needs no
+// per-slot upload.
 fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #if SAMPLES == 1
     // A negative threshold encodes an authored opaque material.
@@ -210,6 +218,8 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
     return 1u;
 #else
     // Evaluate derivatives before branching; opaque materials ignore all alpha inputs.
+    // Not retail: MudCrab's fwidth antialiasing band, because a plain test aliases on thin
+    // blades; retail uses a plain test and discard.
     let width = fwidth(alpha);
     if grass.height_wind.w < 0.0 { return (1u << #{SAMPLES}u) - 1u; }
     let edge = clamp((alpha-grass.height_wind.w)/max(width,0.0001)+0.5,0.0,1.0);
@@ -222,8 +232,8 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #endif
 }
 struct Fragment { @location(0) color:vec4<f32>, @builtin(sample_mask) mask:u32 }
-// Direct light per vertex: DirLightColor * NdotL, evaluated on the instance normal
-// (RF-SHADER-003). With the retail tuning defaults the direct response is saturate(N.L).
+// Direct light per vertex: DirLightColor * NdotL, evaluated on the instance normal.
+// With the retail tuning defaults the direct response is saturate(N.L).
 fn lighting(normal:vec3<f32>) -> vec3<f32> {
     return grass.sun_color.rgb * tuning_diffuse(normal,grass.sun_direction.xyz,grass.tuning_light,grass.tuning_surface);
 }
@@ -292,14 +302,17 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     let base = textureSample(albedo,albedo_sampler,input.uv) * input.color;
     var out:Fragment;
     out.mask = coverage(base.a,sample_index);
-    // Retail grass pixel output (RF-SHADER-003; shadow floor RF-GRASS-005):
-    //   (NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * cb2[16].w
+    // Retail grass pixel output (RF-GRASS-024):
+    //   (NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale
     // `base` is albedo * C (vertex colour times the per-instance brightness); input.light is
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z
-    // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is cb2[16].w, the
-    // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004). Only grass applies it
-    // today; terrain, sky and water do not (open question: does retail apply it there too?).
-    // Exposure and 1/pi: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
+    // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is the per-pass
+    // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004, RF-GRASS-024). Retail's
+    // scale comes from a mutable global whose initial value is 0.8333333, with a
+    // 1.0 fallback; the active runtime value is unverified. This engine passes 0.8333 when its
+    // fog proxy is on and 1.0 otherwise. Only grass applies it today; terrain, sky and water do
+    // not (open question: does retail apply it there too?).
+    // Not retail: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
     // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker
     // than a Bevy PBR surface with the same ambient input. Retail has no such factor. The
     // sun:ambient balance is unverified until the engine light units match retail (#706).

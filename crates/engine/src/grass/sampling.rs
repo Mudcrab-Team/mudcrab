@@ -7,7 +7,8 @@ pub(super) struct Sample {
     pub nearest: usize,
 }
 
-/// Round to the reference's binary16 coordinate precision, including ties to even.
+/// Spud port: binary16 coordinate precision (limits 65520 and 2^-24, ties to even). The spud port
+/// stores heights this way; not yet verified against retail in the registry.
 pub(super) fn half_round(value: f32) -> f32 {
     let magnitude = value.abs();
     if !value.is_finite() || magnitude >= 65_520.0 {
@@ -124,7 +125,7 @@ pub(super) fn committed_height(x: f32, y: f32, heights: &[f32]) -> f32 {
     }
 }
 
-/// Compare the normalized authored normal with the reference's 512-sample cosine table.
+/// Test mirror of [`slope_bounds`].
 #[cfg(test)]
 pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     let cosine = |angle: u8| {
@@ -134,7 +135,9 @@ pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     cosine(max) <= normal_z && normal_z <= cosine(min)
 }
 
-/// Evaluate the reference's 512-sample cosine bounds once per species nomination.
+/// Retail value (RF-GRASS-020): the stored f32 factor 1.4222221 (about 512/360) and a 512-entry
+/// cosine table; the index wraps with `& 511`, so degrees past 360 wrap. The code uses the same
+/// f32, so 45 degrees truncates to index 63 as in retail.
 pub(super) fn slope_bounds(min: u8, max: u8) -> [f32; 2] {
     let cosine = |angle: u8| {
         let index = ((f32::from(angle) * 1.422_222_1) as usize) & 511;

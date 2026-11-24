@@ -473,7 +473,7 @@ fn measured(
                 .map(|batch| batch.grass_id)
                 .collect::<Vec<_>>(),
             (0..8).map(|index| 0x0102_0000 + index).collect::<Vec<_>>(),
-            "post-add cap four admits all four GNAM entries of each texture"
+            "a cap of four checked before insertion admits all four GNAM entries of each texture"
         );
         let count: usize = warm.batches.iter().map(|batch| batch.instances.len()).sum();
         assert!(

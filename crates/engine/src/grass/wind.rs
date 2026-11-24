@@ -1,21 +1,20 @@
-//! Retail grass wind math, from the reverse-engineered `SkyrimSE.exe` 1.7.104.
+//! Retail grass wind math.
 //!
-//! Sources are the registry entries RF-GRASS-001, RF-GRASS-002 and RF-GRASS-003, and the
-//! retail vertex shader (RF-SHADER-002, high confidence: the displacement formula and its
-//! literals 0.4, 1/128, 0.3, 0.2 and 0.5 are in the retail bytecode). The
-//! engine has no blended `WTHR` wind speed and no wind direction yet, so the shader does not
+//! Registry sources: RF-GRASS-001, RF-GRASS-002, RF-GRASS-003 and RF-SHADER-002 (high
+//! confidence). The retail displacement formula uses the literals 0.4, 1/128, 0.3, 0.2 and 0.5.
+//! The engine has no blended `WTHR` wind speed and no wind direction yet, so the shader does not
 //! displace blades: nothing calls these functions in a render path until a sourced `w` and a
 //! sourced wind direction exist.
 
 use std::f32::consts::TAU;
 
-/// RF-GRASS-002: hard-coded cap on the wind constant.
+/// RF-GRASS-002: cap 60 on the wind constant, reached at w >= 0.4583.
 pub const WIND_CONSTANT_CAP: f32 = 60.0;
 
-/// RF-GRASS-002: `fWindGrassMultiplier:Display` retail default.
+/// RF-GRASS-002: `fWindGrassMultiplier:Display` default 1.0.
 pub const WIND_GRASS_MULTIPLIER: f32 = 1.0;
 
-/// RF-GRASS-003: the retail phase scale `1/600`.
+/// RF-GRASS-003: phase scale `1/600` (stored as 0.00166667).
 pub const WIND_PHASE_RATE: f32 = 1.0 / 600.0;
 
 /// RF-GRASS-001: `A = fGrassWindMagnitudeMin + (fGrassWindMagnitudeMax - Min) * w`.
@@ -34,7 +33,7 @@ pub fn wind_shader_constant(amplitude: f32, wind_grass_multiplier: f32) -> f32 {
 /// RF-GRASS-003: `phase = TotalTime * (1/600) * 2*pi * value`.
 ///
 /// The formula has high confidence. That `value` is the GRAS wave period (grass shader property
-/// field) has medium confidence: the binary trace does not name the field.
+/// field) has medium confidence: the field is not named.
 pub fn wind_phase(total_time_seconds: f32, wave_period: f32) -> f32 {
     total_time_seconds * WIND_PHASE_RATE * TAU * wave_period
 }

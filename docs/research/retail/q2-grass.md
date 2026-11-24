@@ -43,12 +43,12 @@ The function fills the grass vertex-shader constant block at `0x1433d4c50`. The 
 | ShadowClampValue | `fShadowClampValue:Display` 0.3 (`0x1420d6d48`) |
 When the global flag `0x1420d68f5` is set (no sun available), it writes DirLightColor = 0, AmbientColor = (1,1,1), DirLightDirection = (1,0,0).
 
-No brightness, saturation, sun-strength or ambient-strength multiplier exists on the CPU side. Light colours are passed through unchanged. The pixel shader then scales the final colour by one global output factor, 1 / FramebufferRange (0.8333 when fog is active, else 1.0), which the CPU passes in the fog constant.
+No brightness, saturation, sun-strength or ambient-strength multiplier exists on the CPU side. Light colours are passed through unchanged. The pixel shader then scales the final colour by one global output factor, 1 / FramebufferRange (initial value 0.8333333, fallback 1.0, runtime value not confirmed; RF-GRASS-024), which the CPU passes in the fog constant.
 
 Shader side (Community Shaders reconstruction, GPL-3.0, written here as a formula; later confirmed in the compiled retail shader): per vertex, `dirLightAngle = dot(DirLightDirection, instance_normal)` (the instance's normal, not the mesh normal); diffuse factor = instance brightness (InstanceData1.w) * vertex colour; ambient term = instance brightness * AmbientColor * vertex colour; ShadowClampValue is passed to the pixel shader as the floor of the shadow term. Wind displacement: `angle = 0.4 * (WindTimer - (inst.x + inst.y)/128)`, `disp = WindVector.xy * WindVector.z * ((sin(pi*sin a) + sin(2pi*sin a))*0.3 + 0.2*cos(pi*cos a)) * 0.5 * alpha^2`. The compiled retail grass shaders confirm this wind formula and the lighting: the 0.3 is the floor of the shadow term (lerp(0.3, 1, shadow) on the direct light only; the ambient term is not shadowed), and the final colour is multiplied by the global output factor above.
 
 ## Verdict for #539 / #541 / #611
-- Retail grass light = sun diffuse colour * max(0, N_instance . L) with shadow floored at 0.3, plus the sun's ambient colour, both times instance brightness and vertex colour, and the result times the global output factor 1 / FramebufferRange (0.8333 with fog). No tuning multipliers.
+- Retail grass light = sun diffuse colour * max(0, N_instance . L) with shadow floored at 0.3, plus the sun's ambient colour, both times instance brightness and vertex colour, and the result times the global output factor 1 / FramebufferRange (initial value 0.8333333, fallback 1.0, runtime value not confirmed; RF-GRASS-024). No tuning multipliers.
 - #541 tuning values sun-angle weight 0, sun strength 0.1, ambient strength 1.15, saturation 0.75, brightness 1.15: no retail source (invented by comparison). Shadow strength 0.3 numerically matches fShadowClampValue 0.3; its semantics in #541 must be checked against "shadow floor 0.3".
 - Wind: use RF-GRASS-001..004, not tuned values.
 

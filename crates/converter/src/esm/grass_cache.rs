@@ -19,7 +19,8 @@ use std::{
     sync::Arc,
 };
 
-/// The winning base record's authoritative Is Marker header flag, also used by runtime spawning.
+/// Retail value: the winning base record's authoritative Is Marker header flag (0x00800000),
+/// also used by runtime spawning.
 const MARKER_RECORD_FLAG: i64 = 0x0080_0000;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -144,6 +145,8 @@ struct ReferenceBounds {
 type Triangle = [DVec3; 3];
 /// One model after the placed base's effective MODS visibility exclusions.
 type GeometryKey = (String, Vec<u32>);
+/// Not retail: MudCrab geometry budget (64 MiB) with LRU eviction, because model decode work
+/// must stay bounded.
 const GEOMETRY_BUDGET: usize = 64 * 1024 * 1024;
 
 mod enable;
@@ -964,6 +967,9 @@ pub fn write_grass_cache_with_cancel(
         let last_y = (reference.max[1] / f64::from(GRASS_CELL_SIZE)).floor() as i32;
         let span = (i64::from(last_x) - i64::from(first_x) + 1)
             .saturating_mul(i64::from(last_y) - i64::from(first_y) + 1);
+        // Not retail: MudCrab span guard. A reference spanning more than 1,024 cells is matched by
+        // scanning the existing cells instead of walking its whole grid, because very large valid
+        // modded bounds must not allocate an unbounded grid.
         if span <= 1024 {
             for y in first_y..=last_y {
                 for x in first_x..=last_x {
@@ -1303,6 +1309,8 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
             wave_period: field!(10, 0.0f32),
             flags: field!(11, 0u8),
         };
+        // Retail value (RF-GRASS-022): modes above 5, and negative signed modes through the
+        // unsigned guard, skip the water test.
         let valid = complete
             && id != 0
             && rule.position_range >= 0.0
@@ -1618,6 +1626,9 @@ fn selection_layers(
             weights,
         });
     }
+    // Retail value (RF-GRASS-026): six weighted slots plus a separate base; the base residual uses
+    // weighted slots 0-4 and compaction clears slot 5. This loop keeps the first five weighted
+    // slots; coverage bytes convert with exactly 1/255.
     for (slot, texture) in bound.into_iter().take(5).enumerate() {
         let texture = if has_texture_set(texture) { texture } else { 0 };
         layers.push(GrassLayer {
@@ -1763,9 +1774,9 @@ fn exclusion_mask(
     mask
 }
 
-/// Old precacher upward-ray policy, expressed in Creation XY/Z coordinates.
-/// No retail trace or REA registry entry (RF-GRASS) sources the -8 and +8192 window. The values
-/// come from the earlier precacher's policy and stay unverified against the retail engine.
+/// Not retail: MudCrab obstruction-mask tolerances, because the mask is a MudCrab device.
+/// The 1e-5 area epsilon, the 1e-4 edge slack and the -8..+8192 upward-ray window have no
+/// retail counterpart.
 fn triangle_covers(t: Triangle, p: DVec3) -> bool {
     let a = t[1] - t[0];
     let b = t[2] - t[0];
@@ -1786,6 +1797,7 @@ fn triangle_covers(t: Triangle, p: DVec3) -> bool {
 /// Interpolate the rendered LAND triangle topology at a cell-relative Creation XY position.
 fn terrain_height(heights: &[f32], x: f32, y: f32) -> f32 {
     let side = 33;
+    // Retail value: 33 by 33 LAND grid with 128-unit squares.
     let sample = [x, y].map(|value| (value / (GRASS_CELL_SIZE / 32.0)).clamp(0.0, 32.0));
     let [ix, iy] = sample.map(|value| (value as usize).min(31));
     let [fx, fy] = [sample[0] - ix as f32, sample[1] - iy as f32];
@@ -3230,6 +3242,8 @@ mod tests {
             min: [-12.0, -3.0, -7.0],
             max: [31.0, 19.0, 11.0],
         };
+        // Unit-test fixture: this asymmetric rotation triple and the 1.7 scale are not retail
+        // placement values, because the test only checks the coordinate contract.
         let angles: [f32; 3] = [0.31, -0.57, 0.83];
         let position = [140.0, -53.0, 28.0];
         let mut min = [f32::INFINITY; 3];

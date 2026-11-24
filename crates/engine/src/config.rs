@@ -5747,7 +5747,7 @@ mod tests {
 mod grass_admission_tests {
     use super::EngineConfig;
 
-    /// A post-add limit admits N+1 entries and cannot overflow at the API boundary.
+    /// A limit checked before insertion admits N+1 entries and cannot overflow at the API boundary.
     #[test]
     fn grass_type_limit_is_checked_after_admission() {
         for (configured, admitted) in [(2, 3), (0, 1), (1, 2), (3, 4), (usize::MAX, usize::MAX)] {
