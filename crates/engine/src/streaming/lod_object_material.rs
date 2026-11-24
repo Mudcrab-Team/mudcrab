@@ -171,7 +171,7 @@ fn load_normal(
         } else {
             "missing_normal_atlas"
         };
-        // STAND-IN(#940): the retail missing-file result is unverified. Keep the existing material.
+        // STAND-IN(#983): the retail missing-file result is unverified. Keep the existing material.
         warn!(world = %world_editor_id(pack, world), "object LOD: {message}");
         return Ok(None);
     };
