@@ -454,8 +454,21 @@ pub struct EngineConfig {
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
-    /// every run that does not ask for lights renders exactly as it did before.
+    /// every run that does not ask for lights renders exactly as it did before. Retail lights every
+    /// placed reference, but the light intensity is not calibrated yet, so "on" blows interiors
+    /// out (#955, #364).
     pub lights: bool,
+    /// The horizontal field of view of every camera that is not the first-person camera, in
+    /// degrees: `[Display] fDefaultWorldFOV` (#904, #949). Retail default
+    /// [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`].
+    pub world_fov_degrees: f32,
+    /// The horizontal field of view of the first-person (walking) camera, in degrees:
+    /// `[Display] fDefault1stPersonFOV` (#904, #949). Retail default
+    /// [`RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES`].
+    pub first_person_fov_degrees: f32,
+    /// The distance of the camera's near plane, in Creation units: `[Display] fNearDistance`
+    /// (#949). Retail default [`RETAIL_NEAR_DISTANCE`].
+    pub near_distance: f32,
     /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
     /// small vetted set to the references that carry them. Off by default.
     pub papyrus_scripts: bool,
@@ -464,6 +477,31 @@ pub struct EngineConfig {
 
 /// Retail's default for `[Display] bDrawLandShadows` is off. See Mudcrab #949.
 pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
+
+/// Retail's default for `[Display] fDefaultWorldFOV`: 80 degrees, **horizontal** (#904, #949).
+///
+/// Source tier: compiled executable default. No shipped INI (`Ultra.ini`, `Skyrim_Default.ini`)
+/// sets the key. `PlayerCamera` reads it at construction (SkyrimSE 1.7.104.0, `0x1408f79f0`;
+/// `docs/research/retail/q7a-camera-states.md`, "FOV", confidence high). The community default
+/// dump lists the same 80 (unverified for 1.7.104; a cross-check only).
+pub const RETAIL_DEFAULT_WORLD_FOV_DEGREES: f32 = 80.0;
+
+/// Retail's default for `[Display] fDefault1stPersonFOV`: 80 degrees, **horizontal** (#904, #949).
+/// Same source and tier as [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]. Retail uses it only while the
+/// camera is in the first-person state (`0x1408fb1e0`).
+pub const RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES: f32 = 80.0;
+
+/// Retail's default for `[Display] fNearDistance`: 15 Creation units (#949).
+///
+/// Source tier: observed retail value. A read-only capture of the main camera on SkyrimSE
+/// 1.7.104.0 holds the frustum near distance 15 (`docs/research/skyrim-culling-rea-parity.md`,
+/// "Gallows Rock west doorway"; `crates/engine/tests/fixtures/gallows-rock-seam.json`). No shipped
+/// INI sets the key, and the community default dump also lists 15 (unverified, cross-check only).
+pub const RETAIL_NEAR_DISTANCE: f32 = 15.0;
+
+/// The smallest and largest horizontal field of view the engine accepts, in degrees. They bound
+/// the settings slider and the two `[Display]` INI keys.
+pub const FOV_RANGE_DEGREES: (f32, f32) = (30.0, 140.0);
 
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
@@ -597,6 +635,9 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            world_fov_degrees: RETAIL_DEFAULT_WORLD_FOV_DEGREES,
+            first_person_fov_degrees: RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES,
+            near_distance: RETAIL_NEAR_DISTANCE,
             papyrus_scripts: false,
             physics_fixture: false,
         }
@@ -887,6 +928,18 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    /// The horizontal field of view this run's camera starts with, in degrees. Retail uses the
+    /// first-person value in the first-person state and the world value otherwise
+    /// (`0x1408fb1e0`). The walking camera is the first-person one; every automated camera
+    /// (shots, benchmarks, fixtures, the free fly camera) is a world camera.
+    pub fn camera_fov_degrees(&self) -> f32 {
+        if self.interactive_world_physics() {
+            self.first_person_fov_degrees
+        } else {
+            self.world_fov_degrees
+        }
+    }
+
     /// Test the configured GNAM limit after admission (default 2 admits three).
     /// Selection order follows spud (MIT, chasmlol/spud).
     pub(crate) fn effective_grass_species_cap(&self) -> usize {
@@ -1776,6 +1829,7 @@ impl EngineConfig {
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
         }
+        ini.claim_active_fov(&mut config);
         if config.terrain_water_fixture_msaa != Msaa::Off && !config.terrain_water_fixture {
             return Err(ConfigError::MissingRequirement {
                 option: "--terrain-water-fixture-msaa",
