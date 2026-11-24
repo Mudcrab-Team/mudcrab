@@ -30,16 +30,16 @@ pub struct GrassSettings {
     /// `iGrassCellRadius`: retail default 2 cells around the player.
     #[serde(rename = "iGrassCellRadius")]
     pub cell_radius: i32,
-    /// `fGrassStartFadeDistance`: retail default 7000.0; shipped `SkyrimPrefs.ini` also sets 7000.0.
+    /// `fGrassStartFadeDistance`: retail default 7000.0 (`Ultra.ini` sets 7000; `docs/research/retail/q2-grass.md`).
     #[serde(rename = "fGrassStartFadeDistance")]
     pub start_fade_distance: f64,
-    /// `fGrassFadeRange`: retail default 1000.0 Creation units.
+    /// `fGrassFadeRange`: retail default 1000.0 Creation units (`docs/research/retail/q2-grass.md`).
     #[serde(rename = "fGrassFadeRange")]
     pub fade_range: f64,
     /// `fGrassMinStartFadeDistance`: 0.0 as shipped in `Skyrim_Default.ini` and `SkyrimPrefs.ini` (the compiled setting holds 400.0, which the shipped INI overrides); reported only.
     #[serde(rename = "fGrassMinStartFadeDistance")]
     pub min_start_fade_distance: f64,
-    /// `fGrassMaxStartFadeDistance`: retail default 7000.0, also shipped in `Skyrim_Default.ini`; reported only.
+    /// `fGrassMaxStartFadeDistance`: retail default 7000.0 (`Skyrim_Default.ini`); reported only.
     #[serde(rename = "fGrassMaxStartFadeDistance")]
     pub max_start_fade_distance: f64,
     /// `fGrassWindMagnitudeMin`: retail default 5.0 (RF-GRASS-001); reported only.
@@ -54,10 +54,10 @@ pub struct GrassSettings {
     /// `bEnableGrassFade`: retail default true.
     #[serde(rename = "bEnableGrassFade")]
     pub enable_grass_fade: bool,
-    /// `bAllowCreateGrass`: retail default true; reported legacy cache switch.
+    /// `bAllowCreateGrass`: retail default true (`Skyrim_Default.ini`); reported legacy cache switch.
     #[serde(rename = "bAllowCreateGrass")]
     pub allow_create_grass: bool,
-    /// `bAllowLoadGrass`: retail default false; reported legacy cache switch.
+    /// `bAllowLoadGrass`: retail default false (`Skyrim_Default.ini`); reported legacy cache switch.
     #[serde(rename = "bAllowLoadGrass")]
     pub allow_load_grass: bool,
     /// `bGenerateGrassDataFiles`: retail default false; reported legacy cache switch.
