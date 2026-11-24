@@ -5,6 +5,33 @@ use std::process::Command;
 
 const ENGINE: &str = env!("CARGO_BIN_EXE_engine");
 
+/// Info mode reports malformed grass options before writing a tuning receipt.
+#[test]
+fn grass_tuning_info_rejects_invalid_grass_radius_before_receipt() {
+    let directory = tempfile::tempdir().expect("a tuning fixture directory is created");
+    let tuning = directory.path().join("appearance.toml");
+    std::fs::write(&tuning, "").expect("an empty tuning file is valid");
+    let output = Command::new(ENGINE)
+        .arg("--grass-tuning-info")
+        .arg(&tuning)
+        .args(["--grass-radius", "oops"])
+        .output()
+        .expect("the engine binary runs");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "invalid grass options use exit code 2; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("the error message is UTF-8");
+    assert!(stderr.contains("grass-radius"), "stderr was: {stderr}");
+    assert!(
+        output.stdout.is_empty(),
+        "info mode emits its usage error before any receipt"
+    );
+}
+
 #[test]
 fn version_prints_the_workspace_version_and_exits_zero() {
     let output = Command::new(ENGINE)

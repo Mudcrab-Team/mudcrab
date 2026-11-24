@@ -138,7 +138,7 @@ fn audit(assets_root: &std::path::Path) -> AuditReport {
 
 fn inspect_glb(path: &std::path::Path) -> Result<()> {
     MeshConverter::glb_texture_uris(path)?;
-    match MeshConverter::glb_bounds(path) {
+    match MeshConverter::drawable_bounds(path) {
         Ok(_) => Ok(()),
         Err(error) => {
             let message = format!("{error:#}");

@@ -43,7 +43,7 @@ def main():
         directory = output / mode
         directory.mkdir()
         command = [
-            str(engine), "--assets", str(assets), "--shots", str(shots),
+            str(engine), "--no-grass", "--assets", str(assets), "--shots", str(shots),
             "--shots-out", str(directory), "--hidden-window", "--lights",
             "--stream-radius", "2", "--color-grade", mode,
             "--visual-preset", VISUAL_PRESET,

@@ -238,7 +238,8 @@ fn deleted_grass_and_replaced_or_deleted_texture_lists_do_not_survive_refresh() 
     );
 }
 
-/// Short DATA and an unsafe model path become NULL columns while the raw subrecords are kept.
+/// Short DATA retains readable scalars; unavailable fields and an unsafe model path are NULL.
+/// The raw subrecords remain available without clamping or inventing missing values.
 #[test]
 fn incomplete_rules_and_unsafe_model_paths_are_nullable_without_losing_raw_data() {
     let dir = tempfile::tempdir().unwrap();

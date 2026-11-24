@@ -1,0 +1,1243 @@
+{
+  "schema": 1,
+  "runtime_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "evaluator_sha256": "3557fb6c4f0cc50137fb0baeba54a643e2b0fe42cd81933aef4315ff5f25f24d",
+  "rules": {
+    "window_game_seconds": 1.15,
+    "stationary_tolerance": 0.2,
+    "minimum_rise": 10,
+    "landing_tolerance": 2,
+    "rmse_gate": 1,
+    "peak_error_gate": 3,
+    "floor": "idealized baseline clip",
+    "prefix": "discard initial non-first-person prefix only; require every pair thereafter",
+    "launch": "camera boundary preceding first nested air callback; phase unresolved"
+  },
+  "provenance_contract": {
+    "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+    "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+    "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+    "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+  },
+  "training": [
+    {
+      "id": "train-60hz-1x-1",
+      "sha256": "565956f51e9b3cb89d419b7f0912d96126c289b46e3e6a4697295cdf879cdb7c"
+    },
+    {
+      "id": "train-60hz-1x-2",
+      "sha256": "dfc449076d19acd793fa376637af885413629f5e5763ec0ba8a09a342e9f3b2d"
+    },
+    {
+      "id": "train-60hz-1x-3",
+      "sha256": "42b2832ea4dd6b1b44d1b2965984938a9559d67d18d0a3f64953f96436eb934b"
+    }
+  ],
+  "models": [
+    {
+      "law": "ballistic",
+      "clock": "camera",
+      "g": 686.6865861889204,
+      "v": 318.3228876931592
+    },
+    {
+      "law": "two_acceleration",
+      "clock": "camera",
+      "g": 686.6865861889204,
+      "g_down": 926.8466806257119,
+      "v": 318.3228876931592
+    },
+    {
+      "law": "mudcrab",
+      "clock": "camera",
+      "g": 900.0,
+      "v": 340.0,
+      "h": 0.016666666666666666
+    },
+    {
+      "law": "ballistic",
+      "clock": "qpc",
+      "g": 684.1921853369224,
+      "v": 317.6637095143661
+    },
+    {
+      "law": "two_acceleration",
+      "clock": "qpc",
+      "g": 684.1921853369224,
+      "g_down": 924.83897187995,
+      "v": 317.6637095143661
+    },
+    {
+      "law": "mudcrab",
+      "clock": "qpc",
+      "g": 900.0,
+      "v": 340.0,
+      "h": 0.016666666666666666
+    },
+    {
+      "law": "native_discrete",
+      "clock": "controller",
+      "g": 686.6141828881737,
+      "v": 327.8663120620113,
+      "fall_multiplier": 1.350000023841858,
+      "assumption": "one controller update per camera; dt schedule observed, own height history"
+    }
+  ],
+  "training_scores": [
+    {
+      "id": "train-60hz-1x-1",
+      "split": "train",
+      "frame_cap": 60,
+      "time_multiplier": 1.0,
+      "observed_sampled_apex": 73.77734375,
+      "events": {
+        "onset": {
+          "qpc": [
+            47.9805612,
+            48.0133512
+          ],
+          "camera": [
+            5.248833037912846,
+            5.2816663682460785
+          ]
+        },
+        "apex": {
+          "qpc": [
+            48.4238806,
+            48.4570315
+          ],
+          "camera": [
+            5.691666344180703,
+            5.724499674513936
+          ]
+        },
+        "landing": {
+          "qpc": [
+            48.8345649,
+            48.8675033
+          ],
+          "camera": [
+            6.101499654352665,
+            6.134332984685898
+          ]
+        }
+      },
+      "launch_phase_uncertainty": {
+        "qpc": 0.01645830000000359,
+        "camera": 0.016499998047947884
+      },
+      "direct_launch_velocity_units_per_second": 327.8663120620113,
+      "models": [
+        {
+          "model": {
+            "law": "ballistic",
+            "clock": "camera",
+            "g": 686.6865861889204,
+            "v": 318.3228876931592
+          },
+          "window": {
+            "n": 71,
+            "rmse": 5.51644475591415,
+            "bias": 2.6052922380416805,
+            "max_abs": 17.819376397322856
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 5.633075276645339,
+            "bias": 2.8547232855230336,
+            "max_abs": 17.819376397322856
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.019364599726257085,
+            "bias": 0.009992486209052192,
+            "max_abs": 0.05094167987668463
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 7.172370399590609,
+            "bias": 4.397284923830876,
+            "max_abs": 17.819376397322856
+          },
+          "predicted_peak": 73.77480978730112,
+          "sampled_peak_error": -0.002533962698876735,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "two_acceleration",
+            "clock": "camera",
+            "g": 686.6865861889204,
+            "g_down": 926.8466806257119,
+            "v": 318.3228876931592
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.17497026518087805,
+            "bias": -0.1207304813968979,
+            "max_abs": 0.3870383232992225
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.15780450765907408,
+            "bias": -0.08836179611403369,
+            "max_abs": 0.3870383232992225
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.019364599726257085,
+            "bias": 0.009992486209052192,
+            "max_abs": 0.05094167987668463
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.22692360307496165,
+            "bias": -0.2109915780771968,
+            "max_abs": 0.3870383232992225
+          },
+          "predicted_peak": 73.77480978730112,
+          "sampled_peak_error": -0.002533962698876735,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        },
+        {
+          "model": {
+            "law": "mudcrab",
+            "clock": "camera",
+            "g": 900.0,
+            "v": 340.0,
+            "h": 0.016666666666666666
+          },
+          "window": {
+            "n": 71,
+            "rmse": 11.438995753332028,
+            "bias": -7.382872102406103,
+            "max_abs": 28.446126302083314
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 13.365797031172335,
+            "bias": -10.003978240184294,
+            "max_abs": 28.446126302083314
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 3.634056443819712,
+            "bias": -2.900382206357758,
+            "max_abs": 8.52734375
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 14.563007336029091,
+            "bias": -10.477924649677579,
+            "max_abs": 28.446126302083314
+          },
+          "predicted_peak": 67.08333333333334,
+          "sampled_peak_error": -6.694010416666657,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "ballistic",
+            "clock": "qpc",
+            "g": 684.1921853369224,
+            "v": 317.6637095143661
+          },
+          "window": {
+            "n": 71,
+            "rmse": 5.506066605702717,
+            "bias": 2.5786214713824256,
+            "max_abs": 17.808175257751913
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 5.619373948838977,
+            "bias": 2.8186007261798713,
+            "max_abs": 17.808175257751913
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.033738192806269,
+            "bias": -0.027652648749991356,
+            "max_abs": 0.051427326619283065
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 7.1588400603611,
+            "bias": 4.378191697188142,
+            "max_abs": 17.808175257751913
+          },
+          "predicted_peak": 73.7368727758119,
+          "sampled_peak_error": -0.04047097418809642,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "two_acceleration",
+            "clock": "qpc",
+            "g": 684.1921853369224,
+            "g_down": 924.83897187995,
+            "v": 317.6637095143661
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.2092997397755813,
+            "bias": -0.1588820409570312,
+            "max_abs": 0.5422439337417586
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.2071572498503897,
+            "bias": -0.1404533485903695,
+            "max_abs": 0.5422439337417586
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.033738192806269,
+            "bias": -0.027652648749991356,
+            "max_abs": 0.051427326619283065
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.27068006734439554,
+            "bias": -0.24949281176665394,
+            "max_abs": 0.5422439337417586
+          },
+          "predicted_peak": 73.7368727758119,
+          "sampled_peak_error": -0.04047097418809642,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        },
+        {
+          "model": {
+            "law": "mudcrab",
+            "clock": "qpc",
+            "g": 900.0,
+            "v": 340.0,
+            "h": 0.016666666666666666
+          },
+          "window": {
+            "n": 71,
+            "rmse": 11.438995753332028,
+            "bias": -7.382872102406103,
+            "max_abs": 28.446126302083314
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 13.365797031172335,
+            "bias": -10.003978240184294,
+            "max_abs": 28.446126302083314
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 3.634056443819712,
+            "bias": -2.900382206357758,
+            "max_abs": 8.52734375
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 14.563007336029091,
+            "bias": -10.477924649677579,
+            "max_abs": 28.446126302083314
+          },
+          "predicted_peak": 67.08333333333334,
+          "sampled_peak_error": -6.694010416666657,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "native_discrete",
+            "clock": "controller",
+            "g": 686.6141828881737,
+            "v": 327.8663120620113,
+            "fall_multiplier": 1.350000023841858,
+            "assumption": "one controller update per camera; dt schedule observed, own height history"
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.11124912185738688,
+            "bias": -0.0561441847841585,
+            "max_abs": 0.220947265625
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.00026200880278181226,
+            "bias": -0.00017666035433180265,
+            "max_abs": 0.0007327267341565857
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.00031333785106609386,
+            "bias": -0.0002738267285875026,
+            "max_abs": 0.0007327267341565857
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.14464399793805424,
+            "bias": -0.0947213367749099,
+            "max_abs": 0.220947265625
+          },
+          "predicted_peak": 73.77707628636347,
+          "sampled_peak_error": -0.00026746363653273875,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        }
+      ],
+      "native_launch": {
+        "pre_velocity": 327.8663120620113,
+        "post_velocity": 312.72646990002977,
+        "dt": 0.016333334147930145,
+        "height_gate_equal_or_below": true,
+        "predicted_first_dv": -15.139843755137015,
+        "sqrt_2gh_launch": 327.86630244540726
+      },
+      "native_callbacks_per_camera_sample": {
+        "n": 53,
+        "min": 1,
+        "median": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "one_controller_update_per_camera_during_flight": true,
+      "clocks": {
+        "camera_dt": {
+          "n": 200,
+          "min": 0.016333332285284996,
+          "median": 0.016333334147930145,
+          "max": 0.016499998047947884,
+          "mean": 0.016399999056011437
+        },
+        "qpc_dt": {
+          "n": 199,
+          "min": 0.015821100000003696,
+          "median": 0.016422800000000848,
+          "max": 0.017013699999999687,
+          "mean": 0.016423660804020117
+        },
+        "controller_dt": {
+          "n": 200,
+          "min": 0.016333332285284996,
+          "median": 0.016333334147930145,
+          "max": 0.016499998047947884,
+          "mean": 0.016399999056011437
+        },
+        "camera_to_qpc_ratio": {
+          "n": 199,
+          "min": 0.969806570466635,
+          "median": 0.9979673411268806,
+          "max": 1.0323765278824595,
+          "mean": 0.9986642748053481
+        },
+        "controller_minus_previous_camera_dt": {
+          "n": 199,
+          "min": 0.0,
+          "median": 0.0,
+          "max": 0.0,
+          "mean": 0.0
+        },
+        "controller_minus_same_camera_dt": {
+          "n": 200,
+          "min": -0.00016666576266288757,
+          "median": 0.0,
+          "max": 0.00016666576266288757,
+          "mean": 0.0
+        }
+      },
+      "position_scale_delta_residual": {
+        "n": 152,
+        "rmse": 6.524559124754316e-05,
+        "bias": -9.345257192188384e-07,
+        "max_abs": 0.00021947865025140345
+      },
+      "native_air_dv_residual_units_per_second": {
+        "rising": {
+          "n": 28,
+          "rmse": 4.89936936365639e-06,
+          "bias": 1.3090945385555526e-06,
+          "max_abs": 1.6114519338598603e-05
+        },
+        "history_gate": {
+          "n": 25,
+          "rmse": 3.8703716752578285e-06,
+          "bias": -1.1847518585770903e-06,
+          "max_abs": 1.682059875743859e-05
+        }
+      }
+    },
+    {
+      "id": "train-60hz-1x-2",
+      "split": "train",
+      "frame_cap": 60,
+      "time_multiplier": 1.0,
+      "observed_sampled_apex": 73.758056640625,
+      "events": {
+        "onset": {
+          "qpc": [
+            56.7286253,
+            56.7615108
+          ],
+          "camera": [
+            5.1508330386132,
+            5.183666368946433
+          ]
+        },
+        "apex": {
+          "qpc": [
+            57.1721699,
+            57.2054869
+          ],
+          "camera": [
+            5.593666348606348,
+            5.626499678939581
+          ]
+        },
+        "landing": {
+          "qpc": [
+            57.5828844,
+            57.6157638
+          ],
+          "camera": [
+            6.0039996560662985,
+            6.0366663206368685
+          ]
+        }
+      },
+      "launch_phase_uncertainty": {
+        "qpc": 0.016286200000003248,
+        "camera": 0.016333332285284996
+      },
+      "direct_launch_velocity_units_per_second": 327.8663120620113,
+      "models": [
+        {
+          "model": {
+            "law": "ballistic",
+            "clock": "camera",
+            "g": 686.6865861889204,
+            "v": 318.3228876931592
+          },
+          "window": {
+            "n": 71,
+            "rmse": 5.540183441642821,
+            "bias": 2.6154603150430145,
+            "max_abs": 17.93349710463329
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 5.676383623351902,
+            "bias": 2.875218533169105,
+            "max_abs": 17.93349710463329
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.020610156428576578,
+            "bias": -0.0047425095246809,
+            "max_abs": 0.05003769403803204
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 7.203232729431596,
+            "bias": 4.424647979625471,
+            "max_abs": 17.93349710463329
+          },
+          "predicted_peak": 73.77530347754511,
+          "sampled_peak_error": 0.01724683692010842,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "two_acceleration",
+            "clock": "camera",
+            "g": 686.6865861889204,
+            "g_down": 926.8466806257119,
+            "v": 318.3228876931592
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.1565910937924822,
+            "bias": -0.11243210554087893,
+            "max_abs": 0.3389687287919543
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.12877053392230048,
+            "bias": -0.07703132138754623,
+            "max_abs": 0.3389687287919543
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.020610156428576578,
+            "bias": -0.0047425095246809,
+            "max_abs": 0.05003769403803204
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.2028755270874027,
+            "bias": -0.1867892075520633,
+            "max_abs": 0.3389687287919543
+          },
+          "predicted_peak": 73.77530347754511,
+          "sampled_peak_error": 0.01724683692010842,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        },
+        {
+          "model": {
+            "law": "mudcrab",
+            "clock": "camera",
+            "g": 900.0,
+            "v": 340.0,
+            "h": 0.016666666666666666
+          },
+          "window": {
+            "n": 71,
+            "rmse": 11.370697368952925,
+            "bias": -7.345305393559272,
+            "max_abs": 28.245442708333314
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 13.285986795016866,
+            "bias": -9.952685233874199,
+            "max_abs": 28.245442708333314
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 3.6354911128379594,
+            "bias": -2.9068813981681028,
+            "max_abs": 8.508056640625
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 14.47205746988052,
+            "bias": -10.409931485615079,
+            "max_abs": 28.245442708333314
+          },
+          "predicted_peak": 67.08333333333334,
+          "sampled_peak_error": -6.674723307291657,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "ballistic",
+            "clock": "qpc",
+            "g": 684.1921853369224,
+            "v": 317.6637095143661
+          },
+          "window": {
+            "n": 71,
+            "rmse": 5.550966916339002,
+            "bias": 2.6049923012581155,
+            "max_abs": 17.987856090096756
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 5.686762651279525,
+            "bias": 2.8584631960850535,
+            "max_abs": 17.987856090096756
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.03498544878930833,
+            "bias": -0.02922935494821967,
+            "max_abs": 0.0749178116758289
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 7.217215030875196,
+            "bias": 4.423859635305347,
+            "max_abs": 17.987856090096756
+          },
+          "predicted_peak": 73.73741298751773,
+          "sampled_peak_error": -0.02064365310727112,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "two_acceleration",
+            "clock": "qpc",
+            "g": 684.1921853369224,
+            "g_down": 924.83897187995,
+            "v": 317.6637095143661
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.16802274296854885,
+            "bias": -0.13333867980412653,
+            "max_abs": 0.3654698400848062
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.14713469088487555,
+            "bias": -0.10557683624698044,
+            "max_abs": 0.3654698400848062
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.03498544878930833,
+            "bias": -0.02922935494821967,
+            "max_abs": 0.0749178116758289
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.21651740971456693,
+            "bias": -0.20522368982368125,
+            "max_abs": 0.3654698400848062
+          },
+          "predicted_peak": 73.73741298751773,
+          "sampled_peak_error": -0.02064365310727112,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        },
+        {
+          "model": {
+            "law": "mudcrab",
+            "clock": "qpc",
+            "g": 900.0,
+            "v": 340.0,
+            "h": 0.016666666666666666
+          },
+          "window": {
+            "n": 71,
+            "rmse": 11.370697368952925,
+            "bias": -7.345305393559272,
+            "max_abs": 28.245442708333314
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 13.285986795016866,
+            "bias": -9.952685233874199,
+            "max_abs": 28.245442708333314
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 3.6354911128379594,
+            "bias": -2.9068813981681028,
+            "max_abs": 8.508056640625
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 14.47205746988052,
+            "bias": -10.409931485615079,
+            "max_abs": 28.245442708333314
+          },
+          "predicted_peak": 67.08333333333334,
+          "sampled_peak_error": -6.674723307291657,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "native_discrete",
+            "clock": "controller",
+            "g": 686.6141828881737,
+            "v": 327.8663120620113,
+            "fall_multiplier": 1.350000023841858,
+            "assumption": "one controller update per camera; dt schedule observed, own height history"
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.11124903469067568,
+            "bias": -0.05593184731788586,
+            "max_abs": 0.220947265625
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.00020534788262692834,
+            "bias": 0.00011326195538660869,
+            "max_abs": 0.00042948178888124744
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.00013009632385451223,
+            "bias": 4.141298226429793e-06,
+            "max_abs": 0.00030686194007500944
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.14464407854697595,
+            "bias": -0.09455431564805863,
+            "max_abs": 0.220947265625
+          },
+          "predicted_peak": 73.75823609454083,
+          "sampled_peak_error": 0.0001794539158339603,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        }
+      ],
+      "native_launch": {
+        "pre_velocity": 327.8663120620113,
+        "post_velocity": 312.5719796713711,
+        "dt": 0.016499998047947884,
+        "height_gate_equal_or_below": true,
+        "predicted_first_dv": -15.294329384527636,
+        "sqrt_2gh_launch": 327.86630244540726
+      },
+      "native_callbacks_per_camera_sample": {
+        "n": 53,
+        "min": 1,
+        "median": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "one_controller_update_per_camera_during_flight": true,
+      "clocks": {
+        "camera_dt": {
+          "n": 199,
+          "min": 0.016333332285284996,
+          "median": 0.016333334147930145,
+          "max": 0.016499998047947884,
+          "mean": 0.016402009097700142
+        },
+        "qpc_dt": {
+          "n": 198,
+          "min": 0.015966299999995215,
+          "median": 0.01642530000000164,
+          "max": 0.016982599999998627,
+          "mean": 0.016426775757575767
+        },
+        "controller_dt": {
+          "n": 199,
+          "min": 0.016333332285284996,
+          "median": 0.016333334147930145,
+          "max": 0.016499998047947884,
+          "mean": 0.016402846614095433
+        },
+        "camera_to_qpc_ratio": {
+          "n": 198,
+          "min": 0.9617686505768444,
+          "median": 0.9975525436021161,
+          "max": 1.032844331433334,
+          "mean": 0.9985781837777001
+        },
+        "controller_minus_previous_camera_dt": {
+          "n": 198,
+          "min": 0.0,
+          "median": 0.0,
+          "max": 0.0,
+          "mean": 0.0
+        },
+        "controller_minus_same_camera_dt": {
+          "n": 199,
+          "min": -0.00016666576266288757,
+          "median": 0.0,
+          "max": 0.00016666576266288757,
+          "mean": 8.375163952908923e-07
+        }
+      },
+      "position_scale_delta_residual": {
+        "n": 152,
+        "rmse": 6.793343219628313e-05,
+        "bias": -9.345257192188384e-07,
+        "max_abs": 0.00021616884623654187
+      },
+      "native_air_dv_residual_units_per_second": {
+        "rising": {
+          "n": 28,
+          "rmse": 5.002419489764519e-06,
+          "bias": 1.6389163360268212e-06,
+          "max_abs": 1.6114519338598603e-05
+        },
+        "history_gate": {
+          "n": 25,
+          "rmse": 2.082673330091445e-06,
+          "bias": -7.641801098553122e-07,
+          "max_abs": 3.0061125564699857e-06
+        }
+      }
+    },
+    {
+      "id": "train-60hz-1x-3",
+      "split": "train",
+      "frame_cap": 60,
+      "time_multiplier": 1.0,
+      "observed_sampled_apex": 73.777587890625,
+      "events": {
+        "onset": {
+          "qpc": [
+            48.5676451,
+            48.600595
+          ],
+          "camera": [
+            5.218499710783362,
+            5.25133304297924
+          ]
+        },
+        "apex": {
+          "qpc": [
+            49.0108554,
+            49.0439235
+          ],
+          "camera": [
+            5.661166353151202,
+            5.693999683484435
+          ]
+        },
+        "landing": {
+          "qpc": [
+            49.4216887,
+            49.4544028
+          ],
+          "camera": [
+            6.071166327223182,
+            6.10399965941906
+          ]
+        }
+      },
+      "launch_phase_uncertainty": {
+        "qpc": 0.016339299999998502,
+        "camera": 0.016333334147930145
+      },
+      "direct_launch_velocity_units_per_second": 327.8663120620113,
+      "models": [
+        {
+          "model": {
+            "law": "ballistic",
+            "clock": "camera",
+            "g": 686.6865861889204,
+            "v": 318.3228876931592
+          },
+          "window": {
+            "n": 71,
+            "rmse": 5.516497160379357,
+            "bias": 2.6047565803319404,
+            "max_abs": 17.819132256697856
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 5.629135622487113,
+            "bias": 2.8521346639399647,
+            "max_abs": 17.819132256697856
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.018245763523904137,
+            "bias": 0.008933316403892125,
+            "max_abs": 0.0487526918064507
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 7.172440560634237,
+            "bias": 4.39711073875845,
+            "max_abs": 17.819132256697856
+          },
+          "predicted_peak": 73.77480979292505,
+          "sampled_peak_error": -0.0027780976999451923,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "two_acceleration",
+            "clock": "camera",
+            "g": 686.6865861889204,
+            "g_down": 926.8466806257119,
+            "v": 318.3228876931592
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.17586381676849094,
+            "bias": -0.12159518917356131,
+            "max_abs": 0.4046270849498086
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.15915493963105207,
+            "bias": -0.08954245480909334,
+            "max_abs": 0.4046270849498086
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.018245763523904137,
+            "bias": 0.008933316403892125,
+            "max_abs": 0.0487526918064507
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.22815196985909256,
+            "bias": -0.21172201445323155,
+            "max_abs": 0.4046270849498086
+          },
+          "predicted_peak": 73.77480979292505,
+          "sampled_peak_error": -0.0027780976999451923,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        },
+        {
+          "model": {
+            "law": "mudcrab",
+            "clock": "camera",
+            "g": 900.0,
+            "v": 340.0,
+            "h": 0.016666666666666666
+          },
+          "window": {
+            "n": 71,
+            "rmse": 11.445926173398032,
+            "bias": -7.383515120671948,
+            "max_abs": 28.494710286458314
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 13.373895587151068,
+            "bias": -10.00485620743189,
+            "max_abs": 28.494710286458314
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 3.6277006523167996,
+            "bias": -2.8911553744612064,
+            "max_abs": 8.527587890625
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 14.573303131628979,
+            "bias": -10.485382564484127,
+            "max_abs": 28.494710286458314
+          },
+          "predicted_peak": 67.08333333333334,
+          "sampled_peak_error": -6.694254557291657,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "ballistic",
+            "clock": "qpc",
+            "g": 684.1921853369224,
+            "v": 317.6637095143661
+          },
+          "window": {
+            "n": 71,
+            "rmse": 5.516304977415542,
+            "bias": 2.580907531592453,
+            "max_abs": 17.797291678471083
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 5.62646028167241,
+            "bias": 2.817861955433339,
+            "max_abs": 17.797291678471083
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.04400361657094364,
+            "bias": -0.03688802051895366,
+            "max_abs": 0.06286028973639368
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 7.172113505403037,
+            "bias": 4.388433031859853,
+            "max_abs": 17.797291678471083
+          },
+          "predicted_peak": 73.73768184477562,
+          "sampled_peak_error": -0.03990604584937785,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "two_acceleration",
+            "clock": "qpc",
+            "g": 684.1921853369224,
+            "g_down": 924.83897187995,
+            "v": 317.6637095143661
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.1997902729700476,
+            "bias": -0.15673494012067044,
+            "max_abs": 0.4807621290089088
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.193913560240407,
+            "bias": -0.13752173014072308,
+            "max_abs": 0.4807621290089088
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.04400361657094364,
+            "bias": -0.03688802051895366,
+            "max_abs": 0.06286028973639368
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.25717761351171103,
+            "bias": -0.2394863846075701,
+            "max_abs": 0.4807621290089088
+          },
+          "predicted_peak": 73.73768184477562,
+          "sampled_peak_error": -0.03990604584937785,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        },
+        {
+          "model": {
+            "law": "mudcrab",
+            "clock": "qpc",
+            "g": 900.0,
+            "v": 340.0,
+            "h": 0.016666666666666666
+          },
+          "window": {
+            "n": 71,
+            "rmse": 11.445926173398032,
+            "bias": -7.383515120671948,
+            "max_abs": 28.494710286458314
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 13.373895587151068,
+            "bias": -10.00485620743189,
+            "max_abs": 28.494710286458314
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 3.6277006523167996,
+            "bias": -2.8911553744612064,
+            "max_abs": 8.527587890625
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 14.573303131628979,
+            "bias": -10.485382564484127,
+            "max_abs": 28.494710286458314
+          },
+          "predicted_peak": 67.08333333333334,
+          "sampled_peak_error": -6.694254557291657,
+          "window_covered": true,
+          "passes_frozen_report_gate": false
+        },
+        {
+          "model": {
+            "law": "native_discrete",
+            "clock": "controller",
+            "g": 686.6141828881737,
+            "v": 327.8663120620113,
+            "fall_multiplier": 1.350000023841858,
+            "assumption": "one controller update per camera; dt schedule observed, own height history"
+          },
+          "window": {
+            "n": 71,
+            "rmse": 0.11124911170664593,
+            "bias": -0.05611205226557831,
+            "max_abs": 0.220947265625
+          },
+          "whole_flight": {
+            "n": 52,
+            "rmse": 0.00025605636418777434,
+            "bias": -0.00013278710780884905,
+            "max_abs": 0.0007327267341565857
+          },
+          "ascent": {
+            "n": 29,
+            "rmse": 0.0003103464271612042,
+            "bias": -0.0002676734562675667,
+            "max_abs": 0.0007327267341565857
+          },
+          "descent": {
+            "n": 42,
+            "rmse": 0.14464398919329668,
+            "bias": -0.0946712662053405,
+            "max_abs": 0.220947265625
+          },
+          "predicted_peak": 73.77750025587747,
+          "sampled_peak_error": -8.763474752981892e-05,
+          "window_covered": true,
+          "passes_frozen_report_gate": true
+        }
+      ],
+      "native_launch": {
+        "pre_velocity": 327.8663120620113,
+        "post_velocity": 312.72646990002977,
+        "dt": 0.016333334147930145,
+        "height_gate_equal_or_below": true,
+        "predicted_first_dv": -15.139843755137015,
+        "sqrt_2gh_launch": 327.86630244540726
+      },
+      "native_callbacks_per_camera_sample": {
+        "n": 53,
+        "min": 1,
+        "median": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "one_controller_update_per_camera_during_flight": true,
+      "clocks": {
+        "camera_dt": {
+          "n": 199,
+          "min": 0.016333332285284996,
+          "median": 0.016333334147930145,
+          "max": 0.016499998047947884,
+          "mean": 0.016397821478283586
+        },
+        "qpc_dt": {
+          "n": 198,
+          "min": 0.016055199999996717,
+          "median": 0.01642905000000283,
+          "max": 0.016777699999998674,
+          "mean": 0.01642473282828283
+        },
+        "controller_dt": {
+          "n": 199,
+          "min": 0.016333332285284996,
+          "median": 0.016333334147930145,
+          "max": 0.016499998047947884,
+          "mean": 0.01639782146892356
+        },
+        "camera_to_qpc_ratio": {
+          "n": 198,
+          "min": 0.9735143842890436,
+          "median": 0.9983273586721695,
+          "max": 1.0217033374377267,
+          "mean": 0.9984230776430318
+        },
+        "controller_minus_previous_camera_dt": {
+          "n": 198,
+          "min": 0.0,
+          "median": 0.0,
+          "max": 0.0,
+          "mean": 0.0
+        },
+        "controller_minus_same_camera_dt": {
+          "n": 199,
+          "min": -0.00016666576266288757,
+          "median": 0.0,
+          "max": 0.00016666576266288757,
+          "mean": -9.360025875532448e-12
+        }
+      },
+      "position_scale_delta_residual": {
+        "n": 152,
+        "rmse": 5.77255799718293e-05,
+        "bias": -9.345257192188384e-07,
+        "max_abs": 0.0001987340219784528
+      },
+      "native_air_dv_residual_units_per_second": {
+        "rising": {
+          "n": 28,
+          "rmse": 4.86963244997621e-06,
+          "bias": 1.6900044149858403e-06,
+          "max_abs": 1.6114519338598603e-05
+        },
+        "history_gate": {
+          "n": 25,
+          "rmse": 3.5303913232238794e-06,
+          "bias": -2.942986490479475e-07,
+          "max_abs": 1.3681101599793521e-05
+        }
+      }
+    }
+  ],
+  "model_sha256": "2e84b3f83914f992ddd7b135ca391a6bfe48978acaff453b0a879b09c8639dcb",
+  "seal_sha256": "c1026fb434bb72d0bb4b255888fd340dd202590e0f9a73d7a19b6a6e0607d575"
+}

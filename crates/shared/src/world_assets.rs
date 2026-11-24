@@ -4,6 +4,71 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 use std::path::Path;
 
+/// Converts a stored model path to the GLB requested by world streaming.
+pub fn streamed_model_path(path: &str) -> Option<String> {
+    // silent-ok: ordinary streaming uses the presence of a drawable path.
+    classify_streamed_model_path(path).ok()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamedModelExclusion {
+    Effects,
+    Sky,
+    Other,
+}
+
+/// Reports the path exclusions that large-reference promotion can identify.
+pub fn classify_streamed_model_path(path: &str) -> Result<String, StreamedModelExclusion> {
+    // Converted assets are published with lowercase canonical paths, so the
+    // lookup must lowercase too (matching world-inspect's resolver).
+    // The filename is no marker signal: forges and the Civil War map flags carry
+    // "marker" and must draw. Editor markers are excluded by the base record's
+    // `Is Marker` flag (`spawned_model_path`) and, inside a mesh, by the converter's
+    // `EditorMarker` shape rule; the folder rules below stay as path-convention guards.
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let normalized = normalized.trim_start_matches("./");
+    let without_prefix = normalized
+        .strip_prefix("meshes/")
+        .unwrap_or(normalized)
+        .trim_start_matches("./");
+    if !is_safe_relative_asset_path(without_prefix) {
+        return Err(StreamedModelExclusion::Other);
+    }
+    let relative = without_prefix
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    let relative = std::path::Path::new(&relative);
+    if relative.as_os_str().is_empty() || relative.starts_with("markers") {
+        return Err(StreamedModelExclusion::Other);
+    }
+    // STAND-IN(#916): The ordinary streamer skips these models. Promotion uses the same filter.
+    if relative.starts_with("sky") {
+        return Err(StreamedModelExclusion::Sky);
+    }
+    if relative.starts_with("effects")
+        && relative != std::path::Path::new("effects/fxcobwebroundwall01.nif")
+    {
+        return Err(StreamedModelExclusion::Effects);
+    }
+    let mut converted = std::path::PathBuf::from("meshes").join(relative);
+    converted.set_extension("glb");
+    Ok(converted.to_string_lossy().replace('\\', "/"))
+}
+
+/// Rejects a database-supplied relative path that could escape the assets
+/// root once re-rooted under `meshes/` with `PathBuf::join`. A `..` segment
+/// walks back out of the base directory, and a rooted or drive-prefixed path
+/// makes `PathBuf::join` replace the base entirely instead of appending to it
+/// (see the `std::path::PathBuf::push` docs). Every component must therefore
+/// be a plain, non-empty path segment.
+fn is_safe_relative_asset_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
 pub fn validate_world_database(path: &Path) -> Result<u32> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .wrap_err_with(|| format!("failed to open {}", path.display()))?;
@@ -36,10 +101,8 @@ pub fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u32) -> 
         );
         return Ok(version);
     }
-    let chunk_count: i64 = connection
-        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
-        .wrap_err("world database has no LOD chunk table")?;
     if !manifest_path.is_file() {
+        let chunk_count = lod_chunk_count(&connection)?;
         color_eyre::eyre::ensure!(
             chunk_count == 0,
             "world database contains {chunk_count} LOD chunks but {} is missing",
@@ -61,8 +124,20 @@ pub fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u32) -> 
 
     let bytes = std::fs::read(&manifest_path)
         .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
+    validate_lod_manifest(&connection, &bytes, converter_schema)?;
+    Ok(version)
+}
+
+/// Checks the manifest against database rows, including rows in an uncommitted generation.
+/// The caller checks the conversion producer manifest separately.
+pub fn validate_lod_manifest(
+    connection: &Connection,
+    bytes: &[u8],
+    converter_schema: u32,
+) -> Result<()> {
+    let chunk_count = lod_chunk_count(connection)?;
     let manifest: LodBuildManifest =
-        serde_json::from_slice(&bytes).wrap_err("invalid LOD build manifest")?;
+        serde_json::from_slice(bytes).wrap_err("invalid LOD build manifest")?;
     color_eyre::eyre::ensure!(
         manifest.land_texture_repeats_per_cell == crate::LAND_TEXTURE_REPEATS_PER_CELL,
         "LOD terrain texture scale is stale; rebuild LOD metadata for {} repeats per cell",
@@ -98,7 +173,13 @@ pub fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u32) -> 
         "LOD manifest declares {} chunks but the world database contains {chunk_count}",
         manifest.chunks
     );
-    Ok(version)
+    Ok(())
+}
+
+fn lod_chunk_count(connection: &Connection) -> Result<i64> {
+    connection
+        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
+        .wrap_err("world database has no LOD chunk table")
 }
 
 #[derive(Deserialize)]

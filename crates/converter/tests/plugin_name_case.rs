@@ -19,6 +19,17 @@ fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
     [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
 }
 
+/// A GRUP of children (type 8: a cell's persistent children) that gives its records a cell.
+fn group(kind: i32, label: u32, content: &[u8]) -> Vec<u8> {
+    let mut bytes = b"GRUP".to_vec();
+    bytes.extend_from_slice(&u32::try_from(content.len() + 24).unwrap().to_le_bytes());
+    bytes.extend_from_slice(&label.to_le_bytes());
+    bytes.extend_from_slice(&kind.to_le_bytes());
+    bytes.extend_from_slice(&[0; 8]);
+    bytes.extend_from_slice(content);
+    bytes
+}
+
 fn frame(tag: &[u8; 4], id: u32, payload: &[u8]) -> Vec<u8> {
     [
         tag.as_slice(),
@@ -63,11 +74,23 @@ fn fixture_with_spelling(root: &Path, owner_bytes: &[u8]) -> (PathBuf, PathBuf, 
         &frame(b"STAT", 0x1800, &sub(b"EDID", b"original\0")),
     );
     let mut patch_records = frame(b"STAT", 0x1800, &sub(b"EDID", b"override\0"));
-    patch_records.extend(frame(
+    // A usable placement keeps this test focused on owner/master name casing. It needs a parent
+    // cell: a placed record without one gets no placement row (#811).
+    let placement = frame(
         b"REFR",
         0x0100_1801,
-        &sub(b"NAME", &0x1800u32.to_le_bytes()),
+        &[
+            sub(b"NAME", &0x1800u32.to_le_bytes()),
+            sub(b"DATA", &[0; 24]),
+        ]
+        .concat(),
+    );
+    patch_records.extend(frame(
+        b"CELL",
+        0x0100_1900,
+        &sub(b"EDID", b"PlacementCell\0"),
     ));
+    patch_records.extend(group(8, 0x0100_1900, &placement));
     let patch = plugin(&data, "Patch.esp", &[owner_bytes], &patch_records);
     let list = root.join("plugins.txt");
     let mut listed = b"*Leading.esm\n*".to_vec();

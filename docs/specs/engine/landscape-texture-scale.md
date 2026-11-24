@@ -12,17 +12,11 @@ rescale the 17x17 quadrant paint-weight grid.
 - DoubleYou's [Skyrim SE default-setting investigation](https://stepmodifications.org/forum/topic/11523-skyrim-special-edition-default-values-for-all-valid-ini-settings/)
   records `fLandTextureTilingMult=3.0000` under Landscape. These are defaults
   when the setting is absent from the INI, not recommended custom settings.
-- A read-only static inspection on 2026-09-30 independently recovered the
-  calculation below from SkyrimSE.exe, file version 1.7.104.0, SHA-256
-  `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`.
+- In retail, `fLandTextureTilingMult:Landscape` defaults to 3.0. The
+  per-quadrant UV step is the reciprocal of `4 / setting`, and it's applied
+  to sample indices 0..16 on both axes of the 17x17 quadrant grid.
 
-The exact named setting `fLandTextureTilingMult:Landscape` has a static float
-value of 3.0 at RVA `0x207b868`. In the function beginning at RVA `0x2b3ce0`,
-the setting is read at `0x2b4052`; the code calculates `4 / setting`, then its
-reciprocal at `0x2b41d1`. Two loops with bounds 17 multiply indices 0..16 by
-that increment and store pairs of floats at `0x2b4252` and `0x2b4257`.
-Function boundaries were taken from the PE runtime-function table; no symbol
-name is assumed. For the nonzero default this is equivalent to:
+For the nonzero default this is equivalent to:
 
 ```text
 step = 1 / (4 / setting) = 3 / 4

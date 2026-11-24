@@ -1,4 +1,4 @@
-//! Interactive rendering preferences. Automated runs keep their explicit configuration.
+//! Interactive rendering and control preferences. Automated runs keep explicit configuration.
 
 use crate::{config::EngineConfig, world::components::StreamingCamera};
 use bevy::{
@@ -17,6 +17,10 @@ use bevy::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+#[path = "settings_g6_tests.rs"]
+mod g6_tests;
 
 pub const TONE_MAPS: [Tonemapping; 9] = [
     Tonemapping::None,
@@ -37,6 +41,11 @@ pub const WINDOW_SIZES: [(u32, u32); 4] = [(1280, 720), (1600, 900), (1920, 1080
 #[serde(default)]
 pub struct RenderingSettings {
     pub version: u32,
+    /// Requested grass state; startup may disable rendering if the pack cache is invalid.
+    /// Changes apply on the next start because grass plugins and caches are startup resources.
+    pub grass: bool,
+    /// Requested cell ring, applied on next start and clamped by explicit terrain limits.
+    pub grass_radius: i32,
     pub point_lights: bool,
     pub point_light_budget: usize,
     pub point_light_shadows: bool,
@@ -65,7 +74,9 @@ pub struct RenderingSettings {
     pub wave_strength: f32,
     pub cpu_frustum_culling: bool,
     pub room_culling: bool,
+    /// Saved drawing preference, applied to camera views at the next start.
     pub indirect_drawing: bool,
+    /// Saved occlusion preference, applied with indirect drawing at the next start.
     pub occlusion_culling: bool,
     pub depth_prepass: bool,
     pub msaa: usize,
@@ -84,6 +95,8 @@ pub struct RenderingSettings {
     pub grade_pivot: f32,
     /// Bit mask of explicitly edited grade fields; zero leaves source values intact.
     pub grade_override_mask: u16,
+    /// Multiplier on retail fMouseHeadingSensitivity; 1 preserves the movement-type defaults.
+    pub mouse_sensitivity: f32,
     pub fov_degrees: f32,
     pub vsync: bool,
     pub window_mode: usize,
@@ -112,6 +125,7 @@ pub struct RenderingSettings {
 }
 
 impl Default for RenderingSettings {
+    /// Starts controls at the retail baseline and rendering at the approved defaults.
     fn default() -> Self {
         let config = EngineConfig::default();
         let weather = crate::sky::WeatherLighting::default();
@@ -119,6 +133,8 @@ impl Default for RenderingSettings {
         let ambient = weather.mean_ambient().to_srgba();
         Self {
             version: 1,
+            grass: config.grass,
+            grass_radius: config.grass_radius,
             point_lights: false,
             point_light_budget: crate::lights::ENABLED_LIGHT_BUDGET,
             point_light_shadows: false,
@@ -162,6 +178,7 @@ impl Default for RenderingSettings {
             grade_tint_blue: 0.72,
             grade_pivot: 0.18,
             grade_override_mask: 0,
+            mouse_sensitivity: 1.0,
             fov_degrees: PerspectiveProjection::default().fov.to_degrees(),
             vsync: true,
             window_mode: 0,
@@ -280,6 +297,10 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
         &["512", "1024", "2048", "4096"]
     )
     .when(|s| s.point_lights && s.point_light_shadows),
+    toggle!("Grass (applies on next start)", "Grass", grass),
+    // Keep menu coverage at the default window under G4's per-cell budgets.
+    // Larger deliberate launch radii remain available through the CLI.
+    number!(Graphics, "Grass (applies on next start)", "Grass radius", grass_radius; 1.0, 2.0, 1.0),
     toggle!("Sun and ambient light", "Sun lighting", sun),
     number!(Graphics, "Sun and ambient light", "Sun illuminance (lux)", sun_illuminance; 0.0, 100_000.0, 1000.0)
         .when(|s| s.sun),
@@ -317,8 +338,8 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Graphics, "Water", "Water wave strength", wave_strength; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     toggle!("Culling and drawing", "CPU frustum culling", cpu_frustum_culling),
     toggle!("Culling and drawing", "Room culling", room_culling),
-    toggle!("Culling and drawing", "GPU indirect drawing", indirect_drawing),
-    toggle!("Culling and drawing", "GPU occlusion culling", occlusion_culling),
+    toggle!("Culling and drawing", "GPU indirect drawing (restart)", indirect_drawing),
+    toggle!("Culling and drawing", "GPU occlusion culling (restart)", occlusion_culling),
     toggle!("Culling and drawing", "Depth prepass", depth_prepass),
     choice!("Image", "MSAA", msaa, &["Off", "2x", "4x", "8x"]),
     number!(Graphics, "Image", "Exposure (EV100)", exposure_ev100; -5.0, 20.0, 0.25),
@@ -386,6 +407,9 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Streaming, "Per-frame budgets", "Model spawns per frame (0 = unlimited)", model_spawns; 0.0, 512.0, 8.0),
     number!(Streaming, "Per-frame budgets", "Asset upload MiB per frame (0 = unlimited)", upload_mib; 0.0, 256.0, 4.0),
     number!(Streaming, "Threads", "IO threads (restart; 0 = automatic)", io_threads; 0.0, 64.0, 1.0),
+    // Divide retail fMouseHeadingSensitivityMin (0.01) and fMouseHeadingSensitivityMax (0.05)
+    // by the nominal default (0.0125) to get the UI multiplier bounds. See the settings UI spec.
+    number!(Controls, "Mouse look", "Mouse sensitivity (x)", mouse_sensitivity; 0.8, 4.0, 0.05),
 ];
 
 impl SettingSpec {
@@ -475,6 +499,27 @@ fn grade_override_bit(label: &str) -> Option<u8> {
 }
 
 impl RenderingSettings {
+    /// Keep automatically sized grass inside terrain while retaining wider saved preferences.
+    /// Explicit terrain limits and programmatic configurations retain their clamped grass ring.
+    fn retain_grass_coverage(&mut self, config: &EngineConfig) {
+        if !config.grass || !config.loads_world() || config.grass_settings_error.is_some() {
+            return;
+        }
+        let automatic = config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "grass:stream-radius");
+        let minimum = if automatic {
+            config.grass_radius.saturating_add(1).max(2)
+        } else {
+            2
+        };
+        self.stream_radius = self.stream_radius.max(minimum);
+        self.unload_radius = self
+            .unload_radius
+            .max(self.stream_radius.saturating_add(i32::from(automatic)));
+    }
+
     pub(crate) fn grade_overrides(&self) -> crate::color_pipeline::SceneGradeOverrides {
         let value = |bit: u8, value| (self.grade_override_mask & (1 << bit) != 0).then_some(value);
         crate::color_pipeline::SceneGradeOverrides {
@@ -574,7 +619,10 @@ impl RenderingSettings {
         Ok(())
     }
 
+    /// Copy launch values before optional grass coverage is imposed on the resolved preferences.
     fn take_launch_values(&mut self, config: &EngineConfig) {
+        self.grass = config.grass || config.grass_disabled_by_terrain;
+        self.grass_radius = config.grass_radius;
         self.color_grade = config.color_grade.index();
         self.visual_preset =
             usize::from(config.visual_preset == crate::color_pipeline::SceneVisualPreset::CoolGray);
@@ -582,8 +630,9 @@ impl RenderingSettings {
             self.grade_override_mask = 0;
         }
         self.point_lights = config.lights;
-        self.stream_radius = config.stream_radius;
-        self.unload_radius = config.unload_radius;
+        (self.stream_radius, self.unload_radius) = config
+            .grass_terrain_radii
+            .unwrap_or((config.stream_radius, config.unload_radius));
         self.lod_level0_distance = config.terrain_lod.block_level0_distance;
         self.lod_level1_distance = config.terrain_lod.block_level1_distance;
         self.lod_maximum_distance = config.terrain_lod.block_maximum_distance;
@@ -615,6 +664,8 @@ impl RenderingSettings {
         }
         for flag in overrides {
             match flag.as_str() {
+                "--grass" | "--no-grass" | "ini:grass" => self.grass = source.grass,
+                "--grass-radius" | "ini:grass-radius" => self.grass_radius = source.grass_radius,
                 "--lights" => self.point_lights = source.point_lights,
                 "--stream-radius" => {
                     self.stream_radius = source.stream_radius;
@@ -707,11 +758,13 @@ fn grade_source_is_launch_owned(overrides: &[String]) -> bool {
 pub struct SettingsFile {
     pub path: Option<PathBuf>,
     pub status: String,
-    /// The preferences the file held before explicit launch options replaced them in the running
-    /// settings. A save writes these values back for the fields those options own.
+    /// Preferences retained before launch overrides and automatic grass coverage are applied.
+    /// Menu radius edits update these values before coverage restores its live minimum.
     stored: RenderingSettings,
     /// The explicit launch options from the run that loaded `stored`.
     launch_overrides: Vec<String>,
+    /// Last effective coverage radii, used to identify independent menu edits on either axis.
+    grass_coverage: Option<(i32, i32)>,
     preserve_unavailable_record_mode: bool,
     unavailable_record_mode_replaced: bool,
     /// The Metal drawing default applies only when no saved setting owns this choice.
@@ -720,6 +773,21 @@ pub struct SettingsFile {
 }
 
 impl SettingsFile {
+    /// Reflect startup's grass rollback in the live preferences and their save ownership.
+    pub(crate) fn clear_grass_coverage(
+        &mut self,
+        settings: &mut RenderingSettings,
+        config: &EngineConfig,
+    ) {
+        self.grass_coverage = None;
+        self.status =
+            "Grass is unavailable for this pack; the saved request is retained for next start."
+                .into();
+        settings.stream_radius = config.stream_radius;
+        settings.unload_radius = config.unload_radius;
+    }
+
+    /// Apply launch-only start-shot framing while retaining saved preferences.
     pub(crate) fn apply_start_shot(
         &mut self,
         settings: &mut RenderingSettings,
@@ -741,9 +809,12 @@ impl SettingsFile {
     pub fn session_only() -> Self {
         Self {
             path: None,
-            status: "Changes apply now. This preview does not save preferences.".into(),
+            status:
+                "Changes apply now except startup settings. This preview does not save preferences."
+                    .into(),
             stored: RenderingSettings::default(),
             launch_overrides: Vec::new(),
+            grass_coverage: None,
             preserve_unavailable_record_mode: false,
             unavailable_record_mode_replaced: false,
             metal_drawing_default_available: true,
@@ -771,14 +842,25 @@ impl SettingsFile {
         self.metal_drawing_default_available = true;
         self.metal_drawing_auto_unowned = true;
         *settings = RenderingSettings::default();
+        if let Some(coverage) = self.grass_coverage.as_mut()
+            && self
+                .launch_overrides
+                .iter()
+                .any(|flag| flag == "grass:stream-radius")
+        {
+            // Reset owns the default preferences; live application establishes coverage again.
+            self.stored.stream_radius = settings.stream_radius;
+            self.stored.unload_radius = settings.unload_radius;
+            *coverage = (settings.stream_radius, settings.unload_radius);
+        }
         self.status = if self
             .launch_overrides
             .iter()
             .any(|flag| flag == "--start-shot")
         {
-            "Defaults restored for this session. Save preserves the pre-launch FOV, window mode, and window size.".into()
+            "Defaults selected. Settings marked restart apply on the next start. Save preserves the pre-launch FOV, window mode, and window size.".into()
         } else {
-            "Defaults restored for this session. Choose Save to keep them.".into()
+            "Defaults selected. Settings marked restart apply on the next start. Choose Save to keep them.".into()
         };
     }
 
@@ -790,8 +872,8 @@ impl SettingsFile {
                 self.metal_drawing_auto_unowned,
             ) {
                 Ok(()) if self.launch_overrides.iter().any(|flag| flag == "--start-shot") =>
-                    "Settings saved. IO-thread changes apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
-                Ok(()) => "Settings saved. IO-thread changes apply after restart.".into(),
+                    "Settings saved. Changes to grass, grass radius, drawing, occlusion, the visual profile and IO threads apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
+                Ok(()) => "Settings saved. Changes to grass, grass radius, drawing, occlusion, the visual profile and IO threads apply after restart.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
             None => "Saving is unavailable for this session.".into(),
@@ -806,6 +888,15 @@ impl SettingsFile {
         let mut persisted = settings.clone();
         persisted.window_size_override = None;
         persisted.take_launch_owned_values(&self.stored, &self.launch_overrides);
+        if let Some((stream_radius, unload_radius)) = self.grass_coverage {
+            if persisted.stream_radius == stream_radius {
+                persisted.stream_radius = self.stored.stream_radius;
+            }
+            if persisted.unload_radius == unload_radius {
+                // A menu edit to the stream ring still needs a covering unload ring.
+                persisted.unload_radius = self.stored.unload_radius.max(persisted.stream_radius);
+            }
+        }
         if self
             .launch_overrides
             .iter()
@@ -840,18 +931,35 @@ pub(crate) fn prepare_settings(config: &mut EngineConfig) -> (RenderingSettings,
     prepare_settings_at(config, preferences_path())
 }
 
+/// Interactive runs automatically use the existing appearance format beside settings.json.
+/// Explicit CLI/environment selections already in the config keep their developer precedence.
+fn select_user_grass_tuning(config: &mut EngineConfig, preferences: Option<&Path>) {
+    if config.grass_tuning.is_none()
+        && let Some(path) = preferences
+            .and_then(Path::parent)
+            .map(|root| root.join("grass.toml"))
+        && path.is_file()
+    {
+        config.grass_tuning = Some(path);
+    }
+}
+
+/// Resolve saved preferences with launch ownership and active grass terrain coverage.
 pub(crate) fn prepare_settings_at(
     config: &mut EngineConfig,
     path: Option<PathBuf>,
 ) -> (RenderingSettings, SettingsFile) {
+    select_user_grass_tuning(config, path.as_deref());
     let mut settings = RenderingSettings::default();
     settings.take_launch_values(config);
     let no_preferences_path = path.is_none();
     let mut file = SettingsFile {
         path,
-        status: "Changes apply now. Choose Save to keep them across runs.".into(),
+        status: "Changes apply now except startup settings. Choose Save to keep them across runs."
+            .into(),
         stored: RenderingSettings::default(),
         launch_overrides: config.settings_overrides.clone(),
+        grass_coverage: None,
         preserve_unavailable_record_mode: false,
         unavailable_record_mode_replaced: false,
         metal_drawing_default_available: no_preferences_path,
@@ -862,7 +970,15 @@ pub(crate) fn prepare_settings_at(
             Ok(bytes) => {
                 let saved = serde_json::from_slice::<RenderingSettings>(&bytes)
                     .map_err(|e| e.to_string())
-                    .and_then(|s| s.validate().map(|()| s));
+                    .and_then(|mut s| {
+                        let radius = s.grass_radius.clamp(1, 2);
+                        if s.grass_radius != radius {
+                            file.status = format!("Saved grass radius {} clamped to {radius}; larger radii are CLI-only.", s.grass_radius);
+                            warn!(old = s.grass_radius, radius, "saved grass radius clamped");
+                            s.grass_radius = radius;
+                        }
+                        s.validate().map(|()| s)
+                    });
                 match saved {
                     Ok(saved) => {
                         file.stored = saved.clone();
@@ -898,6 +1014,29 @@ pub(crate) fn prepare_settings_at(
             }
             Err(error) => file.status = format!("Could not read settings: {error}"),
         }
+    }
+    // Resolve grass before sizing terrain. Menu edits remain next-start requests;
+    // apply_config deliberately leaves the active grass state and radius alone.
+    config.grass = settings.grass;
+    config.grass_radius = settings.grass_radius;
+    config.grass_disabled_by_terrain = false;
+    config.disable_grass_outside_explicit_terrain();
+    config.discard_inactive_grass_imports();
+    config.grass_terrain_radii = None;
+    let before_coverage = (settings.stream_radius, settings.unload_radius);
+    settings.retain_grass_coverage(config);
+    let after_coverage = (settings.stream_radius, settings.unload_radius);
+    // Track automatic coverage even when wider saved radii already cover grass.
+    let automatic_grass = config.grass
+        && config.loads_world()
+        && config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "grass:stream-radius");
+    file.grass_coverage =
+        (before_coverage != after_coverage || automatic_grass).then_some(after_coverage);
+    if file.grass_coverage.is_some() {
+        config.grass_terrain_radii = Some(before_coverage);
     }
     settings.apply_config(config);
     config.io_threads = settings.io_threads;
@@ -951,6 +1090,17 @@ fn save_settings_with_drawing_ownership(
     result.map_err(|e: std::io::Error| e.to_string())
 }
 
+/// Retain live grass coverage without flagging unchanged renderer preferences.
+fn retain_live_grass_coverage(mut settings: Mut<RenderingSettings>, config: &EngineConfig) {
+    let before = (settings.stream_radius, settings.unload_radius);
+    settings
+        .bypass_change_detection()
+        .retain_grass_coverage(config);
+    if before != (settings.stream_radius, settings.unload_radius) {
+        settings.set_changed();
+    }
+}
+
 /// Targets affected by interactive renderer preferences, grouped under Bevy's system parameter limit.
 #[derive(bevy::ecs::system::SystemParam)]
 #[allow(clippy::type_complexity)]
@@ -964,10 +1114,13 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
             &'static mut Tonemapping,
             &'static mut Msaa,
             &'static mut Projection,
+            Ref<'static, StreamingCamera>,
         ),
         With<StreamingCamera>,
     >,
-    reflections: Query<'w, 's, Entity, With<crate::render::WaterReflectionCamera>>,
+    reflections: Query<'w, 's, (Entity, Ref<'static, crate::render::WaterReflectionCamera>)>,
+    /// The game clock, for the hour of the weather-driven sky palette.
+    clock: Option<Res<'w, crate::sun::GameClock>>,
     /// The sun and the "a sun light appeared since the last apply" check need conflicting
     /// access (`&mut DirectionalLight` against that component's change tick), so they share a
     /// `ParamSet`. Every other target's marker is not mutated by this system, so those live in
@@ -1013,6 +1166,23 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
 /// Interactive runs apply the same default through `apply_render_settings`.
 pub struct RenderSettingsPlugin;
 
+/// The drawing mode selected before this session's views are first extracted. Bevy retains
+/// preprocessing buffers for that mode, so each view keeps it for its lifetime.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionDrawingSettings {
+    indirect_drawing: bool,
+    occlusion_culling: bool,
+}
+
+impl SessionDrawingSettings {
+    fn from_settings(settings: &RenderingSettings) -> Self {
+        Self {
+            indirect_drawing: settings.indirect_drawing,
+            occlusion_culling: settings.occlusion_culling,
+        }
+    }
+}
+
 impl Plugin for RenderSettingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderingSettings>()
@@ -1041,26 +1211,43 @@ fn apply_metal_direct_default(
     adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     mut file: ResMut<SettingsFile>,
     mut commands: Commands,
-    world_views: Query<Entity, With<StreamingCamera>>,
-    reflection_views: Query<Entity, With<crate::render::WaterReflectionCamera>>,
+    world_views: Query<(Entity, Ref<StreamingCamera>)>,
+    reflection_views: Query<(Entity, Ref<crate::render::WaterReflectionCamera>)>,
+    mut automatic_direct: Local<Option<bool>>,
 ) {
-    let metal = adapter.is_some_and(|info| info.backend == wgpu::Backend::Metal);
-    if !should_enable_metal_direct_default(&settings, &mut file, metal) {
+    let Some(adapter) = adapter else {
+        return;
+    };
+    let apply = *automatic_direct.get_or_insert_with(|| {
+        let apply = should_enable_metal_direct_default(
+            &settings,
+            &mut file,
+            adapter.backend == wgpu::Backend::Metal,
+        );
+        if apply {
+            settings.indirect_drawing = false;
+            settings.occlusion_culling = false;
+        }
+        apply
+    });
+    if !apply {
         return;
     }
-    settings.indirect_drawing = false;
-    settings.occlusion_culling = false;
-    for entity in &world_views {
-        commands
-            .entity(entity)
-            .insert(NoIndirectDrawing)
-            .remove::<OcclusionCulling>();
+    for (entity, camera) in &world_views {
+        if camera.is_added() {
+            commands
+                .entity(entity)
+                .insert(NoIndirectDrawing)
+                .remove::<OcclusionCulling>();
+        }
     }
-    for entity in &reflection_views {
-        commands
-            .entity(entity)
-            .insert(NoIndirectDrawing)
-            .remove::<OcclusionCulling>();
+    for (entity, camera) in &reflection_views {
+        if camera.is_added() {
+            commands
+                .entity(entity)
+                .insert(NoIndirectDrawing)
+                .remove::<OcclusionCulling>();
+        }
     }
 }
 
@@ -1078,9 +1265,11 @@ pub(crate) fn apply_render_settings(
     mut sky_palette: Option<ResMut<crate::sky::SkyPalette>>,
     mut targets: RenderSettingsTargets,
     mut previous: Local<Option<RenderingSettings>>,
+    mut session_drawing: Local<Option<SessionDrawingSettings>>,
     adapter: Option<Res<RenderAdapter>>,
     adapter_info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     mut file: Option<ResMut<SettingsFile>>,
+    mut grass_fade: Option<ResMut<crate::grass::GrassFade>>,
 ) {
     if let Some(file) = file.as_deref_mut()
         && should_enable_metal_direct_default(
@@ -1092,6 +1281,8 @@ pub(crate) fn apply_render_settings(
         settings.indirect_drawing = false;
         settings.occlusion_culling = false;
     }
+    let drawing =
+        *session_drawing.get_or_insert_with(|| SessionDrawingSettings::from_settings(&settings));
     // This system writes some of its own inputs (the shown grade values, the MSAA fallback and
     // the engine config), so the resource tick alone cannot mean "a preference changed": compare
     // against the snapshot left by the previous run, and also run when the engine config or the
@@ -1105,6 +1296,26 @@ pub(crate) fn apply_render_settings(
         || !targets.sun.p1().is_empty();
     if !preferences_changed {
         return;
+    }
+    let before_coverage = (settings.stream_radius, settings.unload_radius);
+    retain_live_grass_coverage(settings.reborrow(), &config);
+    if let Some(file) = file.as_deref_mut()
+        && let Some(coverage) = file.grass_coverage.as_mut()
+    {
+        let launch_owns_radii = file
+            .launch_overrides
+            .iter()
+            .any(|flag| matches!(flag.as_str(), "--stream-radius" | "ini:stream-radius"));
+        if !launch_owns_radii {
+            // Retain menu intent before live coverage replaces a smaller preferred radius.
+            if before_coverage.0 != coverage.0 {
+                file.stored.stream_radius = before_coverage.0;
+            }
+            if before_coverage.1 != coverage.1 {
+                file.stored.unload_radius = before_coverage.1;
+            }
+        }
+        *coverage = (settings.stream_radius, settings.unload_radius);
     }
     if previous.as_ref().is_some_and(|previous| {
         previous.window_size != settings.window_size || previous.window_mode != settings.window_mode
@@ -1157,7 +1368,13 @@ pub(crate) fn apply_render_settings(
             {
                 settings.set_changed();
             }
-            let next_palette = source.sky_palette(preset);
+            let next_palette = source.sky_palette(
+                preset,
+                targets
+                    .clock
+                    .as_deref()
+                    .map_or(crate::sun::RETAIL_GAME_HOUR, |clock| clock.hour),
+            );
             let palette_changed = sky_palette.as_deref() != Some(&next_palette);
             if palette_changed && let Some(palette) = sky_palette.as_deref_mut() {
                 *palette = next_palette;
@@ -1211,7 +1428,18 @@ pub(crate) fn apply_render_settings(
     if settings.config_differs(&config) {
         settings.apply_config(&mut config);
     }
-    for (entity, mut exposure, mut tone_map, mut msaa, mut projection) in &mut targets.cameras {
+    // Menu changes to the terrain ring retain the same fade clamp as startup.
+    if config.grass
+        && let Some(fade) = grass_fade.as_deref_mut()
+    {
+        let (start, end) = config.effective_grass_fade();
+        fade.enabled = config.grass_enable_fade;
+        fade.start = start;
+        fade.end = end;
+    }
+    for (entity, mut exposure, mut tone_map, mut msaa, mut projection, camera) in
+        &mut targets.cameras
+    {
         exposure.ev100 = settings.exposure_ev100;
         if tone.mode == crate::tone_mapping::SceneToneMapMode::Tony {
             *tone_map = TONE_MAPS[settings.tone_map];
@@ -1220,11 +1448,11 @@ pub(crate) fn apply_render_settings(
         if let Projection::Perspective(p) = &mut *projection {
             p.fov = settings.fov_degrees.to_radians();
         }
-        apply_camera_features(&mut commands, entity, &settings);
+        apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
-    for entity in &targets.reflections {
+    for (entity, camera) in &targets.reflections {
         commands.entity(entity).insert(MSAA_MODES[settings.msaa]);
-        apply_camera_features(&mut commands, entity, &settings);
+        apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
     for (mut light, mut cascades) in &mut targets.sun.p0() {
         light.illuminance = if settings.sun {
@@ -1315,27 +1543,36 @@ pub(crate) fn apply_render_settings(
     *previous = Some(settings.clone());
 }
 
-fn apply_camera_features(commands: &mut Commands, camera: Entity, settings: &RenderingSettings) {
+fn apply_camera_features(
+    commands: &mut Commands,
+    camera: Entity,
+    settings: &RenderingSettings,
+    drawing: SessionDrawingSettings,
+    added: bool,
+) {
     let mut camera = commands.entity(camera);
     if settings.cpu_frustum_culling {
         camera.remove::<NoCpuCulling>();
     } else {
         camera.insert(NoCpuCulling);
     }
-    if settings.indirect_drawing {
-        camera.remove::<NoIndirectDrawing>();
-    } else {
-        camera.insert(NoIndirectDrawing);
+    if added {
+        if drawing.indirect_drawing {
+            camera.remove::<NoIndirectDrawing>();
+        } else {
+            camera.insert(NoIndirectDrawing);
+        }
+        if drawing.occlusion_culling {
+            camera.insert(OcclusionCulling);
+        } else {
+            camera.remove::<OcclusionCulling>();
+        }
     }
-    if settings.depth_prepass {
+    // Active occlusion retains its required depth prepass until the next start.
+    if settings.depth_prepass || drawing.occlusion_culling {
         camera.insert(DepthPrepass);
     } else {
         camera.remove::<DepthPrepass>();
-    }
-    if settings.occlusion_culling {
-        camera.insert(OcclusionCulling);
-    } else {
-        camera.remove::<OcclusionCulling>();
     }
 }
 
@@ -1348,6 +1585,700 @@ mod tests {
         match EngineConfig::from_args(args.iter().cloned()).unwrap() {
             ConfigAction::Run(config) => *config,
             ConfigAction::Help | ConfigAction::Version => panic!("expected a run"),
+        }
+    }
+
+    /// Exercise renderer preferences on a streamed world camera and a separate reflection camera.
+    fn msaa_settings_app(
+        config: EngineConfig,
+        settings: RenderingSettings,
+        file: SettingsFile,
+    ) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(config)
+            .insert_resource(settings)
+            .insert_resource(file)
+            .add_systems(Update, apply_render_settings);
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::color_pipeline::SceneColorPipeline::default(),
+                StreamingCamera,
+                Msaa::Sample4,
+            ))
+            .id();
+        let reflection = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::render::WaterReflectionCamera,
+                Msaa::Sample4,
+            ))
+            .id();
+        (app, camera, reflection)
+    }
+
+    /// No-op coverage checks stay clean, while actual radius repairs mark the resource changed.
+    #[test]
+    fn g3_live_grass_coverage_only_dirties_settings_when_radii_change() {
+        for (args, radii, expected) in [
+            (vec![], (1, 1), (1, 1)),
+            (vec!["--benchmark-only", "--grass"], (1, 1), (1, 1)),
+            (vec!["--grass", "--grass-radius", "7"], (8, 9), (8, 9)),
+            (vec!["--grass", "--grass-radius", "7"], (11, 15), (11, 15)),
+            (vec!["--grass", "--stream-radius", "3"], (3, 4), (3, 4)),
+            (vec!["--grass", "--grass-radius", "7"], (2, 3), (8, 9)),
+            (vec!["--grass", "--grass-radius", "7"], (8, 8), (8, 9)),
+            (vec!["--grass", "--stream-radius", "3"], (1, 1), (2, 2)),
+        ] {
+            let mut config = launch(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>());
+            if args.is_empty() {
+                config.grass = false;
+            }
+            let mut world = World::new();
+            world.insert_resource(RenderingSettings {
+                stream_radius: radii.0,
+                unload_radius: radii.1,
+                ..default()
+            });
+            world.clear_trackers();
+            retain_live_grass_coverage(world.resource_mut::<RenderingSettings>(), &config);
+            let settings = world.resource::<RenderingSettings>();
+            assert_eq!(
+                (settings.stream_radius, settings.unload_radius),
+                expected,
+                "{args:?}"
+            );
+            assert_eq!(
+                world.is_resource_changed::<RenderingSettings>(),
+                radii != expected,
+                "{args:?}: unchanged coverage must not dirty settings"
+            );
+            world.clear_trackers();
+            retain_live_grass_coverage(world.resource_mut::<RenderingSettings>(), &config);
+            assert!(
+                !world.is_resource_changed::<RenderingSettings>(),
+                "{args:?}: second check"
+            );
+            world.resource_mut::<RenderingSettings>().set_changed();
+            retain_live_grass_coverage(world.resource_mut::<RenderingSettings>(), &config);
+            assert!(
+                world.is_resource_changed::<RenderingSettings>(),
+                "{args:?}: existing change"
+            );
+        }
+    }
+
+    /// Saved narrow terrain radii cannot remove the ring required by automatically sized grass.
+    #[test]
+    fn g3_saved_preferences_keep_automatic_grass_streaming_coverage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = RenderingSettings {
+            stream_radius: 2,
+            unload_radius: 3,
+            exposure_ev100: 8.5,
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+        let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+        assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (8, 9));
+        assert_eq!(config.effective_grass_radius(), 7);
+        assert_eq!(loaded.exposure_ev100, saved.exposure_ev100);
+        assert!(config.validate_grass().is_ok());
+    }
+
+    /// Exercise the production preference/cache startup sequence with isolated synthetic files.
+    fn check_cache_startup_radii(cache_kind: &str, saved: bool, terrain_args: &[&str]) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        if saved {
+            save_settings(
+                &path,
+                &RenderingSettings {
+                    stream_radius: 2,
+                    unload_radius: 5,
+                    ..default()
+                },
+            )
+            .unwrap();
+        }
+        let cache_path = directory.path().join("grass_cache.rkyv");
+        match cache_kind {
+            "missing" => {}
+            "corrupt" => std::fs::write(&cache_path, b"broken").unwrap(),
+            "old" | "valid" => {
+                let cache = shared::grass::GrassCache {
+                    version: if cache_kind == "old" {
+                        5
+                    } else {
+                        shared::grass::GRASS_CACHE_VERSION
+                    },
+                    types: vec![],
+                    cells: vec![],
+                };
+                std::fs::write(
+                    &cache_path,
+                    rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+                )
+                .unwrap();
+            }
+            _ => panic!("unknown fixture cache"),
+        }
+        let ini = directory.path().join("Skyrim.ini");
+        std::fs::write(&ini, "[General]\nuGridsToLoad=9\n").unwrap();
+        let terrain_args: Vec<String> = terrain_args
+            .iter()
+            .map(|arg| {
+                if *arg == "INI" {
+                    ini.to_str().unwrap()
+                } else {
+                    arg
+                }
+                .to_string()
+            })
+            .collect();
+        let mut config = launch(
+            &["--grass", "--grass-radius", "32"]
+                .map(String::from)
+                .into_iter()
+                .chain(terrain_args.iter().cloned())
+                .collect::<Vec<_>>(),
+        );
+        config.assets_dir = directory.path().to_path_buf();
+        let mut preferences = prepare_settings_at(&mut config, Some(path.clone()));
+        let cache =
+            crate::app::load_optional_grass_cache(&mut config, true, Some(&mut preferences));
+        let valid = cache_kind == "valid";
+        assert_eq!(cache.is_some(), valid);
+        assert_eq!(config.grass, valid);
+        let mut without_grass = launch(
+            &terrain_args
+                .iter()
+                .cloned()
+                .chain(["--no-grass".into()])
+                .collect::<Vec<_>>(),
+        );
+        let (baseline, _) = prepare_settings_at(&mut without_grass, Some(path.clone()));
+        let expected = if valid && terrain_args.is_empty() {
+            (33, 34)
+        } else {
+            (baseline.stream_radius, baseline.unload_radius)
+        };
+        assert_eq!((config.stream_radius, config.unload_radius), expected);
+        assert_eq!(
+            (preferences.0.stream_radius, preferences.0.unload_radius),
+            expected
+        );
+        preferences.0.exposure_ev100 = 8.5;
+        preferences.1.save(&preferences.0);
+        assert!(
+            preferences.1.status.starts_with("Settings saved"),
+            "{}",
+            preferences.1.status
+        );
+        let (reloaded, _) = prepare_settings_at(&mut launch(&["--no-grass".into()]), Some(path));
+        assert_eq!(
+            (reloaded.stream_radius, reloaded.unload_radius),
+            if saved { (2, 5) } else { (2, 3) }
+        );
+        assert_eq!(reloaded.exposure_ev100, 8.5);
+    }
+
+    #[test]
+    fn g3_missing_cache_preserves_wider_saved_radii() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 11,
+                unload_radius: 15,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass".into(), "--grass-radius".into(), "7".into()]);
+        config.assets_dir = directory.path().to_path_buf();
+        let mut preferences = prepare_settings_at(&mut config, Some(path));
+        assert!(
+            crate::app::load_optional_grass_cache(&mut config, true, Some(&mut preferences))
+                .is_none()
+        );
+        assert_eq!((config.stream_radius, config.unload_radius), (11, 15));
+        assert_eq!(
+            (preferences.0.stream_radius, preferences.0.unload_radius),
+            (11, 15)
+        );
+    }
+
+    #[test]
+    /// An explicit narrow terrain window disables session grass after preferences resolve.
+    fn g3_explicit_small_radius_disables_grass_after_preferences() {
+        let mut config = launch(&["--grass".into(), "--stream-radius".into(), "1".into()]);
+        let (settings, _) = prepare_settings_at(&mut config, None);
+        assert!(!config.grass);
+        assert!(settings.grass, "the next-start request is retained");
+        assert_eq!((config.stream_radius, config.unload_radius), (1, 2));
+        assert!(config.validate_grass().is_ok());
+    }
+
+    #[test]
+    fn g3_excessive_automatic_grass_radius_cannot_expand_terrain() {
+        let mut config = launch(&["--grass".into(), "--grass-radius".into(), "100000".into()]);
+        assert!(config.validate_grass().is_err());
+        assert_eq!((config.stream_radius, config.unload_radius), (2, 3));
+        let (settings, _) = prepare_settings_at(&mut config, None);
+        assert_eq!((settings.stream_radius, settings.unload_radius), (2, 3));
+    }
+
+    /// A missing cache disables grass, warns once and restores both saved terrain radii.
+    #[test]
+    fn g3_cache_startup_missing_restores_saved_radii_and_warns_once() {
+        const PROBE: &str = "MUDCRAB_TEST_GRASS_CACHE_RADII";
+        if std::env::var_os(PROBE).is_some() {
+            check_cache_startup_radii("missing", true, &[]);
+            return;
+        }
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "settings::tests::g3_cache_startup_missing_restores_saved_radii_and_warns_once",
+                "--nocapture",
+            ])
+            .env(PROBE, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        assert_eq!(
+            stderr
+                .matches("warning: grass disabled for this pack:")
+                .count(),
+            1,
+            "{stderr}"
+        );
+        assert!(result.status.success(), "{stderr}");
+    }
+
+    /// Corrupt archives restore the saved radii as well as disabling grass.
+    #[test]
+    fn g3_cache_startup_corrupt_restores_saved_radii() {
+        check_cache_startup_radii("corrupt", true, &[]);
+    }
+
+    /// Archives from an unsupported version also restore the non-grass terrain rings.
+    #[test]
+    fn g3_cache_startup_old_restores_saved_radii() {
+        check_cache_startup_radii("old", true, &[]);
+    }
+
+    /// A valid archive keeps the widened ring while saves retain the user's preferences.
+    #[test]
+    fn g3_cache_startup_valid_keeps_coverage() {
+        check_cache_startup_radii("valid", true, &[]);
+    }
+
+    /// Explicit CLI terrain limits win with either a missing or a valid grass archive.
+    #[test]
+    fn g3_cache_startup_explicit_stream_radius_wins() {
+        for cache in ["missing", "valid"] {
+            check_cache_startup_radii(cache, true, &["--stream-radius", "6"]);
+        }
+    }
+
+    /// Without saved settings, failed grass startup recovers the default terrain radii.
+    #[test]
+    fn g3_cache_startup_missing_restores_unsaved_radii() {
+        check_cache_startup_radii("missing", false, &[]);
+    }
+
+    /// Imported uGridsToLoad survives rollback rather than inheriting grass's larger ring.
+    #[test]
+    fn g3_cache_startup_missing_restores_ini_radii() {
+        check_cache_startup_radii("missing", true, &["--ini", "INI"]);
+    }
+
+    /// Menu radius changes keep the existing grass fade inside the newly generated ring.
+    #[test]
+    fn g3_interactive_radius_updates_grass_fade_with_its_generated_ring() {
+        let mut config = launch(&["--grass", "--stream-radius", "3"].map(String::from));
+        let (start, end) = config.effective_grass_fade();
+        let (settings, file) = prepare_settings_at(&mut config, None);
+        let (mut app, _, _) = msaa_settings_app(config, settings, file);
+        app.insert_resource(crate::grass::GrassFade {
+            enabled: true,
+            start,
+            end,
+        });
+        for (radius, expected_start, expected_end) in [(2, 3584.0, 4096.0), (3, 7000.0, 8000.0)] {
+            {
+                let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
+                settings.stream_radius = radius;
+                settings.unload_radius = radius + 1;
+            }
+            app.update();
+            let config = app.world().resource::<EngineConfig>();
+            assert_eq!(config.stream_radius, radius);
+            let fade = app.world().resource::<crate::grass::GrassFade>();
+            assert!((fade.start - expected_start).abs() < 0.001);
+            assert_eq!(fade.end, expected_end);
+            assert!(fade.end <= config.effective_grass_radius() as f32 * 4096.0);
+        }
+    }
+
+    /// Explicit terrain limits still override saved preferences and clamp the generated grass ring.
+    #[test]
+    fn g3_saved_preferences_respect_explicit_grass_streaming_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 10,
+                unload_radius: 12,
+                exposure_ev100: 8.5,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config =
+            launch(&["--grass", "--grass-radius", "7", "--stream-radius", "2"].map(String::from));
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (2, 3));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (2, 3));
+        assert_eq!(config.effective_grass_radius(), 1);
+        assert_eq!(loaded.exposure_ev100, 8.5);
+        assert!(config.validate_grass().is_ok());
+    }
+
+    /// Automatic grass coverage is a minimum and retains wider saved load and unload rings.
+    #[test]
+    fn g3_grass_keeps_larger_saved_streaming_radii() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 10,
+                unload_radius: 12,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (10, 12));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (10, 12));
+        assert_eq!(config.effective_grass_radius(), 7);
+    }
+
+    /// Saving unrelated preferences never turns automatic grass coverage into terrain preferences.
+    #[test]
+    fn g3_grass_automatic_radii_do_not_persist() {
+        for saved in [None, Some((4, 6))] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            if let Some((stream_radius, unload_radius)) = saved {
+                save_settings(
+                    &path,
+                    &RenderingSettings {
+                        stream_radius,
+                        unload_radius,
+                        ..default()
+                    },
+                )
+                .unwrap();
+            }
+            let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+            let (mut settings, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+            assert_eq!((settings.stream_radius, settings.unload_radius), (8, 9));
+            settings.exposure_ev100 = 8.5;
+            file.save(&settings);
+            assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+            let (reloaded, _) =
+                prepare_settings_at(&mut launch(&["--no-grass".into()]), Some(path));
+            assert_eq!(
+                (reloaded.stream_radius, reloaded.unload_radius),
+                saved.unwrap_or((2, 3))
+            );
+            assert_eq!(reloaded.exposure_ev100, 8.5);
+            assert_eq!((settings.stream_radius, settings.unload_radius), (8, 9));
+        }
+    }
+
+    /// Reset, apply the live grass minimum, then save and reload the actual preferences file.
+    fn assert_grass_reset_saves_default_radii(saved: (i32, i32), startup: (i32, i32)) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: saved.0,
+                unload_radius: saved.1,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+        let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+        assert_eq!((settings.stream_radius, settings.unload_radius), startup);
+        assert_eq!(file.grass_coverage, Some(startup));
+        let (mut app, _, _) = msaa_settings_app(config, settings, file);
+        app.update();
+        app.world_mut()
+            .resource_scope(|world, mut file: Mut<SettingsFile>| {
+                file.restore_defaults(&mut world.resource_mut::<RenderingSettings>());
+            });
+        {
+            let settings = app.world().resource::<RenderingSettings>();
+            assert_eq!((settings.stream_radius, settings.unload_radius), (2, 3));
+        }
+        app.update();
+        {
+            let settings = app.world().resource::<RenderingSettings>();
+            assert_eq!(
+                (settings.stream_radius, settings.unload_radius),
+                (8, 9),
+                "active grass still needs terrain coverage after Reset"
+            );
+        }
+        save_app_settings(&mut app);
+        let file = app.world().resource::<SettingsFile>();
+        assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+        let (reloaded, _) = prepare_settings_at(&mut launch(&["--no-grass".into()]), Some(path));
+        assert_eq!(
+            (reloaded.stream_radius, reloaded.unload_radius),
+            (2, 3),
+            "Reset must save default radii after live grass coverage, starting from {saved:?}"
+        );
+    }
+
+    /// Automatic coverage replacing smaller saved radii retains Reset's default preference intent.
+    #[test]
+    fn g3_grass_reset_defaults_saves_default_radii_from_narrow_preferences() {
+        assert_grass_reset_saves_default_radii((4, 6), (8, 9));
+    }
+
+    /// Reset recomputes automatic coverage when startup previously retained wider saved radii.
+    #[test]
+    fn g3_grass_reset_defaults_saves_default_radii_from_wider_preferences() {
+        assert_grass_reset_saves_default_radii((10, 12), (10, 12));
+    }
+
+    /// Menu radius edits survive live coverage and persist independently across a restart.
+    #[test]
+    fn g3_grass_menu_radius_edits_persist() {
+        for (label, direction, expected) in [
+            ("Full-detail radius (cells)", 1, (9, 10)),
+            ("Unload radius (cells)", 1, (2, 10)),
+            ("Unload radius (cells)", -1, (2, 8)),
+            ("Full-detail radius (cells)", -1, (7, 7)),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+            let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let (mut app, _, _) = msaa_settings_app(config, settings, file);
+            app.update();
+            let radius = SETTING_SPECS
+                .iter()
+                .find(|setting| setting.label == label)
+                .unwrap();
+            radius.adjust(
+                &mut app.world_mut().resource_mut::<RenderingSettings>(),
+                direction,
+            );
+            app.update();
+            save_app_settings(&mut app);
+            let file = app.world().resource::<SettingsFile>();
+            assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+            let (reloaded, _) =
+                prepare_settings_at(&mut launch(&["--no-grass".into()]), Some(path));
+            assert_eq!(
+                (reloaded.stream_radius, reloaded.unload_radius),
+                expected,
+                "{label} {direction}"
+            );
+        }
+    }
+
+    /// Grass launch radii beyond the menu limit must not prevent saving other settings.
+    #[test]
+    fn g3_grass_large_launch_radii_allow_saving_preferences() {
+        for radius in [16, 24, 32] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let mut config = launch(&[
+                "--grass".into(),
+                "--grass-radius".into(),
+                radius.to_string(),
+            ]);
+            let (mut settings, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+            assert_eq!(settings.stream_radius, radius + 1);
+            settings.exposure_ev100 = 8.5;
+            file.save(&settings);
+            assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+            let (reloaded, _) =
+                prepare_settings_at(&mut launch(&["--no-grass".into()]), Some(path));
+            assert_eq!((reloaded.stream_radius, reloaded.unload_radius), (2, 3));
+            assert_eq!(reloaded.exposure_ev100, 8.5);
+        }
+    }
+
+    /// Grass imported through the shared INI reader requires the same terrain coverage as CLI grass.
+    #[test]
+    fn g3_ini_grass_radius_survives_saved_preference_loading() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let ini = directory.path().join("grass.ini");
+        std::fs::write(&ini, "[Grass]\niGrassCellRadius=7\n").unwrap();
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 2,
+                unload_radius: 3,
+                exposure_ev100: 8.5,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass".into(), "--ini".into(), ini.display().to_string()]);
+        assert_eq!(config.grass_radius, 7);
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (8, 9));
+        assert_eq!(config.effective_grass_radius(), 7);
+        assert_eq!(loaded.exposure_ev100, 8.5);
+    }
+
+    /// Disabled grass and no-world modes leave ordinary saved streaming and exposure values intact.
+    #[test]
+    fn g3_inactive_grass_leaves_saved_preferences_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let ini = directory.path().join("disabled.ini");
+        std::fs::write(&ini, "[Grass]\nbDrawShaderGrass=0\niGrassCellRadius=7\n").unwrap();
+        let saved = RenderingSettings {
+            stream_radius: 2,
+            unload_radius: 3,
+            exposure_ev100: 8.5,
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut cases = vec![
+            vec!["--no-grass".into()],
+            vec!["--no-grass".into(), "--grass-radius".into(), "7".into()],
+            vec!["--ini".into(), ini.display().to_string()],
+        ];
+        for mode in [
+            "--benchmark-only",
+            "--material-fixture",
+            "--terrain-water-fixture",
+            "--transform-bounds-fixture",
+            "--renderer-fixture",
+            "--physics-fixture",
+        ] {
+            cases.push(
+                [mode, "--grass", "--grass-radius", "7"]
+                    .map(String::from)
+                    .to_vec(),
+            );
+        }
+        for args in cases {
+            let mut config = launch(&args);
+            assert!(!config.grass || !config.loads_world(), "{args:?}");
+
+            let (loaded, _) = prepare_settings_at(&mut config, Some(path.clone()));
+
+            assert_eq!(
+                (config.stream_radius, config.unload_radius),
+                (2, 3),
+                "{args:?}"
+            );
+            assert_eq!(
+                (loaded.stream_radius, loaded.unload_radius),
+                (2, 3),
+                "{args:?}"
+            );
+            assert_eq!(loaded.exposure_ev100, saved.exposure_ev100, "{args:?}");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{args:?}");
+        }
+    }
+
+    /// Grass world cameras, reflections and the file retain
+    /// the selected preference, including after an unrelated exposure change.
+    #[test]
+    fn g3_grass_world_msaa_survives_preferences_and_later_updates() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        for (index, selected) in MSAA_MODES.into_iter().enumerate() {
+            save_settings(
+                &path,
+                &RenderingSettings {
+                    msaa: index,
+                    ..default()
+                },
+            )
+            .unwrap();
+            let mut config = launch(&["--grass".into()]);
+            let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let (mut app, camera, reflection) = msaa_settings_app(config, settings, file);
+
+            app.update();
+            assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&selected));
+            assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
+
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .exposure_ev100 = 8.5;
+            app.update();
+            assert_eq!(app.world().get::<Exposure>(camera).unwrap().ev100, 8.5);
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&selected));
+            assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
+            assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
+            save_app_settings(&mut app);
+            let persisted =
+                serde_json::from_slice::<RenderingSettings>(&std::fs::read(&path).unwrap())
+                    .unwrap();
+            assert_eq!(persisted.stream_radius, 2);
+            assert_eq!(persisted.msaa, index);
+            assert_eq!(persisted.exposure_ev100, 8.5);
+        }
+    }
+
+    /// Without grass, both streaming and reflection cameras honor every selected MSAA mode.
+    #[test]
+    fn g3_disabled_grass_cameras_honor_selected_msaa() {
+        for (index, selected) in MSAA_MODES.into_iter().enumerate() {
+            let (mut app, camera, reflection) = msaa_settings_app(
+                launch(&["--no-grass".into()]),
+                RenderingSettings {
+                    msaa: index,
+                    ..default()
+                },
+                SettingsFile::session_only(),
+            );
+
+            app.update();
+
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&selected));
+            assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
+            assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
         }
     }
 
@@ -1417,7 +2348,7 @@ mod tests {
         file.restore_defaults(&mut settings);
         assert_eq!(
             file.status,
-            "Defaults restored for this session. Choose Save to keep them."
+            "Defaults selected. Settings marked restart apply on the next start. Choose Save to keep them."
         );
         file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
         file.restore_defaults(&mut settings);
@@ -1436,14 +2367,11 @@ mod tests {
         file.save(&settings);
         assert_eq!(
             file.status,
-            "Settings saved. IO-thread changes apply after restart."
+            "Settings saved. Changes to grass, grass radius, drawing, occlusion, the visual profile and IO threads apply after restart."
         );
         file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
         file.save(&settings);
-        assert!(
-            file.status
-                .contains("Save preserves the pre-launch FOV, window mode, and window size")
-        );
+        assert!(file.status.contains("preserves the pre-launch FOV"));
     }
 
     #[test]
@@ -1609,7 +2537,10 @@ mod tests {
     fn menu_numeric_adjustment_reaches_scene_camera_as_explicit_override() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(EngineConfig::default())
+            .insert_resource(EngineConfig {
+                grass: false,
+                ..Default::default()
+            })
             .insert_resource(RenderingSettings::default())
             .insert_resource(SettingsFile::session_only())
             .insert_resource(crate::color_pipeline::SceneGradeMode::SnapshotSrgb)
@@ -1810,7 +2741,10 @@ mod tests {
     fn rejected_record_mode_keeps_last_valid_menu_and_runtime_mode() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(EngineConfig::default())
+            .insert_resource(EngineConfig {
+                grass: false,
+                ..Default::default()
+            })
             .insert_resource(RenderingSettings::default())
             .insert_resource(SettingsFile::session_only())
             .insert_resource(crate::color_pipeline::SceneGradeMode::SnapshotSrgb)
@@ -1853,7 +2787,10 @@ mod tests {
     fn invalid_numeric_override_rolls_back_menu_and_effective_source_state() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(EngineConfig::default())
+            .insert_resource(EngineConfig {
+                grass: false,
+                ..Default::default()
+            })
             .insert_resource(RenderingSettings::default())
             .insert_resource(SettingsFile::session_only())
             .insert_resource(crate::color_pipeline::SceneGradeMode::SnapshotSrgb)
@@ -1898,6 +2835,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Mouse sensitivity belongs to Controls and preserves the retail baseline at 1x.
+    #[test]
+    fn mouse_sensitivity_has_a_control_setting_at_one_times() {
+        let spec = SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Mouse sensitivity (x)")
+            .expect("Controls must expose mouse sensitivity");
+        assert!(spec.page == SettingsPage::Controls);
+        assert_eq!((spec.read)(&RenderingSettings::default()), 1.0);
+    }
+
+    /// Saved multipliers round-trip and version-1 files without the field retain 1x.
+    #[test]
+    fn mouse_sensitivity_persists_and_old_preferences_keep_one_times() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let settings = RenderingSettings {
+            mouse_sensitivity: 2.35,
+            ..default()
+        };
+        save_settings(&path, &settings).unwrap();
+        let (loaded, _) = prepare_settings_at(&mut EngineConfig::default(), Some(path.clone()));
+        assert_eq!(loaded.mouse_sensitivity, 2.35);
+        std::fs::write(&path, br#"{"version":1,"hud":false}"#).unwrap();
+        let (old, _) = prepare_settings_at(&mut EngineConfig::default(), Some(path));
+        assert_eq!(old.mouse_sensitivity, 1.0);
+        assert!(!old.hud);
+    }
+
+    /// Bounds reject unusable file values and constrain keyboard changes at both ends.
+    #[test]
+    fn mouse_sensitivity_validates_and_adjusts_within_documented_bounds() {
+        let spec = SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Mouse sensitivity (x)")
+            .unwrap();
+        for value in [0.0, 0.79, 4.01, f32::NAN, f32::INFINITY] {
+            let invalid = RenderingSettings {
+                mouse_sensitivity: value,
+                ..default()
+            };
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .contains("Mouse sensitivity")
+            );
+        }
+        let mut settings = RenderingSettings::default();
+        spec.adjust(&mut settings, -100);
+        assert_eq!(settings.mouse_sensitivity, 0.8);
+        settings.validate().unwrap();
+        spec.adjust(&mut settings, 100);
+        assert_eq!(settings.mouse_sensitivity, 4.0);
+        settings.validate().unwrap();
     }
 
     #[test]
@@ -1958,6 +2952,7 @@ mod tests {
         assert!(unknown.validate().is_err());
     }
 
+    /// Terrain preference ownership is independent of optional grass coverage.
     #[test]
     fn saved_preferences_round_trip_and_explicit_flags_win() {
         let directory = tempfile::tempdir().unwrap();
@@ -1975,6 +2970,7 @@ mod tests {
         let (loaded, _) = prepare_settings_at(&mut EngineConfig::default(), Some(path.clone()));
         assert_eq!(loaded, saved);
         let mut config = launch(&[
+            "--no-grass".into(),
             "--stream-radius".into(),
             "1".into(),
             "--max-upload-mib-per-frame".into(),
@@ -2320,6 +3316,7 @@ mod tests {
                 status: String::new(),
                 stored: RenderingSettings::default(),
                 launch_overrides: Vec::new(),
+                grass_coverage: None,
                 preserve_unavailable_record_mode: false,
                 unavailable_record_mode_replaced: false,
                 metal_drawing_default_available: false,
@@ -2373,6 +3370,7 @@ mod tests {
         assert_eq!((loaded.stream_radius, loaded.unload_radius), (4, 5));
     }
 
+    /// Invalid files retain terrain-only launch values without imposing grass coverage.
     #[test]
     fn invalid_saved_choices_fall_back_without_losing_launch_settings() {
         let directory = tempfile::tempdir().unwrap();
@@ -2383,6 +3381,7 @@ mod tests {
         };
         std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
         let mut config = EngineConfig {
+            grass: false,
             lights: true,
             stream_radius: 1,
             unload_radius: 2,
@@ -2504,6 +3503,7 @@ mod tests {
             status: String::new(),
             stored: RenderingSettings::default(),
             launch_overrides: Vec::new(),
+            grass_coverage: None,
             preserve_unavailable_record_mode: false,
             unavailable_record_mode_replaced: false,
             metal_drawing_default_available: false,
@@ -2553,10 +3553,13 @@ mod tests {
     }
 
     #[test]
-    fn renderer_changes_reach_camera_and_upload_budget_but_io_waits_for_restart() {
+    fn live_renderer_changes_preserve_startup_drawing_and_occlusion_dependencies() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(EngineConfig::default())
+            .insert_resource(EngineConfig {
+                grass: false,
+                ..Default::default()
+            })
             .insert_resource(RenderingSettings::default())
             .insert_resource(RenderAssetBytesPerFrame::default())
             .add_systems(Update, apply_render_settings);
@@ -2584,10 +3587,10 @@ mod tests {
             settings.io_threads = 4;
         }
         app.update();
-        assert!(app.world().get::<DepthPrepass>(camera).is_none());
-        assert!(app.world().get::<OcclusionCulling>(camera).is_none());
+        assert!(app.world().get::<DepthPrepass>(camera).is_some());
+        assert!(app.world().get::<OcclusionCulling>(camera).is_some());
         assert!(app.world().get::<NoCpuCulling>(camera).is_some());
-        assert!(app.world().get::<NoIndirectDrawing>(camera).is_some());
+        assert!(app.world().get::<NoIndirectDrawing>(camera).is_none());
         assert_eq!(app.world().get::<Exposure>(camera).unwrap().ev100, 8.5);
         let Projection::Perspective(projection) = app.world().get::<Projection>(camera).unwrap()
         else {
@@ -2643,6 +3646,188 @@ mod tests {
             assert!(app.world().get::<OcclusionCulling>(camera).is_none());
             assert!(app.world().get::<DepthPrepass>(camera).is_some());
         }
+    }
+
+    fn drawing_settings_app(path: &Path) -> App {
+        let mut config = EngineConfig::default();
+        let (settings, file) = prepare_settings_at(&mut config, Some(path.to_owned()));
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(config)
+            .insert_resource(settings)
+            .insert_resource(file)
+            .add_systems(Update, apply_render_settings);
+        app
+    }
+
+    fn spawn_drawing_cameras(app: &mut App) -> [Entity; 2] {
+        let world = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                StreamingCamera,
+                Exposure::default(),
+                Tonemapping::TonyMcMapface,
+                Projection::default(),
+                Msaa::Off,
+                DepthPrepass,
+                OcclusionCulling,
+            ))
+            .id();
+        let reflection = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::render::WaterReflectionCamera,
+                Msaa::Off,
+                DepthPrepass,
+                OcclusionCulling,
+            ))
+            .id();
+        [world, reflection]
+    }
+
+    fn assert_camera_drawing(
+        app: &App,
+        cameras: [Entity; 2],
+        indirect: bool,
+        occlusion: bool,
+        depth: bool,
+    ) {
+        for camera in cameras {
+            assert_eq!(
+                app.world().get::<NoIndirectDrawing>(camera).is_none(),
+                indirect
+            );
+            assert_eq!(
+                app.world().get::<OcclusionCulling>(camera).is_some(),
+                occlusion
+            );
+            assert_eq!(app.world().get::<DepthPrepass>(camera).is_some(), depth);
+        }
+    }
+
+    #[test]
+    fn drawing_toggle_and_save_keep_live_views_and_apply_on_the_next_start() {
+        for label in ["GPU indirect drawing", "GPU occlusion culling"] {
+            for enabled in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("settings.json");
+                let initial = RenderingSettings {
+                    indirect_drawing: enabled,
+                    occlusion_culling: enabled,
+                    ..default()
+                };
+                save_settings(&path, &initial).unwrap();
+                let mut app = drawing_settings_app(&path);
+                let cameras = spawn_drawing_cameras(&mut app);
+                app.update();
+                assert_camera_drawing(&app, cameras, enabled, enabled, true);
+
+                let control = SETTING_SPECS
+                    .iter()
+                    .find(|spec| spec.label.starts_with(label))
+                    .unwrap();
+                control.adjust(
+                    app.world_mut()
+                        .resource_mut::<RenderingSettings>()
+                        .into_inner(),
+                    1,
+                );
+                app.world_mut()
+                    .resource_mut::<SettingsFile>()
+                    .note_drawing_selection();
+                app.update();
+                save_app_settings(&mut app);
+                app.update();
+                let pending = app.world().resource::<RenderingSettings>().clone();
+                let saved: RenderingSettings =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                assert_eq!(saved.indirect_drawing, pending.indirect_drawing);
+                assert_eq!(saved.occlusion_culling, pending.occlusion_culling);
+                assert_camera_drawing(&app, cameras, enabled, enabled, true);
+
+                // Replacement views use the same session mode while saved choices await restart.
+                let later = spawn_drawing_cameras(&mut app);
+                app.update();
+                assert_camera_drawing(&app, later, enabled, enabled, true);
+                assert_camera_drawing(&app, cameras, enabled, enabled, true);
+
+                let mut restarted = drawing_settings_app(&path);
+                let cameras = spawn_drawing_cameras(&mut restarted);
+                restarted.update();
+                assert_camera_drawing(
+                    &restarted,
+                    cameras,
+                    pending.indirect_drawing,
+                    pending.occlusion_culling,
+                    true,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disabling_depth_prepass_keeps_active_occlusion_valid_until_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(&path, &RenderingSettings::default()).unwrap();
+        let mut app = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut app);
+        app.update();
+        SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Depth prepass")
+            .unwrap()
+            .adjust(
+                app.world_mut()
+                    .resource_mut::<RenderingSettings>()
+                    .into_inner(),
+                1,
+            );
+        app.world_mut()
+            .resource_mut::<SettingsFile>()
+            .note_drawing_selection();
+        app.update();
+        save_app_settings(&mut app);
+        app.update();
+        assert_camera_drawing(&app, cameras, true, true, true);
+        let mut restarted = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut restarted);
+        restarted.update();
+        assert_camera_drawing(&restarted, cameras, true, false, false);
+    }
+
+    #[test]
+    fn restored_drawing_defaults_wait_for_the_next_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                indirect_drawing: false,
+                occlusion_culling: false,
+                depth_prepass: false,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut app = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut app);
+        app.update();
+        let mut settings = app.world().resource::<RenderingSettings>().clone();
+        app.world_mut()
+            .resource_mut::<SettingsFile>()
+            .restore_defaults(&mut settings);
+        app.insert_resource(settings);
+        app.update();
+        save_app_settings(&mut app);
+        app.update();
+        assert_camera_drawing(&app, cameras, false, false, true);
+        let mut restarted = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut restarted);
+        restarted.update();
+        assert_camera_drawing(&restarted, cameras, true, true, true);
     }
 
     #[test]
@@ -2727,6 +3912,10 @@ mod tests {
         }
         let settings = app.world().resource::<RenderingSettings>();
         assert!(!settings.indirect_drawing && !settings.occlusion_culling);
+
+        let later = spawn_drawing_cameras(&mut app);
+        app.update();
+        assert_camera_drawing(&app, later, false, false, true);
     }
 
     #[test]
@@ -2845,7 +4034,7 @@ mod tests {
             .unwrap();
         let occlusion = SETTING_SPECS
             .iter()
-            .find(|spec| spec.label == "GPU occlusion culling")
+            .find(|spec| spec.label == "GPU occlusion culling (restart)")
             .unwrap();
         depth.adjust(&mut settings, 1);
         assert!(!settings.depth_prepass && !settings.occlusion_culling);

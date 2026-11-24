@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "The room graph excludes placements with unusable DATA. A subset update clears memberships owned by or pointing to the removed placement. Field-level semantics remain deferred.",
+  "table": "reference_rooms"
+}

@@ -1,0 +1,25 @@
+{
+  "evidence": [
+    {
+      "anchor": "pub fn terrain(&self, cell_id: u32)",
+      "path": "crates/engine/src/world/cache.rs"
+    },
+    {
+      "anchor": "let mut terrain = cache.terrain(payload.cell_id);",
+      "path": "crates/engine/src/streaming.rs"
+    }
+  ],
+  "format_version": 1,
+  "owner": "terrain/cache maintainers",
+  "reason": "Versioned rkyv store supplies terrain heights, normals, colors, layers, water height/type through CellCache. SQLite absence does not mean terrain is unused. Source path only; native draw evidence pending.",
+  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
+  "states": {
+    "decoded": "source_decoded",
+    "mapped": "source_mapping",
+    "preserved": "source_preserved",
+    "projected": "source_projected",
+    "query_dependent": "unknown",
+    "semantic_use": "unknown"
+  },
+  "store": "cell_cache.rkyv"
+}

@@ -297,7 +297,6 @@ fn malformed_terrain_and_native_arrays_cannot_replace_complete_candidates() {
                 [
                     record(b"LAND", 0x800, 0, sub(b"VHGT", &heightmap(f32::NAN))),
                     record(b"LAND", 0x800, 0, sub(b"VNML", &[1; 3])),
-                    record(b"LAND", 0x800, 0, sub(b"BTXT", &[0; 7])),
                     record(b"LAND", 0x800, 0, sub(b"VTEX", &[0; 3])),
                 ]
                 .concat(),

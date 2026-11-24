@@ -1,0 +1,91 @@
+{
+  "artifacts": {
+    "audit-main.json": "85e7d0619956d5b00055de786bd6b3dcbf03d9ec9d0e5584b909cc49133a6d32",
+    "audit-updated.json": "725cce6d021f1e1f5eac11500384621a2329d6e7bd36b1d6960f29971ac39a10",
+    "historical-recheck.json": "1d2f3561dda71214331f570483eafef1c3d3c1c1c9128c33fb35b9f4fe51cc8b",
+    "production-result.json": "c7a2e65ca273d79bdadbb4bbf7767f240abb0c5c2b9dd0f36efdd76af6c8f555",
+    "production-source.json": "aec8344b8f48026ed2f7d7fb50b802784b1705c94c5d2381054fc6c248fdcd58"
+  },
+  "environment": {
+    "cargo_build_jobs": 4,
+    "gpu": "private Mesa 26.2.6 software Vulkan driver, WGPU_BACKEND=vulkan, LP_NUM_THREADS=2",
+    "rust": "1.98.1",
+    "rustflags": "-C debuginfo=0"
+  },
+  "logs": {
+    "clippy": {
+      "gzip_sha256": "0adbdd719ae730e8be9e0a7a1f5dc307cae0c4eb98c3669e214308872e8ae135",
+      "private_raw_sha256": "5d52ee7400ba97a65eabbc3180fe665cdd2ba8c1f21f63ef23d7fed51ad62956",
+      "published_raw_sha256": "d9c60a95f1a85db40dd9073711f68d2c376cd9b1bec85e985a0afdb64a45f992"
+    },
+    "gpu": {
+      "gzip_sha256": "4b4c7e3d3cb456ee7cdfdc792c7d9414d553311de2f20be3912f08fd0fbc0e3f",
+      "private_raw_sha256": "bd04c86b259578993254077c4a353cc91de4363e014c7a93bd1c9f7a6a3d2c4f",
+      "published_raw_sha256": "b624df9fe0e5cca38c80ba1de525dcba30b6094e359427a414dfe76e4b814191"
+    },
+    "production": {
+      "gzip_sha256": "cfdf10b7ba59d34548b717999388cbb52a1e191304fe0adca3e7dd0b9860228c",
+      "private_raw_sha256": "113a3f6f70dc1997ae3c2c0fc1bcd788184bfb2d3e17b2b3137d894b72cfd155",
+      "published_raw_sha256": "0baf59d73d36be4fd609123013a90abaa1453ba855dcbd3cd5c0b27920b9e7dc"
+    },
+    "profile-before": {
+      "gzip_sha256": "025d8b8386295b9931a2d7da4334e748b57767ed714e0f6be581b1847057b05d",
+      "private_raw_sha256": "ac16144fc96f0e92ff2cfad83a56132819c19a9a3fbc96b5e8939865e075ec63",
+      "published_raw_sha256": "096ab93dabcc6e4f54f8368a2ce549937f7e99ed202c96ad3d28b458fa343baf"
+    },
+    "profile-cli": {
+      "gzip_sha256": "b3bf6978c55e549cffd0ea421c6a0f44042890c5f4a556613c0c5d114278e131",
+      "private_raw_sha256": "08f26721e80d97a46ea597f9756ff96cebca028be4f4ad2afd074343752a0348",
+      "published_raw_sha256": "08f26721e80d97a46ea597f9756ff96cebca028be4f4ad2afd074343752a0348"
+    },
+    "python": {
+      "gzip_sha256": "d1ce38abfb9a27ee9f08dc245cc8202b8bc477f5b934a85e789b60d48f69f9c9",
+      "private_raw_sha256": "df54fb0681a419e6ff69f2cc956d83802793f1b64eff28417de33899a1834727",
+      "published_raw_sha256": "df54fb0681a419e6ff69f2cc956d83802793f1b64eff28417de33899a1834727"
+    },
+    "workspace": {
+      "gzip_sha256": "0af8b3d1937cef5d8e360d190b15168e2fe1b8c26cbd6999f8e306b679421505",
+      "private_raw_sha256": "40e10595d7a1d56fe71ce2bc911e428b7dbc62d251320a2ffafe9ded7538f0f6",
+      "published_raw_sha256": "92a1425a29703b8c7fd0726d905152249c221ac44e2809c74a08df971e8ad20a"
+    },
+    "workspace-before": {
+      "gzip_sha256": "9bec7f741ddf948ee50ec964e3f5e136225783ac6a574c651a6729a4fb18bed4",
+      "private_raw_sha256": "a84c90f7b5c91063595e8e7aed9fa51166ff6796089d8476cfd5393e2375f5c6",
+      "published_raw_sha256": "a5882c837ea95a1b27e4ad5466aace67b638e956d5306fa25728dabfd122503f"
+    }
+  },
+  "parent_commit": "78459dcfa3f25e91173c4159b2121cbcd642000c",
+  "schema": 1,
+  "sources": {
+    "Cargo.lock": "c7f20f53e0a991c537a0a6956a84f949f87d03b74ff4239b06a3e1a07449d31b",
+    "Cargo.toml": "f03278ceb911fb7c9ffd82f3b4a232e59918f4bcccf3a0e58d8831bf41afd44f",
+    "crates/converter/src/esm/inhouse.rs": "afc6b2294ae2aec7df760fdd313cf17a0412fe74c8486cabceaf8f069e1bfd13",
+    "crates/converter/tests/snapshots.rs": "f5233ff6889132ffe105512b3d22cd2893c7251d6b992c74f13f825aac97616c",
+    "crates/engine/src/config.rs": "e70b38433ed90310740e755a95e158541dfce60ac8dd2f2c797a90e8ac1c4dfc",
+    "scripts/capture_skyrim_jump.py": "f61cac7e8faab84ce891df70a5948ddab06e0086a6cd7c4170f57aa60a6914f1",
+    "scripts/test_capture_skyrim_jump.py": "13a1455ecd5d40cf1a098eb7dc38f4cd14bccdd3efcee1d116e1cc028373bffc"
+  },
+  "validation": {
+    "advisory_database": "d9cb059f3217db87aeccd190b81eaffe8cc29cb9",
+    "fresh_production_replay": {
+      "maximum_pointwise_error": 0.22509765625,
+      "maximum_rmse": 0.11414554895231227,
+      "n": 12,
+      "passes": 12
+    },
+    "main_audit_exit": 1,
+    "new_native_recordings": 0,
+    "python_passed": 178,
+    "software_vulkan_passed": 2,
+    "updated_audit_exit": 0,
+    "workspace_before_script_registration": {
+      "failed": 1,
+      "failure": "config::tests::the_scripts_only_pass_options_the_parser_accepts",
+      "passed": 3304
+    },
+    "workspace_clippy": "all targets and features, -D warnings passed",
+    "workspace_fmt": "passed",
+    "workspace_passed": 3305,
+    "workspace_skipped": 57
+  }
+}

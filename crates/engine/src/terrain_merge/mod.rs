@@ -397,6 +397,10 @@ impl TerrainMergePlugin {
 
 impl Plugin for TerrainMergePlugin {
     fn build(&self, app: &mut App) {
+        use crate::terrain_lod_noise::TerrainBlendShaderPlugin;
+        if !app.is_plugin_added::<TerrainBlendShaderPlugin>() {
+            app.add_plugins(TerrainBlendShaderPlugin);
+        }
         embedded_asset!(app, "terrain_merged.wgsl");
         let verdict = TerrainMergeVerdict::default();
         app.add_plugins(MaterialPlugin::<MergedTerrainMaterial>::default())

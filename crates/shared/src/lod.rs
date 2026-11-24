@@ -203,6 +203,9 @@ pub mod nodes {
     }
 }
 
+/// Material name that identifies a chunk using game-supplied sRGB terrain colour.
+pub const RETAIL_TERRAIN_MATERIAL_NAME: &str = "lod_terrain_retail";
+
 /// Canonical chunk payload path inside the published asset set, relative to
 /// the assets root: `lod/<worldspace-id>/<tier>/cell_<ax>_<ay>.glb`. Lowercase hex
 /// worldspace id, decimal anchors (which may be negative). Both the compiler
@@ -231,9 +234,47 @@ pub fn object_chunk_payload_path(key: ChunkKey) -> String {
     )
 }
 
+/// Path of a worldspace's shared object LOD atlas (KTX2) inside the published asset set:
+/// `lod/<world-hex>/objects_atlas.opensky-srgb.ktx2`. The `.opensky-srgb.ktx2` suffix is the
+/// converter's colour-texture alias, which the `skyrim` profile's image loader claims so the atlas
+/// decodes as raw texels there (a plain `.ktx2` would decode as sRGB). One file per worldspace, listed in the additive table
+/// `lod_object_atlases`, referenced by every object chunk of that worldspace.
+pub fn object_atlas_path(worldspace_id: u32) -> String {
+    format!("lod/{worldspace_id:08x}/objects_atlas.opensky-srgb.ktx2")
+}
+
+/// glTF vertex attributes for the model-space axes of the red and green atlas channels.
+pub const OBJECT_ATLAS_RED: &str = "_OBJECT_ATLAS_RED";
+pub const OBJECT_ATLAS_GREEN: &str = "_OBJECT_ATLAS_GREEN";
+
+/// File name of the optional linear object LOD normal atlas.
+pub const OBJECT_NORMAL_ATLAS_FILE: &str = "objects_normal_atlas.opensky-linear.ktx2";
+
+/// Path of the optional linear object LOD normal atlas.
+pub fn object_normal_atlas_path(worldspace_id: u32) -> String {
+    format!("lod/{worldspace_id:08x}/{OBJECT_NORMAL_ATLAS_FILE}")
+}
+
+/// The image URI an object chunk GLB uses for the shared atlas. It is relative to the chunk file,
+/// `lod/<world-hex>/<tier>/objects_<x>_<y>.glb`, so it resolves to [`object_atlas_path`] for every
+/// tier of the worldspace.
+pub const OBJECT_ATLAS_URI: &str = "../objects_atlas.opensky-srgb.ktx2";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shared_atlas_uri_resolves_to_the_atlas_path_from_every_tier_directory() {
+        for tier in LodTier::ALL {
+            let key = ChunkKey::new(60, tier, ChunkAnchor::new(1, 2));
+            let chunk = object_chunk_payload_path(key);
+            let directory = chunk.rsplit_once('/').unwrap().0;
+            let resolved = format!("{directory}/{OBJECT_ATLAS_URI}")
+                .replace(&format!("/{}/../", tier.side_cells()), "/");
+            assert_eq!(resolved, object_atlas_path(60));
+        }
+    }
 
     #[test]
     fn tiers_order_nearest_to_farthest() {

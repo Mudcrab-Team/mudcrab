@@ -494,23 +494,24 @@ fn terrain_cell(cell: u32, land: &[u8]) -> Vec<u8> {
     group(1, 1, &content)
 }
 
-/// Distinct bad authored fields exercise NaN rejection and physical alpha-layer ownership.
+/// Bad paint items exercise weight recovery and physical alpha-layer ownership.
 #[derive(Clone, Copy)]
 enum BadLayer {
     NanWeight,
     RejectedAnchor,
 }
 
-/// Retain expected native winners and the intended rejected signature for cache checks.
+/// Keep exact sources and the typed decoder rejection signature for recovery checks.
 struct TerrainCase {
     fixture: Fixture,
     baseline: Vec<u8>,
+    candidate: Vec<u8>,
     rejected_signature: &'static str,
     patch_original: Vec<u8>,
     heightless: Vec<u8>,
 }
 
-/// Create prior height 56, rejected override height 792, malformed first definition and neighbors.
+/// Create prior height56 and recoverable height792 candidates beside usable neighbors.
 fn terrain_case(bad: BadLayer) -> TerrainCase {
     let fixture = Fixture::new();
     let baseline = terrain(Some(7.0), 0.25);
@@ -539,18 +540,19 @@ fn terrain_case(bad: BadLayer) -> TerrainCase {
             &group(9, 0xB00, &record(b"LAND", 0xB01, 0, &candidate)),
         ),
     ));
-    // The same unusable authored data without a predecessor must not masquerade as heightless.
+    // A first definition with recoverable paint retains its authored heights.
     patch.extend(terrain_cell(
         0x0100_0B20,
         &record(b"LAND", 0x0100_0B21, 0, &candidate),
     ));
-    let heightless = terrain(None, 0.25);
+    // A flat authored height field: a LAND without VHGT is omitted, never zero-filled (#811).
+    let heightless = terrain(Some(0.0), 0.25);
     patch.extend(terrain_cell(
         0x0100_0B30,
         &record(b"LAND", 0x0100_0B31, 0, &heightless),
     ));
     if matches!(bad, BadLayer::NanWeight) {
-        // Finite out-of-range values are independently rejected by existing terrain validation.
+        // Finite out-of-range paint drops only its weight, preserving height792.
         fixture.extend_base(&terrain_cell(0xB10, &record(b"LAND", 0xB11, 0, &baseline)));
         patch.extend(group(
             1,
@@ -577,6 +579,7 @@ fn terrain_case(bad: BadLayer) -> TerrainCase {
     TerrainCase {
         fixture,
         baseline,
+        candidate,
         rejected_signature,
         patch_original,
         heightless,
@@ -589,8 +592,8 @@ fn cache(output: &Path, name: &str) -> CellCache {
         .unwrap()
 }
 
-/// Both runtime and preserved caches must retain exactly the predecessor's alpha weights.
-fn assert_layers(layers: &[TerrainLayer]) {
+/// Both caches retain the authored layer and only its usable weights.
+fn assert_layers(layers: &[TerrainLayer], opacity: Option<f32>) {
     assert_eq!(layers.len(), 2);
     assert!(layers[0].is_base);
     assert_eq!(layers[0].texture_form_id, 0);
@@ -603,35 +606,37 @@ fn assert_layers(layers: &[TerrainLayer]) {
         ),
         (4, 0, 1, false)
     );
+    let expected: Vec<_> = opacity
+        .into_iter()
+        .map(|opacity| TerrainWeight { vertex: 2, opacity })
+        .collect();
     assert_eq!(
-        layers[1].weights,
-        [TerrainWeight {
-            vertex: 2,
-            opacity: 0.25
-        }]
+        layers[1].weights, expected,
+        "a rejected physical anchor must not transfer vertex9 onto layer1"
     );
 }
 
-/// Assert candidate-local recovery in native SQL, both caches, history and usable neighbors.
+/// Paint recovery accepts the actual candidate and retains exact source/history and neighbors.
 fn assert_terrain(case: &TerrainCase, output: &Path) {
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
-    // These are the intended assertion-red checks on the integration commit.
+    let candidate_weight = (case.rejected_signature == "ATXT").then_some(0.25);
     for name in ["cell_cache.rkyv", "cell_cache_preserved.rkyv"] {
         let cache = cache(output, name);
-        let prior = cache
-            .cells
-            .iter()
-            .find(|cell| cell.cell_id == 0xB00)
-            .unwrap();
-        assert_eq!(
-            prior.heights,
-            vec![56.0; 33 * 33],
-            "bad authored {} replaced the prior heights in {name}",
-            case.rejected_signature
-        );
-        assert_eq!(prior.vertex_colors, vec![111; 33 * 33 * 3]);
-        assert_layers(&prior.layers);
-        assert!(!cache.cells.iter().any(|cell| cell.cell_id == 0x0100_0B20));
+        for id in [0xB00, 0x0100_0B20] {
+            let accepted = cache
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id == id)
+                .expect("paint corruption must not remove its LAND");
+            assert_eq!(
+                accepted.heights,
+                vec![792.0; 33 * 33],
+                "recoverable {} must retain the height99*8 candidate in {name}",
+                case.rejected_signature
+            );
+            assert_eq!(accepted.vertex_colors, vec![111; 33 * 33 * 3]);
+            assert_layers(&accepted.layers, candidate_weight);
+        }
         let heightless = cache
             .cells
             .iter()
@@ -639,42 +644,148 @@ fn assert_terrain(case: &TerrainCase, output: &Path) {
             .unwrap();
         assert_eq!(heightless.heights, vec![0.0; 33 * 33]);
         assert_eq!(heightless.vertex_colors, vec![111; 33 * 33 * 3]);
-        assert_layers(&heightless.layers);
+        assert_layers(&heightless.layers, Some(0.25));
         if case.rejected_signature == "VTXT" {
             let finite = cache
                 .cells
                 .iter()
                 .find(|cell| cell.cell_id == 0xB10)
                 .unwrap();
-            assert_eq!(finite.heights, vec![56.0; 33 * 33]);
+            assert_eq!(finite.heights, vec![792.0; 33 * 33]);
+            assert_eq!(finite.vertex_colors, vec![111; 33 * 33 * 3]);
+            assert_layers(&finite.layers, None);
         }
     }
-    assert_winner(&db, 0xB01, 0, &case.baseline);
-    assert_skipped(&db, 0xB01, 1, case.rejected_signature);
-    assert_absent(&db, 0x0100_0B21);
-    assert_skipped(&db, 0x0100_0B21, 1, case.rejected_signature);
+    assert_winner(&db, 0xB01, 1, &case.candidate);
+    assert_winner(&db, 0x0100_0B21, 1, &case.candidate);
     assert_winner(&db, 0x0100_0B31, 1, &case.heightless);
-    let heightmap: Vec<u8> = db
-        .query_row(
-            "SELECT heightmap FROM land WHERE cell_id=?1",
-            [0xB00u32],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(heightmap, heights(7.0));
-    let (supplier, layer_data): (u32, Vec<u8>) = db
-        .query_row(
-            "SELECT load_order,layer_data FROM inhouse_terrain_layers WHERE form_id=?1",
-            [0xB01u32],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(supplier, 0);
-    let layers = rkyv::from_bytes::<Vec<TerrainLayer>, rkyv::rancor::Error>(&layer_data).unwrap();
-    assert_layers(&layers);
+    for (cell, id, opacity) in [
+        (0xB00u32, 0xB01u32, candidate_weight),
+        (0x0100_0B20, 0x0100_0B21, candidate_weight),
+        (0x0100_0B30, 0x0100_0B31, Some(0.25)),
+    ] {
+        let heightmap: Vec<u8> = db
+            .query_row(
+                "SELECT heightmap FROM land WHERE cell_id=?1",
+                [cell],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            heightmap,
+            if cell == 0x0100_0B30 {
+                heights(0.0)
+            } else {
+                heights(99.0)
+            }
+        );
+        let (supplier, layer_data): (u32, Vec<u8>) = db
+            .query_row(
+                "SELECT load_order,layer_data FROM inhouse_terrain_layers WHERE form_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(supplier, 1);
+        let layers =
+            rkyv::from_bytes::<Vec<TerrainLayer>, rkyv::rancor::Error>(&layer_data).unwrap();
+        assert_layers(&layers, opacity);
+        let (status, reason): (String, Option<String>) = db
+            .query_row(
+                "SELECT status,reason FROM record_overrides WHERE form_id=?1 AND plugin_id=1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), reason), ("accepted", None));
+    }
+    let history = read_history(output, None, 0xB01).unwrap();
+    assert_eq!(history.versions.len(), 2);
+    assert_eq!(
+        (history.versions[0].plugin_id, history.versions[0].winner),
+        (0, false)
+    );
+    let current = &history.versions[1];
+    assert_eq!(
+        (current.plugin_id, current.status.as_str(), current.winner),
+        (1, "accepted", true)
+    );
+    assert!(current.reason.is_none());
+    // Strict typed replay declines a payload with rejected fields even though
+    // tolerant runtime publication accepted its usable geometry and paint.
+    assert_eq!(current.decode_status, "undecodable");
+    assert!(current.record.is_none());
+    assert!(
+        current
+            .decode_reason
+            .as_ref()
+            .unwrap()
+            .contains("undecodable fields")
+    );
+    let mut seen = 0;
+    let source = visit_source_history(
+        output,
+        None,
+        SourceQuery::Source {
+            original_owner: "skyrim.esm".into(),
+            full_local: 0xB01,
+        },
+        |version| {
+            assert_eq!(version.status, "accepted");
+            assert!(version.rejection_reason.is_none());
+            assert_eq!(version.accepted_source_winner, version.plugin_id == 1);
+            assert_eq!(version.runtime_record_present, version.plugin_id == 1);
+            assert!(!version.runtime_fallback_before_latest_source);
+            let expected = if version.plugin_id == 0 {
+                &case.baseline
+            } else {
+                &case.candidate
+            };
+            assert_eq!(
+                version.raw.as_ref().unwrap().stored_payload.as_deref(),
+                Some(expected.as_slice())
+            );
+            seen += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(seen, 2);
+    assert_eq!(source.versions, 2);
+    assert!(source.fully_raw_available);
+    assert!(!source.typed_runtime_decoding_attempted);
+    let omission_count = if case.rejected_signature == "ATXT" {
+        2
+    } else {
+        1
+    };
+    for id in [0xB01u32, 0x0100_0B21] {
+        let reasons: Vec<String> = db.prepare("SELECT reason FROM record_diagnostics WHERE plugin_id=1 AND form_id=?1 AND stage='terrain_recovery' AND category='adapter' AND action='omitted'").unwrap().query_map([id], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(
+            reasons.len(),
+            1,
+            "one recovery diagnostic must identify each accepted LAND"
+        );
+        assert!(
+            reasons[0].contains(&format!(
+                "omitted {omission_count} malformed LAND texture items"
+            )),
+            "{:?}",
+            reasons
+        );
+    }
     if case.rejected_signature == "VTXT" {
-        assert_winner(&db, 0xB11, 0, &case.baseline);
-        assert_skipped(&db, 0xB11, 1, "VTXT");
+        assert_winner(&db, 0xB11, 1, &terrain(Some(99.0), -0.25));
+        let heightmap: Vec<u8> = db
+            .query_row(
+                "SELECT heightmap FROM land WHERE cell_id=?1",
+                [0xB10u32],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(heightmap, heights(99.0));
+        let omissions: u32 = db.query_row("SELECT count(*) FROM record_diagnostics WHERE plugin_id=1 AND form_id=?1 AND stage='terrain_recovery' AND action='omitted' AND reason LIKE '%omitted 1 malformed LAND texture items%'", [0xB11u32], |row| row.get(0)).unwrap();
+        assert_eq!(omissions, 1);
     }
     for (id, name) in [
         (0x0100_0D01, "BeforeBrokenTerrain"),
@@ -687,11 +798,7 @@ fn assert_terrain(case: &TerrainCase, output: &Path) {
             .unwrap();
     assert_eq!(
         diagnostics["decoder"]["badnegative.esp"]["skipped_records"],
-        if case.rejected_signature == "VTXT" {
-            3
-        } else {
-            2
-        }
+        0
     );
     assert_eq!(
         fs::read(case.fixture.data.join("BadNegative.esp")).unwrap(),
@@ -699,33 +806,34 @@ fn assert_terrain(case: &TerrainCase, output: &Path) {
     );
 }
 
-/// NaN authored weights cannot replace height 56 with 792 in a complete published pack.
+/// NaN paint drops locally while the height792 candidate and healthy neighbors publish.
 #[tokio::test]
-async fn nan_land_override_keeps_prior_heights_through_complete_publication() {
+async fn nan_land_override_keeps_valid_candidate_heights_through_complete_publication() {
     let case = terrain_case(BadLayer::NanWeight);
     let output = case.fixture.publish().await;
     assert_terrain(&case, &output);
 }
 
-/// Full records-only publication exercises the same NaN candidate rejection.
+/// Full records-only publication keeps the usable candidate and exact source provenance.
 #[test]
-fn nan_land_override_keeps_prior_heights_through_full_record_bundle() {
+fn nan_land_override_keeps_valid_candidate_heights_through_full_record_bundle() {
     let case = terrain_case(BadLayer::NanWeight);
     let output = case.fixture.bundle();
     assert_terrain(&case, &output);
 }
 
-/// A rejected seven-byte alpha anchor cannot give vertex-nine weights to layer A.
+/// A rejected seven-byte anchor drops its weights without losing the height792 candidate.
 #[tokio::test]
-async fn rejected_alpha_anchor_keeps_prior_layer_weights_through_complete_publication() {
+async fn rejected_alpha_anchor_keeps_valid_candidate_and_layer_weights_through_complete_publication()
+ {
     let case = terrain_case(BadLayer::RejectedAnchor);
     let output = case.fixture.publish().await;
     assert_terrain(&case, &output);
 }
 
-/// Full focused publication also rejects first definitions with unusable authored layers.
+/// Full focused publication retains first definitions while omitting only unusable paint items.
 #[test]
-fn rejected_alpha_anchor_keeps_prior_layer_weights_through_full_record_bundle() {
+fn rejected_alpha_anchor_keeps_valid_candidate_and_layer_weights_through_full_record_bundle() {
     let case = terrain_case(BadLayer::RejectedAnchor);
     let output = case.fixture.bundle();
     assert_terrain(&case, &output);

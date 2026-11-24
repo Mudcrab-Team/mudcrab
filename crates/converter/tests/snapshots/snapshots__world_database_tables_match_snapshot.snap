@@ -2,325 +2,224 @@
 source: crates/converter/tests/snapshots.rs
 expression: snapshot
 ---
-{
-  "actor_model_parts": [],
-  "actor_models": [
-    {
-      "head_model": null,
-      "head_source": null,
-      "id": 7,
-      "race_id": 10,
-      "resolution": "unresolved",
-      "sex": "male",
-      "skin_armo_id": null,
-      "skin_tone_b": null,
-      "skin_tone_g": null,
-      "skin_tone_r": null,
-      "weight": null
-    }
-  ],
-  "cells": [
-    {
-      "data": {
-        "encoded_bytes": 56
-      },
-      "flags": 0,
-      "full_name": null,
-      "grid_x": 0,
-      "grid_y": 0,
-      "id": 16,
-      "interior_name": "GeneratedCell",
-      "worldspace_id": 1
-    },
-    {
-      "data": {
-        "encoded_bytes": 84
-      },
-      "flags": 0,
-      "full_name": "Generated Interior",
-      "grid_x": null,
-      "grid_y": null,
-      "id": 65536,
-      "interior_name": "GeneratedInterior",
-      "worldspace_id": null
-    }
-  ],
-  "formid_map": [
-    {
-      "form_id": 1,
-      "internal_id": 1,
-      "plugin_name": "skyrim.esm",
-      "record_type": "WRLD"
-    },
-    {
-      "form_id": 2,
-      "internal_id": 2,
-      "plugin_name": "skyrim.esm",
-      "record_type": "TXST"
-    },
-    {
-      "form_id": 3,
-      "internal_id": 3,
-      "plugin_name": "skyrim.esm",
-      "record_type": "STAT"
-    },
-    {
-      "form_id": 4,
-      "internal_id": 4,
-      "plugin_name": "skyrim.esm",
-      "record_type": "LTEX"
-    },
-    {
-      "form_id": 5,
-      "internal_id": 5,
-      "plugin_name": "skyrim.esm",
-      "record_type": "DOOR"
-    },
-    {
-      "form_id": 6,
-      "internal_id": 6,
-      "plugin_name": "skyrim.esm",
-      "record_type": "DOOR"
-    },
-    {
-      "form_id": 7,
-      "internal_id": 7,
-      "plugin_name": "skyrim.esm",
-      "record_type": "NPC_"
-    },
-    {
-      "form_id": 10,
-      "internal_id": 10,
-      "plugin_name": "skyrim.esm",
-      "record_type": "RACE"
-    },
-    {
-      "form_id": 11,
-      "internal_id": 11,
-      "plugin_name": "skyrim.esm",
-      "record_type": "GMST"
-    },
-    {
-      "form_id": 16,
-      "internal_id": 16,
-      "plugin_name": "skyrim.esm",
-      "record_type": "CELL"
-    },
-    {
-      "form_id": 17,
-      "internal_id": 17,
-      "plugin_name": "skyrim.esm",
-      "record_type": "LAND"
-    },
-    {
-      "form_id": 18,
-      "internal_id": 18,
-      "plugin_name": "skyrim.esm",
-      "record_type": "REFR"
-    },
-    {
-      "form_id": 19,
-      "internal_id": 19,
-      "plugin_name": "skyrim.esm",
-      "record_type": "REFR"
-    },
-    {
-      "form_id": 65536,
-      "internal_id": 65536,
-      "plugin_name": "skyrim.esm",
-      "record_type": "CELL"
-    },
-    {
-      "form_id": 65537,
-      "internal_id": 65537,
-      "plugin_name": "skyrim.esm",
-      "record_type": "REFR"
-    },
-    {
-      "form_id": 219149,
-      "internal_id": 219149,
-      "plugin_name": "skyrim.esm",
-      "record_type": "MOVT"
-    }
-  ],
-  "land": [
-    {
-      "cell_id": 16,
-      "heightmap": {
-        "encoded_bytes": 1096
-      },
-      "normals": {
-        "encoded_bytes": 0
-      },
-      "vclr": {
-        "encoded_bytes": 0
-      },
-      "vtex": {
-        "encoded_bytes": 0
-      }
-    }
-  ],
-  "landscape_textures": [
-    {
-      "editor_id": "GeneratedLandscape",
-      "friction": 30.0,
-      "id": 4,
-      "material_type": 8,
-      "restitution": 30.0,
-      "texture_set_id": 2
-    }
-  ],
-  "npcs": [
-    {
-      "class_id": null,
-      "editor_id": "Player",
-      "flags": 0,
-      "full_name": null,
-      "id": 7,
-      "race_id": 10
-    }
-  ],
-  "references": [
-    {
-      "base_form_id": 3,
-      "cell_id": 16,
-      "data": {
-        "encoded_bytes": 60
-      },
-      "emittance_id": null,
-      "enable_parent_flags": null,
-      "enable_parent_id": null,
-      "header_flags": 0,
-      "id": 18,
-      "is_exterior": 1,
-      "local_x": 2048.0,
-      "local_y": 2048.0,
-      "pos_x": 2048.0,
-      "pos_y": 2048.0,
-      "pos_z": 0.0,
-      "radius_override": null,
-      "rot_x": 0.0,
-      "rot_y": 0.0,
-      "rot_z": 0.0,
-      "scale": 1.0,
-      "worldspace_id": 1
-    },
-    {
-      "base_form_id": 5,
-      "cell_id": 16,
-      "data": {
-        "encoded_bytes": 104
-      },
-      "emittance_id": null,
-      "enable_parent_flags": null,
-      "enable_parent_id": null,
-      "header_flags": 0,
-      "id": 19,
-      "is_exterior": 1,
-      "local_x": 2048.0,
-      "local_y": 1024.0,
-      "pos_x": 2048.0,
-      "pos_y": 1024.0,
-      "pos_z": 0.0,
-      "radius_override": null,
-      "rot_x": 0.0,
-      "rot_y": 0.0,
-      "rot_z": 0.0,
-      "scale": 1.0,
-      "worldspace_id": 1
-    },
-    {
-      "base_form_id": 6,
-      "cell_id": 65536,
-      "data": {
-        "encoded_bytes": 104
-      },
-      "emittance_id": null,
-      "enable_parent_flags": null,
-      "enable_parent_id": null,
-      "header_flags": 0,
-      "id": 65537,
-      "is_exterior": 0,
-      "local_x": null,
-      "local_y": null,
-      "pos_x": 128.0,
-      "pos_y": 512.0,
-      "pos_z": 0.0,
-      "radius_override": null,
-      "rot_x": 0.0,
-      "rot_y": 0.0,
-      "rot_z": 0.0,
-      "scale": 1.0,
-      "worldspace_id": null
-    }
-  ],
-  "statics": [
-    {
-      "bounds_max_x": 64.0,
-      "bounds_max_y": 64.0,
-      "bounds_max_z": 64.0,
-      "bounds_min_x": -64.0,
-      "bounds_min_y": -64.0,
-      "bounds_min_z": -64.0,
-      "bounds_valid": 0,
-      "editor_id": "GeneratedStatic",
-      "flags": 0,
-      "full_name": null,
-      "id": 3,
-      "model_path": "meshes/generated.nif"
-    },
-    {
-      "bounds_max_x": 64.0,
-      "bounds_max_y": 64.0,
-      "bounds_max_z": 64.0,
-      "bounds_min_x": -64.0,
-      "bounds_min_y": -64.0,
-      "bounds_min_z": -64.0,
-      "bounds_valid": 0,
-      "editor_id": "AutoLoadDoor01",
-      "flags": 0,
-      "full_name": null,
-      "id": 5,
-      "model_path": "meshes/generated.nif"
-    },
-    {
-      "bounds_max_x": 64.0,
-      "bounds_max_y": 64.0,
-      "bounds_max_z": 64.0,
-      "bounds_min_x": -64.0,
-      "bounds_min_y": -64.0,
-      "bounds_min_z": -64.0,
-      "bounds_valid": 0,
-      "editor_id": "GeneratedDoor01",
-      "flags": 0,
-      "full_name": null,
-      "id": 6,
-      "model_path": "meshes/generated.nif"
-    }
-  ],
-  "texture_sets": [
-    {
-      "detail_path": null,
-      "diffuse_path": "textures/generated_color.dds",
-      "editor_id": "GeneratedTextures",
-      "environment_path": null,
-      "glow_path": null,
-      "height_path": null,
-      "id": 2,
-      "mask_path": null,
-      "normal_path": "textures/generated_normal.dds",
-      "specular_path": null
-    }
-  ],
-  "worldspaces": [
-    {
-      "editor_id": "GeneratedWorld",
-      "flags": 0,
-      "full_name": null,
-      "id": 1,
-      "lod_origin_x": null,
-      "lod_origin_y": null,
-      "parent_world": null
-    }
-  ]
-}
+# Rows of a world database built from dummy-content's preset interior
+# plugin (one exterior cell, one interior cell and their load-door pair)
+# through the default in-house reader. Every table is listed, including
+# empty ones. One line per row: table|column=value|column=value.
+# Rows are sorted by column values before formatting, so SQLite row order
+# and HashMap iteration cannot churn. NULL is NULL, text is a JSON string,
+# a REAL shows nine decimals when that token parses back to the same
+# value and Rust's round-trip form otherwise, and a BLOB is
+# blob:<sha256 prefix>:<length>.
+# Normalized columns, because the machine or clock sets them:
+#   conversion_cache.plugin_path: the fixture's temporary directory, which differs between runs and machines
+#   conversion_cache.last_converted: the wall-clock time when the cache row was written
+#   record_overrides.source_path: the plugin path in the fixture's temporary directory
+# Omitted objects, named so no exclusion is silent:
+#   exterior_spatial_node (shadow): R-tree node block of exterior_spatial
+#   exterior_spatial_parent (shadow): R-tree parent block of exterior_spatial
+#   exterior_spatial_rowid (shadow): R-tree rowid map of exterior_spatial
+#   lod_chunks_spatial_node (shadow): R-tree node block of lod_chunks_spatial
+#   lod_chunks_spatial_parent (shadow): R-tree parent block of lod_chunks_spatial
+#   lod_chunks_spatial_rowid (shadow): R-tree rowid map of lod_chunks_spatial
+# The virtual tables exterior_spatial and lod_chunks_spatial are included:
+# their rows are the published spatial index. The test fails if the omitted
+# set differs from this list.
+## actor_model_parts (0 rows)
+## actor_models (1 rows)
+actor_models|id=7|race_id=10|sex="male"|skin_armo_id=NULL|head_model=NULL|head_source=NULL|resolution="unresolved"|skin_tone_r=NULL|skin_tone_g=NULL|skin_tone_b=NULL|weight=NULL
+## base_texture_swaps (0 rows)
+## cell_environment (2 rows)
+cell_environment|cell_id=16|data_flags=NULL|image_space_id=NULL|acoustic_space_id=NULL|music_id=NULL|sky_region_id=NULL|location_id=NULL|encounter_zone_id=NULL|owner_id=NULL|owner_rank=NULL|water_id=NULL|water_height=NULL
+cell_environment|cell_id=65536|data_flags=1|image_space_id=NULL|acoustic_space_id=NULL|music_id=NULL|sky_region_id=NULL|location_id=NULL|encounter_zone_id=NULL|owner_id=NULL|owner_rank=NULL|water_id=NULL|water_height=NULL
+## cell_lighting (0 rows)
+## cell_regions (0 rows)
+## cells (2 rows)
+cells|id=16|worldspace_id=1|grid_x=0|grid_y=0|interior_name="GeneratedCell"|flags=0|data=blob:8bf1a2c750775224:56|full_name=NULL
+cells|id=65536|worldspace_id=NULL|grid_x=NULL|grid_y=NULL|interior_name="GeneratedInterior"|flags=0|data=blob:ab9a392086ec71fe:84|full_name="Generated Interior"
+## climate_weathers (0 rows)
+## climates (0 rows)
+## conversion_cache (0 rows)
+## default_objects (2 rows)
+default_objects|key="DMRN"|form_id=219149
+default_objects|key="DMWL"|form_id=219149
+## door_links (2 rows)
+door_links|ref_id=19|destination_ref_id=65537|pos_x=128.000000000|pos_y=256.000000000|pos_z=0.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|destination_cell_id=65536|destination_worldspace_id=NULL|destination_name="Generated Interior"
+door_links|ref_id=65537|destination_ref_id=19|pos_x=2048.000000000|pos_y=512.000000000|pos_z=0.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|destination_cell_id=16|destination_worldspace_id=1|destination_name="GeneratedWorld"
+## emittance (0 rows)
+## exterior_spatial (2 rows)
+exterior_spatial|id=18|minX=2048.000000000|maxX=2048.000000000|minY=2048.000000000|maxY=2048.000000000|minZ=0.000000000|maxZ=0.000000000|cell_id=16|worldspace_id=1
+exterior_spatial|id=19|minX=2048.000000000|maxX=2048.000000000|minY=1024.000000000|maxY=1024.000000000|minZ=0.000000000|maxZ=0.000000000|cell_id=16|worldspace_id=1
+## formid_map (17 rows)
+formid_map|form_id=1|plugin_name="skyrim.esm"|internal_id=1|record_type="WRLD"
+formid_map|form_id=2|plugin_name="skyrim.esm"|internal_id=2|record_type="TXST"
+formid_map|form_id=3|plugin_name="skyrim.esm"|internal_id=3|record_type="STAT"
+formid_map|form_id=4|plugin_name="skyrim.esm"|internal_id=4|record_type="LTEX"
+formid_map|form_id=5|plugin_name="skyrim.esm"|internal_id=5|record_type="DOOR"
+formid_map|form_id=6|plugin_name="skyrim.esm"|internal_id=6|record_type="DOOR"
+formid_map|form_id=7|plugin_name="skyrim.esm"|internal_id=7|record_type="NPC_"
+formid_map|form_id=10|plugin_name="skyrim.esm"|internal_id=10|record_type="RACE"
+formid_map|form_id=11|plugin_name="skyrim.esm"|internal_id=11|record_type="GMST"
+formid_map|form_id=12|plugin_name="skyrim.esm"|internal_id=12|record_type="DOBJ"
+formid_map|form_id=16|plugin_name="skyrim.esm"|internal_id=16|record_type="CELL"
+formid_map|form_id=17|plugin_name="skyrim.esm"|internal_id=17|record_type="LAND"
+formid_map|form_id=18|plugin_name="skyrim.esm"|internal_id=18|record_type="REFR"
+formid_map|form_id=19|plugin_name="skyrim.esm"|internal_id=19|record_type="REFR"
+formid_map|form_id=65536|plugin_name="skyrim.esm"|internal_id=65536|record_type="CELL"
+formid_map|form_id=65537|plugin_name="skyrim.esm"|internal_id=65537|record_type="REFR"
+formid_map|form_id=219149|plugin_name="skyrim.esm"|internal_id=219149|record_type="MOVT"
+## grass_types (0 rows)
+## image_spaces (0 rows)
+## inhouse_localized_fields (0 rows)
+## inhouse_plugin_masters (0 rows)
+## inhouse_schema_addons (0 rows)
+## inhouse_source_records (17 rows)
+inhouse_source_records|form_id=1|source_form_id=1|load_order=0|record_type="WRLD"|flags=0|payload=blob:ac10cdcfe4737999:21
+inhouse_source_records|form_id=2|source_form_id=2|load_order=0|record_type="TXST"|flags=0|payload=blob:538bfa549d7be7fe:95
+inhouse_source_records|form_id=3|source_form_id=3|load_order=0|record_type="STAT"|flags=0|payload=blob:5392df432ab3aaea:49
+inhouse_source_records|form_id=4|source_form_id=4|load_order=0|record_type="LTEX"|flags=0|payload=blob:caa1e5c5b6592c90:53
+inhouse_source_records|form_id=5|source_form_id=5|load_order=0|record_type="DOOR"|flags=0|payload=blob:7928747fe2bfe5c6:55
+inhouse_source_records|form_id=6|source_form_id=6|load_order=0|record_type="DOOR"|flags=0|payload=blob:520f191a48bf7a9a:56
+inhouse_source_records|form_id=7|source_form_id=7|load_order=0|record_type="NPC_"|flags=0|payload=blob:fe5754121be18bf4:63
+inhouse_source_records|form_id=10|source_form_id=10|load_order=0|record_type="RACE"|flags=0|payload=blob:05ec9f39be2382e3:154
+inhouse_source_records|form_id=11|source_form_id=11|load_order=0|record_type="GMST"|flags=0|payload=blob:4e90abff3d1625db:31
+inhouse_source_records|form_id=12|source_form_id=12|load_order=0|record_type="DOBJ"|flags=0|payload=blob:2e78fbec95819fd6:49
+inhouse_source_records|form_id=16|source_form_id=16|load_order=0|record_type="CELL"|flags=0|payload=blob:f1420d22c5885305:34
+inhouse_source_records|form_id=17|source_form_id=17|load_order=0|record_type="LAND"|flags=0|payload=blob:55e42cc47a13b724:1116
+inhouse_source_records|form_id=18|source_form_id=18|load_order=0|record_type="REFR"|flags=0|payload=blob:afa2b03767f27ac9:40
+inhouse_source_records|form_id=19|source_form_id=19|load_order=0|record_type="REFR"|flags=0|payload=blob:ecd3b64ed091af7c:78
+inhouse_source_records|form_id=65536|source_form_id=65536|load_order=0|record_type="CELL"|flags=0|payload=blob:4a83a4421f6a754f:56
+inhouse_source_records|form_id=65537|source_form_id=65537|load_order=0|record_type="REFR"|flags=0|payload=blob:ce70ab8ce0485e3c:78
+inhouse_source_records|form_id=219149|source_form_id=219149|load_order=0|record_type="MOVT"|flags=0|payload=blob:5586b82a926ff78a:71
+## inhouse_terrain_layers (1 rows)
+inhouse_terrain_layers|form_id=17|cell_id=16|load_order=0|layer_data=blob:6d8c4ec85886082b:28
+## inhouse_terrain_source_order (1 rows)
+inhouse_terrain_source_order|form_id=17|source_record_offset=978
+## inhouse_unresolved_terrain_textures (0 rows)
+## land (1 rows)
+land|cell_id=16|heightmap=blob:5eebf4d5a9061c19:1096|vtex=NULL|vclr=NULL|normals=NULL
+## landscape_texture_grasses (0 rows)
+## landscape_textures (1 rows)
+landscape_textures|id=4|editor_id="GeneratedLandscape"|texture_set_id=2|material_type=8|friction=30.000000000|restitution=30.000000000
+## large_reference_omissions (0 rows)
+## large_references (0 rows)
+## lighting_templates (0 rows)
+## lights (0 rows)
+## lod (0 rows)
+## lod_build (0 rows)
+## lod_chunks (0 rows)
+## lod_chunks_spatial (0 rows)
+## movement_game_settings (1 rows)
+movement_game_settings|id=11|editor_id="fJumpHeightMin"|value=76.000000000|load_order=0
+## movement_types (1 rows)
+movement_types|id=219149|editor_id="NPC_Default_MT"|left_walk=80.08999633789063|left_run=370.000000000|right_walk=79.750000000|right_run=370.000000000|forward_walk=80.0999984741211|forward_run=370.000000000|back_walk=71.93000030517578|back_run=205.250000000|load_order=0
+## npcs (1 rows)
+npcs|id=7|editor_id="Player"|full_name=NULL|race_id=10|class_id=NULL|flags=0
+## plugins (1 rows)
+plugins|id=0|name="Skyrim.esm"|priority=0|checksum=blob:05a3c21c914d71a1:32
+## projection_omission_samples (0 rows)
+## projection_omission_stats (0 rows)
+## race_animation_sources (2 rows)
+race_animation_sources|race_id=10|sex="female"|skeleton_nif=NULL|project_hkx=NULL
+race_animation_sources|race_id=10|sex="male"|skeleton_nif=NULL|project_hkx=NULL
+## race_movement_links (1 rows)
+race_movement_links|id=10|walk_movt_id=NULL|run_movt_id=NULL|load_order=0
+## record_diagnostics (0 rows)
+## record_overrides (18 rows)
+record_overrides|form_id=NULL|chain_position=0|plugin_id=0|source_form_id=0|deleted=0|record_type="TES4"|flags=0|source_record_offset=0|source_record_size=46|status="header"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path="<fixture>/Skyrim.esm"|schema_sha256="4470386f5ff1f63da87872d9a63fdbecaa6e57ccc08bfdd71ea819ee559f4d52"|original_owner=NULL|full_local=NULL|source_identity_state="null_raw_word"|source_group_end=2721|frame_complete=1|record_signature=blob:3f7367ae804a6acc:4
+record_overrides|form_id=1|chain_position=0|plugin_id=0|source_form_id=1|deleted=0|record_type="WRLD"|flags=0|source_record_offset=827|source_record_size=21|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=1|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:547fd2170b4c2c24:4
+record_overrides|form_id=2|chain_position=0|plugin_id=0|source_form_id=2|deleted=0|record_type="TXST"|flags=0|source_record_offset=70|source_record_size=95|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=2|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:c50ece4d40f8497c:4
+record_overrides|form_id=3|chain_position=0|plugin_id=0|source_form_id=3|deleted=0|record_type="STAT"|flags=0|source_record_offset=189|source_record_size=49|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=3|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:d46f8fc02ea31604:4
+record_overrides|form_id=4|chain_position=0|plugin_id=0|source_form_id=4|deleted=0|record_type="LTEX"|flags=0|source_record_offset=750|source_record_size=53|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=4|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:1ae6d242b746cb34:4
+record_overrides|form_id=5|chain_position=0|plugin_id=0|source_form_id=5|deleted=0|record_type="DOOR"|flags=0|source_record_offset=2284|source_record_size=55|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=5|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:931c04975068cc4f:4
+record_overrides|form_id=6|chain_position=0|plugin_id=0|source_form_id=6|deleted=0|record_type="DOOR"|flags=0|source_record_offset=2363|source_record_size=56|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=6|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:931c04975068cc4f:4
+record_overrides|form_id=7|chain_position=0|plugin_id=0|source_form_id=7|deleted=0|record_type="NPC_"|flags=0|source_record_offset=608|source_record_size=63|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=7|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:3b7f9a970744968a:4
+record_overrides|form_id=10|chain_position=0|plugin_id=0|source_form_id=10|deleted=0|record_type="RACE"|flags=0|source_record_offset=430|source_record_size=154|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=10|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:c51fb9b52aac0ff0:4
+record_overrides|form_id=11|chain_position=0|plugin_id=0|source_form_id=11|deleted=0|record_type="GMST"|flags=0|source_record_offset=695|source_record_size=31|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=11|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:f721565b616cb609:4
+record_overrides|form_id=12|chain_position=0|plugin_id=0|source_form_id=12|deleted=0|record_type="DOBJ"|flags=0|source_record_offset=357|source_record_size=49|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=12|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:30bf9308345ea680:4
+record_overrides|form_id=16|chain_position=0|plugin_id=0|source_form_id=16|deleted=0|record_type="CELL"|flags=0|source_record_offset=896|source_record_size=34|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=1|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=16|source_identity_state="resolved"|source_group_end=2284|frame_complete=1|record_signature=blob:0ee01f4e20a796e9:4
+record_overrides|form_id=17|chain_position=0|plugin_id=0|source_form_id=17|deleted=0|record_type="LAND"|flags=0|source_record_offset=978|source_record_size=1116|status="accepted"|reason=NULL|source_cell_form_id=16|source_worldspace_form_id=1|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=17|source_identity_state="resolved"|source_group_end=2284|frame_complete=1|record_signature=blob:10d4ae679adf6e1f:4
+record_overrides|form_id=18|chain_position=0|plugin_id=0|source_form_id=18|deleted=0|record_type="REFR"|flags=0|source_record_offset=2118|source_record_size=40|status="accepted"|reason=NULL|source_cell_form_id=16|source_worldspace_form_id=1|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=18|source_identity_state="resolved"|source_group_end=2284|frame_complete=1|record_signature=blob:d490257293cc9a40:4
+record_overrides|form_id=19|chain_position=0|plugin_id=0|source_form_id=19|deleted=0|record_type="REFR"|flags=0|source_record_offset=2182|source_record_size=78|status="accepted"|reason=NULL|source_cell_form_id=16|source_worldspace_form_id=1|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=19|source_identity_state="resolved"|source_group_end=2284|frame_complete=1|record_signature=blob:d490257293cc9a40:4
+record_overrides|form_id=65536|chain_position=0|plugin_id=0|source_form_id=65536|deleted=0|record_type="CELL"|flags=0|source_record_offset=2491|source_record_size=56|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=65536|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:0ee01f4e20a796e9:4
+record_overrides|form_id=65537|chain_position=0|plugin_id=0|source_form_id=65537|deleted=0|record_type="REFR"|flags=0|source_record_offset=2619|source_record_size=78|status="accepted"|reason=NULL|source_cell_form_id=65536|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=65537|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:d490257293cc9a40:4
+record_overrides|form_id=219149|chain_position=0|plugin_id=0|source_form_id=219149|deleted=0|record_type="MOVT"|flags=0|source_record_offset=262|source_record_size=71|status="accepted"|reason=NULL|source_cell_form_id=NULL|source_worldspace_form_id=NULL|source_topic_form_id=NULL|topic_group_offset=NULL|source_path=NULL|schema_sha256=NULL|original_owner="skyrim.esm"|full_local=219149|source_identity_state="resolved"|source_group_end=2721|frame_complete=1|record_signature=blob:818382639a234910:4
+## records (17 rows)
+records|form_id=1|record_type="WRLD"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:52f17d6cd746806a:36
+records|form_id=2|record_type="TXST"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:9a49932729ad1a82:124
+records|form_id=3|record_type="STAT"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:6696f6a59882c972:72
+records|form_id=4|record_type="LTEX"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:0f0ca55993e38abc:88
+records|form_id=5|record_type="DOOR"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:45f63e12026782c7:84
+records|form_id=6|record_type="DOOR"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:9950bbed26d4b42b:84
+records|form_id=7|record_type="NPC_"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:211de3ab62600d6a:96
+records|form_id=10|record_type="RACE"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:6086791fcabf928d:176
+records|form_id=11|record_type="GMST"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:11721a24c2cd119c:52
+records|form_id=12|record_type="DOBJ"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:c8f684133c8b2b50:72
+records|form_id=16|record_type="CELL"|cell_id=NULL|worldspace_id=1|load_order=0|data=blob:8bf1a2c750775224:56
+records|form_id=17|record_type="LAND"|cell_id=16|worldspace_id=1|load_order=0|data=blob:6bc604d44643889c:1136
+records|form_id=18|record_type="REFR"|cell_id=16|worldspace_id=1|load_order=0|data=blob:a996c9c4bd516ec8:60
+records|form_id=19|record_type="REFR"|cell_id=16|worldspace_id=1|load_order=0|data=blob:f80c00a339781201:104
+records|form_id=65536|record_type="CELL"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:ab9a392086ec71fe:84
+records|form_id=65537|record_type="REFR"|cell_id=65536|worldspace_id=NULL|load_order=0|data=blob:ab774ad964fcaacc:104
+records|form_id=219149|record_type="MOVT"|cell_id=NULL|worldspace_id=NULL|load_order=0|data=blob:0af9321d5d2980d0:92
+## reference_activate_parents (0 rows)
+## reference_authored_changes (0 rows)
+## reference_authored_targets (0 rows)
+## reference_details (0 rows)
+## reference_light_data (0 rows)
+## reference_linked_refs (0 rows)
+## reference_rooms (0 rows)
+## references (3 rows)
+references|id=18|cell_id=16|worldspace_id=1|base_form_id=3|is_exterior=1|pos_x=2048.000000000|pos_y=2048.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=2048.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:a996c9c4bd516ec8:60|radius_status=0
+references|id=19|cell_id=16|worldspace_id=1|base_form_id=5|is_exterior=1|pos_x=2048.000000000|pos_y=1024.000000000|pos_z=0.000000000|local_x=2048.000000000|local_y=1024.000000000|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:f80c00a339781201:104|radius_status=0
+references|id=65537|cell_id=65536|worldspace_id=NULL|base_form_id=6|is_exterior=0|pos_x=128.000000000|pos_y=512.000000000|pos_z=0.000000000|local_x=NULL|local_y=NULL|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:ab774ad964fcaacc:104|radius_status=0
+## region_weathers (0 rows)
+## room_bounds (0 rows)
+## room_graph_cells (0 rows)
+## room_graph_stats (18 rows)
+room_graph_stats|name="assignment_version"|value=1
+room_graph_stats|name="invalid_markers_skipped"|value=0
+room_graph_stats|name="invalid_occluders_skipped"|value=0
+room_graph_stats|name="links"|value=0
+room_graph_stats|name="non_box_rooms_skipped"|value=0
+room_graph_stats|name="objects_in_no_room"|value=0
+room_graph_stats|name="objects_in_several_rooms"|value=0
+room_graph_stats|name="occluders"|value=0
+room_graph_stats|name="occlusion_links_verified"|value=1
+room_graph_stats|name="occlusion_version"|value=1
+room_graph_stats|name="overlap_rows"|value=0
+room_graph_stats|name="portals"|value=0
+room_graph_stats|name="portals_with_extra_pairs"|value=0
+room_graph_stats|name="portals_with_missing_side"|value=0
+room_graph_stats|name="portals_with_trailing_xpod_bytes"|value=0
+room_graph_stats|name="portals_without_size_skipped"|value=0
+room_graph_stats|name="rooms"|value=0
+room_graph_stats|name="visibility_version"|value=2
+## room_link_anomalies (0 rows)
+## room_links (0 rows)
+## room_model_bounds (0 rows)
+## room_occluder_links (0 rows)
+## room_occluders (0 rows)
+## room_portals (0 rows)
+## room_reference_rules (1 rows)
+room_reference_rules|reference_id=65537|cell_id=65536|assignment="auto"|target_ref=NULL
+## schema_info (1 rows)
+schema_info|version=9
+## script_properties (0 rows)
+## script_property_values (0 rows)
+## scripts (0 rows)
+## statics (3 rows)
+statics|id=3|editor_id="GeneratedStatic"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
+statics|id=5|editor_id="AutoLoadDoor01"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
+statics|id=6|editor_id="GeneratedDoor01"|model_path="meshes/generated.nif"|flags=0|full_name=NULL|bounds_min_x=-64.000000000|bounds_min_y=-64.000000000|bounds_min_z=-64.000000000|bounds_max_x=64.000000000|bounds_max_y=64.000000000|bounds_max_z=64.000000000|bounds_valid=0
+## subset_nonplacement_deletions (0 rows)
+## texture_sets (1 rows)
+texture_sets|id=2|editor_id="GeneratedTextures"|diffuse_path="textures/generated_color.dds"|normal_path="textures/generated_normal.dds"|glow_path=NULL|height_path=NULL|environment_path=NULL|mask_path=NULL|specular_path=NULL|detail_path=NULL
+## waters (0 rows)
+## weather_colors (0 rows)
+## weather_directional_ambient (0 rows)
+## weathers (0 rows)
+## worldspace_environment (1 rows)
+worldspace_environment|worldspace_id=1|data_flags=NULL|parent_flags=NULL|climate_id=NULL|water_id=NULL|lod_water_id=NULL|lod_water_height=NULL|default_land_height=NULL|default_water_height=NULL|lighting_template_id=NULL|music_id=NULL|location_id=NULL|encounter_zone_id=NULL|bounds_min_x=NULL|bounds_min_y=NULL|bounds_max_x=NULL|bounds_max_y=NULL|lod_multiplier=NULL|center_cell_x=NULL|center_cell_y=NULL
+## worldspaces (1 rows)
+worldspaces|id=1|editor_id="GeneratedWorld"|parent_world=NULL|flags=0|lod_origin_x=NULL|lod_origin_y=NULL|full_name=NULL

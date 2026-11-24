@@ -65,6 +65,15 @@ impl AssetSourceIndex {
     /// Builds a case-insensitive index. Roots are ordered from lowest to highest
     /// priority, matching load-order overlay semantics.
     pub fn build(roots: &[PathBuf], kind: AssetKind) -> Result<Self> {
+        Self::build_with_name_filter(roots, kind, |_| true)
+    }
+
+    /// Filters original root-relative source names before canonicalization and collision checks.
+    pub fn build_with_name_filter(
+        roots: &[PathBuf],
+        kind: AssetKind,
+        include_name: impl Fn(&str) -> bool,
+    ) -> Result<Self> {
         let mut index = Self::default();
         for (priority, root) in roots.iter().enumerate() {
             let mut within_root = BTreeMap::<String, PathBuf>::new();
@@ -84,7 +93,11 @@ impl AssetSourceIndex {
                 {
                     continue;
                 }
-                let key = canonical_asset_path(&relative.to_string_lossy(), kind, extension)?;
+                let name = relative.to_string_lossy();
+                if !include_name(&name) {
+                    continue;
+                }
+                let key = canonical_asset_path(&name, kind, extension)?;
                 if let Some(previous) = within_root.insert(key.clone(), entry.path().to_owned()) {
                     bail!(
                         "normalized asset collision for {key}: {} and {}",
@@ -120,16 +133,32 @@ impl AssetSourceIndex {
         self.entries.get(canonical_key)
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = &IndexedAsset> {
+        self.assets()
+    }
+
+    pub fn assets(&self) -> impl Iterator<Item = &IndexedAsset> {
+        self.entries.values()
+    }
+
     pub fn overrides(&self) -> &[AssetOverride] {
         &self.overrides
     }
 }
 
 /// Authoring resources are not runtime assets, even when their extension is NIF/DDS/PEX.
-pub(crate) fn is_authoring_resource(path: &str) -> bool {
+pub fn is_authoring_resource(path: &str) -> bool {
     path.replace('\\', "/")
         .split('/')
         .any(|part| part.eq_ignore_ascii_case("calientetools"))
+}
+
+/// Recognizes authoring directories in an original source name before canonicalization.
+pub fn is_authoring_source_name(name: &str) -> bool {
+    let name = name.trim();
+    is_authoring_resource(name)
+        || (name.contains('%')
+            && percent_decode(name).is_ok_and(|path| is_authoring_resource(&path)))
 }
 
 /// Canonicalizes a Bethesda asset path into a lowercase, root-relative key.
@@ -140,14 +169,22 @@ pub fn canonical_asset_path(
     kind: AssetKind,
     output_extension: &str,
 ) -> Result<String> {
-    let decoded = percent_decode(input.trim())?;
-    if decoded.is_empty() {
+    canonical_literal_asset_path(&percent_decode(input.trim())?, kind, output_extension)
+}
+
+/// A path already decoded from its source spelling, including literal percent signs.
+pub(crate) fn canonical_literal_asset_path(
+    input: &str,
+    kind: AssetKind,
+    output_extension: &str,
+) -> Result<String> {
+    if input.is_empty() {
         bail!("asset path is empty");
     }
-    if decoded.chars().any(char::is_control) {
+    if input.chars().any(char::is_control) {
         bail!("asset path contains a control character");
     }
-    let normalized = decoded.replace('\\', "/");
+    let normalized = input.replace('\\', "/");
     if normalized.starts_with('/') || normalized.contains(':') {
         bail!("asset path is absolute: {input}");
     }

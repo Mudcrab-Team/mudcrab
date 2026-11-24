@@ -91,6 +91,9 @@ commit_preprocessors = [
 # Skips come first so they win over the group rules below.
 commit_parsers = [
   { message = "^chore(\\(release\\))?!?: prepare", skip = true },
+  # A stack lands with merge commits (docs/contributing/workflow.md), so the
+  # layers' "Merge branch 'main' into ..." commits reach main. Skip them.
+  { message = "^Merge (branch|remote-tracking branch) ", skip = true },
   { message = "^chore\\(deps[^)]*\\)", skip = true },
   { message = "^feat(\\([^)]*\\))?!?:", group = "Added" },
   { message = "^fix(\\([^)]*\\))?!?:", group = "Fixed" },

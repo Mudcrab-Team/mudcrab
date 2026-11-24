@@ -1,0 +1,2 @@
+# Adopted D defaults. Explicit overrides may follow.
+mode = "d"

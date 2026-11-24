@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#899)",
+  "reason": "The engine reads filtered WRLD.RNAM placement buckets and resolves their FormIDs as full references. Cross-plugin membership precedence remains unverified (#913).",
+  "table": "large_references"
+}

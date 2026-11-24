@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "A subset update with unusable placement DATA removes stale links involving that reference. Field-level semantics remain deferred.",
+  "table": "room_links"
+}

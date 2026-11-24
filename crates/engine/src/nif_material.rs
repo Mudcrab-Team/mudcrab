@@ -10,7 +10,7 @@ use crate::{
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
 use bevy::{
-    asset::{LoadContext, embedded_asset},
+    asset::{AssetPath, LoadContext, embedded_asset},
     gltf::{
         DefaultGltfImageSampler, GltfMaterial,
         extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
@@ -38,6 +38,7 @@ impl Plugin for NifMaterialPlugin {
         // Bevy 0.19's MaterialPlugin::build calls init_asset unconditionally.
         // Keep this plugin's registrations conditional so it can also support headless
         // NIF loading without replacing stores initialized by the rendering plugin.
+        app.init_resource::<MissingNifAlphaData>();
         init_asset_if_missing::<EffectPaletteImage>(app);
         init_asset_if_missing::<EffectPaletteMaterial>(app);
         init_asset_if_missing::<EffectPaletteDepthMaterial>(app);
@@ -66,12 +67,14 @@ impl Plugin for NifMaterialPlugin {
             .get_resource::<crate::visual_profile::VisualProfile>()
             .copied()
             .unwrap_or_default();
+        let missing_alpha = app.world().resource::<MissingNifAlphaData>().clone();
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
             .write_blocking()
             .push(Box::new(NativeMaterialHandler {
                 default_sampler,
+                missing_alpha,
                 raw_colour_texels: !profile.decodes_colour_srgb(),
                 ..default()
             }));
@@ -350,6 +353,35 @@ fn record_texture_fallbacks(
     }
 }
 
+/// Counts distinct legacy meshes encountered during one streamed pack run.
+#[derive(Clone, Default, Resource)]
+pub(crate) struct MissingNifAlphaData(Arc<Mutex<HashSet<(AssetPath<'static>, usize)>>>);
+
+impl MissingNifAlphaData {
+    fn record(&self, path: &AssetPath<'_>, mesh: usize) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert((path.clone_owned(), mesh));
+    }
+
+    fn count(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+
+    pub(crate) fn report(&self) {
+        let count = self.count();
+        if count != 0 {
+            warn!(
+                "loaded {count} NIF meshes without alpha property metadata; re-export the meshes"
+            );
+        }
+    }
+}
+
 /// Per load, Bevy clones the registered handler, so `textures` holds this glTF's images by
 /// glTF texture index: Bevy reports every texture before any material. A slot Bevy never
 /// reported holds a default handle, which spawn validation reports as not loaded.
@@ -363,6 +395,8 @@ struct NativeMaterialHandler {
     // Scene hooks use a child LoadContext, which cannot read the parent's material assets.
     // Bevy clones a handler per glTF load, so this cache also isolates concurrent loads.
     depth_states: HashMap<String, NifDepthState>,
+    reported_alpha_meshes: HashSet<usize>,
+    missing_alpha: MissingNifAlphaData,
     /// Materials given a `"{label}/skin"` [`SkyrimSkinMaterial`], or with a depth state a
     /// `"{label}/skin-depth"` [`SkyrimSkinDepthMaterial`].
     skin_labels: HashSet<String>,
@@ -372,6 +406,25 @@ struct NativeMaterialHandler {
 }
 
 impl NativeMaterialHandler {
+    fn report_alpha_data(
+        &mut self,
+        path: &AssetPath<'_>,
+        mesh_index: usize,
+        material: &gltf::Material<'_>,
+    ) -> bool {
+        match alpha_data_status(material) {
+            AlphaDataStatus::Missing => self.missing_alpha.record(path, mesh_index),
+            AlphaDataStatus::Invalid if self.reported_alpha_meshes.insert(mesh_index) => {
+                warn!(
+                    "invalid NIF alpha blend data or shader flags in {path} mesh {mesh_index}; re-export the mesh"
+                );
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
     /// The linear twin of glTF texture `index`, loaded with that texture's sampler.
     fn linear_texture(&self, context: &mut LoadContext<'_>, index: usize) -> Option<Handle<Image>> {
         let sampler = self
@@ -434,10 +487,19 @@ impl NativeMaterialHandler {
             shader_flags_1,
             self.raw_colour_texels,
         );
-        let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
-            material.extension.images = Some(scope.get_label_handle::<SkyrimSkinImages>(holder));
-            Ok::<_, Infallible>(material)
-        });
+        if let Some(state) = self.depth_states.get(label).copied() {
+            let Ok(_) = context.labeled_asset_scope(format!("{label}/skin-depth"), |scope| {
+                material.extension.images =
+                    Some(scope.get_label_handle::<SkyrimSkinImages>(holder));
+                Ok::<_, Infallible>(depth_material(material, state))
+            });
+        } else {
+            let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
+                material.extension.images =
+                    Some(scope.get_label_handle::<SkyrimSkinImages>(holder));
+                Ok::<_, Infallible>(material)
+            });
+        }
         self.skin_labels.insert(label.to_owned());
     }
 }
@@ -551,12 +613,73 @@ fn native_depth_flags(material: &gltf::Material<'_>) -> Option<(u32, u32)> {
     Some((flags_1, flags_2))
 }
 
+fn alpha_property_extra(material: &gltf::Material<'_>) -> Option<serde_json::Value> {
+    // silent-ok: glTF provides validated raw JSON. The mesh hook reports missing native data.
+    let extras: serde_json::Value = serde_json::from_str(material.extras().as_ref()?.get()).ok()?;
+    extras.get("openSkyrim")?.get("alphaProperty").cloned()
+}
+
+fn authored_blend_factors(material: &gltf::Material<'_>) -> Option<[u8; 2]> {
+    // silent-ok: the mesh hook reports invalid alpha metadata once per mesh.
+    let property: shared::nif_alpha::NifAlphaProperty =
+        serde_json::from_value(alpha_property_extra(material)?).ok()?;
+    let factors = [property.source_factor, property.destination_factor];
+    (property.blend_enabled && crate::nif_depth::valid_blend_factors(factors)).then_some(factors)
+}
+
+enum AlphaDataStatus {
+    Current,
+    Missing,
+    Invalid,
+}
+
+fn alpha_data_status(material: &gltf::Material<'_>) -> AlphaDataStatus {
+    let valid_flags = native_depth_flags(material).is_some();
+    let Some(value) = alpha_property_extra(material) else {
+        return if valid_flags {
+            AlphaDataStatus::Missing
+        } else {
+            AlphaDataStatus::Current
+        };
+    };
+    if !valid_flags {
+        return AlphaDataStatus::Invalid;
+    }
+    if value.is_null() {
+        return AlphaDataStatus::Current;
+    }
+    match serde_json::from_value::<shared::nif_alpha::NifAlphaProperty>(value) {
+        Ok(property)
+            if !property.blend_enabled
+                || crate::nif_depth::valid_blend_factors([
+                    property.source_factor,
+                    property.destination_factor,
+                ]) =>
+        {
+            AlphaDataStatus::Current
+        }
+        _ => AlphaDataStatus::Invalid,
+    }
+}
+
+fn is_additive_emittance_decal(source: &gltf::Material<'_>, state: NifDepthState) -> bool {
+    state.decal
+        && state.blend_factors == Some(crate::nif_depth::SOURCE_ALPHA_ADDITIVE)
+        && native_tag(source, "shaderFamily", "effect")
+        && has_external_emittance(source)
+}
+
 fn native_depth_state(
     material: &gltf::Material<'_>,
     alpha_mode: AlphaMode,
 ) -> Option<NifDepthState> {
     let (flags_1, flags_2) = native_depth_flags(material)?;
-    NifDepthState::from_flags(flags_1, flags_2, alpha_mode)
+    NifDepthState::from_material(
+        flags_1,
+        flags_2,
+        alpha_mode,
+        authored_blend_factors(material),
+    )
 }
 
 fn native_material(
@@ -638,11 +761,46 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             .get_labeled(format!("{label}/std"))
             .and_then(|asset| asset.get::<StandardMaterial>())
             .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
-        let material = native_material(source, standard).unwrap_or_else(|| standard.clone());
-        // `native_material` drops a model-space map from the base; the skin material takes it
-        // from the stock material instead.
-        let model_space_normal = standard.normal_map_texture.clone();
-        let specular_srgb = standard.specular_tint_texture.clone();
+        let mut material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+        let mut depth = native_depth_state(source, material.alpha_mode);
+        if palette.is_none()
+            && let Some(state) = depth.as_mut()
+            && !has_model_space_normals(source)
+            && is_additive_emittance_decal(source, *state)
+            && material.base_color_texture.is_some()
+        {
+            state.uses_effect_emittance = true;
+            // Sample the source colour and alpha without lighting the overlay as a solid wall.
+            // STAND-IN(#934): Use the packed emission as the source multiplier and skip
+            // surface fog until the retail effect's tint and fog evaluation are traced.
+            let alpha = material.base_color.to_linear().alpha;
+            material.base_color = Color::LinearRgba(LinearRgba {
+                alpha,
+                ..material.emissive
+            });
+            material.unlit = true;
+            material.fog_enabled = false;
+        }
+        if let Some(state) = depth {
+            self.depth_states.insert(label.to_owned(), state);
+        }
+        // The skin shader decodes the model-space normal and FaceGen maps.
+        if palette.is_none()
+            && has_model_space_normals(source)
+            && let Some(model_space_normal) = standard.normal_map_texture.clone()
+        {
+            let specular_srgb = standard.specular_tint_texture.clone();
+            self.add_skin_material(
+                context,
+                source,
+                label,
+                material.clone(),
+                model_space_normal,
+                specular_srgb,
+            );
+            context.add_labeled_asset(format!("{label}/nif"), material);
+            return;
+        }
         match palette {
             Some((lookup, image)) => {
                 let holder = format!("{label}/nif_palette_image");
@@ -652,12 +810,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         image: image.clone(),
                     },
                 );
-                let depth = native_depth_state(source, material.alpha_mode);
                 let mut material =
                     effect_palette_material(lookup, material, image, self.raw_colour_texels);
                 material.extension.image_holder = Some(image_holder);
                 if let Some(state) = depth {
-                    self.depth_states.insert(label.to_owned(), state);
                     let depth_material = depth_material(material.clone(), state);
                     let Ok(_) = context.labeled_asset_scope(
                         format!("{label}/nif_palette_depth"),
@@ -674,8 +830,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             }
             None => {
                 let hair_tint = nif_hair_tint(source).filter(|_| !has_model_space_normals(source));
-                if let Some(state) = native_depth_state(source, material.alpha_mode) {
-                    self.depth_states.insert(label.to_owned(), state);
+                if let Some(state) = depth {
                     if let Some(tint) = hair_tint {
                         // Retail brows and hairlines are authored decals.
                         self.skin_labels.insert(label.to_owned());
@@ -687,9 +842,6 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                             ),
                         );
                     } else {
-                        // A model-space surface among these keeps the vertex-normal shading of
-                        // `native_material`: of the retail pack's model-space materials only two
-                        // load-screen heads carry a depth state.
                         context.add_labeled_asset(
                             format!("{label}/nif-depth"),
                             depth_material(material.clone(), state),
@@ -700,17 +852,6 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                     context.add_labeled_asset(
                         format!("{label}/skin"),
                         hair_material(material.clone(), tint, self.raw_colour_texels),
-                    );
-                } else if has_model_space_normals(source)
-                    && let Some(model_space_normal) = model_space_normal
-                {
-                    self.add_skin_material(
-                        context,
-                        source,
-                        label,
-                        material.clone(),
-                        model_space_normal,
-                        specular_srgb,
                     );
                 }
                 context.add_labeled_asset(format!("{label}/nif"), material);
@@ -728,6 +869,31 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         label: &str,
     ) {
         record_texture_fallbacks(context, primitive, mesh, material);
+        self.report_alpha_data(context.path(), mesh.index(), material);
+        let palette = self.palette(material).is_some();
+        if let Some(state) = self.depth_states.get(label)
+            && !palette
+            && !has_model_space_normals(material)
+            && is_additive_emittance_decal(material, *state)
+            && !material
+                .pbr_metallic_roughness()
+                .base_color_texture()
+                .is_some_and(|texture| {
+                    primitive
+                        .get(&::gltf::Semantic::TexCoords(texture.tex_coord()))
+                        .is_some()
+                })
+        {
+            error!(
+                "additive effect with external emittance needs a source texture and UVs: {}",
+                context.path()
+            );
+            // An untextured effect keeps its normal material. Hide only when the
+            // texture-dependent tint was applied but the primitive cannot sample it.
+            if state.uses_effect_emittance {
+                entity.insert(Visibility::Hidden);
+            }
+        }
         if let Some(shape) = crate::object_materials::ObjectGeometryIndex::from_primitive(primitive)
         {
             entity.insert(shape);
@@ -735,7 +901,6 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         if has_external_emittance(material) {
             entity.insert(ExternalEmittance);
         }
-        let palette = self.palette(material).is_some();
         if palette || needs_native_material(material) {
             let source = entity
                 .get::<MeshMaterial3d<StandardMaterial>>()
@@ -771,6 +936,9 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                             "{label}/skin-depth"
                         )),
                     ));
+                    if is_skin_tint(material) {
+                        entity.insert(SkinTintSurface);
+                    }
                 } else {
                     entity.insert(MeshMaterial3d(
                         context.get_label_handle::<NifDepthMaterial>(format!("{label}/nif-depth")),
@@ -1064,6 +1232,92 @@ mod tests {
                 assert_eq!(state.cast_shadows, casts);
                 assert_eq!(state.excludes_shadow(), !casts);
             }
+        }
+    }
+
+    #[test]
+    fn missing_native_alpha_data_is_counted_across_mesh_loads() {
+        let old = first_material(serde_json::json!({
+            "alphaMode": "BLEND",
+            "extras": {"openSkyrim": {"shaderFlags1": DEPTH_TEST, "shaderFlags2": 0}}
+        }));
+        let current = first_material(serde_json::json!({
+            "extras": {"openSkyrim": {
+                "shaderFlags1": DEPTH_TEST, "shaderFlags2": 0, "alphaProperty": null
+            }}
+        }));
+        let generic = first_material(serde_json::json!({"alphaMode": "BLEND"}));
+        let old = old.materials().next().unwrap();
+        let current = current.materials().next().unwrap();
+        let generic = generic.materials().next().unwrap();
+        let path = AssetPath::from("meshes/fixture.glb");
+        let mut handler = NativeMaterialHandler::default();
+
+        assert!(!handler.report_alpha_data(&path, 0, &generic));
+        assert!(!handler.report_alpha_data(&path, 0, &current));
+        assert!(!handler.report_alpha_data(&path, 0, &old));
+        assert!(!handler.report_alpha_data(&path, 0, &old));
+        let mut another_load = handler.clone();
+        assert!(!another_load.report_alpha_data(&path, 0, &old));
+        assert!(!another_load.report_alpha_data(&path, 1, &old));
+        let another_path = AssetPath::from("meshes/other.glb");
+        assert!(!another_load.report_alpha_data(&another_path, 0, &old));
+        assert_eq!(handler.missing_alpha.count(), 3);
+        assert!(handler.reported_alpha_meshes.is_empty());
+        assert_eq!(authored_blend_factors(&old), None);
+    }
+
+    #[test]
+    fn explicit_null_alpha_data_still_requires_valid_shader_flags() {
+        for flags in [
+            serde_json::json!({}),
+            serde_json::json!({"shaderFlags2": "invalid"}),
+        ] {
+            let mut flags = flags;
+            flags["shaderFlags1"] = serde_json::json!(DEPTH_TEST);
+            flags["alphaProperty"] = serde_json::Value::Null;
+            let document = first_material(serde_json::json!({"extras": {"openSkyrim": flags}}));
+            let material = document.materials().next().unwrap();
+            let path = AssetPath::from("meshes/fixture.glb");
+            let mut handler = NativeMaterialHandler::default();
+            assert!(handler.report_alpha_data(&path, 0, &material));
+            assert!(!handler.report_alpha_data(&path, 0, &material));
+            assert_eq!(handler.missing_alpha.count(), 0);
+        }
+    }
+
+    #[test]
+    fn invalid_blend_factors_and_missing_shader_flags_are_reported() {
+        use serde_json::json;
+        let path = AssetPath::from("meshes/fixture.glb");
+        for (source, destination, flags, reported) in [
+            (10, 8, json!(0), false),
+            (10, 10, json!(0), true),
+            (11, 0, json!(0), true),
+            (6, 0, json!("invalid"), true),
+            (6, 0, serde_json::Value::Null, true),
+        ] {
+            let mut extras = json!({
+                "shaderFlags1": DEPTH_TEST | DECAL,
+                "alphaProperty": {
+                    "blendEnabled": true, "sourceFactor": source, "destinationFactor": destination,
+                    "testEnabled": false, "testFunction": 4, "threshold": 128
+                }
+            });
+            if !flags.is_null() {
+                extras["shaderFlags2"] = flags;
+            }
+            let document = first_material(json!({"extras": {"openSkyrim": extras}}));
+            let material = document.materials().next().unwrap();
+            let mut handler = NativeMaterialHandler::default();
+            assert_eq!(handler.report_alpha_data(&path, 0, &material), reported);
+            assert!(!handler.report_alpha_data(&path, 0, &material));
+            let state = native_depth_state(&material, AlphaMode::Blend);
+            assert_eq!(state.is_some(), native_depth_flags(&material).is_some());
+            assert_eq!(
+                state.and_then(|state| state.blend_factors),
+                (!reported).then_some([10, 8])
+            );
         }
     }
 

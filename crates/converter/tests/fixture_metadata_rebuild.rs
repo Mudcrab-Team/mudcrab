@@ -145,6 +145,23 @@ async fn legacy_dangling_base_retains_unresolved_identity() {
     dangling_base_publication(converter::config::RecordReader::Legacy, 0x899).await;
 }
 
+/// A used default that cannot be read, converted or resolved fails the rebuild (#811, SI-23).
+/// No generated white texture replaces it, and the source pack stays unchanged.
+fn assert_default_failure(
+    result: &Result<converter::PipelineReport, impl std::fmt::Debug>,
+    what: &str,
+) {
+    let message = format!("{result:?}");
+    assert!(
+        result.is_err(),
+        "{what}: expected a failed rebuild, got {message}"
+    );
+    assert!(
+        message.contains("no white texture replaces it"),
+        "{what}: {message}"
+    );
+}
+
 /// Verify complete publication, white default metadata, and an intact neighboring record.
 fn assert_white_rebuild(report: &converter::PipelineReport, output: &Path, needed: bool) {
     assert!(report.complete, "{report:?}");
@@ -186,16 +203,7 @@ fn assert_white_rebuild(report: &converter::PipelineReport, output: &Path, neede
             vec![(0, 4), (1, 4), (2, 4), (3, 4)]
         }
     );
-    if needed {
-        assert!(
-            report
-                .notices
-                .iter()
-                .any(|notice| notice.contains("falls back to white")),
-            "{:?}",
-            report.notices
-        );
-    } else {
+    if !needed {
         assert!(
             !report
                 .notices
@@ -244,11 +252,15 @@ async fn rebuild_with_unreadable_default(needed: bool) {
     );
     let result = rebuild(&data, &source, &output).await;
     drop(unreadable);
-    assert!(
-        result.is_ok(),
-        "unreadable default aborted metadata rebuild (needed={needed}): {result:?}"
-    );
-    assert_white_rebuild(&result.unwrap(), &output, needed);
+    if needed {
+        assert_default_failure(&result, "unreadable loose default");
+    } else {
+        assert_white_rebuild(
+            result.as_ref().expect("an unused default is never opened"),
+            &output,
+            false,
+        );
+    }
     assert_eq!(
         hash_file(&source.join("conversion-manifest.json")).unwrap(),
         manifest_hash
@@ -262,16 +274,16 @@ async fn metadata_rebuild_default_unused_unreadable_loose_completes() {
     rebuild_with_unreadable_default(false).await;
 }
 
-/// An unreadable used default falls back to white without losing usable neighboring data.
+/// An unreadable used default fails the rebuild; no white texture replaces it (#811).
 #[cfg(any(windows, unix))]
 #[tokio::test]
-async fn metadata_rebuild_default_needed_unreadable_loose_falls_back() {
+async fn metadata_rebuild_default_needed_unreadable_loose_fails() {
     rebuild_with_unreadable_default(true).await;
 }
 
-/// A damaged archive-only default falls back locally without blocking publication.
+/// A damaged archive-only default fails the rebuild; no white texture replaces it (#811).
 #[tokio::test]
-async fn metadata_rebuild_default_changed_archive_falls_back() {
+async fn metadata_rebuild_default_changed_archive_fails() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -293,11 +305,7 @@ async fn metadata_rebuild_default_changed_archive_falls_back() {
     )
     .unwrap();
     let result = rebuild(&data, &source, &output).await;
-    assert!(
-        result.is_ok(),
-        "changed archive default aborted metadata rebuild: {result:?}"
-    );
-    assert_white_rebuild(&result.unwrap(), &output, true);
+    assert_default_failure(&result, "damaged archive default");
 }
 
 /// Regenerated default images use current loose or archive bytes, unlike retained LTEX assets.
@@ -407,9 +415,9 @@ async fn metadata_rebuild_defaults_use_current_bytes() {
     }
 }
 
-/// A corrupt compressed default entry cannot abort extraction of usable neighboring inputs.
+/// A corrupt compressed default entry fails the rebuild; no white texture replaces it (#811).
 #[tokio::test]
-async fn metadata_rebuild_default_damaged_compressed_archive_falls_back() {
+async fn metadata_rebuild_default_damaged_compressed_archive_fails() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -437,11 +445,7 @@ async fn metadata_rebuild_default_damaged_compressed_archive_falls_back() {
     fs::write(data.join("Skyrim - Textures.bsa"), archive).unwrap();
     fs::remove_file(default).unwrap();
     let result = rebuild(&data, &source, &output).await;
-    assert!(
-        result.is_ok(),
-        "damaged compressed default aborted metadata rebuild: {result:?}"
-    );
-    assert_white_rebuild(&result.unwrap(), &output, true);
+    assert_default_failure(&result, "damaged compressed default");
 }
 
 /// Default recovery must not relax source identity checks for an LTEX-required diffuse.
@@ -464,6 +468,43 @@ async fn metadata_rebuild_default_recovery_keeps_ordinary_sources_strict() {
         "{error:#}"
     );
     assert!(!output.exists());
+}
+
+#[tokio::test]
+async fn metadata_rebuild_matches_terrain_archive_precedence_used_by_conversion() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    let diffuse = layout::GENERATED_DIFFUSE_PATH;
+    let dds = fs::read(data.join(diffuse)).unwrap();
+    fs::remove_file(data.join(diffuse)).unwrap();
+    let archive = |name, member, bytes| {
+        fs::write(
+            data.join(name),
+            bsa::v105(&[Entry::new(member, bytes)], bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+    };
+    archive("Skyrim - A.bsa", diffuse, b"earlier runtime DDS");
+    archive("Skyrim - B.bsa", diffuse, &dds);
+    archive(
+        "Skyrim - C.bsa",
+        "CalienteTools/Textures/Generated_Color.DDS",
+        b"later authoring DDS",
+    );
+    convert(&data, &source).await;
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{report:?}");
+    let entry = &ConversionManifest::load(&source.join("conversion-manifest.json"))
+        .unwrap()
+        .entries[diffuse];
+    assert_eq!(
+        hash_file(&output.join(&entry.output)).unwrap(),
+        entry.output_hash
+    );
 }
 
 /// A capability dropped during final refresh must affect both published completeness flags.
@@ -1060,6 +1101,344 @@ fn enable_parent_target() -> Vec<u8> {
     .concat()
 }
 
+/// Encode a synthetic plugin subrecord without depending on exporter internals.
+fn grass_subrecord(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(payload.len() as u16).to_le_bytes(),
+        payload,
+    ]
+    .concat()
+}
+
+/// Encode a synthetic uncompressed record with its plugin-local FormID.
+fn grass_record(tag: &[u8; 4], id: u32, payload: Vec<u8>) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(payload.len() as u32).to_le_bytes(),
+        &[0; 4],
+        &id.to_le_bytes(),
+        &[0; 8],
+        &payload,
+    ]
+    .concat()
+}
+
+/// Add a mod-owned grass rule to the generated terrain's winning texture override.
+fn add_grass_plugin(data: &Path) {
+    let header = [
+        grass_subrecord(b"MAST", b"Skyrim.esm\0"),
+        grass_subrecord(b"DATA", &[0; 8]),
+    ]
+    .concat();
+    let mut rule = vec![37, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for value in [12.0f32, 0.25, 0.5, 1.75] {
+        rule.extend(value.to_le_bytes());
+    }
+    rule.extend([0; 4]);
+    let model = format!("{}\0", layout::GENERATED_MODEL_PATH);
+    let grass = grass_record(
+        b"GRAS",
+        0x0100_0801,
+        [
+            grass_subrecord(b"EDID", b"RebuildGrass\0"),
+            grass_subrecord(b"MODL", model.as_bytes()),
+            grass_subrecord(b"DATA", &rule),
+        ]
+        .concat(),
+    );
+    let texture = grass_record(
+        b"LTEX",
+        4,
+        [
+            grass_subrecord(b"TNAM", &2u32.to_le_bytes()),
+            grass_subrecord(b"GNAM", &0x0100_0801u32.to_le_bytes()),
+        ]
+        .concat(),
+    );
+    fs::write(
+        data.join("Grass.esp"),
+        [grass_record(b"TES4", 0, header), grass, texture].concat(),
+    )
+    .unwrap();
+}
+
+/// Rebuilding metadata preserves a nonempty grass archive and reuses source cells.
+#[tokio::test]
+async fn metadata_rebuild_preserves_grass_cache_and_reuses_unchanged_cells() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    add_grass_plugin(&data);
+    convert(&data, &source).await;
+    let source_cache = source.join("grass_cache.rkyv");
+    let original_hash = hash_file(&source_cache).unwrap();
+    let original_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let map = converter::esm::grass_cache::validate_grass_cache(&source_cache).unwrap();
+    let cache =
+        rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap();
+    assert_eq!(cache.types.len(), 1);
+    assert_eq!(cache.types[0].form_id.to_native(), 0x0100_0801);
+    assert_eq!(
+        cache.cells.len(),
+        1,
+        "fixture must contain grass-bearing terrain"
+    );
+    let cell_count = cache.cells.len();
+    assert!(cache.cells[0].quadrants.iter().any(|quadrant| {
+        quadrant
+            .layers
+            .iter()
+            .any(|layer| !layer.grass_ids.is_empty())
+    }));
+    drop(map);
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    let rebuilt_cache = output.join("grass_cache.rkyv");
+    assert!(
+        rebuilt_cache.is_file(),
+        "metadata rebuild must publish the grass cache"
+    );
+    converter::esm::grass_cache::validate_grass_cache(&rebuilt_cache).unwrap();
+    assert!(report.complete);
+    assert!(report.artifacts.contains(&"grass_cache.rkyv".into()));
+    assert_eq!(hash_file(&rebuilt_cache).unwrap(), original_hash);
+    assert_eq!(hash_file(&source_cache).unwrap(), original_hash);
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        original_manifest
+    );
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap();
+    assert_eq!(provenance["grass_baked_cells"], 0);
+    assert_eq!(provenance["grass_reused_cells"], cell_count);
+}
+
+/// Append an explicitly excluded sibling without changing the visible primitive or binary data.
+fn add_broken_marker(glb_path: &Path, original: &[u8], alpha_mode: serde_json::Value) {
+    let glb = gltf::binary::Glb::from_slice(original).unwrap();
+    let mut document: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
+    let materials = document["materials"].as_array_mut().unwrap();
+    let marker_material = materials.len();
+    materials.push(serde_json::json!({
+        "alphaMode": alpha_mode,
+        "alphaCutoff": 1.0,
+        "pbrMetallicRoughness": {"baseColorFactor": [0.0, 0.0, 0.0, 0.0]},
+        "extras": {"openSkyrim": {"nonRenderingExclusion": true}}
+    }));
+    let primitives = document["meshes"][0]["primitives"].as_array_mut().unwrap();
+    let mut marker = primitives[0].clone();
+    marker["material"] = serde_json::json!(marker_material);
+    marker["extras"] = serde_json::json!({
+        "openSkyrim": {"materialExclusion": "BSX EditorMarker"}
+    });
+    primitives.push(marker);
+    let mut json = serde_json::to_vec(&document).unwrap();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let bin = glb.bin.unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"glTF");
+    bytes.extend(2u32.to_le_bytes());
+    bytes.extend(((28 + json.len() + bin.len()) as u32).to_le_bytes());
+    bytes.extend((json.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"JSON");
+    bytes.extend(json);
+    bytes.extend((bin.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"BIN\0");
+    bytes.extend_from_slice(&bin);
+    fs::write(glb_path, bytes).unwrap();
+}
+
+/// Publish healthy records and same-model obstruction despite a malformed excluded material.
+#[tokio::test]
+async fn metadata_rebuild_preserves_visible_obstruction_beside_broken_marker() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    generate(&data);
+    let plugin = esm::Plugin {
+        cells: &[
+            esm::PRESET_EXTERIOR_CELL,
+            esm::Cell {
+                grid_x: 1,
+                grid_y: 0,
+            },
+        ],
+        author: layout::GENERATED_AUTHOR,
+        worldspace: layout::GENERATED_WORLDSPACE,
+        model_path: layout::GENERATED_MODEL_PATH,
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    };
+    let light = esm::Light {
+        model_path: None,
+        reference_flags: 0x800,
+        enable_parent: Some((0x1234, 1)),
+        ..esm::PRESET_LIGHT
+    };
+    let mut plugin_bytes = esm::plugin_with_lights(&plugin, &light).unwrap();
+    plugin_bytes.extend(enable_parent_target());
+    fs::write(data.join("Skyrim.esm"), plugin_bytes).unwrap();
+    add_grass_plugin(&data);
+    // Each static is at cell-local (2048, 2048). This elevated horizontal
+    // triangle covers the northeast quadrant's first sample at (2064, 2064).
+    fs::write(
+        data.join(layout::GENERATED_MODEL_PATH),
+        nif::static_shape(&nif::StaticShape {
+            name: "VisibleObstruction",
+            positions: &[
+                [0.0, 0.0, 128.0],
+                [1024.0, 0.0, 128.0],
+                [0.0, 1024.0, 128.0],
+            ],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            indices: &[[0, 1, 2]],
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    convert(&data, &source).await;
+    let source_cache = source.join("grass_cache.rkyv");
+    let source_cache_hash = hash_file(&source_cache).unwrap();
+    let map = converter::esm::grass_cache::validate_grass_cache(&source_cache).unwrap();
+    let control =
+        rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap();
+    assert_eq!(control.cells.len(), 2);
+    assert_eq!(control.cells[0].cell_id.to_native(), 0x10);
+    assert_eq!(control.cells[1].cell_id.to_native(), 0x20);
+    let expected_masks: Vec<_> = control
+        .cells
+        .iter()
+        .map(|cell| {
+            assert_eq!(
+                cell.quadrants[3].exclusion[0] & 1,
+                1,
+                "visible control must block"
+            );
+            (
+                cell.cell_id.to_native(),
+                cell.quadrants
+                    .iter()
+                    .map(|quadrant| quadrant.exclusion.to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    drop(map);
+    let manifest_path = source.join("conversion-manifest.json");
+    let original_manifest = ConversionManifest::load(&manifest_path).unwrap();
+    let glb_path = source.join(&original_manifest.entries[layout::GENERATED_MODEL_PATH].output);
+    let original_glb = fs::read(&glb_path).unwrap();
+    for (case, alpha_mode) in [serde_json::json!("NOT_A_MODE"), serde_json::json!(17)]
+        .into_iter()
+        .enumerate()
+    {
+        add_broken_marker(&glb_path, &original_glb, alpha_mode);
+        // Keep retention proofs valid: this tests obstruction recovery, not checksum rejection.
+        let glb_hash = hash_file(&glb_path).unwrap();
+        let mut manifest = original_manifest.clone();
+        let entry = manifest
+            .entries
+            .get_mut(layout::GENERATED_MODEL_PATH)
+            .unwrap();
+        entry.output_hash = glb_hash.clone();
+        entry.output_size = fs::metadata(&glb_path).unwrap().len();
+        manifest.save(&manifest_path).unwrap();
+        let source_manifest_hash = hash_file(&manifest_path).unwrap();
+        let output = directory.path().join(format!("derived-marker-{case}"));
+        let result = rebuild(&data, &source, &output).await;
+        assert!(
+            result.is_ok(),
+            "excluded marker aborted publication: {result:?}"
+        );
+        let report = result.unwrap();
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(report.artifacts.contains(&"grass_cache.rkyv".into()));
+        let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+        converter::esm::exporter::validate_database(&connection).unwrap();
+        for id in [0x12, 0x22, 0x1234] {
+            let count: u64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM \"references\" WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "valid neighboring reference {id:#x} must publish");
+        }
+        let published_manifest =
+            ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert!(published_manifest.complete);
+        assert_eq!(
+            published_manifest.entries[layout::GENERATED_MODEL_PATH].output_hash,
+            glb_hash
+        );
+        assert_eq!(
+            hash_file(&output.join(&manifest.entries[layout::GENERATED_MODEL_PATH].output))
+                .unwrap(),
+            glb_hash
+        );
+        assert_eq!(hash_file(&source_cache).unwrap(), source_cache_hash);
+        assert_eq!(hash_file(&glb_path).unwrap(), glb_hash);
+        assert_eq!(hash_file(&manifest_path).unwrap(), source_manifest_hash);
+        let provenance: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap())
+                .unwrap();
+        assert_eq!(provenance["grass_baked_cells"], 2);
+        assert_eq!(provenance["grass_reused_cells"], 0);
+        let rebuilt = output.join("grass_cache.rkyv");
+        let map = converter::esm::grass_cache::validate_grass_cache(&rebuilt).unwrap();
+        let cache =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap();
+        assert_eq!(cache.types.len(), 1);
+        assert_eq!(cache.types[0].form_id.to_native(), 0x0100_0801);
+        assert_eq!(
+            cache.cells.len(),
+            2,
+            "healthy neighboring terrain must publish"
+        );
+        for (id, masks) in &expected_masks {
+            let cell = cache
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id.to_native() == *id)
+                .unwrap();
+            assert!(cell.quadrants.iter().any(|quadrant| {
+                quadrant.layers.iter().any(|layer| {
+                    layer
+                        .grass_ids
+                        .iter()
+                        .any(|id| id.to_native() == 0x0100_0801)
+                })
+            }));
+            assert_eq!(
+                cell.quadrants[3].exclusion[0] & 1,
+                1,
+                "excluded marker lost the visible sibling's obstruction in cell {id:#x}"
+            );
+            let actual: Vec<_> = cell
+                .quadrants
+                .iter()
+                .map(|quadrant| quadrant.exclusion.to_vec())
+                .collect();
+            assert_eq!(
+                actual, *masks,
+                "excluded marker lost the visible sibling's obstruction in cell {id:#x}"
+            );
+            assert!(
+                cell.obstruction_failures.is_empty(),
+                "excluded marker poisoned its model"
+            );
+        }
+    }
+}
+
 /// Generate complete assets and a light whose enable-parent resolves to an authored reference.
 fn generate(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
@@ -1370,7 +1749,14 @@ async fn metadata_rebuild_of_current_source_keeps_meshes_as_cache_hits() {
         .map(|archive| archive.files.len())
         .sum::<usize>();
     assert_eq!(report.converted, extracted as u64);
-    assert_eq!(report.cache_hits, retained.entries.len() as u64);
+    assert_eq!(
+        report.cache_hits,
+        retained
+            .entries
+            .values()
+            .filter(|entry| entry.output != "grass_cache.rkyv")
+            .count() as u64
+    );
     assert_eq!(current.retained_mesh_schema_version, None);
 }
 
@@ -1464,7 +1850,12 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
         } else {
             let manifest =
                 ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
-            let asset = &manifest.entries.values().next().unwrap().output;
+            let asset = &manifest
+                .entries
+                .values()
+                .find(|entry| entry.output.starts_with("meshes/"))
+                .unwrap()
+                .output;
             fs::write(source.join(asset), b"corrupt asset").unwrap();
         }
         let error = rebuild(&data, &source, &output)
@@ -1551,6 +1942,21 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
     let source = directory.path().join("source");
     let output = directory.path().join("derived");
     generate(&data);
+    let model = layout::GENERATED_MODEL_PATH;
+    let runtime = fs::read(data.join(model)).unwrap();
+    let authoring = format!("CalienteTools/{model}");
+    fs::write(
+        data.join("Skyrim - Meshes.bsa"),
+        bsa::v105(
+            &[
+                Entry::new(model, &runtime),
+                Entry::new(&authoring, b"authoring mesh"),
+            ],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     convert(&data, &source).await;
     fs::remove_file(data.join("lodsettings/GeneratedWorld.lod")).unwrap();
     fs::write(
@@ -1567,6 +1973,7 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
     .unwrap();
     fs::write(source.join("lod/stale.glb"), b"obsolete generation").unwrap();
     let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
     assert!(report.lod_chunks > 0);
     assert!(
         report
@@ -1975,6 +2382,26 @@ async fn metadata_rebuild_v87_accepts_old_prune_hashes_only_after_exact_source_r
         let entry = manifest.entries.get_mut(key).unwrap();
         entry.output_hash = hash_file(&candidate).unwrap();
         entry.output_size = fs::metadata(&candidate).unwrap().len();
+        if !corrupt && !with_skeleton && with_vfs {
+            let mut historical = manifest.clone();
+            historical.entries.get_mut(key).unwrap().output_size += 1;
+            historical
+                .save(&source.join("conversion-manifest.json"))
+                .unwrap();
+            let error = rebuild(&data, &source, &output)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("cannot reproduce original pruned GLB checksum"),
+                "{error}"
+            );
+            assert!(
+                error.contains("Run a normal conversion into a new package"),
+                "{error}"
+            );
+            assert!(!output.exists());
+        }
         manifest
             .save(&source.join("conversion-manifest.json"))
             .unwrap();
@@ -2155,6 +2582,11 @@ fn provenance(output: &Path) -> serde_json::Value {
 /// result reuses every kind.
 #[tokio::test]
 async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
+    check_script_abi_upgrade(1).await;
+    check_script_abi_upgrade(3).await;
+}
+
+async fn check_script_abi_upgrade(source_abi: u32) {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -2162,7 +2594,7 @@ async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
     let again = directory.path().join("again");
     generate(&data);
     convert(&data, &source).await;
-    let originals = age_source(&source, &data, 1, None);
+    let originals = age_source(&source, &data, source_abi, None);
     let aged_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
     let manifest = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
     let kept: Vec<_> = manifest
@@ -2219,7 +2651,7 @@ async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
         assert_eq!(entry.output_hash, hash_bytes(bytes));
     }
     let record = provenance(&output);
-    assert_eq!(record["source_script_abi"], 1);
+    assert_eq!(record["source_script_abi"], source_abi);
     assert_eq!(record["script_abi"], converter::script::SCRIPT_ABI_VERSION);
     assert_eq!(record["asset_kinds"]["pex"]["action"], "rebuilt");
     assert_eq!(record["asset_kinds"]["nif"]["action"], "reused");
@@ -2236,7 +2668,7 @@ async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
     for script in originals.keys() {
         assert_eq!(
             fs::read(source.join(script)).unwrap(),
-            b"-- script ABI 1 marker\n"
+            format!("-- script ABI {source_abi} marker\n").as_bytes()
         );
     }
 
@@ -2364,7 +2796,7 @@ fn assert_regeneration_note(error: &str) {
     }
 }
 
-/// Copy a pack tree. Stands in for an APFS clone on the tiny fixture.
+/// Copy a pack tree for the Unix inode-preservation fixture.
 #[cfg(unix)]
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
@@ -2583,4 +3015,519 @@ async fn output_inside_another_pack_is_refused() {
         .filter(|name| name.to_string_lossy().contains("rebuilt"))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// Metadata-only upgrades add controls from current providers and retain every verified asset byte.
+#[tokio::test]
+async fn control_files_metadata_rebuild_upgrades_an_older_pack() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    assert!(!source.join("interface").exists());
+    let manifest_path = source.join("conversion-manifest.json");
+    let source_hash = hash_file(&manifest_path).unwrap();
+    let manifest = ConversionManifest::load(&manifest_path).unwrap();
+    let control = b"Synth Action\t0x17\t0xff\t0x2000\t1\t0\t1\r\nbad line\r\nSynth Other\t0x18\t0xff\t0x1000\t1\t0\t1\r\n";
+    fs::write(
+        data.join("Skyrim - Interface.bsa"),
+        bsa::v105(
+            &[
+                Entry::new("Interface/Controls/PC/ControlMap.txt", control),
+                Entry::new(
+                    "interface/controls/pc/keyboard_english.txt",
+                    b"Synth\t0x17\t23\r\n",
+                ),
+                Entry::new("interface/controls/pc/gamepad.txt", b"SYNTH_A\t0x1000\r\n"),
+            ],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let loose = data.join("Interface/Controls/PC/Keyboard_English.TXT");
+    fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    fs::write(&loose, b"Modded\t0x33\r\n").unwrap();
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(
+        output
+            .join("interface/controls/pc/controlmap.txt")
+            .is_file()
+    );
+    assert_eq!(
+        fs::read(output.join("interface/controls/pc/controlmap.txt")).unwrap(),
+        [
+            b"Synth Action\t0x17\t0xff\t0x2000\t1\t0\t1\r\n".as_slice(),
+            b"Synth Other\t0x18\t0xff\t0x1000\t1\t0\t1\r\n".as_slice(),
+        ]
+        .concat()
+    );
+    assert_eq!(
+        fs::read(output.join("interface/controls/pc/keyboard_english.txt")).unwrap(),
+        b"Modded\t0x33\r\n"
+    );
+    assert!(!report.complete);
+    assert_eq!(
+        report
+            .warnings
+            .iter()
+            .filter(|warning| warning.contains("controlmap.txt:2"))
+            .count(),
+        1
+    );
+    assert_eq!(hash_file(&manifest_path).unwrap(), source_hash);
+    for entry in manifest.entries.values() {
+        assert_eq!(
+            fs::read(output.join(&entry.output)).unwrap(),
+            fs::read(source.join(&entry.output)).unwrap(),
+            "{}",
+            entry.output
+        );
+    }
+}
+
+/// Snapshot every package file so rebuild recovery proves its source remained immutable.
+fn script_recovery_package_hashes(root: &Path) -> std::collections::BTreeMap<String, String> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| {
+            (
+                entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                hash_file(entry.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Verify incomplete publication retains world, grass, models, textures and healthy scripts.
+fn assert_script_recovery_publication(
+    source: &Path,
+    output: &Path,
+    report: &converter::PipelineReport,
+    originals: &std::collections::BTreeMap<String, Vec<u8>>,
+    omitted: &str,
+) {
+    assert!(
+        !report.complete,
+        "a skipped script must mark publication incomplete"
+    );
+    assert!(
+        !report.warnings.is_empty(),
+        "script loss needs a report warning"
+    );
+    assert!(report.skipped > 0);
+    let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    assert!(!manifest.complete);
+    assert!(
+        !manifest.failures.is_empty(),
+        "script loss needs a manifest failure"
+    );
+    assert!(!manifest.entries.contains_key(omitted));
+    let bad_output = omitted.replace(".pex", ".luau");
+    assert!(
+        !output.join(&bad_output).exists(),
+        "old ABI bytes must be omitted"
+    );
+    for (name, bytes) in originals {
+        if name != &bad_output {
+            assert_eq!(
+                &fs::read(output.join(name)).unwrap(),
+                bytes,
+                "healthy script {name}"
+            );
+        }
+    }
+    let source_manifest =
+        ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    for entry in source_manifest
+        .entries
+        .values()
+        .filter(|entry| entry.output.ends_with(".glb") || entry.output.ends_with(".ktx2"))
+    {
+        assert_eq!(
+            hash_file(&output.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+    }
+    assert!(output.join("grass_cache.rkyv").is_file());
+    assert_eq!(
+        fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
+        include_bytes!("../../shared/src/papyrus_runtime.luau")
+    );
+    let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let count: u64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "healthy neighboring world record must publish");
+}
+
+/// A recorded unchanged script rejected by the current decoder omits only that script.
+#[tokio::test]
+async fn metadata_script_recovery_skips_recorded_bad_pex_and_publishes_neighbors() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    fs::write(
+        data.join("scripts/bad.pex"),
+        dummy_content::pex::minimal("Bad").unwrap(),
+    )
+    .unwrap();
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    let broken = b"unchanged historical PEX rejected by the current decoder";
+    replace_file(&data.join("scripts/bad.pex"), broken);
+    edit_manifest(&source, |manifest| {
+        manifest
+            .entries
+            .get_mut("scripts/bad.pex")
+            .unwrap()
+            .source_hash = hash_bytes(broken);
+    });
+    let before = script_recovery_package_hashes(&source);
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "one unchanged bad PEX must preserve publication: {result:?}"
+    );
+    let report = result.unwrap();
+    assert_script_recovery_publication(&source, &output, &report, &originals, "scripts/bad.pex");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("bad.pex")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(script_recovery_package_hashes(&source), before);
+}
+
+/// A valid archive table can identify a selected script whose compressed payload is corrupt.
+#[tokio::test]
+async fn metadata_script_recovery_skips_corrupt_selected_archive_and_publishes_neighbors() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    let bad_pex = dummy_content::pex::minimal("ArchivedBad").unwrap();
+    let good_pex = dummy_content::pex::minimal("ArchivedGood").unwrap();
+    let same_archive_pex = dummy_content::pex::minimal("SameArchiveGood").unwrap();
+    let archive = data.join("Skyrim - Scripts.bsa");
+    let mut bytes = bsa::v104(
+        &[
+            Entry {
+                name: "scripts/samearchivegood.pex",
+                data: &same_archive_pex,
+            },
+            Entry {
+                name: "scripts/archivebad.pex",
+                data: &bad_pex,
+            },
+        ],
+        bsa::Compression::Zlib,
+    )
+    .unwrap();
+    fs::write(&archive, &bytes).unwrap();
+    fs::write(
+        data.join("Skyrim - Neighbor.bsa"),
+        bsa::v105(
+            &[Entry {
+                name: "scripts/archivegood.pex",
+                data: &good_pex,
+            }],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    assert!(originals.contains_key("scripts/archivebad.luau"));
+    assert!(originals.contains_key("scripts/archivegood.luau"));
+    assert!(originals.contains_key("scripts/samearchivegood.luau"));
+    let record = 36 + 16 + 1 + "scripts".len() + 1 + 16;
+    let payload = u32::from_le_bytes(bytes[record + 12..record + 16].try_into().unwrap()) as usize;
+    assert!(payload + 8 < bytes.len());
+    bytes[payload + 4..].fill(0xff);
+    replace_file(&archive, &bytes);
+    let before = script_recovery_package_hashes(&source);
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "one corrupt selected archive must preserve publication: {result:?}"
+    );
+    let report = result.unwrap();
+    assert_script_recovery_publication(
+        &source,
+        &output,
+        &report,
+        &originals,
+        "scripts/archivebad.pex",
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Skyrim - Scripts.bsa")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(script_recovery_package_hashes(&source), before);
+    assert_eq!(fs::read(&archive).unwrap(), bytes);
+}
+
+/// Source authentication precedes decoding so changed invalid bytes remain a package refusal.
+#[tokio::test]
+async fn metadata_script_recovery_refuses_changed_invalid_pex_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    replace_file(&data.join("scripts/generated.pex"), b"changed invalid PEX");
+    let before = script_recovery_package_hashes(&source);
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("script sources in Data differ"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+    assert_eq!(script_recovery_package_hashes(&source), before);
+}
+
+/// Extra invalid scripts are authenticated as changed input even when the decoder rejects them.
+#[tokio::test]
+async fn metadata_script_recovery_refuses_extra_invalid_pex_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    fs::write(data.join("scripts/extra.pex"), b"extra invalid PEX").unwrap();
+    let before = script_recovery_package_hashes(&source);
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("script sources in Data differ"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+    assert_eq!(script_recovery_package_hashes(&source), before);
+}
+
+/// Explicit fail-fast still returns the script error before publishing the rebuilt directory.
+#[tokio::test]
+async fn metadata_script_recovery_respects_fail_fast() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    let broken = b"recorded invalid PEX for explicit fail-fast";
+    replace_file(&data.join("scripts/generated.pex"), broken);
+    edit_manifest(&source, |manifest| {
+        manifest
+            .entries
+            .get_mut("scripts/generated.pex")
+            .unwrap()
+            .source_hash = hash_bytes(broken);
+    });
+    let before = script_recovery_package_hashes(&source);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.fail_fast = true;
+    let result = AssetPipeline::rebuild_metadata_async(config, &source, tx).await;
+    drain.await.unwrap();
+    assert!(result.is_err(), "explicit fail-fast must stop publication");
+    assert!(!output.exists());
+    assert_eq!(script_recovery_package_hashes(&source), before);
+}
+
+/// Publish verified neighboring scripts and world/assets while dropping unusable archive names.
+async fn metadata_odd_archive_names_publication(corrupt_payload: bool, fail_fast: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    let good = dummy_content::pex::minimal("OddNameNeighbor").unwrap();
+    let bad = dummy_content::pex::minimal("OddNameRecorded").unwrap();
+    let odd = dummy_content::pex::minimal("UnidentifiableExtra").unwrap();
+    let archive = data.join("Skyrim - Scripts.bsa");
+    let baseline = bsa::v104(
+        &[
+            Entry {
+                name: "scripts/samearchivegood.pex",
+                data: &good,
+            },
+            Entry {
+                name: "scripts/archivebad.pex",
+                data: &bad,
+            },
+        ],
+        bsa::Compression::Zlib,
+    )
+    .unwrap();
+    fs::write(&archive, baseline).unwrap();
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    assert!(originals.contains_key("scripts/samearchivegood.luau"));
+    assert!(originals.contains_key("scripts/archivebad.luau"));
+    let mut bytes = bsa::v104(
+        &[
+            Entry {
+                name: "scripts/samearchivegood.pex",
+                data: &good,
+            },
+            Entry {
+                name: "scripts/odd%25.pex",
+                data: &odd,
+            },
+            Entry {
+                name: "scripts/deep%2525.pex",
+                data: &odd,
+            },
+            Entry {
+                name: "scripts/archivebad.pex",
+                data: &bad,
+            },
+        ],
+        bsa::Compression::Zlib,
+    )
+    .unwrap();
+    if corrupt_payload {
+        // The fourth record is the last payload in this single-folder fixture.
+        let record = 36 + 16 + 1 + "scripts".len() + 1 + 3 * 16;
+        let payload =
+            u32::from_le_bytes(bytes[record + 12..record + 16].try_into().unwrap()) as usize;
+        assert!(payload + 8 < bytes.len());
+        bytes[payload + 4..].fill(0xff);
+    }
+    replace_file(&archive, &bytes);
+    // Inventory succeeds: each raw name has passed the extractor's first canonicalization.
+    let listed = converter::archive::ArchiveExtractor::list_paths(&archive).unwrap();
+    assert!(listed.contains(&"scripts/odd%.pex".into()));
+    assert!(listed.contains(&"scripts/deep%25.pex".into()));
+    let before = script_recovery_package_hashes(&source);
+    let archive_before = hash_file(&archive).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.fail_fast = fail_fast;
+    let result = AssetPipeline::rebuild_metadata_async(config, &source, tx).await;
+    drain.await.unwrap();
+    assert_eq!(script_recovery_package_hashes(&source), before);
+    assert_eq!(hash_file(&archive).unwrap(), archive_before);
+    if fail_fast {
+        assert!(
+            result.is_err(),
+            "explicit fail-fast must retain the member-name refusal"
+        );
+        assert!(!output.exists());
+        return;
+    }
+    assert!(
+        result.is_ok(),
+        "unusable archive script names must preserve neighboring publication: corrupt={corrupt_payload}, result={result:?}"
+    );
+    let report = result.unwrap();
+    assert!(!report.complete);
+    assert!(report.skipped >= 2 + u64::from(corrupt_payload));
+    let name_warnings: Vec<_> = report
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("script archive members with unusable names"))
+        .collect();
+    assert_eq!(
+        name_warnings.len(),
+        1,
+        "one bounded warning per archive: {:?}",
+        report.warnings
+    );
+    assert!(name_warnings[0].contains("2 script archive members"));
+    assert!(name_warnings[0].contains("Skyrim - Scripts.bsa"));
+    let published = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    assert!(!published.complete);
+    assert!(!published.entries.contains_key("scripts/odd%.pex"));
+    assert!(!published.entries.contains_key("scripts/deep%25.pex"));
+    assert!(!output.join("scripts/odd%.luau").exists());
+    assert!(!output.join("scripts/deep%.luau").exists());
+    for (name, bytes) in &originals {
+        if corrupt_payload && name == "scripts/archivebad.luau" {
+            assert!(!output.join(name).exists());
+            assert!(published.failures.contains_key("scripts/archivebad.pex"));
+        } else {
+            assert_eq!(
+                &fs::read(output.join(name)).unwrap(),
+                bytes,
+                "healthy script {name}"
+            );
+        }
+    }
+    let original = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    for entry in original
+        .entries
+        .values()
+        .filter(|entry| entry.output.ends_with(".glb") || entry.output.ends_with(".ktx2"))
+    {
+        assert_eq!(
+            hash_file(&output.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+    }
+    assert!(output.join("grass_cache.rkyv").is_file());
+    assert_eq!(
+        fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
+        include_bytes!("../../shared/src/papyrus_runtime.luau")
+    );
+    let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let count: u64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "healthy neighboring world record must publish");
+}
+
+/// A successful extraction batch drops only unidentifiable names before the VFS overlay.
+#[tokio::test]
+async fn metadata_script_recovery_skips_odd_names_after_successful_archive_batch() {
+    metadata_odd_archive_names_publication(false, false).await;
+}
+
+/// Per-member retry drops unidentifiable names while preserving authenticated healthy neighbors.
+#[tokio::test]
+async fn metadata_script_recovery_skips_odd_names_during_archive_member_retry() {
+    metadata_odd_archive_names_publication(true, false).await;
+}
+
+/// Explicit fail-fast preserves refusal for both unusable names and broken selected payloads.
+#[tokio::test]
+async fn metadata_script_recovery_odd_names_respect_fail_fast() {
+    metadata_odd_archive_names_publication(false, true).await;
+    metadata_odd_archive_names_publication(true, true).await;
 }

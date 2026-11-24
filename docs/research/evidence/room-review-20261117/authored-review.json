@@ -1,0 +1,701 @@
+{
+  "source": "4de561bef462ec1e956fad9c1a4c67387ae47ace",
+  "binary_sha256": "1b845509a6b83186f88477b2db25032304a71d7fc157481ce1a233c9f7d7c775",
+  "backend": "Vulkan",
+  "dimensions": [
+    1400,
+    1050
+  ],
+  "controls": "Same executable and geometry; independent off database removes four room tables. Automated shots ignore saved interactive preferences.",
+  "preparation": {
+    "cells": [
+      225758,
+      86643,
+      768815,
+      91555,
+      228550
+    ],
+    "complete": true,
+    "models": 1206,
+    "katariah_rules": {
+      "auto": 2536,
+      "none": 3,
+      "target": 32,
+      "unknown": 18
+    }
+  },
+  "captures": [
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 428,
+      "listed": 2542,
+      "image": "BleakFallsBarrow01-room1-c.png",
+      "sha256": "1b76a13c51933c3f7b7746852abe98abe53050b193bc020c0bdf943258f4521c"
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 149,
+      "listed": 149,
+      "image": "GallowsRock01-outside-away.png",
+      "sha256": "ae993105e41aa10c9a67d3fd501c572b895a2da616dc2907974c4383d847a35e"
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 55,
+      "listed": 162,
+      "image": "GallowsRock01-inside-out.png",
+      "sha256": "6ddb3d3fcb821b7252f11963a48f5e66f13800ed0da3faa159ab3e8f7acc9bdd"
+    },
+    {
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 63,
+      "listed": 153,
+      "image": "Katariah-NONE-floor.png",
+      "sha256": "864ede0c2ad6f57b9b208732661a2441804e28980c6bc0dc9324bdad231cbd22"
+    },
+    {
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 48,
+      "listed": 255,
+      "image": "Katariah-named-floor.png",
+      "sha256": "d90d72c248001fb7339022391a41c3d887323933a2b93fb08e84e28425c7e84a"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 124,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 290,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 440,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "8b844a51f30171c2fb076b25d79b57f437edb2ab90c4c5bd1bb649fce62099c7"
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 2542,
+      "listed": 2542,
+      "image": "BleakFallsBarrow01-room1-c.png",
+      "sha256": "4f735d72e3e34c32dac9ee24a639f900fc8ddcca535b0c78d8107ba55ecf04a1"
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 149,
+      "listed": 149,
+      "image": "GallowsRock01-outside-away.png",
+      "sha256": "4481f5077b1633cc8453c6054f268fa947e997ddc1663bdf58e7b335fb40ec92"
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 162,
+      "listed": 162,
+      "image": "GallowsRock01-inside-out.png",
+      "sha256": "a5ea7dc0ff3f504f106336d29f2bf38e3a8149d6542bf4633b8f5a34dae79cf0"
+    },
+    {
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 153,
+      "listed": 153,
+      "image": "Katariah-NONE-floor.png",
+      "sha256": "864ede0c2ad6f57b9b208732661a2441804e28980c6bc0dc9324bdad231cbd22"
+    },
+    {
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 255,
+      "listed": 255,
+      "image": "Katariah-named-floor.png",
+      "sha256": "52db6d128d7d7f0348ce2ec2cedf4dd3efff40d1e19abbaf066ff12d6fd26433"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 920,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "8b844a51f30171c2fb076b25d79b57f437edb2ab90c4c5bd1bb649fce62099c7"
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 2542,
+      "listed": 2542,
+      "image": "BleakFallsBarrow01-room1-c.png",
+      "sha256": "4e71f900721c61dedd14a6380c7a7a8ebb51c841fa90ef9a7b6669e85cd1973a"
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 149,
+      "listed": 149,
+      "image": "GallowsRock01-outside-away.png",
+      "sha256": "25889de5ed2b63bb1298f9cce9e294e930abc87cd3cda9da395c050478f64338"
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 162,
+      "listed": 162,
+      "image": "GallowsRock01-inside-out.png",
+      "sha256": "9372b28586d6ddde5a178a6c10f0597268a778b2ba5f32aa1f216a5fd3427dbc"
+    },
+    {
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 153,
+      "listed": 153,
+      "image": "Katariah-NONE-floor.png",
+      "sha256": "864ede0c2ad6f57b9b208732661a2441804e28980c6bc0dc9324bdad231cbd22"
+    },
+    {
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 255,
+      "listed": 255,
+      "image": "Katariah-named-floor.png",
+      "sha256": "52db6d128d7d7f0348ce2ec2cedf4dd3efff40d1e19abbaf066ff12d6fd26433"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 920,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "8b844a51f30171c2fb076b25d79b57f437edb2ab90c4c5bd1bb649fce62099c7"
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 428,
+      "listed": 2542,
+      "image": "BleakFallsBarrow01-room1-c.png",
+      "sha256": "3a68530dbcdb2e41081dcc71a8311b140b9111f40f27aae555fb7d75fa0ee243"
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 149,
+      "listed": 149,
+      "image": "GallowsRock01-outside-away.png",
+      "sha256": "ae8a1c06149ffff2564b75e47c7af8df1f32f20dd48110e415475aaafc7a2c8e"
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 55,
+      "listed": 162,
+      "image": "GallowsRock01-inside-out.png",
+      "sha256": "f74b40a37c8851280d6e00d612691a4ce777b2f1b5d000e3bf5bb3395733d2d9"
+    },
+    {
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 63,
+      "listed": 153,
+      "image": "Katariah-NONE-floor.png",
+      "sha256": "864ede0c2ad6f57b9b208732661a2441804e28980c6bc0dc9324bdad231cbd22"
+    },
+    {
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 48,
+      "listed": 255,
+      "image": "Katariah-named-floor.png",
+      "sha256": "d90d72c248001fb7339022391a41c3d887323933a2b93fb08e84e28425c7e84a"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 124,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 290,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 440,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "2d98bf37c8c23bec63ec2ee0d4de3fa3f214f33582d08883403bb4f490463ac8"
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 428,
+      "listed": 2542,
+      "image": "BleakFallsBarrow01-room1-c.png",
+      "sha256": "a99d04a3e1177a853161fe273e6f1898def58999d7dcef35899a091b38cbf1af"
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 149,
+      "listed": 149,
+      "image": "GallowsRock01-outside-away.png",
+      "sha256": "c3378aaea7004abd9a947405e9c4a0dc5fae1c6cbc648a5db92324870ca5434b"
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 55,
+      "listed": 162,
+      "image": "GallowsRock01-inside-out.png",
+      "sha256": "2186f6d8101471a04f2424b9cfa5c0dd00cd9a669fc89dba10981a19d29675c2"
+    },
+    {
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 63,
+      "listed": 153,
+      "image": "Katariah-NONE-floor.png",
+      "sha256": "864ede0c2ad6f57b9b208732661a2441804e28980c6bc0dc9324bdad231cbd22"
+    },
+    {
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 48,
+      "listed": 255,
+      "image": "Katariah-named-floor.png",
+      "sha256": "d90d72c248001fb7339022391a41c3d887323933a2b93fb08e84e28425c7e84a"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 124,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 290,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 440,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "2d98bf37c8c23bec63ec2ee0d4de3fa3f214f33582d08883403bb4f490463ac8"
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 2542,
+      "listed": 2542,
+      "image": "BleakFallsBarrow01-room1-c.png",
+      "sha256": "64ce5a3041a509b858da077fe3f08ecf3feeb459f21aca73331f9cfb2c239adf"
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 149,
+      "listed": 149,
+      "image": "GallowsRock01-outside-away.png",
+      "sha256": "e14e4139662d7aea85bb3a5fa79cb7975aaf5a6afc7d12eb353d7719af6a5428"
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 162,
+      "listed": 162,
+      "image": "GallowsRock01-inside-out.png",
+      "sha256": "ded2fae92445164bd78921d917e180ea57c350fbdb3c22aaa1ca0e9747c45501"
+    },
+    {
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 153,
+      "listed": 153,
+      "image": "Katariah-NONE-floor.png",
+      "sha256": "864ede0c2ad6f57b9b208732661a2441804e28980c6bc0dc9324bdad231cbd22"
+    },
+    {
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 255,
+      "listed": 255,
+      "image": "Katariah-named-floor.png",
+      "sha256": "52db6d128d7d7f0348ce2ec2cedf4dd3efff40d1e19abbaf066ff12d6fd26433"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 920,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "2d98bf37c8c23bec63ec2ee0d4de3fa3f214f33582d08883403bb4f490463ac8"
+    }
+  ],
+  "image_comparison": [
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "changed_pixels": [
+        0,
+        0,
+        0
+      ],
+      "stable_changed_pixels": 0,
+      "bbox": null
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "changed_pixels": [
+        302215,
+        302160,
+        302196
+      ],
+      "stable_changed_pixels": 302089,
+      "bbox": [
+        0,
+        0,
+        1261,
+        460
+      ]
+    },
+    {
+      "pose": "GallowsRock01-inside-out",
+      "changed_pixels": [
+        222057,
+        222057,
+        222057
+      ],
+      "stable_changed_pixels": 222056,
+      "bbox": [
+        0,
+        0,
+        1400,
+        597
+      ]
+    },
+    {
+      "pose": "GallowsRock01-outside-away",
+      "changed_pixels": [
+        0,
+        0,
+        0
+      ],
+      "stable_changed_pixels": 0,
+      "bbox": null
+    },
+    {
+      "pose": "Katariah-NONE-floor",
+      "changed_pixels": [
+        0,
+        0,
+        0
+      ],
+      "stable_changed_pixels": 0,
+      "bbox": null
+    },
+    {
+      "pose": "Katariah-named-floor",
+      "changed_pixels": [
+        657103,
+        657103,
+        657103
+      ],
+      "stable_changed_pixels": 657103,
+      "bbox": [
+        698,
+        0,
+        1400,
+        1050
+      ]
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "changed_pixels": [
+        0,
+        1,
+        0
+      ],
+      "stable_changed_pixels": 0,
+      "bbox": null
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "changed_pixels": [
+        0,
+        0,
+        0
+      ],
+      "stable_changed_pixels": 0,
+      "bbox": null
+    }
+  ],
+  "poses": {
+    "width": 1400,
+    "height": 1050,
+    "shots": [
+      {
+        "name": "BleakFallsBarrow01-room1-c",
+        "worldspace_id": null,
+        "interior_cell_id": 225758,
+        "position": [
+          -467.1600036621094,
+          -3488.0,
+          -2080.0
+        ],
+        "yaw": 90.00000683018999,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311
+      },
+      {
+        "name": "GallowsRock01-outside-away",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4591.9990234375,
+          -3999.999267578125,
+          160.000732421875
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311
+      },
+      {
+        "name": "GallowsRock01-inside-out",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4623.99658203125,
+          -3999.999267578125,
+          159.99998474121094
+        ],
+        "yaw": 270.0000512264249,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311
+      },
+      {
+        "name": "Katariah-NONE-floor",
+        "worldspace_id": null,
+        "interior_cell_id": 768815,
+        "position": [
+          256,
+          2560,
+          748
+        ],
+        "yaw": 180,
+        "pitch": 60,
+        "hfov": 75
+      },
+      {
+        "name": "Katariah-named-floor",
+        "worldspace_id": null,
+        "interior_cell_id": 768815,
+        "position": [
+          -768,
+          1536,
+          748
+        ],
+        "yaw": 180,
+        "pitch": 60,
+        "hfov": 75
+      },
+      {
+        "name": "BleakFallsBarrow01-portal0-c",
+        "worldspace_id": null,
+        "interior_cell_id": 225758,
+        "position": [
+          1018.55,
+          -4962.72,
+          -2011.23
+        ],
+        "yaw": 260.12,
+        "pitch": 2.13,
+        "hfov": 75.0,
+        "note": "through portal 234056 (234061 -> 234037), eye in room 234061"
+      },
+      {
+        "name": "WhiterunDragonsreach-room0-c",
+        "worldspace_id": null,
+        "interior_cell_id": 91555,
+        "position": [
+          -384.0,
+          1080.0,
+          984.0
+        ],
+        "yaw": 295.39,
+        "pitch": 17.34,
+        "hfov": 75.0,
+        "note": "room 933570 centre, looking at the doorway (portal 933574) into room 933569"
+      },
+      {
+        "name": "RiftenMercerFreyHouse-room0-c",
+        "worldspace_id": null,
+        "interior_cell_id": 228550,
+        "position": [
+          -1234.68,
+          1797.12,
+          -87.11
+        ],
+        "yaw": 265.74,
+        "pitch": -11.23,
+        "hfov": 75.0,
+        "note": "room 347646 centre, looking at the doorway (portal 347651) into room 347647"
+      }
+    ]
+  },
+  "historical_authored_oracle": {
+    "binary_sha256": "d5085f777fc5944c939fc3538dafea0687854a44a0731631a336c52eadf704af",
+    "provenance": "room-authored-assignment-20261115.json",
+    "captures": [
+      {
+        "pose": "BleakFallsBarrow01-room1-c",
+        "mode": "on",
+        "image": "BleakFallsBarrow01-room1-c.png",
+        "sha256": "7dc6d14d4f56c83217f226a1e432857189a4da90a9ba023d2a4c8cf4391269be"
+      },
+      {
+        "pose": "BleakFallsBarrow01-room1-c",
+        "mode": "off",
+        "image": "BleakFallsBarrow01-room1-c.png",
+        "sha256": "9d38cc86521ed03c70c06dc7eb5708b9f959d33e43d5fe9a67e41416cc2ecdc5"
+      },
+      {
+        "pose": "GallowsRock01-inside-out",
+        "mode": "on",
+        "image": "GallowsRock01-inside-out.png",
+        "sha256": "a6673cc8ef9a6cd58c4f3c88f4fccf31e601d66e12bde99299e716bf836fe2f1"
+      },
+      {
+        "pose": "GallowsRock01-inside-out",
+        "mode": "off",
+        "image": "GallowsRock01-inside-out.png",
+        "sha256": "feb0379e905a6f0438f977be707cc3e034a84c241093fdae5eb90029d2e021d9"
+      }
+    ]
+  }
+}

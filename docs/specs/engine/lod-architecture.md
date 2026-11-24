@@ -70,8 +70,11 @@ command-line options override every file wherever they appear
 | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2`; odd values only |
 | `[TerrainManager]` | `fSplitDistanceMult` | terrain split rule (below) |
 | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists |
-| `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
-| `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
+| `[TerrainManager]` | `fBlockLevel0Distance` | object LOD split from level 8 to level 4 |
+| `[TerrainManager]` | `fBlockLevel1Distance` | object LOD split from level 16 to level 8 |
+
+The same reader honours the `[Grass]` keys listed with their defaults and effects
+in [Runtime grass](grass.md#skyrim-ini-settings).
 
 Terrain follows retail's block rule (RF-LOD-001, RF-LOD-003, RF-LOD-011). A
 block of `level` cells is replaced by its four children while the planar
@@ -98,7 +101,7 @@ The query and keep radius of a tier is its parent's split distance plus the
 parent's cells: 17 / 33 / 92 cells at the defaults
 (`TerrainLodDistances::reach_cells`).
 
-### Object LOD at run time (first slice)
+### Object LOD at run time
 
 The converter publishes object chunks (retail `.bto` imports) as separate files listed in the
 additive table `lod_object_chunks`, with its own R-tree and the same row contract as terrain
@@ -110,14 +113,39 @@ object path (`streaming/lod_objects.rs`) works as follows.
   block splits under `fBlockLevel1Distance` x sqrt(NAMA) and a level-8 block under
   `fBlockLevel0Distance` x sqrt(NAMA). NAMA is 1.0 for every worldspace until the pack carries
   the WRLD value (retail uses 0.25 for Whiterun, Markarth, Windhelm and Alftand).
-- **Tier 16 only.** Only tier-16 chunks are selected, which draw between 70,000 and 250,000
-  units at the defaults and never meet the loaded grid. Tier 8 and tier 4 rows are ignored until
-  object chunks hand off to full detail.
+- **Tiers (RF-LOD-004).** The engine measures squared XY distance from the continuous camera
+  position to the block rectangle. It uses strict comparisons at the default distances of 35,000,
+  70,000 and 250,000 world units. Movement within a cell can change the selected tier.
+- **Hand-over.** An outgoing chunk stays visible while any selected replacement in its block is
+  waiting for budget or loading. The replacements stay hidden until the same pass that retires the
+  outgoing chunk. If a replacement stalls or fails, the outgoing chunk retires at the deadline
+  and any available replacements draw. Retail fade and hysteresis are unverified (skyrim_decomp#675).
+- **Loaded cells.** A tier-4 chunk carries cell-tagged pieces (`object_cell_<x>_<y>_<n>`, with
+  `LodObjectCell`). A piece stays visible until its cell's full-detail models are ready, then stays
+  hidden until the full-detail cell unloads.
+- **Large references.** The `WRLD.RNAM` importer requires exact equality of the header and
+  placement keys. The reviewed default widths are 5 and 9. The per-cell promotion path
+  skips fixed-center worldspaces and resolves full references. A retail demotion branch has a
+  cap of one cell by default. The marked tier-4 filter uses a strict deadline comparison
+  after a 2,000 ms delay. See [reviewed retail facts, G01–G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+  The engine keeps marked LOD when projected membership or model readiness is incomplete.
+  STAND-IN(#913): Mudcrab sweeps the outer ring around the camera's cell and uses width 9
+  across profiles. It uses Bevy virtual time and switches ownership when a replacement can draw.
+  Same-worldspace moves share the demotion cap, with cells retired in sorted order and
+  admission bounded by one large window.
+- **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
+  KTX2 file (`lod/<world>/objects_atlas.opensky-srgb.ktx2`). The engine hash-checks it like a chunk, loads it
+  once and keeps the handle, so every chunk shares the image. A chunk that embeds its atlas (an
+  earlier pack) loads as before.
+- **Normal atlas material.** Compiler 6 preserves the BTO vertex basis and lists the optional linear
+  atlas and its hash in `lod-manifest.json`. After the normal image loads, the object material uses
+  signed RGB with blue as Z and transforms the result through the vertex basis for diffuse lighting.
+  Both slots use clamp addressing and 16× anisotropy (skyrim_decomp#948). Older chunks and chunks
+  with a missing atlas, failed load, or missing basis retain the standard material.
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
-  every tier-16 file is hash-checked, one IO-pool task per file; rows of tiers that do not draw
-  are not read. A bad row, a missing file or a wrong hash logs one error and turns object LOD off
-  for the pack. No chunk is skipped on its own, and the failure stays through worldspace changes
-  until the pack changes.
+  every file of every tier, and the shared atlas, is hash-checked, one IO-pool task per file. A bad row, a missing file
+  or a wrong hash logs one error and turns object LOD off for the pack. No chunk is skipped on its
+  own, and the failure stays through worldspace changes until the pack changes.
 - **Order and limits.** The system runs inside the commit window: after `plan_lod_chunks`,
   `collect_cells` and `collect_lod_chunks`, before
   `finish_streaming_commit_budget` and before `update_render_origin`, so a root spawned in the
@@ -127,8 +155,15 @@ object path (`streaming/lod_objects.rs`) works as follows.
   controls: an object chunk is one asset-server load, bounded by the commit budget.
 - **Doors.** The verified rows are kept while the worldspace is unchanged, so an interior visit
   drops the roots but does not read or hash the rows again.
-- **Not yet.** No hand-off to full detail, no scene-name validation of object chunk GLBs, and no
-  tier 8 or tier 4 drawing.
+- **Not yet.** Fade and scene-name validation of object chunk GLBs remain unimplemented.
+
+Terrain chunks cut from retail `.btr` blocks (see the
+[LOD compiler](../converters/lod-compiler.md#retail-terrain-import-the-default-source)) use the
+same quadrant nodes and handoff. A quadrant mesh may have any vertex count and no vertex
+colours, and a source cell may have one to four quadrants (the retail mesh does not cover the
+edge of a worldspace). The material carries the colour map and a normal map applied against a
+constant reference frame. The lighting is the engine's ordinary material, not the retail
+equation (unverified).
 
 Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 70000 and 250000 with a multiplier of 1.5
@@ -142,7 +177,7 @@ replaced it, so `--ini` values no longer reproduce those runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
-(Phase 3), `uLargeRefLODGridSize` (large references are omitted; so is retail's
+(Phase 3), custom `uLargeRefLODGridSize` values and retail's
 flag 0x8000, RF-LOD-006, which forces level 4 in blocks touching that square: no
 difference at the default High preset, but at Low, `fSplitDistanceMult` 0.5,
 retail would force level 4 out to about 18,000 units and Mudcrab does not), and the

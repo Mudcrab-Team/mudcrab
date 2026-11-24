@@ -1,0 +1,297 @@
+{
+  "date": "2026-11-17",
+  "scope": "Per-quest trace order from the original and corrected-plugin captures",
+  "base_commit": "3d5d3ebb5aa73a4afb11231180d84b8b34a5d6d0",
+  "skyrim_version": "1.7.104.0",
+  "compiler": {
+    "name": "Caprica",
+    "version": "0.3.0",
+    "url": "https://github.com/Orvid/Caprica/releases/tag/v0.3.0",
+    "exe_sha256": "389fef19a803c36342fa7f733c96b6e27ef10fcd0b171af10427e29cbe153ec6",
+    "archive_sha256": "0037e54cf3a1021e976278d9a637e8ae541aaf9ebeb8d274b6c2cfe32f4ee559"
+  },
+  "fixture_source_sha256": {
+    "tools/papyrus-parity/fixtures/MCParityGrand.psc": "47216e3cae2e938d0fbfeec5f22779aba37c78a1fb15ded684df2f421be4e70e",
+    "tools/papyrus-parity/fixtures/MCParityInheritance.psc": "d7c9d2009546d1b9fc967da897e87b76cab3892cfcfb148c85f820a70d073f24",
+    "tools/papyrus-parity/fixtures/MCParityLatent.psc": "b9fb5ed716e8080b70d3c87743dffc869cf14e31d3060d44174e040eb9bf559b",
+    "tools/papyrus-parity/fixtures/MCParityNestedBegin.psc": "6a6b8a9fb598186cb406b0f409b56247bb837bc7c13f445af737cd3301c1c5dd",
+    "tools/papyrus-parity/fixtures/MCParityNestedEnd.psc": "88858a4ab015a1fcff130666f69824bd2a3f17b18f608dbea7b3a80098c37214",
+    "tools/papyrus-parity/fixtures/MCParityParent.psc": "8a056c457c98779bb8c9ce4162d68023aeb13351318623e2ae7239d768cf3fcf",
+    "tools/papyrus-parity/headers/Debug.psc": "ebbc44f1e2fc0c8aad6085c3ee53eed31535934e578c578aa48023944e94a473",
+    "tools/papyrus-parity/headers/Parity.flg": "d57e037f3c52bd0ef4ed9e00b3321c63fb412ae16e81a28cd6a1dbfab9acc131",
+    "tools/papyrus-parity/headers/Quest.psc": "ec2150a4e08f86ff16798273cc4f96dc239b8acd8a96327bff8bf83eeb7fb765",
+    "tools/papyrus-parity/headers/Utility.psc": "5e4d328c091f3b1b563b1e039f93c2f5478e4b87450fdbbc6686d7d818e21269"
+  },
+  "before": {
+    "status": "differences",
+    "scope": "Per-case event order, not relative timing or cross-quest scheduling",
+    "game_exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "plugin_sha256": "29df46dedbcac381cd61c0bef858cf2bcad1d663b1efc9182853280ad224656a",
+    "pex_sha256": {
+      "MCParityGrand.pex": "9e09241792e7e0e554a2ca858b5d47b1f0441b3d906e1c53fb2a7ef8d91bf6bb",
+      "MCParityInheritance.pex": "530e9cffd915dff461fefd95a1c00f7f104ff85659443ba753247133744f963b",
+      "MCParityLatent.pex": "ed21149406a24c8c25b0429bb9c9d7d8b36416da4164245d60a08ad24a3926dd",
+      "MCParityNestedBegin.pex": "2486367be14b326930635ea4b8de1d090127339f9916f5d521e372c96ebf82f0",
+      "MCParityNestedEnd.pex": "d78ba04454b4a78f9bfbf07b484b906f4115f915eea9da9bf2eb174e284e4191",
+      "MCParityParent.pex": "0479b02e4164cf9ee4bfdf70fb8d75fe979da8ca7e8abfb5ce20c88afc612bd4"
+    },
+    "helper_sha256": "9f9d66007582fef3e4cd4eef6e50e81237c219373e17c24cfbc3042458619537",
+    "cases": {
+      "inheritance": {
+        "status": "mismatch",
+        "retail": [
+          "MCPARITY|inheritance|begin",
+          "MCPARITY|inheritance|default_vs_parent_state=parent.ready",
+          "MCPARITY|inheritance|parent_only=parent.ready",
+          "MCPARITY|inheritance|grand_only=grand.empty",
+          "MCPARITY|inheritance|grand_state_over_parent_default=grand.ready",
+          "MCPARITY|inheritance|virtual=child.ready",
+          "MCPARITY|inheritance|chain=child/parent/grand",
+          "MCPARITY|inheritance|empty_state=child.empty",
+          "MCPARITY|inheritance|done"
+        ],
+        "luau": [
+          "MCPARITY|inheritance|begin",
+          "MCPARITY|inheritance|default_vs_parent_state=child.empty",
+          "MCPARITY|inheritance|parent_only=parent.ready",
+          "MCPARITY|inheritance|grand_only=grand.empty",
+          "MCPARITY|inheritance|grand_state_over_parent_default=parent.empty",
+          "MCPARITY|inheritance|virtual=child.ready",
+          "MCPARITY|inheritance|chain=child/parent/grand",
+          "MCPARITY|inheritance|empty_state=child.empty",
+          "MCPARITY|inheritance|done"
+        ],
+        "first_difference": 1,
+        "error": null
+      },
+      "nested_end": {
+        "status": "match",
+        "retail": [
+          "MCPARITY|nested_end|begin",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.leave=Start",
+          "MCPARITY|nested_end|nested.begin=Nested",
+          "MCPARITY|nested_end|end.leave=Nested",
+          "MCPARITY|nested_end|final.begin=Final",
+          "MCPARITY|nested_end|after=Final",
+          "MCPARITY|nested_end|done"
+        ],
+        "luau": [
+          "MCPARITY|nested_end|begin",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.leave=Start",
+          "MCPARITY|nested_end|nested.begin=Nested",
+          "MCPARITY|nested_end|end.leave=Nested",
+          "MCPARITY|nested_end|final.begin=Final",
+          "MCPARITY|nested_end|after=Final",
+          "MCPARITY|nested_end|done"
+        ],
+        "first_difference": null,
+        "error": null
+      },
+      "nested_begin": {
+        "status": "match",
+        "retail": [
+          "MCPARITY|nested_begin|begin",
+          "MCPARITY|nested_begin|final.enter=Final",
+          "MCPARITY|nested_begin|final.end=Final",
+          "MCPARITY|nested_begin|nested.begin=Nested",
+          "MCPARITY|nested_begin|final.leave=Nested",
+          "MCPARITY|nested_begin|after=Nested",
+          "MCPARITY|nested_begin|done"
+        ],
+        "luau": [
+          "MCPARITY|nested_begin|begin",
+          "MCPARITY|nested_begin|final.enter=Final",
+          "MCPARITY|nested_begin|final.end=Final",
+          "MCPARITY|nested_begin|nested.begin=Nested",
+          "MCPARITY|nested_begin|final.leave=Nested",
+          "MCPARITY|nested_begin|after=Nested",
+          "MCPARITY|nested_begin|done"
+        ],
+        "first_difference": null,
+        "error": null
+      },
+      "latent": {
+        "status": "unsupported_native",
+        "retail": [
+          "MCPARITY|latent|begin",
+          "MCPARITY|latent|outer.before",
+          "MCPARITY|latent|inner.before",
+          "MCPARITY|latent|inner.after",
+          "MCPARITY|latent|outer.after=42",
+          "MCPARITY|latent|done"
+        ],
+        "luau": [
+          "MCPARITY|latent|begin",
+          "MCPARITY|latent|outer.before",
+          "MCPARITY|latent|inner.before"
+        ],
+        "first_difference": 3,
+        "error": "runtime error: [string \"crates/converter/examples/papyrus_parity.rs:45:29\"]:60: unregistered Papyrus native: Utility::Wait"
+      }
+    },
+    "probe_only_wait_adapter_matches": true,
+    "raw_log_sha256": "86767be9b4c0077f0d450fc3759f48b90efc4926be458c231def2dfe5d8d4156"
+  },
+  "after": {
+    "status": "differences",
+    "scope": "Per-case event order, not relative timing or cross-quest scheduling",
+    "game_exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "plugin_sha256": "29df46dedbcac381cd61c0bef858cf2bcad1d663b1efc9182853280ad224656a",
+    "pex_sha256": {
+      "MCParityGrand.pex": "9e09241792e7e0e554a2ca858b5d47b1f0441b3d906e1c53fb2a7ef8d91bf6bb",
+      "MCParityInheritance.pex": "530e9cffd915dff461fefd95a1c00f7f104ff85659443ba753247133744f963b",
+      "MCParityLatent.pex": "ed21149406a24c8c25b0429bb9c9d7d8b36416da4164245d60a08ad24a3926dd",
+      "MCParityNestedBegin.pex": "2486367be14b326930635ea4b8de1d090127339f9916f5d521e372c96ebf82f0",
+      "MCParityNestedEnd.pex": "d78ba04454b4a78f9bfbf07b484b906f4115f915eea9da9bf2eb174e284e4191",
+      "MCParityParent.pex": "0479b02e4164cf9ee4bfdf70fb8d75fe979da8ca7e8abfb5ce20c88afc612bd4"
+    },
+    "helper_sha256": "96506e191b0fc42b0d2c59599cc16d8bf7211fef6604eaef614e2801e7c4403a",
+    "cases": {
+      "inheritance": {
+        "status": "match",
+        "retail": [
+          "MCPARITY|inheritance|begin",
+          "MCPARITY|inheritance|default_vs_parent_state=parent.ready",
+          "MCPARITY|inheritance|parent_only=parent.ready",
+          "MCPARITY|inheritance|grand_only=grand.empty",
+          "MCPARITY|inheritance|grand_state_over_parent_default=grand.ready",
+          "MCPARITY|inheritance|virtual=child.ready",
+          "MCPARITY|inheritance|chain=child/parent/grand",
+          "MCPARITY|inheritance|empty_state=child.empty",
+          "MCPARITY|inheritance|done"
+        ],
+        "luau": [
+          "MCPARITY|inheritance|begin",
+          "MCPARITY|inheritance|default_vs_parent_state=parent.ready",
+          "MCPARITY|inheritance|parent_only=parent.ready",
+          "MCPARITY|inheritance|grand_only=grand.empty",
+          "MCPARITY|inheritance|grand_state_over_parent_default=grand.ready",
+          "MCPARITY|inheritance|virtual=child.ready",
+          "MCPARITY|inheritance|chain=child/parent/grand",
+          "MCPARITY|inheritance|empty_state=child.empty",
+          "MCPARITY|inheritance|done"
+        ],
+        "first_difference": null,
+        "error": null
+      },
+      "nested_end": {
+        "status": "match",
+        "retail": [
+          "MCPARITY|nested_end|begin",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.leave=Start",
+          "MCPARITY|nested_end|nested.begin=Nested",
+          "MCPARITY|nested_end|end.leave=Nested",
+          "MCPARITY|nested_end|final.begin=Final",
+          "MCPARITY|nested_end|after=Final",
+          "MCPARITY|nested_end|done"
+        ],
+        "luau": [
+          "MCPARITY|nested_end|begin",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.enter=Start",
+          "MCPARITY|nested_end|end.leave=Start",
+          "MCPARITY|nested_end|nested.begin=Nested",
+          "MCPARITY|nested_end|end.leave=Nested",
+          "MCPARITY|nested_end|final.begin=Final",
+          "MCPARITY|nested_end|after=Final",
+          "MCPARITY|nested_end|done"
+        ],
+        "first_difference": null,
+        "error": null
+      },
+      "nested_begin": {
+        "status": "match",
+        "retail": [
+          "MCPARITY|nested_begin|begin",
+          "MCPARITY|nested_begin|final.enter=Final",
+          "MCPARITY|nested_begin|final.end=Final",
+          "MCPARITY|nested_begin|nested.begin=Nested",
+          "MCPARITY|nested_begin|final.leave=Nested",
+          "MCPARITY|nested_begin|after=Nested",
+          "MCPARITY|nested_begin|done"
+        ],
+        "luau": [
+          "MCPARITY|nested_begin|begin",
+          "MCPARITY|nested_begin|final.enter=Final",
+          "MCPARITY|nested_begin|final.end=Final",
+          "MCPARITY|nested_begin|nested.begin=Nested",
+          "MCPARITY|nested_begin|final.leave=Nested",
+          "MCPARITY|nested_begin|after=Nested",
+          "MCPARITY|nested_begin|done"
+        ],
+        "first_difference": null,
+        "error": null
+      },
+      "latent": {
+        "status": "unsupported_native",
+        "retail": [
+          "MCPARITY|latent|begin",
+          "MCPARITY|latent|outer.before",
+          "MCPARITY|latent|inner.before",
+          "MCPARITY|latent|inner.after",
+          "MCPARITY|latent|outer.after=42",
+          "MCPARITY|latent|done"
+        ],
+        "luau": [
+          "MCPARITY|latent|begin",
+          "MCPARITY|latent|outer.before",
+          "MCPARITY|latent|inner.before"
+        ],
+        "first_difference": 3,
+        "error": "runtime error: [string \"crates/converter/examples/papyrus_parity.rs:45:29\"]:60: unregistered Papyrus native: Utility::Wait"
+      }
+    },
+    "probe_only_wait_adapter_matches": true,
+    "raw_log_sha256": "86767be9b4c0077f0d450fc3759f48b90efc4926be458c231def2dfe5d8d4156"
+  },
+  "validation": {
+    "state_regressions_passed": 9,
+    "comparator_controls_passed": 8,
+    "profile_preparation_regressions_passed": 5,
+    "snapshot_isolation_regressions_passed": 1,
+    "failing_before": "pex_parent_dispatch_preserves_receiver_and_defining_class: active-state ancestry assertion",
+    "excluded_trial": "First unguarded capture rejected because OnInit ran twice per quest",
+    "limits": [
+      "No cross-quest scheduling or elapsed-time comparison",
+      "No production Utility::Wait provider or scheduler added",
+      "No save/load or concurrent reentry campaign"
+    ]
+  },
+  "corrected_plugin_capture": {
+    "date": "2026-11-19",
+    "game_exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "plugin_sha256": "193e6c785fc37344c627ee0815981760a52bfd76b9c4385cc085487cde76b75a",
+    "raw_log_sha256": "f1f1f427f0b7323b99a1827fb94e9636459eaef57d6ae897e4ee9b09257c25c6",
+    "pex_sha256_matches_original": true,
+    "helper_sha256": "96506e191b0fc42b0d2c59599cc16d8bf7211fef6604eaef614e2801e7c4403a",
+    "case_results": {
+      "inheritance": {
+        "markers": 9,
+        "retail_matches_original": true,
+        "status": "match"
+      },
+      "nested_end": {
+        "markers": 9,
+        "retail_matches_original": true,
+        "status": "match"
+      },
+      "nested_begin": {
+        "markers": 7,
+        "retail_matches_original": true,
+        "status": "match"
+      },
+      "latent": {
+        "markers": 6,
+        "retail_matches_original": true,
+        "status": "unsupported_native"
+      }
+    },
+    "probe_only_wait_adapter_matches": true
+  }
+}

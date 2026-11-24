@@ -1,7 +1,11 @@
+#import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
+
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    forward_io::{VertexOutput, FragmentOutput},
+    forward_io::{Vertex, VertexOutput, FragmentOutput},
+    mesh_functions,
+    view_transformations::position_world_to_clip,
 }
 
 // One overlay's weight grid: 17x17 opacities, four to a vec4, padded to whole vec4s so every
@@ -48,6 +52,62 @@ struct TerrainSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(116) var normal_3: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(117) var normal_4: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(118) var normal_5: texture_2d<f32>;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(121) var<uniform> seam: NearTerrainBlendSettings;
+@group(#{MATERIAL_BIND_GROUP}) @binding(122) var seam_overlay: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(123) var seam_overlay_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(124) var seam_noise: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(125) var seam_noise_sampler: sampler;
+
+struct TerrainVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) world_position: vec4<f32>,
+    @location(1) world_normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+#ifdef VERTEX_UVS_B
+    @location(3) uv_b: vec2<f32>,
+#endif
+#ifdef VERTEX_TANGENTS
+    @location(4) world_tangent: vec4<f32>,
+#endif
+#ifdef VERTEX_COLORS
+    @location(5) color: vec4<f32>,
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    @location(6) @interpolate(flat) instance_index: u32,
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    @location(7) @interpolate(flat) visibility_range_dither: i32,
+#endif
+    @location(8) seam_ramp: f32,
+}
+
+@vertex
+fn vertex(in: Vertex) -> TerrainVertexOutput {
+    var out: TerrainVertexOutput;
+    let world_from_local = mesh_functions::get_world_from_local(in.instance_index);
+    out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(in.position, 1.0));
+    out.position = position_world_to_clip(out.world_position.xyz);
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(in.normal, in.instance_index);
+    out.uv = in.uv;
+#ifdef VERTEX_UVS_B
+    out.uv_b = in.uv_b;
+#endif
+#ifdef VERTEX_TANGENTS
+    out.world_tangent = mesh_functions::mesh_tangent_local_to_world(world_from_local, in.tangent, in.instance_index);
+#endif
+#ifdef VERTEX_COLORS
+    out.color = in.color;
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    out.instance_index = in.instance_index;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(in.instance_index, world_from_local[3]);
+#endif
+    out.seam_ramp = terrain_blend_ramp(distance(vec2<f32>(in.position.x, -in.position.z), seam.centre.xy));
+    return out;
+}
 
 // Skyrim's `_n` maps are DirectX-convention: green points down the texture, so it is flipped to
 // the tangent frame's +Y. One constant, settled by an A/B render of lit slopes.
@@ -125,8 +185,28 @@ fn grid_weight(overlay: u32, coordinate: vec2<f32>) -> f32 {
 }
 
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
+fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    var standard_in: VertexOutput;
+    standard_in.position = in.position;
+    standard_in.world_position = in.world_position;
+    standard_in.world_normal = in.world_normal;
+    standard_in.uv = in.uv;
+#ifdef VERTEX_UVS_B
+    standard_in.uv_b = in.uv_b;
+#endif
+#ifdef VERTEX_TANGENTS
+    standard_in.world_tangent = in.world_tangent;
+#endif
+#ifdef VERTEX_COLORS
+    standard_in.color = in.color;
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    standard_in.instance_index = in.instance_index;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    standard_in.visibility_range_dither = in.visibility_range_dither;
+#endif
+    var pbr_input = pbr_input_from_standard_material(standard_in, is_front);
     var weights = array<f32, 6>(
         terrain.fallback_weights_0.x,
         terrain.fallback_weights_0.y,
@@ -168,7 +248,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     color += textureSample(layer_3, layer_sampler, uv) * weights[3];
     color += textureSample(layer_4, layer_sampler, uv) * weights[4];
     color += textureSample(layer_5, layer_sampler, uv) * weights[5];
-    pbr_input.material.base_color *= color / total;
+    color = color / total;
+    let seam_weight = terrain_blend_weight(in.seam_ramp, seam.atlas.w);
+    if seam.atlas.w != 0.0 {
+        let distant_uv = terrain_atlas_uv(in.uv, seam.atlas);
+        let distant = textureSample(seam_overlay, seam_overlay_sampler, distant_uv).rgb;
+        let noisy = noisy_land_colour(distant, seam_noise, seam_noise_sampler, distant_uv);
+        color = vec4<f32>(mix(color.rgb, noisy, seam_weight), color.a);
+    }
+    // Technique 19 order (skyrim_decomp#979): noise scales the distant sample before blending.
+    // Vertex tint scales the full lit diffuse before the first fog bound. Highlights enter
+    // separately before a second bound when enabled.
+    // Bevy's vertex color scales the blended base color before diffuse lighting. The specular
+    // reflectance of these opaque dielectric materials is independent of base color.
+    // Bevy fog processes the combined lit result. The separate fog bounds need draw inputs
+    // that this pass does not bind.
+    pbr_input.material.base_color *= color;
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.
     var specular_mask = 0.0;
@@ -181,7 +276,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         surface += layer_surface(normal_5, uv, terrain.normal_layers_1.y) * weights[5];
         specular_mask = surface.w;
         let geometric = normalize(pbr_input.world_normal);
-        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(surface.xyz));
+        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(surface.xyz / total, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
     }
     pbr_input.material.reflectance = terrain_reflectance(pbr_input.material.reflectance, specular_mask, total);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);

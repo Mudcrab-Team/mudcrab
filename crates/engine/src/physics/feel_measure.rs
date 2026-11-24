@@ -80,10 +80,10 @@ fn log_tick(
     };
     log.0.push(TickRow {
         body: body.translation,
-        vertical_velocity: state.vertical_velocity,
+        vertical_velocity: state.vertical_velocity(),
         horizontal_velocity: state.horizontal_velocity,
         supported: output.is_some_and(|o| o.grounded),
-        jump_active: state.jump_active,
+        jump_active: state.jump_active(),
     });
 }
 
@@ -174,13 +174,20 @@ fn ticks(app: &App) -> Vec<TickRow> {
 fn packaged_tuning() -> MovementTuning {
     MovementTuning {
         record_speeds: Some(DirectionalMovementSpeeds {
-            directions: [
+            walk_directions: [
+                [80.09, 370.0],
+                [79.75, 370.0],
+                [80.10, 370.0],
+                [71.93, 205.25],
+            ],
+            run_directions: [
                 [80.09, 370.0],
                 [79.75, 370.0],
                 [80.10, 370.0],
                 [71.93, 205.25],
             ],
             source: "feel_measure NPC_Default_MT".into(),
+            warnings: Vec::new(),
         }),
         ..MovementTuning::default()
     }
@@ -553,6 +560,7 @@ fn measure_air_control_response() {
             ..default()
         };
         let mut trace = Vec::new();
+        let mut y = 0.0;
         for _ in 0..60 {
             integrate_walk(
                 &mut state,
@@ -563,8 +571,9 @@ fn measure_air_control_response() {
                 },
                 &tuning,
                 PHYSICS_TIMESTEP,
-                false,
+                ResolvedWalk { y, grounded: false },
             );
+            y += state.vertical_velocity() * PHYSICS_TIMESTEP;
             trace.push(state.horizontal_velocity.x);
         }
         trace
@@ -631,7 +640,10 @@ fn measure_air_control_response() {
                 &WalkIntent::default(),
                 &tuning,
                 PHYSICS_TIMESTEP,
-                true,
+                ResolvedWalk {
+                    y: 0.0,
+                    grounded: true,
+                },
             );
             count += 1;
         }
@@ -671,7 +683,16 @@ fn measure_start_and_stop_acceleration() {
         let mut distance = 0.0;
         let mut distance_at_1s = 0.0;
         for tick in 0..120 {
-            integrate_walk(&mut state, &go, &tuning, PHYSICS_TIMESTEP, true);
+            integrate_walk(
+                &mut state,
+                &go,
+                &tuning,
+                PHYSICS_TIMESTEP,
+                ResolvedWalk {
+                    y: 0.0,
+                    grounded: true,
+                },
+            );
             distance += state.horizontal_velocity.length() * PHYSICS_TIMESTEP;
             if tick == 59 {
                 distance_at_1s = distance;
@@ -714,7 +735,10 @@ fn measure_start_and_stop_acceleration() {
                 &WalkIntent::default(),
                 &tuning,
                 PHYSICS_TIMESTEP,
-                true,
+                ResolvedWalk {
+                    y: 0.0,
+                    grounded: true,
+                },
             );
             stop_distance += stop.horizontal_velocity.length() * PHYSICS_TIMESTEP;
             stop_ticks += 1;
@@ -856,6 +880,7 @@ fn measure_mouse_turn_and_body_scale() {
         &CursorCapture::Captured,
         Vec2::new(1.0, 0.0),
         false,
+        1.0,
         &mut look,
     );
     let yaw = look.yaw.abs();
@@ -864,6 +889,7 @@ fn measure_mouse_turn_and_body_scale() {
         &CursorCapture::Captured,
         Vec2::new(0.0, 1.0),
         false,
+        1.0,
         &mut look,
     );
     let pitch = look.pitch.abs();

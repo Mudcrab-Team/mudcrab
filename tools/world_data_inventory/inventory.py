@@ -5,11 +5,27 @@ import hashlib
 import json
 import re
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+SURFACE_NAME = "reviewed-surface.json"
+STORE_DIR = "stores"
+STORE_FIELDS = ("format_version", "store", "reviewed_at_commit", "owner", "reason", "states", "evidence")
+STORE_DISPOSITIONS = ("reviewed_at_commit", "owner", "reason", "states", "evidence")
+TABLE_DIR = "tables"
+TABLE_FIELDS = ("format_version", "table", "classification", "owner", "reason")
+TABLE_DISPOSITIONS = ("classification", "owner", "reason")
+COMMIT = re.compile(r"[0-9a-f]{40}")
+# Derived files. Never commit them: they hold fingerprints of source files, so every unrelated source edit
+# changes them and every open pull request then conflicts. CI and this tool regenerate them. The list matches
+# .gitignore. `reviewed-sources.json` is the old committed fingerprint file; it stays here so a stale copy is found.
+GENERATED_PATHS = ("docs/data-inventory/inventory.json", "docs/data-inventory/report.md",
+                   "tools/world_data_inventory/reviewed-sources.json")
+MIGRATION_RECIPE = ("git rm -qf --ignore-unmatch -- " + " ".join(GENERATED_PATHS) + " && git commit --no-edit")
 METHODS = {"prepare", "prepare_cached", "query_row", "query_row_and_then", "execute", "execute_batch"}
 STATES = ("decoded", "preserved", "projected", "query_dependent", "mapped", "semantic_use")
 STATE_VALUES = {
@@ -180,11 +196,16 @@ def scan_queries(root):
             start = tokens[i + 2][2]
             end = tokens[j][2] if j < len(tokens) else len(source)
             expression = source[start:end].strip()
+            # Same-file string constants that a dynamic call names or interpolates (`{COLS}`). Their text is
+            # part of the reader's reviewed identity, so an edit to such a constant is reviewed too.
+            names = {t[1] for t in arg if t[0] == "code"} | {n for t in arg if t[0] == "string"
+                                                            for n in re.findall(r"\{([A-Za-z_][A-Za-z_0-9]*)\}", t[1])}
+            referenced = [constants[name] for name in sorted(names) if name in constants]
             key = f"{path.relative_to(root).as_posix()}::{method}::{digest(expression)[:16]}"
             occurrences[key] = occurrences.get(key, 0) + 1
             queries.append({"id": f"{key}::{occurrences[key]}", "path": path.relative_to(root).as_posix(),
                             "line": source.count("\n", 0, tokens[i][2]) + 1,
-                            "method": method, "expression": expression, "sql": sql,
+                            "method": method, "expression": expression, "sql": sql, "constants": referenced,
                             "status": "literal" if sql is not None and method != "execute_batch" else "unknown",
                             "reason": "Bounded lexical candidate scan; receiver types are not resolved."})
     return queries
@@ -282,6 +303,132 @@ def validate_refs(root, evidence):
             raise ValueError(f"broken evidence reference: {ref}")
 
 
+def store_paths(here):
+    """The committed store files, sorted. Each store is its own file so store PRs never share a line."""
+    directory = here / STORE_DIR
+    if not directory.is_dir():
+        raise ValueError(f"missing {STORE_DIR}/ directory; each external store needs its own JSON file")
+    paths = sorted(directory.glob("*.json"))
+    loaded = set(paths)
+    for path in sorted(directory.iterdir()):
+        if path.is_file() and path not in loaded:
+            name = path.relative_to(here).as_posix()
+            raise ValueError(f"unexpected file in store directory: {name}; only lowercase *.json store files are read")
+    return paths
+
+
+def load_stores(here):
+    """Load one disposition per external store. Refuse a partial or mistyped file instead of dropping fields."""
+    stores = {}
+    sources = {}
+    for path in store_paths(here):
+        name = path.relative_to(here).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f"cannot read store file {name}: {error}") from None
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid JSON in store file {name}: {error}") from None
+        if not isinstance(value, dict):
+            raise ValueError(f"store file is not an object: {name}")
+        problems = []
+        missing = sorted(set(STORE_FIELDS) - set(value))
+        extra = sorted(set(value) - set(STORE_FIELDS))
+        if missing:
+            problems.append("missing " + ", ".join(missing))
+        if extra:
+            problems.append("unknown " + ", ".join(extra))
+        if problems:
+            raise ValueError(f"invalid store file {name}: " + "; ".join(problems))
+        if value["format_version"] != 1:
+            raise ValueError(f"unsupported store file version: {name}")
+        key = value["store"]
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"missing store name: {name}")
+        if key in stores:
+            raise ValueError(f"duplicate store {key}: {sources[key]} and {name}")
+        stores[key] = {field: value[field] for field in STORE_DISPOSITIONS}
+        stores[key]["source"] = name
+        sources[key] = name
+    return dict(sorted(stores.items()))
+
+
+def table_paths(here):
+    """The committed table files, sorted. Each table is its own file so table PRs never share a line."""
+    directory = here / TABLE_DIR
+    if not directory.is_dir():
+        raise ValueError(f"missing {TABLE_DIR}/ directory; each table needs its own JSON file")
+    paths = sorted(directory.glob("*.json"))
+    loaded = set(paths)
+    for path in sorted(directory.iterdir()):
+        if path.is_file() and path not in loaded:
+            name = path.relative_to(here).as_posix()
+            raise ValueError(f"unexpected file in table directory: {name}; only lowercase *.json table files are read")
+    return paths
+
+
+def load_tables(here):
+    """Load one disposition per table. Refuse a partial or mistyped file instead of dropping fields."""
+    tables = {}
+    sources = {}
+    for path in table_paths(here):
+        name = path.relative_to(here).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f"cannot read table file {name}: {error}") from None
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid JSON in table file {name}: {error}") from None
+        if not isinstance(value, dict):
+            raise ValueError(f"table file is not an object: {name}")
+        problems = []
+        missing = sorted(set(TABLE_FIELDS) - set(value))
+        extra = sorted(set(value) - set(TABLE_FIELDS))
+        if missing:
+            problems.append("missing " + ", ".join(missing))
+        if extra:
+            problems.append("unknown " + ", ".join(extra))
+        if problems:
+            raise ValueError(f"invalid table file {name}: " + "; ".join(problems))
+        if value["format_version"] != 1:
+            raise ValueError(f"unsupported table file version: {name}")
+        key = value["table"]
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"missing table name: {name}")
+        if key in tables:
+            raise ValueError(f"duplicate table {key}: {sources[key]} and {name}")
+        tables[key] = {field: value[field] for field in TABLE_DISPOSITIONS}
+        tables[key]["source"] = name
+        sources[key] = name
+    return dict(sorted(tables.items()))
+
+
+def load_manual(here):
+    """Load dispositions.json and join the per-store and per-table files.
+
+    A legacy `stores` or `tables` block fails with the migration path, so no entry
+    disappears when two pull requests edit the same shared object.
+    """
+    manual = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+    if "stores" in manual:
+        raise ValueError(
+            f"dispositions.json must not contain a stores block; each store has its own file under "
+            f"tools/world_data_inventory/{STORE_DIR}/ with its own reviewed_at_commit. "
+            "Move each entry to that directory and delete the block.")
+    if "tables" in manual:
+        raise ValueError(
+            f"dispositions.json must not contain a tables block; each table has its own file under "
+            f"tools/world_data_inventory/{TABLE_DIR}/. "
+            "Move each entry to that directory and delete the block.")
+    manual["stores"] = load_stores(here)
+    manual["tables"] = load_tables(here)
+    return manual
+
+
 def validate_manual(root, manual):
     if manual.get("format_version", 1) != 1:
         raise ValueError("unsupported disposition version")
@@ -297,24 +444,45 @@ def validate_manual(root, manual):
             raise ValueError(f"semantic claim needs a sink: {key}")
         validate_refs(root, value.get("sink", []))
         validate_refs(root, value.get("tests", []))
-    for value in manual["stores"].values():
+    for key, value in manual["stores"].items():
+        source = value.get("source", "unknown store file")
+        if not isinstance(value.get("reviewed_at_commit"), str) or not COMMIT.fullmatch(value["reviewed_at_commit"]):
+            raise ValueError(f"invalid store reviewed_at_commit: {key} ({source})")
+        if not value.get("owner") or not value.get("reason"):
+            raise ValueError(f"missing store owner/reason: {key} ({source})")
         if set(value["states"]) != set(STATES) or any(value["states"][state] not in STATE_VALUES[state] for state in STATES):
-            raise ValueError("external store needs independent valid states")
-        validate_refs(root, value["evidence"])
+            raise ValueError(f"external store needs independent valid states: {key} ({source})")
+        try:
+            validate_refs(root, value["evidence"])
+        except ValueError as error:
+            raise ValueError(f"store {key} ({source}): {error}") from None
     for value in manual["legacy_shapes"]:
         validate_refs(root, value["evidence"])
     for key, value in manual["tables"].items():
+        source = value.get("source", "unknown table file")
         if value["classification"] not in {"deferred", "provenance"} or not value["owner"] or not value["reason"]:
-            raise ValueError(f"invalid table disposition: {key}")
+            raise ValueError(f"invalid table disposition: {key} ({source})")
+
+
+def checked_at(root):
+    """The commit under test, as a label only. Anchors are checked against the checked-out tree."""
+    try:
+        done = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8", check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return done.stdout.strip() or "unknown"
 
 
 def build(root, manual, extraction=None, queries=None):
     validate_manual(root, manual)
     queries = scan_queries(root) if queries is None else queries
-    result = {"format_version": 1, "reviewed_at_commit": manual["reviewed_at_commit"],
+    result = {"format_version": 1, "checked_at": checked_at(root),
               "schema_status": "emitted" if extraction else "not_extracted",
               "schemas": {}, "queries": queries, "variants": [], "fields": manual["fields"],
-              "stores": manual["stores"], "limitations": manual["limitations"],
+              "stores": {key: {field: value[field] for field in STORE_DISPOSITIONS}
+                         for key, value in manual["stores"].items()},
+              "limitations": manual["limitations"],
               "legacy_shapes": manual["legacy_shapes"],
               "denominators": {"rusqlite_candidates": len(queries), "emitted_schema_columns": 0 if extraction else None,
                                "manually_traced_fields": len(manual["fields"]),
@@ -341,7 +509,8 @@ def build(root, manual, extraction=None, queries=None):
                 for cid, column, kind, required, default, pk in table_info:
                     disposition = manual["fields"].get(f"{table}.{column}")
                     if disposition is None:
-                        disposition = manual["blob_default"] if "BLOB" in kind.upper() else manual["tables"][table]
+                        disposition = (manual["blob_default"] if "BLOB" in kind.upper()
+                                       else {field: manual["tables"][table][field] for field in TABLE_DISPOSITIONS})
                     columns.append({"ordinal": cid, "name": column, "type": kind, "not_null": bool(required),
                                     "default": default, "primary_key": pk,
                                     "disposition": disposition,
@@ -415,7 +584,7 @@ def validate_mappings(result):
 
 
 def report(result):
-    lines = ["# World-data inventory", "", f"Schema status: **{result['schema_status']}**. Reviewed source: `{result['reviewed_at_commit']}`.", "",
+    lines = ["# World-data inventory", "", f"Schema status: **{result['schema_status']}**. Checked at: `{result['checked_at']}`.", "",
              "Prepare dependencies are not executed rows, mapped rows, semantic use, population, or retail parity.", "",
              "## Denominators", "", *[f"- {key}: {'unknown' if value is None else value}" for key, value in result["denominators"].items()], "",
              "## Traced examples", "", "| Field | Decoded | Preserved | Projected | Query-dependent | Mapped | Semantic use | Role / reason |",
@@ -431,7 +600,7 @@ def report(result):
         lines.append("- Full reader identities and per-query dependencies: inventory.json.")
     lines += ["", "## External stores", ""]
     for key, value in sorted(result["stores"].items()):
-        lines += [f"- `{key}`: {value['reason']}"]
+        lines += [f"- `{key}`: reviewed at `{value['reviewed_at_commit']}`. {value['reason']}"]
     lines += ["", "## Evidence anchors", ""]
     for key, value in sorted(result["fields"].items()):
         refs = value["evidence"] + value.get("sink", []) + value.get("tests", [])
@@ -465,55 +634,158 @@ def source_guard(root, queries, manual):
     evidence_paths = {ref["path"] for field in manual["fields"].values()
                       for group in ("evidence", "sink", "tests") for ref in field.get(group, [])}
     evidence_paths.update(ref["path"] for store in manual["stores"].values() for ref in store["evidence"])
+    store_dir = root / "tools/world_data_inventory" / STORE_DIR
+    table_dir = root / "tools/world_data_inventory" / TABLE_DIR
+    tooling = ["tools/world_data_inventory/inventory.py", "tools/world_data_inventory/dispositions.json",
+               "tools/world_data_inventory/dispositions.schema.json",
+               "tools/world_data_inventory/store.schema.json",
+               "tools/world_data_inventory/table.schema.json",
+               "crates/engine/src/world/inventory_tests.rs"]
+    tooling += sorted(path.relative_to(root).as_posix() for path in store_dir.glob("*.json")) if store_dir.is_dir() else []
+    tooling += sorted(path.relative_to(root).as_posix() for path in table_dir.glob("*.json")) if table_dir.is_dir() else []
     return {"projection_sources": source_files(root), "query_candidates": [q["id"] for q in queries],
             "reader_sources": {p: digest((root / p).read_text(encoding="utf-8"))
                                for p in sorted({q["path"] for q in queries} | evidence_paths)},
-            "tooling_sources": {p: digest((root / p).read_text(encoding="utf-8")) for p in (
-                "tools/world_data_inventory/inventory.py", "tools/world_data_inventory/dispositions.json",
-                "tools/world_data_inventory/dispositions.schema.json",
-                "crates/engine/src/world/inventory_tests.rs") if (root / p).is_file()}}
+            "tooling_sources": {p: digest((root / p).read_text(encoding="utf-8")) for p in tooling if (root / p).is_file()}}
 
 
-def main():
+def reader_surface(queries):
+    """Stable identity of each record reader: the call site key plus a hash of the SQL it runs.
+
+    The key holds the file path, method, a hash of the call expression and an occurrence number. It holds no
+    line number and no hash of the whole file, so an unrelated edit leaves it unchanged. The SQL hash catches a
+    changed constant or literal. For a dynamic query, the hash covers the same-file string constants it names or interpolates.
+    `None` marks a dynamic query with no such constant: its SQL is not reviewed, only its call expression."""
+    def identity(query):
+        if query["sql"] is not None:
+            return digest(query["sql"])[:16]
+        return digest("\0".join(query["constants"]))[:16] if query["constants"] else None
+    return {q["id"]: identity(q) for q in queries}
+
+
+def emitted_columns(extraction):
+    """Every `table.column` that any extracted schema shape declares, as a sorted list."""
+    names = set()
+    for schema in extraction["schemas"].values():
+        with closing(open_schema(schema)) as db:
+            for obj in schema["objects"]:
+                if obj["type"] == "table" and obj["name"] not in schema["shadow_tables"]:
+                    names.update(f"{obj['name']}.{row[1]}" for row in
+                                 db.execute("SELECT * FROM pragma_table_info(?)", (obj["name"],)))
+    return sorted(names)
+
+
+def surface_text(surface):
+    """One entry per line, so a review diff shows exactly which reader or column changed."""
+    lines = ['{', '  "format_version": 1,', '  "readers": {']
+    lines += [f'    {json.dumps(key)}: {json.dumps(value)}' + ("," if i + 1 < len(surface["readers"]) else "")
+              for i, (key, value) in enumerate(sorted(surface["readers"].items()))]
+    lines += ['  },', '  "columns": [']
+    lines += [f'    {json.dumps(name)}' + ("," if i + 1 < len(surface["columns"]) else "")
+              for i, name in enumerate(sorted(surface["columns"]))]
+    lines += ['  ]', '}', '']
+    return "\n".join(lines)
+
+
+def load_surface(here):
+    path = here / SURFACE_NAME
+    if not path.is_file():
+        raise ValueError(f"missing {SURFACE_NAME}; review the readers, then run inventory.py --review-sources")
+    surface = json.loads(path.read_text(encoding="utf-8"))
+    if surface.get("format_version") != 1:
+        raise ValueError("unsupported reviewed-surface version")
+    return surface
+
+
+def surface_difference(kind, reviewed, current):
+    added = sorted(set(current) - set(reviewed))
+    removed = sorted(set(reviewed) - set(current))
+    changed = sorted(key for key in set(current) & set(reviewed)
+                     if isinstance(reviewed, dict) and reviewed[key] != current[key])
+    lines = [f"  new {kind} without a reviewed disposition: {key}" for key in added]
+    lines += [f"  changed {kind} (its SQL changed): {key}" for key in changed]
+    lines += [f"  reviewed {kind} that no longer exists: {key}" for key in removed]
+    return lines
+
+
+def tracked_generated_files(root):
+    """Generated files that git tracks. Returns nothing outside a git checkout."""
+    try:
+        done = subprocess.run(["git", "ls-files", "--", *GENERATED_PATHS], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8", check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return done.stdout.split()
+
+
+def run(argv, root=ROOT, here=HERE):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--extraction", type=Path, help="JSON emitted by world_data_inventory_extraction")
-    parser.add_argument("--output", type=Path, default=ROOT / "docs/data-inventory")
-    parser.add_argument("--check", action="store_true", help="compare committed source inventory/report; never write")
-    parser.add_argument("--review-sources", action="store_true", help="explicitly accept reviewed source fingerprints after updating dispositions")
-    parser.add_argument("--source-identity", action="store_true", help="print the checked source fingerprint for executable extraction")
-    args = parser.parse_args()
+    parser.add_argument("--output", type=Path, default=root / "docs/data-inventory",
+                        help="where to write the generated report and JSON (default is gitignored)")
+    parser.add_argument("--check", action="store_true",
+                        help="kept for existing commands: the committed reviewed surface is always enforced")
+    parser.add_argument("--review-sources", action="store_true",
+                        help=f"after review, rewrite the committed {SURFACE_NAME}; add --extraction to rewrite its columns too")
+    parser.add_argument("--source-identity", action="store_true", help="print the source fingerprint for executable extraction")
+    args = parser.parse_args(argv)
     if args.source_identity and (args.extraction or args.review_sources or args.check):
         parser.error("--source-identity cannot be combined with generation/check options")
-    manual = json.loads((HERE / "dispositions.json").read_text(encoding="utf-8"))
+    if args.review_sources and args.check:
+        parser.error("--check cannot update the reviewed surface")
+    manual = load_manual(here)
     extraction = json.loads(args.extraction.read_text(encoding="utf-8")) if args.extraction else None
-    validate_manual(ROOT, manual)
-    queries = scan_queries(ROOT)
-    guard = source_guard(ROOT, queries, manual)
-    if args.review_sources:
-        if args.check:
-            parser.error("--check cannot update reviewed sources")
-        write_text(HERE / "reviewed-sources.json", canonical(guard))
-    expected = json.loads((HERE / "reviewed-sources.json").read_text(encoding="utf-8"))
-    if guard != expected:
-        raise ValueError("unreviewed projection source/query drift; review dispositions and reviewed-sources.json")
+    validate_manual(root, manual)
+    queries = scan_queries(root)
+    # Derived. Never compared with a committed copy, so no committed file holds a source hash.
+    guard = source_guard(root, queries, manual)
     fingerprint = digest(canonical(guard))
     if args.source_identity:
         print(fingerprint)
         return
-    if extraction and extraction.get("reviewed_source_guard_sha256") != fingerprint:
+    tracked = tracked_generated_files(root)
+    if tracked:
+        raise ValueError("generated inventory files are committed: " + ", ".join(tracked)
+                         + ". They are derived in CI and gitignored. Remove them with: " + MIGRATION_RECIPE)
+    if extraction and not args.review_sources and extraction.get("reviewed_source_guard_sha256") != fingerprint:
         raise ValueError("extraction does not match the reviewed source fingerprint")
-    result = build(ROOT, manual, extraction, queries)
+    surface_path = here / SURFACE_NAME
+    if args.review_sources:
+        if extraction:
+            # Reviewing a column never replaces classifying its table under tables/.
+            tables = sorted({name.split(".", 1)[0] for name in emitted_columns(extraction)} - set(manual["tables"]))
+            if tables:
+                raise ValueError("unclassified emitted table: " + ", ".join(tables)
+                                 + ". Add a disposition under tools/world_data_inventory/tables/ first")
+        previous = json.loads(surface_path.read_text(encoding="utf-8")) if surface_path.is_file() else {}
+        columns = emitted_columns(extraction) if extraction else previous.get("columns", [])
+        write_text(surface_path, surface_text({"readers": reader_surface(queries), "columns": columns}))
+    surface = load_surface(here)
+    problems = surface_difference("reader", surface["readers"], reader_surface(queries))
+    if extraction:
+        problems += surface_difference("column", surface["columns"], emitted_columns(extraction))
+    if problems:
+        raise ValueError("unreviewed change to the record readers or columns. Review the dispositions in "
+                         "tables/ and dispositions.json, then run inventory.py --review-sources"
+                         + (" --extraction <extraction.json>" if extraction else "")
+                         + " and commit " + SURFACE_NAME + ":\n" + "\n".join(problems))
+    result = build(root, manual, extraction, queries)
     result["reviewed_source_guard_sha256"] = fingerprint
+    result["source_guard"] = guard
     outputs = {"inventory.json": canonical(result), "report.md": report(result)}
-    if args.check:
-        for name, content in outputs.items():
-            if not (args.output / name).is_file() or (args.output / name).read_text(encoding="utf-8") != content:
-                raise ValueError(f"inventory drift: {name}; regenerate after review")
-    else:
-        args.output.mkdir(parents=True, exist_ok=True)
-        for name, content in outputs.items():
-            write_text(args.output / name, content)
-    print(f"inventory: {result['schema_status']}; {len(result['queries'])} candidates; {len(result['variants'])} composed variants")
+    # Always regenerate. A missing file is created and a stale one is overwritten, so no step trusts a copy on disk.
+    args.output.mkdir(parents=True, exist_ok=True)
+    for name, content in outputs.items():
+        write_text(args.output / name, content)
+    print(f"inventory: {result['schema_status']}; {len(result['queries'])} candidates; {len(result['variants'])} composed variants; "
+          f"regenerated {', '.join(outputs)} in {args.output}")
+
+
+def main():
+    try:
+        run(sys.argv[1:])
+    except ValueError as error:
+        sys.exit(f"error: {error}")
 
 
 if __name__ == "__main__":

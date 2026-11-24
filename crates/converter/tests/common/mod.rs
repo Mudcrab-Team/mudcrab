@@ -14,6 +14,8 @@ pub fn cpu_lod_config(
 ) -> converter::PipelineConfig {
     let mut config = converter::PipelineConfig::new(data_dir, output_dir);
     config.lod_texture_encoder = converter::TextureEncoder::Cpu;
+    // The fixtures have no retail terrain LOD files; these tests exercise the self-built stage.
+    config.terrain_lod_source = converter::config::TerrainLodSource::SelfBuilt;
     config
 }
 
@@ -37,7 +39,9 @@ pub fn assert_reader_warning_publication(report: &PipelineReport, output: &Path)
             .warnings
             .iter()
             .all(|warning| warning.contains("in-house reader")
-                || warning.contains("inhouse adapter")),
+                || warning.contains("inhouse adapter")
+                || (warning.starts_with("grass cache omitted ")
+                    && warning.contains(" malformed LAND selection items; first cell "))),
         "unexpected non-reader failure: {report:?}"
     );
     let manifest: serde_json::Value =

@@ -1,0 +1,661 @@
+name: mutants
+
+# Mutation testing of the converter's record readers and recovery code (#833).
+#
+# A mutant is one small source change, such as `<=` becoming `<`. If the tests still pass, the
+# mutant survived, and no test proves that line matters. The survivors are the report.
+#
+# This never runs on a pull request: every mutant rebuilds the converter and reruns its tests, so
+# one shard takes tens of minutes. The schedule and a manual dispatch produce a report; they do
+# not gate anything. Gating new code with `--in-diff` is a later change.
+#
+# The scope is split by `--shard k/n` so each job fits its timeout. Each shard uploads its own
+# mutants.out. The run step has a shorter timeout than the job, so a shard that stops at the cap
+# still reaches its summary and upload steps and reports what it finished.
+# docs/contributing/mutants.md explains how to read the artifacts and how to run this locally.
+#
+# The plan job publishes the shard count and the matrix, so the matrix and the report denominator
+# cannot disagree. A run with fewer shards is a dispatch input, not a workflow edit.
+
+on:
+  schedule:
+    # Monday 04:17 UTC: off the hour, so the run does not queue behind the hourly jobs.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      files:
+        description: 'Space-separated cargo-mutants --file globs, relative to the repository root. Empty uses the reader default.'
+        required: false
+        default: ''
+      shards:
+        description: 'Number of shards, a positive integer. Empty uses the default of 8.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  # A scheduled report and a manual report may both finish; do not cancel a run that already spent
+  # an hour of runner time.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+  RUSTUP_TOOLCHAIN: "1.98.1"
+  # Debug info is not needed to run a test, and linking without it is much faster. Each mutant
+  # relinks the converter's test binaries, so this is the main saving.
+  RUSTFLAGS: "-C debuginfo=0"
+  # Upgrade deliberately, together with the versions in docs/contributing/mutants.md.
+  CARGO_MUTANTS_VERSION: '27.1.0'
+  CARGO_NEXTEST_VERSION: '0.9.152'
+
+jobs:
+  plan:
+    name: plan the shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      # Both consumers of the shard count read these outputs: the matrix in the mutants job and
+      # SHARDS in the report job, so the matrix and the denominator cannot disagree.
+      shards: ${{ steps.plan.outputs.shards }}
+      shard_list: ${{ steps.plan.outputs.shard_list }}
+    steps:
+      - name: Plan the shard matrix
+        id: plan
+        env:
+          # The only shard count in the workflow. The matrix and the report denominator both come
+          # from this value through the job outputs.
+          DEFAULT_SHARDS: '8'
+          REQUESTED_SHARDS: ${{ inputs.shards }}
+        run: |
+          set -euo pipefail
+          count="${REQUESTED_SHARDS:-$DEFAULT_SHARDS}"
+          if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::The shards input must be a positive integer, got '$count'."
+            exit 2
+          fi
+          shard_list=$(python3 -c 'import json, sys; print(json.dumps(list(range(int(sys.argv[1])))))' "$count")
+          echo "shards=$count" >> "$GITHUB_OUTPUT"
+          echo "shard_list=$shard_list" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Mutation run plan"
+            echo
+            echo "Shards: $count ($shard_list)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  mutants:
+    name: mutants shard ${{ matrix.shard }}
+    needs: plan
+    runs-on: ubuntu-latest
+    # The scope below is sized so that one shard finishes inside this cap with room to spare.
+    timeout-minutes: 120
+    strategy:
+      # One slow shard must not cancel the shards that would still report.
+      fail-fast: false
+      # cargo-mutants shard indices start at 0 and must be less than the shard count.
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shard_list) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Set up mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Install nextest ${{ env.CARGO_NEXTEST_VERSION }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+
+      - name: Install cargo-mutants ${{ env.CARGO_MUTANTS_VERSION }}
+        run: cargo install --locked cargo-mutants --version "$CARGO_MUTANTS_VERSION"
+
+      - name: Run cargo-mutants
+        # Below the job cap, so a shard that overruns still reaches the summary and upload steps.
+        # A step timeout fails this step, and the `if: always()` steps after it still run.
+        timeout-minutes: 105
+        env:
+          # First slice of the reader and recovery scope: the framing reader, which recovers at
+          # trusted boundaries and bounds inflation, and the memory-mapped plugin reader. That is
+          # about 101 mutants. The measured cost is dominated by hanging mutants, which cost the
+          # full test timeout each, so keep the scheduled slice small.
+          # Run `crates/converter/src/esm/binary.rs` (116 mutants), `crates/converter/src/esm/load_order.rs`
+          # (127), or the wider `crates/converter/src/records/**` and
+          # `crates/converter/src/esm/**` globs by hand with the `files` input; see
+          # docs/contributing/mutants.md.
+          DEFAULT_FILES: >-
+            crates/converter/src/records/scanner.rs
+            crates/converter/src/esm/mmap_reader.rs
+          MUTANT_FILES: ${{ inputs.files }}
+        run: |
+          set -euo pipefail
+          shards='${{ needs.plan.outputs.shards }}'
+          shard='${{ matrix.shard }}'
+          files="${MUTANT_FILES:-$DEFAULT_FILES}"
+
+          # Pathname expansion stays off while the input is split. The input holds cargo-mutants
+          # --file globs, and bash would expand a value such as crates/converter/src/records/**
+          # against the checkout first. Without globstar, ** then behaves like *, so the loop
+          # would drop the nested .rs files and cargo-mutants would see a narrower scope than
+          # the one requested.
+          file_args=()
+          set -f
+          for glob in $files; do
+            file_args+=(--file "$glob")
+          done
+          set +f
+          if [ "${#file_args[@]}" -eq 0 ]; then
+            echo '::error::No --file globs were given, so the run would cover the whole converter.'
+            exit 2
+          fi
+          echo "Shard $shard of $shards covers: $files"
+
+          # Count the whole filtered scope first, so a typo in a glob fails loudly instead of a
+          # shard reporting an empty success over a scope it never asked for.
+          if ! scope_output=$(cargo mutants -p converter "${file_args[@]}" --list --no-times); then
+            echo '::error::cargo-mutants could not list mutants. Check the workspace and the globs.'
+            exit 2
+          fi
+          scope_total=$(printf '%s\n' "$scope_output" | grep -c '^crates/' || true)
+          if [ "$scope_total" -eq 0 ]; then
+            echo "::error::No mutants matched the --file globs, so the run covers nothing. Check the patterns: $files"
+            exit 2
+          fi
+
+          if ! shard_output=$(cargo mutants -p converter "${file_args[@]}" \
+            --shard "$shard/$shards" --list --no-times); then
+            echo '::error::cargo-mutants could not list the mutants for this shard.'
+            exit 2
+          fi
+          planned=$(printf '%s\n' "$shard_output" | grep -c '^crates/' || true)
+          echo "Shard $shard plans to test $planned of $scope_total mutants." | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [ "$planned" -eq 0 ]; then
+            # A dispatch can request fewer than one mutant per shard. An empty shard is expected
+            # then and must not fail the run; only an empty whole scope is an error, and the
+            # count above already checked that. The marker lets the report count this shard as
+            # reporting, with zero outcomes, instead of calling it a missing report.
+            mkdir -p mutants.out
+            printf 'This shard was assigned no mutants. The filtered scope has %s mutants, which other shards test.\n' \
+              "$scope_total" > mutants.out/shard-empty.txt
+            {
+              echo
+              echo "This shard was assigned no mutants. The filtered scope has $scope_total mutants, which other shards test."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          set +e
+          # Copy mode (the default) rather than --in-place: cargo-mutants refuses --jobs together
+          # with --in-place, and two jobs let one test run overlap the next build. Each job builds
+          # its own copy, so the first mutant of the second copy pays one full dependency build.
+          cargo mutants -p converter "${file_args[@]}" \
+            --test-tool nextest \
+            --timeout-multiplier 2 \
+            --jobs 2 \
+            --shard "$shard/$shards"
+          status=$?
+          set -e
+
+          # 0: every mutant was caught. 2: survivors, which is a report, not an error. 3: at least
+          # one test timed out, which the summary counts. Anything else, including a failed
+          # baseline (4), is an infrastructure failure and fails this job.
+          echo "cargo-mutants exited with status $status"
+          case "$status" in
+            0 | 2 | 3) ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Summarize the shard
+        if: always()
+        # pipefail makes a failed parse fail the step. Without it, tee exits 0 and a shard that
+        # wrote a truncated outcomes.json would leave a clean-looking summary behind.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob
+          import json
+          import os
+          import sys
+          from collections import Counter
+
+          # outcomes.json holds one entry per finished scenario. Each entry names its summary, such
+          # as CaughtMutant, and its scenario: "Baseline" or {"Mutant": {...}}.
+          # mutants.json lists every mutant the shard planned to test, including any that a timeout
+          # cut off before they ran, so its length is the planned total.
+          SUMMARIES = {
+              "CaughtMutant": "caught",
+              "MissedMutant": "missed",
+              "Timeout": "timeout",
+              "Unviable": "unviable",
+              "Failure": "failure",
+          }
+          # cargo-mutants appends one line per outcome to these lists. They are the documented
+          # artifact of a run, and they outlive a deleted scratch checkout, so count them when
+          # outcomes.json is missing instead of printing zeros.
+          LISTS = (
+              "caught.txt",
+              "missed.txt",
+              "timeout.txt",
+              "unviable.txt",
+              "failure.txt",
+          )
+          ROWS = ("caught", "missed", "timeout", "unviable", "failure")
+
+
+          def find(name):
+              matches = sorted(glob.glob(os.path.join("mutants.out", "**", name), recursive=True))
+              return matches[0] if matches else None
+
+
+          def stop(message):
+              print(f"::error::{message}", file=sys.stderr)
+              sys.exit(1)
+
+
+          planned = None
+          planned_path = find("mutants.json")
+          if planned_path:
+              try:
+                  with open(planned_path, encoding="utf-8") as stream:
+                      planned = len(json.load(stream))
+              except (OSError, ValueError) as error:
+                  stop(f"mutants.json could not be read or parsed ({planned_path}): {error}")
+
+          tested = Counter()
+          unknown = Counter()
+          mutant_outcomes = 0
+          counts_from = None
+          empty_path = find("shard-empty.txt")
+
+          outcomes_path = find("outcomes.json")
+          if outcomes_path:
+              try:
+                  with open(outcomes_path, encoding="utf-8") as stream:
+                      lab = json.load(stream)
+              except (OSError, ValueError) as error:
+                  stop(
+                      f"outcomes.json could not be parsed ({outcomes_path}): {error}. "
+                      "The shard report is incomplete, so this step fails instead of printing a "
+                      "clean table."
+                  )
+              outcomes = lab.get("outcomes") if isinstance(lab, dict) else None
+              if not isinstance(outcomes, list):
+                  stop(f"outcomes.json does not hold an outcomes list ({outcomes_path}).")
+              for outcome in outcomes:
+                  if not isinstance(outcome, dict):
+                      continue
+                  scenario = outcome.get("scenario")
+                  if not (isinstance(scenario, dict) and "Mutant" in scenario):
+                      continue
+                  mutant_outcomes += 1
+                  summary = outcome.get("summary")
+                  if summary in SUMMARIES:
+                      tested[SUMMARIES[summary]] += 1
+                  else:
+                      unknown[summary] += 1
+              counts_from = "outcomes.json"
+          else:
+              found = {name: find(name) for name in LISTS}
+              if any(found.values()):
+                  for name, path in found.items():
+                      if path is None:
+                          continue
+                      with open(path, encoding="utf-8") as stream:
+                          tested[name.removesuffix(".txt")] = sum(
+                              1 for line in stream if line.strip()
+                          )
+                  mutant_outcomes = sum(tested.values())
+                  counts_from = "the outcome lists"
+              elif not empty_path:
+                  stop(
+                      "No outcomes.json and no caught.txt, missed.txt, timeout.txt, "
+                      "unviable.txt or failure.txt exist, so this shard reported nothing."
+                  )
+
+          finished = sum(tested.values()) + sum(unknown.values())
+          total = planned if planned is not None else finished
+          not_tested = max(total - finished, 0)
+
+          print("## Mutants shard ${{ matrix.shard }} of ${{ strategy.job-total }}")
+          print()
+          if empty_path:
+              with open(empty_path, encoding="utf-8") as stream:
+                  note = stream.read().strip()
+              print(note or "This shard was assigned no mutants.")
+              print()
+          if counts_from == "the outcome lists":
+              print("outcomes.json was missing, so the counts come from the outcome lists.")
+              print()
+          if planned is None and not empty_path:
+              print("No mutants.json was written, so the planned total is the finished count.")
+              print()
+          print("| Outcome | Mutants |")
+          print("| --- | --- |")
+          for outcome in ROWS:
+              print(f"| {outcome} | {tested.get(outcome, 0)} |")
+          if unknown:
+              print(f"| unknown summary | {sum(unknown.values())} |")
+          print(f"| not tested | {not_tested} |")
+          print(f"| total planned | {total} |")
+          print(f"| mutant outcomes | {mutant_outcomes} |")
+
+          missed_path = find("missed.txt")
+          if missed_path:
+              missed = [
+                  line.strip()
+                  for line in open(missed_path, encoding="utf-8")
+                  if line.strip()
+              ]
+              if missed:
+                  print()
+                  print("Surviving mutants:")
+                  print()
+                  for name in missed:
+                      print(f"- `{name}`")
+          PY
+
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: mutants.out/
+          # A missing report means the shard proved nothing; do not hide that. An empty shard
+          # still writes mutants.out/shard-empty.txt, so its artifact exists and says so.
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    name: surviving mutants
+    needs: [plan, mutants]
+    # Run even when a shard failed or reached its timeout: the other shards still reported.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The plan job owns the shard count. The report cannot read the matrix, and a missing
+      # artifact must show as a missing shard, not shrink the denominator.
+      SHARDS: ${{ needs.plan.outputs.shards }}
+    steps:
+      - name: Download every shard report
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-shard-*
+          path: shards
+
+      - name: Merge the surviving mutants
+        # pipefail makes a failed parse fail the step. Without it, tee exits 0 and the step
+        # would still write a clean "no survivors" file over an unreadable input.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob
+          import json
+          import os
+          import sys
+          from collections import Counter
+
+          SUMMARIES = {
+              "CaughtMutant": "caught",
+              "MissedMutant": "missed",
+              "Timeout": "timeout",
+              "Unviable": "unviable",
+              "Failure": "failure",
+          }
+          LISTS = (
+              "caught.txt",
+              "missed.txt",
+              "timeout.txt",
+              "unviable.txt",
+              "failure.txt",
+          )
+          ROWS = ("caught", "missed", "timeout", "unviable", "failure")
+          SHARDS = int((os.environ.get("SHARDS") or "0").strip() or "0")
+          if SHARDS < 1:
+              print(
+                  "::error::The plan job published no shard count, so the report cannot be "
+                  "validated.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+
+          def find(root, name):
+              matches = sorted(glob.glob(os.path.join(root, "**", name), recursive=True))
+              return matches[0] if matches else None
+
+
+          counts = Counter()
+          unknown = Counter()
+          survivors = set()
+          planned = 0
+          planned_known = False
+          reported = 0
+          mutant_outcomes = 0
+          missing = []
+          without_outcomes = []
+          unreadable = []
+
+          for index in range(SHARDS):
+              shard = os.path.join("shards", f"mutants-shard-{index}")
+              if not os.path.isdir(shard):
+                  missing.append(index)
+                  continue
+
+              planned_path = find(shard, "mutants.json")
+              if planned_path:
+                  try:
+                      with open(planned_path, encoding="utf-8") as stream:
+                          planned += len(json.load(stream))
+                      planned_known = True
+                  except (OSError, ValueError) as error:
+                      unreadable.append(f"shard {index} mutants.json: {error}")
+
+              outcomes_path = find(shard, "outcomes.json")
+              empty_path = find(shard, "shard-empty.txt")
+              if outcomes_path:
+                  try:
+                      with open(outcomes_path, encoding="utf-8") as stream:
+                          lab = json.load(stream)
+                  except (OSError, ValueError) as error:
+                      # Do not count this shard as reported. The partial artifact still uploads,
+                      # and the verify step fails the job.
+                      unreadable.append(f"shard {index} outcomes.json: {error}")
+                      continue
+                  outcomes = lab.get("outcomes") if isinstance(lab, dict) else None
+                  if not isinstance(outcomes, list):
+                      unreadable.append(f"shard {index} outcomes.json: no outcomes list")
+                      continue
+                  reported += 1
+                  for outcome in outcomes:
+                      if not isinstance(outcome, dict):
+                          continue
+                      scenario = outcome.get("scenario")
+                      if not (isinstance(scenario, dict) and "Mutant" in scenario):
+                          continue
+                      mutant_outcomes += 1
+                      summary = outcome.get("summary")
+                      if summary in SUMMARIES:
+                          counts[SUMMARIES[summary]] += 1
+                      else:
+                          unknown[summary] += 1
+              else:
+                  found = {name: find(shard, name) for name in LISTS}
+                  if any(found.values()):
+                      # The lists are appended after each outcome and are the documented artifact.
+                      # Count them so a shard whose outcomes.json is gone still reports.
+                      reported += 1
+                      for name, path in found.items():
+                          if path is None:
+                              continue
+                          with open(path, encoding="utf-8") as stream:
+                              value = sum(1 for line in stream if line.strip())
+                          counts[name.removesuffix(".txt")] += value
+                          mutant_outcomes += value
+                  elif empty_path:
+                      # The shard was assigned no mutants. That is a report, not a gap.
+                      reported += 1
+                  else:
+                      without_outcomes.append(index)
+
+              missed_path = find(shard, "missed.txt")
+              if missed_path:
+                  with open(missed_path, encoding="utf-8") as stream:
+                      survivors.update(
+                          line.strip() for line in stream if line.strip()
+                      )
+
+          finished = sum(counts[row] for row in ROWS) + sum(unknown.values())
+          total = planned if planned_known else finished
+          not_tested = max(total - finished, 0)
+
+          problems = []
+          if missing:
+              problems.append(
+                  "shards with no artifact: " + ", ".join(str(index) for index in missing)
+              )
+          if without_outcomes:
+              problems.append(
+                  "shards with no outcome data: "
+                  + ", ".join(str(index) for index in without_outcomes)
+              )
+          if unreadable:
+              problems.append(f"unreadable inputs: {len(unreadable)}")
+          if mutant_outcomes < 1:
+              problems.append("no Mutant scenario outcome was reported")
+
+          # Write the list before failing, so the partial artifact uploads and names what is
+          # missing. Do not write "No surviving mutants" unless every input was read and at
+          # least one mutant finished; a baseline-only run proves nothing.
+          with open("surviving-mutants.txt", "w", encoding="utf-8") as stream:
+              if survivors:
+                  for name in sorted(survivors):
+                      stream.write(name + "\n")
+              elif problems:
+                  stream.write(
+                      "The surviving-mutant list is incomplete. "
+                      + "; ".join(problems)
+                      + ".\n"
+                  )
+              else:
+                  stream.write("No surviving mutants were reported.\n")
+
+          with open("report-status.txt", "w", encoding="utf-8") as stream:
+              stream.write(f"expected={SHARDS}\n")
+              stream.write(f"reported={reported}\n")
+              stream.write(f"mutant_outcomes={mutant_outcomes}\n")
+              stream.write(f"missing={len(missing)}\n")
+              stream.write(f"without_outcomes={len(without_outcomes)}\n")
+              stream.write(f"unreadable={len(unreadable)}\n")
+
+          print("## Mutation report")
+          print()
+          print(f"Shards reporting: {reported} of {SHARDS}")
+          if missing:
+              print(
+                  "Shards with no artifact: "
+                  + ", ".join(str(index) for index in missing)
+              )
+          if without_outcomes:
+              print(
+                  "Shards with an artifact but no outcome data: "
+                  + ", ".join(str(index) for index in without_outcomes)
+              )
+          if unreadable:
+              print(f"Inputs that could not be parsed: {len(unreadable)}")
+          print()
+          print("| Outcome | Mutants |")
+          print("| --- | --- |")
+          for outcome in ROWS:
+              print(f"| {outcome} | {counts.get(outcome, 0)} |")
+          if unknown:
+              print(f"| unknown summary | {sum(unknown.values())} |")
+          print(f"| not tested | {not_tested} |")
+          print(f"| total planned | {total} |")
+          print(f"| mutant outcomes | {mutant_outcomes} |")
+          print()
+          print(f"Surviving mutants: {len(survivors)}")
+          if survivors:
+              print()
+              for name in sorted(survivors):
+                  print(f"- `{name}`")
+
+          if unreadable:
+              for problem in unreadable:
+                  print(
+                      f"::error::Could not parse {problem}. The merged list is incomplete.",
+                      file=sys.stderr,
+                  )
+              sys.exit(1)
+          PY
+
+      - name: Upload the merged list
+        # Upload the partial list too: it names the missing shards instead of hiding them.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: surviving-mutants.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      # The merged list is written before this step, so a partial run still leaves evidence. The
+      # report job fails when that evidence is incomplete: a crashed shard must not look like a
+      # clean report.
+      - name: Verify every shard reported outcomes
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -s report-status.txt ]; then
+            echo '::error::The merge step wrote no report status, so no shard report was validated.'
+            exit 1
+          fi
+          # The merge step writes plain integer assignments; nothing else is sourced here.
+          . ./report-status.txt
+          failed=0
+          if [ "$reported" -ne "$expected" ]; then
+            echo "::error::$reported of $expected shards reported usable outcomes."
+            failed=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::$missing shards uploaded no artifact. A crashed or timed-out shard leaves no report."
+            failed=1
+          fi
+          if [ "$without_outcomes" -ne 0 ]; then
+            echo "::error::$without_outcomes shards have an artifact but no outcome data."
+            failed=1
+          fi
+          if [ "$unreadable" -ne 0 ]; then
+            echo "::error::$unreadable inputs could not be parsed, so the merged list is incomplete."
+            failed=1
+          fi
+          if [ "$mutant_outcomes" -lt 1 ]; then
+            echo '::error::No shard reported a Mutant scenario outcome. A baseline-only run proves nothing.'
+            failed=1
+          fi
+          if [ "$failed" -ne 0 ]; then
+            echo "See the mutants-report artifact for the partial list and the job summary for the counts."
+            exit 1
+          fi
+          echo "Every shard reported, and at least one mutant finished."

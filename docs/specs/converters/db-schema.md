@@ -14,6 +14,71 @@ for both frontends. MOD3 is an ARMA model slot, not an ARMO world-model path.
 
 ---
 
+## Optional PC control files
+
+The converter publishes `interface/controls/pc/controlmap.txt`,
+`keyboard_english.txt`, and `gamepad.txt` as optional copied files beside the
+world database. Their presence adds no database tables or required capability;
+older packs without these paths remain readable. This preserves the original
+text contract for future input/menu consumers without a SQL-specific parser.
+
+These three paths are additive inputs, extracted separately from each enabled
+archive on every conversion. Only archive headers and the selected control
+payloads are read by this extra pass; unrelated payloads are not decompressed
+or repacked. Existing `converter-inputs-v4` and `runtime-english-v4` inventories
+retain their original coverage and remain reusable, without a second archive
+pack generation. Mesh, texture, database and script schema/cache versions stay
+the same.
+Archives overlay in the existing plugin load order, last provider wins, then
+loose Data files (or the effective MO2 loose winner) override archives. Paths
+match case-insensitively and publish in lowercase.
+Each control payload is extracted independently. A failed payload emits one
+warning for that path and leaves its earlier archive provider intact (or absent),
+while readable files from the same archive still win normally. An unreadable
+archive retains one archive-level warning rather than repeating it per path.
+
+Rows receive structural validation, preserving binding expressions as opaque
+text for the input layer. Controlmap rows have seven tab-separated fields
+(event, keyboard, mouse, gamepad, three 0/1 remap flags), optionally followed by
+hexadecimal event flags. Consecutive tabs provide alignment; spaces inside
+names and aliases remain meaningful. Keyboard rows contain a key name and hex
+hardware code, optionally a decimal Flash code; gamepad rows contain a name
+and hex hardware code. Alias, alternative and chord binding expressions are
+retained; this pass does not resolve or semantically validate them.
+
+Original bytes, comments (`//`), blank context separators and line endings are
+preserved, including legacy Windows-1252 names and an optional leading UTF-8
+BOM. A malformed physical line is removed entirely, including its newline, so
+it cannot introduce a new context. One warning per affected file summarizes
+the skipped-line count and first original 1-based line number, making the report
+and manifest incomplete while valid neighboring lines and files still publish.
+LF, CRLF and CR-only files retain their original endings.
+If removing a malformed row would join a retained CR to a later blank LF row,
+the CR is completed to CRLF so the blank context separator remains distinct.
+Control extraction runs independently of ordinary archive payload failures;
+readable controls still publish with the asset failure warning. Undiscovered
+loose prefixes mask affected control sources as well as ordinary VFS inputs,
+so an unknown loose override cannot expose an older archive binding.
+An unreadable winning file warns and is omitted. Output I/O failures remain
+errors. An empty or absent optional file is permitted.
+
+`interface/controls/pc/provenance.json` is an object keyed by published logical
+path. Each entry has `provider` (`archive:<relative archive path>` or
+`loose:<logical path>`), `source_sha256` (original bytes), `output_sha256`
+(sanitized bytes), and `skipped_lines` (original 1-based line numbers). Loose
+provider paths describe the effective logical winner, including MO2, rather
+than machine-specific installation paths. The source hash identifies its exact
+content. The sidecar is absent when no control files publish.
+
+A metadata rebuild (`--reuse-assets <source-pack>` into a new output) can add or
+refresh these files: it extracts only the three paths from the existing matched
+plugin archive selection and applies loose overrides, retaining verified
+GLB/KTX2/Luau bytes. Existing metadata restrictions still apply (complete
+compatible source pack, matching plugins, disjoint new output, no MO2 mode).
+An ingestion-only extraction does not publish runtime files. Normal conversion
+also refreshes the files while reusing unrelated compatible assets; a full
+mesh/texture reconversion is unnecessary for this addition.
+
 ## 1. Schema Overview
 
 `skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). With `PipelineConfig.plugins_file` (CLI `--plugins-file`), the converter reads Windows-1252 selection, keeps the last duplicate entry's position and checkbox, and matches installed filenames case-insensitively. Installed Skyrim, Update, Dawnguard, HearthFires and Dragonborn masters are always active in that fixed order, followed by installed entries of readable `Skyrim.ccc`. `skyrim_ccc_file` (`--skyrim-ccc-file`) overrides the default file beside Data. Only checked player entries load, including mod masters; official and Creation entries keep their implicit positions. An explicit `skyrim_ini_file` (`--skyrim-ini-file`) supplies General `sTestFile1` through `sTestFile10`: listed plugins retain their listed positions even if unchecked, while unlisted entries append by ascending file modification time (filename breaks ties). No ambient user profile is read. Missing entries and optional CCC/INI read errors warn and continue. Plugins with missing, disabled or unusable masters and their transitive dependents are omitted with bounded notices; an empty usable selection gives a clear error.
@@ -122,6 +187,12 @@ winning source plugin through `plugins.id`. Required movement and terrain
 semantics are validated before winner selection; rejected candidates leave an
 earlier usable winner intact and are counted in per-plugin diagnostics. The pack's
 `record-reader.json` identifies the frontend and schema.
+
+When a later plugin deletes a previously defined base of a compatible type, both readers omit
+placements that depended on it and count them in the conversion notices. Each notice includes
+a sample placement and base FormID. This preserves record-data completeness. A placement that
+names an already deleted, never-defined, or incompatible base still counts as a recovery warning,
+subject to the engine's existing hardcoded low-FormID fallback.
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
@@ -295,6 +366,9 @@ CREATE TABLE IF NOT EXISTS worldspaces (
     full_name TEXT                      -- Display name (FULL, e.g. 'Skyrim'); see "Display names"
 );
 ```
+
+A `WRLD` without `EDID` gets no `worldspaces` row and no worldspace environment row. The converter
+does not invent an editor id for it. The export reports it as `worldspace_missing_editor_id`.
 
 ---
 
@@ -556,6 +630,11 @@ key light, ambient and fog from `cell_lighting`, `lighting_templates`, `image_sp
 
 ---
 
+Missing or unsupported-size `LGTM.DATA` already leaves the DATA lighting columns NULL.
+The `lighting_template_unusable_data` omission now reports this loss (section 19);
+`editor_id`, identity and an independently valid `DALC` remain available. Accepted sizes
+come from the documented xEdit layouts, not guessed retail defaults.
+
 ### 5. Placed World References (`references`)
 
 Stores 3D positions, rotations, scales, and cell parentage for placed world objects (`REFR`,
@@ -577,7 +656,7 @@ CREATE TABLE IF NOT EXISTS "references" (
     rot_y REAL NOT NULL,                -- Rotation Y (Radians)
     rot_z REAL NOT NULL,                -- Rotation Z (Radians)
     scale REAL NOT NULL DEFAULT 1.0,    -- Scale multiplier
-    radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
+    radius_override REAL,               -- signed XRDS radius offset in Creation units (NULL when absent/invalid)
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
@@ -588,6 +667,29 @@ CREATE TABLE IF NOT EXISTS "references" (
 -- Ordinary SQLite index used for interior cell reference lookup
 CREATE INDEX IF NOT EXISTS idx_references_cell ON "references"(cell_id);
 ```
+
+A placed record needs the leading 24 bytes of `DATA` for position and rotation, as
+[xEdit xedit-4.1.5f's placed-record definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L5320-L5323)
+uses `wbDATAPosRot`. Missing or short `DATA` keeps the canonical `records` row but
+omits the placement, spatial row and derived reference links, reporting
+`reference_unusable_data` (section 19). The required transform columns are `NOT NULL`;
+the converter does not invent an origin or partial rotation. A subset update with
+unusable `DATA` also removes any prior placement and spatial row, owned link/detail rows,
+door transitions involving it, and related room rows. Room graph publication excludes those
+unusable placements before projecting markers or memberships; it cannot recreate an origin
+from their canonical bytes. Incoming authored links may still name the retained canonical record.
+
+The same omission applies to the other required placement fields (#811, section 19). A
+placed record with no four-byte `NAME`, with an `XSCL` that is present but shorter than four
+bytes, or with no parent cell gets no placement row and no spatial row. The converter stores
+no base form 0, no scale 1.0 and no cell 0 for it. An absent `XSCL` is different: it is an
+authored scale of 1.0 and stays so. Each omission is reported as `reference_missing_base`,
+`reference_short_scale` or `reference_missing_cell`, with the form ID and the field.
+
+The typed record reader can retain a first definition without `NAME` as a target for
+package and faction links. Runtime plugin export requires exactly one nonzero base `NAME`.
+It omits the record, its `references` and `exterior_spatial` rows, and resolves incoming
+typed links as it would for an absent target.
 
 The reference flag and enable-parent columns preserve winning raw-record
 metadata for initial spawn filtering (#165) and later object LOD (#106).
@@ -632,7 +734,8 @@ Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FU
 `KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, `PROJ`, `HAZD`, and `LIGH` when it has a model. `TACT`
 (talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
 added for #269; before that their references had no row and did not render. The engine still
-skips models under `effects/`, `sky/` or `markers/`
+skips models under `effects/`, `sky/` or `markers/`, with one drawable activator exception for
+`effects/fxcobwebroundwall01.nif`
 (`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
 models; that is render policy, not data the table lacks. Marker filenames alone are not excluded:
 the base record's `Is Marker` flag controls editor-marker admission. They are additive
@@ -694,10 +797,34 @@ Rules:
   and `PFLA` (not `ACHR` or `ACRE`). `owner_id` accepts `FACT`, `ACHR` or `NPC_`; `lock_key_id`
   accepts `KEYM`; `XLCN` accepts `LCTN`; `XLRL` accepts `LCRT` or `LCTN`; and `XEZN` accepts
   `ECZN`. A zero ID resolves to NULL. A nonzero hardcoded ID below `0x800` is retained if no
-  plugin record exists; a present winner must be non-deleted and have an allowed type. Other
+  plugin record exists and no accepted deletion removed it; a present winner must be non-deleted and have an allowed type. Other
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
+- Subset exports refresh incoming `XLKR`, `XAPR`, `XATR` and `XOWN` links when a target is
+  added, deleted, restored or changes record type. Full runtime exports index authored
+  target IDs, source IDs and slot positions in `reference_authored_targets`, including
+  sources with no detail row. The first restoration on an older pack builds the index in
+  its edit transaction. Later edits reread changed sources and look up incoming slots by
+  target ID. Unrelated columns, including owner rank, retain their values.
+  `reference_authored_changes(reference_id INTEGER PRIMARY KEY)` queues source IDs for
+  reindexing. Placement updates add IDs explicitly or through the trigger on updates to
+  `references.data`. The refresh clears the queue in the same transaction.
+  Placement layers also refresh affected links in the same transaction.
+  For an unedited in-house source, the converter uses the original plugin payload and master
+  list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
+  occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
+  which source a subset replaced and retains recoverable link fields for typed subsets.
+  Typed subset edits also resolve these recovered fields against targets already present in the pack.
+  A later placement-layer edit removes that entry and supplies the effective source.
+  The provenance table has columns `form_id INTEGER PRIMARY KEY` and `data BLOB`. A subset or
+  placement edit upgrades older FormID-only tables in the edit transaction. Existing rows keep
+  their source markers and have NULL link data. A full export drops this edit history.
+- The exporter stores the FormID of each deleted non-placement record it receives in
+  `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. A later subset uses the table
+  to recognize deleted targets whose canonical records still exist. A live subset replacement
+  clears the FormID's deletion entry. Full plugin exports also store accepted deletions that
+  have no surviving winner, including placements absent from the canonical archive.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -754,6 +881,15 @@ CREATE TABLE IF NOT EXISTS land (
 );
 ```
 
+A `LAND` without a `VHGT` field (or with an empty one) gets no `land` row, and the terrain cell
+cache and merged terrain mesh publish no cell for it. The converter stores no empty blob and no
+zero heights (#811). The export reports it as `land_missing_heights`; the cell cache and the mesh
+builder print a counted warning and skip the cell. Retail's behaviour for a height-less `LAND` is
+unverified. `vtex`, `vclr` and `normals` are `NULL` when the record has no `VTEX`, `VCLR` or `VNML`
+(earlier output stored an empty blob). Missing or zero `VNML` vectors are still rebuilt from the
+authored heights in the cell cache: that derivation is not default fill, and the retail rule for a
+zero vector is unverified (open item on #811).
+
 ---
 
 ### 8. Level of Detail (`lod_chunks`, `lod_chunks_spatial`, `lod_build`)
@@ -785,6 +921,69 @@ CREATE TABLE IF NOT EXISTS lod_build (
 The unused pre-schema-6 `lod` blob placeholder is retained. Terrain LOD
 uses `lod_chunks` for indexing and external GLB files for payloads. See
 [ADR-0010](../../adr/0010-lod-chunk-payload-format.md).
+
+#### Object LOD chunks (`lod_object_chunks`, `lod_object_chunks_spatial`)
+
+Additive tables for retail object LOD, one row per retail `.bto` block of level 16, 8 or 4 (tier 16, 8 or 4). They have the columns,
+primary key and R-tree of `lod_chunks` and `lod_chunks_spatial`, and are created only when the
+first object chunk is published, so a pack without object LOD has no extra table and its database
+is unchanged. `payload_path` is `lod/<world>/<tier>/objects_<x>_<y>.glb`, a file beside the terrain
+chunk of the same key. The rows are checked against the same `lod_build` identity as terrain rows
+and do not change it. `WORLD_DATABASE_SCHEMA_VERSION` is unchanged.
+
+`lod-manifest.json` gains three optional fields, absent for a pack without object LOD:
+`object_chunks` (row count), `objects_compiler_version` and `object_chunk_inputs` (payload path to
+the SHA-256 of the compiler revision, key, LOD origin, `.bto` bytes and atlas bytes). Package
+validation fails when a listed chunk is missing, has a different SHA-256, or is not a valid object
+chunk GLB (see [lod-compiler.md](lod-compiler.md#object-lod-chunks)).
+
+The additive table `lod_object_atlases(worldspace_id PRIMARY KEY, payload_path, content_hash)` lists
+the shared atlas of a worldspace (`lod/<world>/objects_atlas.opensky-srgb.ktx2`, KTX2, SHA-256 of the file) that
+its object chunks reference. A worldspace without a row has chunks that embed the atlas. The manifest
+field `object_atlases` maps each atlas path to its SHA-256.
+
+#### Large-reference membership (`large_references`)
+
+This additive projection stores the defining plugin's filtered `WRLD.RNAM` membership.
+The importer remaps each FormID in the supplying plugin's load order and accepts tuples whose
+header and placement cell keys match. It omits and counts malformed or unresolved input.
+The cell coordinates describe the placement bucket, including when the reference's parent
+cell differs. See [reviewed retail facts, G01](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+
+```sql
+CREATE TABLE IF NOT EXISTS large_references (
+    worldspace_id INTEGER NOT NULL,
+    grid_x INTEGER NOT NULL,
+    grid_y INTEGER NOT NULL,
+    reference_id INTEGER NOT NULL,
+    PRIMARY KEY (worldspace_id, grid_x, grid_y, reference_id)
+);
+```
+
+The engine uses the first three columns to find exterior buckets. It checks that the winning
+reference has a placement in the matching exterior worldspace and bucket.
+
+`large_reference_omissions` records incomplete input. A row covers one bucket when both
+coordinates are present, or the whole worldspace when both are NULL. The count covers rejected
+RNAM subrecords, unresolved FormIDs, and members without a projected reference or worldspace.
+The separate `confirmed_removed_count` records membership entries with a winning deleted REFR.
+These entries have a known outcome and do not make their bucket incomplete.
+
+```sql
+CREATE TABLE IF NOT EXISTS large_reference_omissions (
+    worldspace_id INTEGER NOT NULL,
+    grid_x INTEGER,
+    grid_y INTEGER,
+    omitted_count INTEGER NOT NULL CHECK(omitted_count >= 0),
+    confirmed_removed_count INTEGER NOT NULL CHECK(confirmed_removed_count >= 0),
+    CHECK(omitted_count > 0 OR confirmed_removed_count > 0),
+    CHECK(confirmed_removed_count = 0 OR grid_x IS NOT NULL),
+    CHECK((grid_x IS NULL) = (grid_y IS NULL))
+);
+```
+
+The engine requires both tables for promotion and preserves marked object LOD for incomplete
+buckets. The schema version is unchanged.
 
 ---
 
@@ -856,6 +1055,7 @@ reference and cell fields, validated against their expected sizes:
 | `XLKR` | placed references | keyword and linked reference (8 bytes), or the linked reference alone (legacy 4 bytes) |
 | `XNDP` | placed references | navmesh (bytes 0-3 of 8) |
 | `XEMI` | placed references | emitted light or region |
+| `XMBR` | placed references | multibound target (one 4-byte FormID) |
 | `XATR` | placed references | attached reference (the in-house reader already remapped it; the legacy reader does since #269) |
 | `SNAM`, `LNAM` | LIGH | sound and lens flare (the in-house reader already remapped them; the legacy reader does since #269) |
 | `XAPR` | placed references | activate-parent reference (one 8-byte subrecord per parent) |
@@ -879,21 +1079,28 @@ For blob remapping, placed references are REFR, ACHR, ACRE, PGRE, PMIS, PHZD,
 PARW, PBAR, PBEA, PCON and PFLA. This does not expand the record types exported
 to the `references` table; the six newly covered types retain their blobs in
 `records` without adding `references` rows.
+For `XMBR`, the legacy reader remaps the four-byte word for every placed type listed above.
+The in-house reader emits a runtime FormID when the record schema declares `XMBR` as a FormID.
+With the built-in `ACRE` schema, `records.data` can retain opaque `XMBR` bytes,
+including a source master index outside the plugin’s master list. The in-house source archive
+(`inhouse_source_records.payload`) keeps the original plugin bytes.
 Fields not covered may still hold plugin-local FormIDs. In particular, do not
 consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys (use `reference_details.lock_key_id`), `XPWR` water
 reflections as resolved IDs. Other
-unconverted fields include `XLIB`, `XMBR`, `XTNM`, `PDTO` and
+unconverted fields include `XLIB`, `XTNM`, `PDTO` and
 `CELL.XILL`. Check the converter's field-specific handling before using
 these payloads; this list is not exhaustive.
 
-The fields in this table validate master indices and light-plugin local IDs.
+When a reader remaps a field in this table, it validates master indices and light-plugin local IDs.
 An out-of-range index or light-plugin local ID wider than 12 bits is an invalid
 optional link: the converter sets that FormID to zero and reports a warning,
 aggregated per source plugin with the count and first record/field diagnostic.
-Other records and valid links continue to convert. Malformed field lengths cause
-the entire subrecord to be dropped and counted in the same per-plugin warning,
-since its FormID offsets cannot be decoded safely. An array with an incomplete
-entry is dropped in full; valid repeated subrecords are retained. Existing
+Other records and valid links continue to convert. The legacy reader warns about malformed
+field lengths, including arrays with an incomplete entry. It normally drops the affected
+occurrence and retains valid siblings. It keeps an empty payload for malformed placed `XMBR`,
+`REFR.XLRM`, `REFR.XPOD`, `REFR.XORD`, and occluder `XESP` fields so room projection can
+recognize an unusable authored value. An empty `XMBR` yields `unknown` assignment. An absent
+`XMBR` can allow automatic assignment. Existing
 validation of record headers and required fields is unchanged. Zero FormIDs
 remain zero. Other bytes in retained subrecords (such as teleport coordinates,
 enable flags, navmesh triangles and activation delays) are preserved. Unlisted fields remain opaque,
@@ -909,6 +1116,15 @@ were remapped. A future consumer of these fields must account for old packs.
 `export_to_db` without a load order refreshes already-resolved records (for
 example movement annotations), preserving established `formid_map` ownership;
 it neither resolves plugin-local IDs nor upgrades an old pack.
+
+A live sourced placement must match the record type already stored for its FormID.
+A sourced placement deletion checks the owning plugin, local ID and record type
+against the pack before removing the placement and its scripts. The owning
+identity survives deletion. For a low FormID without a stored identity, a subset
+records the deletion in `subset_placement_deletions(form_id INTEGER PRIMARY KEY)`.
+Later subsets leave links to these deleted placements null. A live replacement
+restores the link target, and a full conversion rebuilds the snapshot from its
+source plugins.
 
 ```sql
 CREATE TABLE IF NOT EXISTS formid_map (
@@ -946,9 +1162,9 @@ the space, and most `LIGH` records in `Skyrim.esm` are invisible. A record whose
 row rather than invented values, and a `LIGH` without a `MODL` gets no `statics`
 row either - there would be no mesh to draw.
 
-A reference that places a light usually carries its own `XRDS` radius, stored in
+A reference that places a light usually carries a signed `XRDS` radius offset, stored in
 `references.radius_override` (10,810 of the 12,148 `LIGH` references in
-`Skyrim.esm`), which overrides the base record's radius for that placement.
+`Skyrim.esm`). Add this signed offset to the base radius for that placement.
 
 ```sql
 CREATE TABLE IF NOT EXISTS lights (
@@ -979,7 +1195,7 @@ a shorter `DATA` leaves them NULL for both readers, and floats that are not fini
 in-house reader clears links that do not resolve and the legacy reader keeps them), and the legacy
 reader now remaps `LIGH` `SNAM`/`LNAM` as the in-house schema already did. The columns are
 additive and optional, with no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: `create_tables` adds
-them to an older reused `lights` table. The engine reads radius, colour and flags only.
+them to an older reused `lights` table. The engine reads radius, colour, flags, `fade`, `falloff` and `fade_status`.
 
 ---
 
@@ -1034,11 +1250,16 @@ same NIF-to-GLB converter as other meshes. `flags` below contains the `DATA` gra
 flags rather than record header flags. `load_order` identifies the winning
 override; `formid_map` retains owning-plugin identity independently.
 
-The layout follows [xEdit's TES5 GRAS and LTEX definitions](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas)
+The layout follows [xEdit's TES5 GRAS and LTEX definitions at xedit-4.1.5f](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L10199-L10230)
 and [CommonLibSSE-NG's TESGrass definition](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/main/include/RE/T/TESGrass.h).
 `DATA` is 32 bytes; its padding and unprojected fields stay in `records.data`.
-The converter preserves authored values without clamping to vanilla ranges. A field
-whose bytes are missing, or a non-finite float, becomes NULL. Missing, empty or unsafe
+The converter preserves authored values without clamping to vanilla ranges. Missing or
+short `DATA` records `grass_unusable_data` (section 19); each complete scalar at its fixed
+offset is retained, while absent or incomplete scalar spans become NULL. For example,
+three bytes preserve density and both slope values without inventing the remaining fields.
+The in-house adapter recovers this unique, safely framed numeric prefix after typed-field
+rejection; it does not mark the malformed typed field as decoded. The identity and model
+still publish. A non-finite float becomes NULL. Missing, empty or unsafe
 model paths also become NULL; the original subrecords remain available for diagnostics.
 Path normalization does not verify that the referenced asset exists. Even vanilla
 records can name an absent mesh, so a non-NULL `model_path` is not an availability
@@ -1066,6 +1287,7 @@ CREATE TABLE IF NOT EXISTS grass_types (
 CREATE TABLE IF NOT EXISTS landscape_texture_grasses (
     ltex_id INTEGER NOT NULL,           -- resolved LTEX FormID
     gras_id INTEGER NOT NULL,           -- resolved GNAM GRAS FormID
+    ordinal INTEGER NOT NULL DEFAULT 0, -- first GNAM occurrence in the winning list
     PRIMARY KEY (ltex_id, gras_id)
 );
 ```
@@ -1076,9 +1298,17 @@ Either At Most Above and Either At Most Below, respectively. `flags` bits 0,
 1 and 2 mean Vertex Lighting, Uniform Scaling and Fit to Slope. These definitions
 establish the authored contract, not Skyrim's exact placement equations.
 
-Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse.
-The winning LTEX list replaces the earlier list in full. There is no foreign key on
-the grass target: a deleted or unresolved grass can still be named by a texture,
+Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse,
+retaining the first occurrence's zero-based `ordinal`. Both record readers use this
+projection. Consumers read each texture's species in `ordinal` order (with `gras_id`
+as a deterministic tie fallback), preserving source order rather than sorting species
+by FormID. Gaps after discarded or duplicate occurrences are allowed.
+The winning LTEX list replaces the earlier list in full, including its order and an
+empty replacement. `create_tables` adds `ordinal` to older association tables with a
+negative sentinel, preserving unrelated rows during subset exports. The grass baker
+recovers those lists, and lists in databases without the column, from winning raw
+LTEX records without mutating the database. A complete export writes explicit ordinals.
+There is no foreign key on the grass target: a deleted or unresolved grass can still be named by a texture,
 and consumers resolve it against `grass_types`. Both projections refresh atomically
 from a complete effective load-order export, removing stale grass and associations
 on deletions or later overrides. Deleted GRAS records therefore do not reappear as
@@ -1105,11 +1335,11 @@ CREATE TABLE IF NOT EXISTS npcs (               -- one row per NPC_
 );
 CREATE INDEX IF NOT EXISTS idx_npcs_editor_id ON npcs(editor_id);
 
-CREATE TABLE IF NOT EXISTS movement_types (     -- MOVT 0003580D (NPC_Default_MT) only, today
+CREATE TABLE IF NOT EXISTS movement_types (     -- one row per MOVT
     id INTEGER PRIMARY KEY,
-    editor_id TEXT NOT NULL,                    -- written as the literal 'NPC_Default_MT'
-    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second
-    right_walk REAL NOT NULL, right_run REAL NOT NULL,
+    editor_id TEXT NOT NULL,                    -- EDID
+    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second;
+    right_walk REAL NOT NULL, right_run REAL NOT NULL,     -- zero where the type cannot move
     forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
     back_walk REAL NOT NULL, back_run REAL NOT NULL,
     load_order INTEGER NOT NULL
@@ -1120,6 +1350,17 @@ CREATE TABLE IF NOT EXISTS race_movement_links (  -- one row per RACE
     run_movt_id INTEGER,                        -- RNMV
     load_order INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS default_objects (    -- DOBJ DNAM, merged key by key over every override
+    key TEXT PRIMARY KEY,                       -- use code, for example DMWL (walk) or DMRN (run)
+    form_id INTEGER NOT NULL                    -- load-order FormID; a null link has no row
+);
+-- `default_objects` follows the game loader: a later `DOBJ` changes only the keys it lists, a null
+-- link removes the key, and a zero key (Update.esm holds hundreds of padding pairs) is skipped.
+-- Both record readers feed the key-merged `DOBJ` into the runtime projection, so `records.data`
+-- for DOBJ 00000031 holds the merged `DNAM` under the winning plugin's `load_order`. It is a
+-- derived record, not the winner's bytes. With the in-house reader, the winner's exact source
+-- bytes stay in `inhouse_source_records`, and every version's header is in the source history. A package with no `default_objects` table was
+-- converted before the table existed; the engine flags it and uses the earlier rule.
 CREATE TABLE IF NOT EXISTS movement_game_settings ( -- fMoveCharWalkBase and fJumpHeightMin only
     id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
     value REAL NOT NULL, load_order INTEGER NOT NULL
@@ -1177,7 +1418,7 @@ CREATE TABLE inhouse_unresolved_terrain_textures (      -- LAND layer textures t
 
 ---
 
-### 15. Interior Room Graph (`room_bounds`, `room_portals`, `room_links`, `reference_rooms`, `room_graph_stats`)
+### 15. Interior room graph and occlusion
 
 Skyrim marks the rooms of an interior with `RoomMarker` references (base `0x1F`) and the
 doorways between them with `PortalMarker` references (base `0x20`). The converter decodes both
@@ -1186,7 +1427,7 @@ objects to draw is the engine's policy (design: `docs/research/interior-room-gra
 upstream issue #188). Only interior cells and only box rooms (`XPRM` shape 1) are written;
 exterior markers are skipped silently, and rooms of other shapes, and rooms or portals with a non-finite size or transform, are skipped and counted in the conversion report.
 All FormIDs are in load-order numbering, like `references.id`.
-The two marker base forms are the ones `Skyrim.esm` defines (always load-order slot 0, so the numbers do not change with the load order). A plugin that places rooms with a marker base of its own is not recognised and produces no rows; the conversion report does not count that case.
+These marker base forms, and the occlusion `PlaneMarker` (`0x17`), are the ones `Skyrim.esm` defines (always load-order slot 0, so the numbers do not change with the load order). A plugin that places rooms with a marker base of its own is not recognised and produces no rows; the conversion report does not count that case.
 
 ```sql
 CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarker with a box XPRM
@@ -1197,7 +1438,7 @@ CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarke
     half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL, -- XPRM[0..12]
     lighting_template_id INTEGER,              -- LNAM, NULL when absent
     image_space_id INTEGER,                    -- INAM, NULL when absent
-    flags INTEGER NOT NULL DEFAULT 0           -- XRMR flags byte | (XRMR u16 << 8), kept raw
+    flags INTEGER NOT NULL DEFAULT 0           -- XRMR byte 1 | (second XRMR word << 8), kept raw
 );
 CREATE INDEX IF NOT EXISTS idx_room_bounds_cell ON room_bounds(cell_id);
 
@@ -1210,13 +1451,36 @@ CREATE TABLE IF NOT EXISTS room_portals (      -- one row per XPOD pair of an in
     half_x REAL NOT NULL, half_z REAL NOT NULL, -- doorway half-width and half-height
     room_a INTEGER,                            -- the pair's origin; NULL when 0, absent or not a room of this cell
     room_b INTEGER,                            -- the pair's destination; same
+    unbounded_a INTEGER NOT NULL DEFAULT 0,     -- source XPOD explicitly names NULL on side A
+    unbounded_b INTEGER NOT NULL DEFAULT 0,     -- source XPOD explicitly names NULL on side B
     PRIMARY KEY (ref_id, pair_index)
 );
 CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
 
-CREATE TABLE IF NOT EXISTS room_links (        -- XLRM: rooms seen together without a portal
+CREATE TABLE IF NOT EXISTS room_occluders (
+    ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+    shape INTEGER NOT NULL CHECK(shape IN (1,3)), -- XPRM box or plane
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+    half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL,
+    scale REAL NOT NULL,
+    header_flags INTEGER NOT NULL,
+    has_enable_parent INTEGER NOT NULL,
+    has_links INTEGER NOT NULL,
+    target_ref INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
+CREATE TABLE IF NOT EXISTS room_occluder_links (
+    ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
+    linked_ref INTEGER NOT NULL,
+    single_target_verified INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (ref_id, link_index)
+);
+
+CREATE TABLE IF NOT EXISTS room_links (        -- ordered authored room-group links
     room_ref INTEGER NOT NULL,
     linked_ref INTEGER NOT NULL,
+    link_index INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_ref, linked_ref)
 );
 
@@ -1228,37 +1492,142 @@ CREATE TABLE IF NOT EXISTS reference_rooms (   -- room membership, interiors wit
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_reference_rooms_room ON reference_rooms(room_ref);
 
-CREATE TABLE IF NOT EXISTS room_graph_stats (  -- conversion report counters, one row per name
+CREATE TABLE IF NOT EXISTS room_reference_rules (
+    reference_id INTEGER PRIMARY KEY,
+    cell_id INTEGER NOT NULL,
+    assignment TEXT NOT NULL CHECK(assignment IN ('auto','none','target','unknown')),
+    target_ref INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_room_reference_rules_cell ON room_reference_rules(cell_id);
+CREATE TABLE IF NOT EXISTS room_model_bounds (
+    base_form_id INTEGER PRIMARY KEY,
+    center_x REAL NOT NULL, center_y REAL NOT NULL, center_z REAL NOT NULL,
+    radius REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_graph_cells (
+    cell_id INTEGER PRIMARY KEY,
+    complete INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and version markers
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_link_anomalies (
+    plugin TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_marker INTEGER NOT NULL,
+    first_cell INTEGER NOT NULL
 );
 ```
 
 Columns and rules:
 
+- **`room_occluders`** stores interior `PlaneMarker` placements, base form `0x17`, including
+  cells with no room markers. Shape 1 is a box. Shape 3 is a local X-Z plane. `DATA` supplies
+  the transform and `XPRM` supplies the unscaled half-extents. The native record loader consumes
+  legacy `XOCP` without retaining its geometry. The converter skips deleted placements.
+  Unusable geometry leaves no row and marks the cell incomplete. An absent `XSCL` gives scale 1. An authored scale must be one finite,
+  positive float. A repeated, malformed, or non-positive scale skips the geometry and records
+  an `occluder_unusable_geometry` omission. Resolved outgoing links are still stored.
+  The runtime also skips invalid scale rows in older packs. For a valid
+  scale it uses the authored extents at scale 1 or higher and shrinks them below 1. This bounds
+  the shadow whether retail uses authored extents or scales them.
+  The row retains disabled-state flags, enable-parent presence, and linked-plane presence for
+  runtime policy. `target_ref` is NULL only when `XMBR` is absent. Zero preserves an unresolved
+  or malformed explicit override. `has_links` remains true for malformed `XORD`, including after
+  remapping.
+  For a plane with one valid nonzero source target, the full converter also writes the
+  corroborating `target` assignment in `room_reference_rules`. The runtime requires both
+  facts to agree with the unique containing room before using a named plane.
+- **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
+  occurrences. Each occurrence holds four 32-bit FormIDs that can name a `REFR` or be null.
+  [xEdit 4.1.5f's TES5 `REFR.XORD` definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278)
+
+  `link_index` is `occurrence * 4 + slot` using the original source position, including gaps for
+  earlier malformed occurrences. The converter keeps each remapped nonzero FormID when it skips
+  source geometry or the target is absent. The edge still suppresses the target if a later subset
+  adds it. An unreadable occurrence sets the source cell's `complete` flag to false. In-house
+  exports also clear that flag for unresolved FormIDs and targets without a live `REFR`.
+  A full in-house export publishes `occlusion_version = 1` in `room_graph_stats`.
+  It sets `occlusion_links_verified`
+  to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
+  Full in-house exports and plugin placement imports also clear the flag when a discarded
+  frame has unknown scope, a `REFR` fails before its links can be read, or a rejected
+  placement has a possible `XORD` target and a `NAME` that can name a PlaneMarker.
+  An unreadable `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
+  the placement is new. A later usable replacement or deletion of the same FormID
+  supersedes that evidence within the conversion or import.
+  These markers let the loader keep unrelated occluders in a complete cell that contains an
+  all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
+  links. A verified same-cell edge can be replaced or removed while the engine reloads its
+  endpoints and checks their shared owner.
+  A plugin placement import also clears pack-wide link verification when remapping reports
+  damage on an occlusion marker. It retains each outgoing link it can resolve.
+  Occluder shadows require both markers because an unverified source in another cell can have a
+  missing incoming link to a local occluder. Legacy exports omit both markers.
+  A single complete source `XORD` with exactly one nonzero slot sets `single_target_verified`
+  on its resolved edge. The pack editor checks the original Skyrim fields before remapping, or
+  reads all four runtime FormID slots directly from native JSON. Existing rows default to zero. Isolated one-way and reciprocal pairs of
+  eligible planes with a common owner may each cast independent shadows.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
-  (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
-  half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
+  (the same Euler convention as any reference, `shared::coordinates`). Exactly one 24-byte `DATA`
+  supplies the transform. An invalid transform omits the room and marks its cell incomplete.
+  A marker with no `XRMR` authors no flags, so `flags` is `0`. A marker whose `XRMR` header is
+  present but unreadable (short, repeated or unframed) has unknown flags: it gets no row, its
+  cell is incomplete and the export reports `room_marker_unreadable_flags` (#811).
+  Exactly one 32-byte box `XPRM` supplies the `half_*` extents in the room’s own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
   (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
-- **`room_portals`**: a portal's doorway is the marker's local X-Z rectangle (normal along local
-  +Y); `half_x`/`half_z` are its half-width and half-height. A portal marker without `XPRM`
-  has no size and gets no row. `XPOD` is an array of 8-byte (origin, destination) FormID pairs
+- A **`room_portals`** row describes a doorway in the marker's local X-Z plane, with its normal along +Y.
+  The converter requires exactly one 24-byte `DATA` with finite position and rotation values and exactly
+  one 32-byte shape-3 `XPRM` with finite, strictly positive X and Z half-extents (`half_x` and
+  `half_z`). If either field is missing, duplicated, or invalid, the converter skips the portal
+  and marks its cell incomplete. `XPOD` is an array of 8-byte (origin, destination) FormID pairs
   (xEdit 4.1.5f defs, `Core/wbDefinitionsTES5.pas`: `wbArray(XPOD, 'Portal Data',
   wbStruct('References', [wbFormIDCk('Origin', [REFR, NULL]), wbFormIDCk('Destination',
   [REFR, NULL])]))`), so a portal gets **one row per pair**, numbered by `pair_index` from 0
   in stored order; the geometry columns repeat on every row. A portal whose `XPOD` is absent,
-  empty or shorter than one pair gets one row with `pair_index` 0 and both sides NULL. Bytes
-  after the last whole pair are ignored. Every `XPOD` in the official masters is one pair, so
+  empty or shorter than one pair gets one row with `pair_index` 0 and both sides NULL.
+  Missing, empty, truncated, or repeated `XPOD` fields mark the cell incomplete; conflicting
+  occurrences are not exported. Both outside flags are zero for a truncated field, including on any
+  retained leading pair. Every `XPOD` in the official masters is one pair, so
   vanilla output has `pair_index` 0 only. **Readers must not assume `ref_id` is unique**: join
   or group on `(ref_id, pair_index)`, or on `ref_id` and expect several rows. The key changed
   from `ref_id` alone, and `create_tables` migrates an older-shaped `room_portals` (no
   `pair_index`) in place, inside one savepoint: every row is kept with `pair_index` 0 until the
   next full export rebuilds the table.
-  In the plugin remap `XPOD` is an array of FormIDs: every four bytes are remapped, and a
-  length that is not a multiple of four is dropped with a warning, like any other FormID array.
-- **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
-  rooms that may have no portal between them but must be seen together: if one is visible, so is
-  the other. The target is stored as written, even if it is not a `room_bounds` row.
+  A NULL endpoint with its `unbounded_*` flag set names authored unbounded space. Without that
+  flag it is unknown: a missing, malformed, unresolved or foreign-cell link does not establish
+  outside connectivity. Adding these columns to an older database leaves both flags zero.
+  In the plugin remap `XPOD` is an array of FormIDs: every four bytes are remapped. An
+  invalid length or broken nonzero link leaves an empty legacy occurrence and a warning,
+  so malformed siblings cannot disappear and establish false uniqueness or authored nulls.
+  The typed reader restores flags only from a unique source field containing whole eight-byte
+  pairs; its canonical cleared links cannot establish outside connectivity.
+  Private comparison databases may add a nullable integer `retail_visit_index` to this table.
+  It records the portal registration order from one retail load. For a complete visibility-v2
+  cell the engine accepts the order only when there is one row per marker and the indices form
+  a permutation from zero through the portal count minus one. Otherwise it uses FormID order.
+  The ordinary converter has no load-specific order to export.
+- **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
+  zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
+  publishes the authored-assignment version. A missing target or a target in another cell marks
+  the source cell incomplete. The target is retained in either case.
+  Both readers check the source order before publishing resolved links. One four-byte `XRMR`
+  header precedes four-byte `LNAM` and `INAM` fields, in that order, when their flags are set.
+  The lower 14 bits of the first `XRMR` word give the number of contiguous four-byte `XLRM`
+  slots that follow. A misplaced field or count mismatch marks the cell incomplete. The export
+  retains links from the valid prefix of this run, up to the declared count.
+  In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
+  An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
+  before recursive links and traversing reverse source order. Explicit masters install missing
+  reciprocal links during resolution. Distinct masters remain distinct, even within a connected
+  component. Unresolvable cycles or construction-order ambiguity retain the whole-cell fallback.
+  The room is the union of its primary and joined bounds; gaps are not filled by an enclosing box.
+  Malformed or unresolved `XLRM` occurrences keep the cell incomplete in both readers,
+  including fields rejected before typed canonical publication.
+  The legacy reader also marks the cell incomplete when it skips a damaged placement with a
+  known parent cell and no usable version supplies that placement.
+  Legacy graphs continue treating links as open visibility edges.
 - **`reference_rooms`**: written for every placed object (`REFR`, `ACHR`, `ACRE`, `PGRE`,
   `PMIS`) in an interior cell that has at least one room, except the room and portal markers
   themselves. `contained = 1` rows come from the ESM export: the object's pivot (its position)
@@ -1281,32 +1650,293 @@ Columns and rules:
   `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several
   pairs can add several), `portals_with_extra_pairs` (markers whose `XPOD` holds more than one
   pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
-  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a non-finite size or transform), `objects_in_no_room` and
-  `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
+  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals skipped for invalid geometry
+  or ambiguous portal fields, including missing, truncated, duplicate or non-finite transforms,
+  non-finite sizes, negative room half-extents, nonpositive portal X or Z half-extents, and repeated `XPOD` fields), `objects_in_no_room` and
+  `objects_in_several_rooms` (both by pivot), `overlap_rows`, `occluders` (valid geometry rows),
+  and `invalid_occluders_skipped` (unsupported or malformed occlusion primitives).
+  `assignment_version = 1` enables authored master/slave resolution and reference ownership,
+  together with the three assignment tables, `link_index`, and `visibility_version = 2`.
+  If the pack declares an unsupported assignment version, the engine draws the full cell.
+  `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
+  source provenance. The typed reader publishes this marker and the flags in the source-data
+  transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
+- **`room_link_anomalies`** counts markers with invalid headers, misplaced fields, mismatched counts, or unresolved `XLRM` slots for each
+  supplying plugin. The lowest affected marker FormID and its cell are stored with the count.
+  Each plugin has one warning with that count and example. `integration-report.json` shows
+  the counts under `room_graph.room_link_anomalies`.
+
+Both plugin readers require a nonzero, resolved `NAME` base on live placements. A live override
+needs one 24-byte `DATA` transform with six finite coordinates. A cell-owned predecessor also
+requires a usable destination cell. Rejecting an override
+preserves its predecessor and marks the affected interiors incomplete. If only the reference
+ID resolves, the reader can still identify the predecessor’s cell. A later accepted override or
+deletion clears damage tied to that ID. If only the destination cell resolves, the damage stays
+with that cell. If a discarded frame tail could hide a placement header, an unseen override
+could refer to a placement from another cell. All surviving interiors then use the whole-cell
+fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
+surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
+A recognized placement tag with a missing or partial FormID also leaves all interiors incomplete,
+because its predecessor could be in any cell. The same rule covers a one-, two-, or three-byte
+prefix of any placed record type, including `REFR`, `ACHR`, and `PMIS`. When the available group kind bytes are consistent
+with a cell-child group, the enclosing cell and the cell named by the label are incomplete.
+A discarded `GRUP` prefix with an incomplete label leaves all interiors incomplete. A kind
+that excludes cell-child groups affects only the enclosing cell when it is known.
+Parsing resumes at the next trusted frame boundary.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
-records on every conversion, like the grass tables, and the subset export used by movement
-annotation leaves them alone. `create_tables` adds them to an older reused database.
+records on every conversion, like the grass tables. Subsets without placed references, including
+movement annotation, leave the graph alone. The low-level subset exporter reprojects edited
+occluders. For ordinary placed references it clears membership and marks the previous and new
+cells incomplete. The placement command described below rebuilds room ownership for its supported
+edits in the same transaction.
+A subset that changes or removes an existing base model also deletes that base's source sphere
+and marks every referencing cell incomplete in the same transaction. An unchanged model retains
+its sphere and cell completeness. A full room export restores completeness after rebuilding.
+The certificate stores one completeness bit for the whole cell. A model-bounds refresh cannot
+distinguish an outdated model from an unresolved room or portal in the same cell. Restoring
+culling after a base-model change therefore requires a full room export.
+`create_tables` adds these tables to an older reused database.
 
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
 them automatically and probes for them first, as it does for `lights` and the
 additive `waters` columns, so a database without them behaves as before.
+Unbounded traversal also requires both endpoint columns, `visibility_version = 2`, and a complete
+`room_graph_cells` marker for the cell. A skipped unsupported room or invalid room/portal marker
+makes that cell incomplete, so the runtime draws the whole cell. Negative room or portal extents are invalid; the loader also rejects them in older packs. Other complete cells retain
+unbounded traversal. The engine keeps the full cell visible whenever its completeness row or the table itself is
+missing. Write one row per assessed interior. Set `complete=1` only after validating its room
+geometry, links and portal endpoints. Set `complete=0` for an interior with incomplete evidence.
+In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
+placements from references belonging to other cells or unknown runtime objects.
 
-Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
-policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
-integration also removes stale rows for these references. The engine reads the existing
-`references.header_flags` column and exempts flagged roots even when an older conversion still
-contains geometric room rows. Named overrides are conservatively kept visible too.
+Authored assignment metadata:
 
-| Case | Converter writes | Engine |
+- **`room_reference_rules`** records ordinary placements independently of geometric overlap rows.
+  For a `target` rule, `room_reference_rules.target_ref` is the nonzero runtime FormID projected from `XMBR`.
+  A Multibound header flag with no `XMBR` is `none`. An ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
+  are `unknown`. Repeated `XMBR` fields also produce `unknown` with no target, including identical
+  repetitions. Both readers preserve malformed `XMBR` presence for every supported placed
+  record type, including references carrying the Multibound flag; rejection cannot turn it
+  into `auto` or `none`.
+  Missing/foreign targets remain visible. An absent `XMBR` alone does not mean `NONE`.
+- **`room_model_bounds`** stores source NIF spheres in runtime axes and Creation units, without
+  metre scaling. Mesh conversion writes GLB root extras `mudcrabRoomSphere` version 1, and model
+  integration rebuilds this table transactionally. It merges supported source child spheres in
+  native order, ignoring the placed root's source transform. Models with disconnected exported geometry
+  retain no assignment sphere. Supported fixed, self-contained skins
+  also receive source bounds. External or unresolved rigs, physics-deformed skins, and unsupported
+  trees have no row. Render AABBs are not substituted for missing native assignment bounds.
+  The converter rejects a NIF that ends inside a declared block during parsing, before the skin
+  pose check runs.
+  Incremental Skyrim conversion and failed-asset repair project both bounds from the final
+  staged GLB winner. Missing or unreadable winners clear the validity flag and prior sphere.
+  After a mod update replaces or removes native GLBs in a private runtime copy, the pack maintainer
+  or the mod installation script runs `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...`
+  with the engine closed. The launcher and engine leave this step to the caller. If the refresh
+  fails, keep the pack offline until it succeeds or you restore the previous GLBs.
+  List each changed lowercase runtime path. Native GLBs can supply a sphere in the same
+  version 1 root extra. The command updates all matching base forms and geometric room overlaps
+  in one SQLite transaction. Keep the original conversion pack for manifest verification and
+  later Skyrim conversion or repair.
+- **`room_graph_cells`** marks cells whose authored geometry was fully exported. A skipped
+  unsupported room shape or invalid/missing marker size makes the cell incomplete. Incomplete
+  cells retain full rendering in authored mode.
+
+Initial attachment honors a valid named target directly, even when the object's center lies outside
+the room bounds. Later reference-transform changes reclassify supported bounds. Automatic
+assignment uses the sphere center, tests the union of each master's bounds, and classifies zero,
+one, or multiple touched physical portals as ordinary-space, portal-shared, or common-node
+ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
+volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners.
+The native runtime's choice depends on handle and hash order. `NONE`, unsupported transforms,
+actors, and doors remain drawn. Activators (`ACTI`), including static webs, stay visible in legacy
+graphs. An initial named target can cull an unskinned mesh without a source sphere. A skinned mesh with
+a valid named target stays drawn if the model lacks a source sphere. A mesh also stays drawn if it
+or one of its ancestors below the reference root carries `AnimatedBy`. Automatic attachment and
+reassignment after movement keep meshes with unknown source bounds visible. Named-target
+neighboring-room priority and specialized/forced native assignment paths are not fully reproduced.
+
+The `switch-value-and-multibound-room-spheres` mesh contract includes the initially selected child of a switch with the active-child bound flag, empty value-node attachment points, and oriented boxes referenced by multibound nodes. The `initial-switch-scene` contract preserves the switch transform and links only the initially selected branch’s geometry into the exported scene. When the switch hides every mesh, the converter marks the GLB with `extras.mudcrabInactiveSwitch`. Pack repair and reuse accept the meshless scene. The static keeps `bounds_valid=0` and has no `room_model_bounds` row. The `skin-ancestor-room-spheres` contract withholds the bind-pose sphere when a transform controller moves a joint through a non-root ancestor. A missing or unsupported bound remains unknown. The [Gallows Rock comparison](../../research/skyrim-culling-rea-parity.md#gallows-rock-west-doorway) checks the resulting room assignments against retail.
+
+Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
+from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
+protect these references even before reconversion. Reconvert normally to obtain authored assignment:
+the compiled converter digest invalidates old base-database cache bundles, and the
+`native-room-assignment-spheres` and `complete-root-room-spheres` mesh-output contracts
+regenerate source-sphere metadata. These
+additive tables do not change the global world schema or add a feature flag.
+
+#### Import interiors and room placements after conversion
+
+Use `converter apply-room-placements` on a private, offline asset directory. The command takes
+the pack's exclusive lock and requires world database schema 9 and `visibility_version = 2`.
+It accepts either `assignment_version = 1` or an absent assignment marker. With version 1,
+a valid native `target` assigns the reference to its named room. Without the marker, the import
+succeeds and sets the Multibound exemption, so the reference stays drawn even when that room is
+hidden. Reconvert the pack as described above to enable authored assignment.
+
+
+```sh
+converter apply-room-placements path/to/assets --plugin Decorations.esp
+converter apply-room-placements path/to/assets --native decorations.json
+```
+
+`--plugin` appends an `.esp`, `.esm`, or `.esl` with interiors and placements to the original plugin order.
+The pack must retain the in-house reader's plugin headers. Masters can come from the original
+conversion or earlier placement imports. Existing FormID slots stay stable. The command reads
+`REFR` adds, full overrides, moves, and deleted headers for existing interiors. The supported
+bases are existing `STAT` and `DOOR` records and Skyrim's room, portal, and occlusion markers. A master-owned
+`CELL` record can identify an existing interior for its children. The import uses only its FormID.
+
+A plugin can declare a new interior with a plugin-owned `CELL`. Give it a nonzero local FormID
+that fits the plugin's full or light slot, a null-terminated UTF-8 `EDID`, and `DATA` with only
+the interior bit set (one or two bytes). Optional fields are an inline UTF-8 `FULL` in a
+nonlocalized plugin and 72-byte or 92-byte `XCLL` lighting. The `CELL` must be outside worldspace
+and cell-child groups. Its record header supports the compression flag. Its placements must use
+unused FormIDs owned by the same plugin.
+
+Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
+On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry a 32-byte
+`XTEL` field. The importer skips the placement and preserves its previous door link if `XTEL`
+occurs more than once, has the wrong width, contains a nonfinite arrival frame, or names a
+nonzero source destination that cannot be resolved.
+Static primitives, actor references, scripts, new base records, exterior changes, and other
+`CELL` fields require a normal conversion.
+
+The command warns when it skips a damaged record or discards the unread part of a group.
+The parser resumes at a verified record or group boundary, and the command applies the usable
+placements and interiors it reads. A plugin placement needs one finite 24-byte `DATA` transform.
+If present, `XSCL` must occur once and contain a finite positive 32-bit float. The importer skips a
+non-occluder placement if `XPRM` occurs more than once or exceeds 32 bytes. A damaged
+placement leaves its destination and any retained
+predecessor's cell incomplete. When a discarded tail could hide a placement header or the
+command cannot identify the affected cell, all interiors use the whole-cell fallback. The
+command also warns and skips placements that require a damaged new interior. Usable records
+with unsupported content still roll back the import.
+
+An occluder that passes placement admission can still have an unusable shape, such as a
+malformed `XPRM`. The placement edit report counts projection omissions by category and samples
+FormIDs and reasons. Resolved outgoing `XORD` slots still suppress their targets when the source
+shape is omitted. A placement rejected earlier, for example for a nonfinite `DATA` transform,
+produces a warning and leaves its affected cells incomplete. It contributes no projection
+omission or new link slots. If it could hide outgoing PlaneMarker links, the importer clears
+link verification. Valid neighboring placements still apply.
+
+`--native` accepts a `cells` array for new interiors and an `edits` array for placements.
+Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional
+`full_name`. `put` adds or replaces a static placement or occluder, and `delete` removes a placement by
+`id`. A native replacement preserves the existing `XESP` and initially-disabled flag. If the
+existing enable state is unavailable or cannot be preserved, the import fails. Use numeric runtime
+FormIDs from the target pack. For a new native interior or placement,
+choose an unused ID from `0xFF000001` through `0xFFFFFFFF`. A new interior takes only fresh
+placements. IDs used in earlier imports stay reserved for their original records even after a
+placement is deleted. Position uses Creation units. Rotation uses radians and defaults to
+`[0, 0, 0]`. Scale defaults to `1`. Ownership
+defaults to `{"kind": "auto"}`. Use `{"kind": "none"}` for a Multibound override without a
+target, or `{"kind": "target", "room": 2048}` for a named room.
+
+`put_room` adds or replaces a box room marker. Its `half_extents` array gives finite, nonnegative
+X, Y, and Z half-extents in Creation units. Optional `links` name joined rooms in authored order.
+Set `master` to `true` or `false` to change the room's master flag. Omitting it preserves the
+flag on an existing room. A new room defaults to `false`.
+`put_portal` adds or replaces a portal marker with finite, positive X and Z `half_extents`. Its
+`endpoints` array names two rooms in that cell. Use `0` for an explicit outside endpoint.
+
+```json
+{
+  "cells": [
+    {"id": 4278190081, "editor_id": "FreshInterior", "full_name": "Fresh Interior"}
+  ],
+  "edits": [
+    {
+      "op": "put_room", "id": 4278190082, "cell": 4278190081,
+      "position": [0, -100, 0], "half_extents": [100, 100, 100]
+    },
+    {
+      "op": "put_room", "id": 4278190083, "cell": 4278190081,
+      "position": [0, 100, 0], "half_extents": [100, 100, 100]
+    },
+    {
+      "op": "put_portal", "id": 4278190084, "cell": 4278190081,
+      "position": [0, 0, 0], "half_extents": [30, 60],
+      "endpoints": [4278190082, 4278190083]
+    }
+  ]
+}
+```
+
+For a PlaneMarker, use base 23 and supply a shape such as
+`{"kind":"plane","half_width":8,"half_height":8}` or
+`{"kind":"box","half_extents":[8,12,16]}`. Optional `links` holds four
+runtime FormIDs in physical XORD order. Use zero for an empty slot. Four zeros have
+the same effect as omitting `links`. Skyrim placement plugins can supply the same
+fields on a PlaneMarker. Occluder edits
+require a pack with a source-verified occluder projection.
+
+One transaction creates the runtime cell rows and updates placements, ownership rules, and the room
+graph. Moves refresh both the source and destination cells. The command uses the model bounds
+already in the pack. It reports how many cells were created and how many affected cells passed
+certification. A fresh interior with complete input retains its certificate even when it has no
+rooms. A later import can add its first room and portal. Incomplete graph evidence keeps the
+whole-cell fallback. An existing cell must have a valid prior certificate to retain certification.
+Unknown assignments and unverified portal endpoints retain their conservative behavior.
+When an occluder first reaches a roomless interior with no
+certificate, the exporter checks its stored Skyrim placements for earlier room, portal, or
+occlusion markers before establishing a certificate.
+
+The original conversion's canonical `records`, `formid_map`, source history, and reports remain
+available for inspection. `room_placement_layers` retains the exact imported file and checksum.
+`room_placement_edits` maps each created cell and edited placement to its source FormID and
+records placement deletions.
+A native `put` fails if its base FormID is in `subset_nonplacement_deletions`. The import
+rolls back. A `delete` can still remove an existing placement that uses that base.
+Reapplying the same source is a no-op. Plugins match existing imports by case-insensitive filename
+and checksum. Different contents under an imported filename are rejected, including after a
+successful import that skipped damaged records.
+To replace an imported plugin, start with a fresh conversion of the same base pack and replay
+the placement sources in their original order. Use the corrected plugin under the original name
+at its original position. Keep the plugin's full or light classification and the local FormIDs
+that later layers reference. To make a follow-up edit on the current pack, author a new patch
+with a different filename. List the imported plugin as a master when overriding its forms.
+
+The following table describes geometric membership. Whole-cell fallbacks and reference exemptions
+take precedence over the per-object rules. Other renderer visibility checks still apply.
+
+| Case | Converter writes | Engine room filter |
 |---|---|---|
-| Interior without room markers | no rows | draw everything, as today |
+| Interior without room markers | no room rows | certified standalone occluders can hide fully shadowed meshes in the unbounded space |
 | Old database, tables absent | n/a | feature off, no error |
-| Portal side 0, missing or not a room | `room_a`/`room_b` NULL | ignore that edge |
-| Object in no room / several | no `contained = 1` row / several | always drawn |
-| Camera outside every room | n/a | draw everything |
-| Non-box room shape | skipped, counted | its objects are in no room, so drawn |
+| Source-verified outside portal side | NULL with an unbounded-side flag | traverse the explicit unbounded node |
+| Missing, invalid, or foreign portal endpoint | NULL without verified outside provenance | retain the cell |
+| Object in several rooms | several `contained = 1` rows | always retained by geometric membership |
+| Object in no room, legacy graph | no `contained = 1` row | always retained |
+| Object without geometric membership in a roomed cell | no `reference_rooms` rows | retain for ordinary view culling |
+| Known object overlapping rooms in a complete versioned graph | overlap rows only | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
+| Lookup point outside every room, geometric membership only | n/a | retain the cell |
+| Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
 | Exterior markers | not written | out of scope (#106) |
+
+The geometric filter retains authored overrides including `NONE`, actors and their leveled lists,
+doors, activators, loose inventory references, moving rigid bodies, and explicitly exempt roots
+or meshes. References without valid stored model bounds also stay drawn because pivot-only rows
+do not establish overlap coverage. Unknown references outside the graph are retained.
+Missing or invalid per-mesh bounds and `NoFrustumCulling` skip aperture-bound testing; a candidate
+space must still be reached. Portal-shared geometry can use either endpoint's visible volume.
+
+The authored-assignment path uses these rules:
+
+| Case | Engine |
+|---|---|
+| Absent room tables, or a roomless cell without a usable occluder | normal rendering |
+| Certified roomless interior with a supported occluder | test mesh bounds against its unbounded-space shadow |
+| Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
+| Unknown portal endpoint | whole-cell fallback |
+| Incomplete authored cell or unresolved master | whole-cell fallback |
+| Lookup point outside every authored room union, complete graph with source-verified endpoints | start in unbounded space and traverse its portals |
+| Reference with no recoverable assignment | keep visible |
+| Exterior markers | outside this feature's scope |
 
 ---
 
@@ -1397,8 +2027,10 @@ record decides: an override that removes `XTEL` removes the link. The `XTEL` fla
 projected; it stays in `records.data`.
 
 A full load-order export clears and rebuilds the table on every conversion, like the grass and
-room tables. The movement-annotation subset export leaves it alone, and a diagnostic archive
-(which defers every runtime view) leaves it empty. `create_tables` adds the table to an older
+room tables. Placement edits refresh links to and from edited doors in the same transaction.
+When a plugin placement layer edits a door, the projection reads its effective fields from
+`references.data`. The movement-annotation subset export leaves the table alone. A diagnostic
+archive defers every runtime view and leaves the table empty. `create_tables` adds the table to an older
 reused database, and adds `destination_name` to a table that predates it.
 `door-links-annotate <skyrim_world.db>` rebuilds it in one transaction from a converted
 database's own winning records, with no plugin reparsed, so an existing package gains doors
@@ -1446,7 +2078,7 @@ CREATE TABLE IF NOT EXISTS actor_model_parts (
     npc_id INTEGER NOT NULL,
     slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
     model_path TEXT NOT NULL,
-    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25)
+    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25); NULL when RNAM is absent
     skin_texture_set_id INTEGER,     -- ARMA/NAM0 (male) or NAM1 (female), a TXST
     PRIMARY KEY (npc_id, slot)
 );
@@ -1466,7 +2098,8 @@ targets. The detailed source and evidence boundaries are in
 retail `femalehands_1.nif` has no `_s`, while `NakedHands` (`00000D6C`) gives female hands
 `SkinHandFemale_1` (`0003EDE9`), whose `TX07` is `FemaleHands_1_S.dds`. `skin_texture_set_id`
 stores that FormID (`NULL` when the armature has none for the sex; the other sex's set is not
-used), and `armature_race_id` the armature's own `RNAM`, so `25` marks a part that came from the
+used), and `armature_race_id` the armature's own `RNAM` (`NULL`, never `0`, for an armature with no
+readable `RNAM` that matched through an additional race; `armature_missing_race` reports it), so `25` marks a part that came from the
 shared `DefaultRace` armature. The converter composes the default humanoid body from the
 `DefaultRace` sets: per sex and slot, the set most parts with `armature_race_id = 25` use, applied
 in NIF slot order (`TX00`→0, `TX01`→1, `TX03`→2, `TX04`→3, `TX05`→4, `TX02`→5, `TX06`→6,
@@ -1634,21 +2267,22 @@ actors in their skin when it is absent or invalid.
 
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
-The light and emittance projections write no row for a record whose data cannot supply one. Each
-skip is counted under a stable category, so the conversion report can account for it instead of
-a terminal message alone (#297). The categories come from `insert_light` and
-`insert_emittance_sources` in `crates/converter/src/esm/exporter.rs`; the code is
+Runtime projections omit unusable rows or fields without inventing authored data. Each
+omission is counted under a stable category so the conversion report can include it (#297).
+Light, grass, placed-record and RACE animation projections in
+`crates/converter/src/esm/exporter.rs`, lighting-template projection in `esm/environment.rs`,
+and emittance resolution contribute categories. The category code is
 `crates/converter/src/esm/projection_omissions.rs`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS projection_omission_stats (   -- one row per category with omissions
     category TEXT PRIMARY KEY,     -- stable name, see the table below
-    severity TEXT NOT NULL,        -- 'data_loss' or 'fallback'
+    severity TEXT NOT NULL,        -- 'data_loss', 'fallback' or 'omitted'
     count INTEGER NOT NULL         -- exact number of records left out
 );
 CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, at most 8 per category
     category TEXT NOT NULL,
-    form_id INTEGER NOT NULL,      -- the LIGH, or the XEMI target
+    form_id INTEGER NOT NULL,      -- the omitted record, or the XEMI target
     reason TEXT NOT NULL,          -- human-readable detail, e.g. the DATA length
     PRIMARY KEY (category, form_id)
 ) WITHOUT ROWID;
@@ -1658,18 +2292,48 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 |---|---|---|
 | `light_missing_data` | `LIGH` without `DATA`: no `lights` row | data loss |
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
+| `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
+| `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
+| `reference_missing_base` | Placed record without a four-byte `NAME`: no placement or spatial row | data loss |
+| `reference_short_scale` | Placed record whose `XSCL` is present but shorter than four bytes: no placement or spatial row | data loss |
+| `reference_missing_cell` | Placed record with no parent cell: no placement or spatial row | data loss |
+| `worldspace_missing_editor_id` | `WRLD` without `EDID`: no `worldspaces` row | omitted |
+| `land_missing_heights` | `LAND` without `VHGT`: no `land` row | omitted |
+| `land_unusable_heights` | `LAND` whose `VHGT` is present but empty: no `land` row | data loss |
+| `armature_missing_race` | `ARMA` without a readable `RNAM`: `actor_model_parts.armature_race_id` is NULL | data loss |
+| `room_marker_unreadable_flags` | Room marker whose `XRMR` header is present but short, repeated or unframed: no `room_bounds` row; its cell is incomplete | data loss |
+| `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row and leaves its cell incomplete | data loss |
+| `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
+| `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
+| `race_unreadable_authoring` | `RACE` with unreadable animation model slots: no `race_animation_sources` row | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
 | `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
 | `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
 
-**Severity.** A light without a `lights` row loses a light the runtime would draw, so a
+**Severity.** A missing light or placement row, incomplete grass or template DATA, or
+unreadable RACE animation authoring loses all or part of a supported projection. Readable
+GRAS scalars remain authored values. Only unavailable scalar spans become NULL. Each
+unreadable RACE is counted once, regardless of how many NPCs use it. A
 `data_loss` category adds one line to the conversion's `warnings` and makes the output
 incomplete. A reference whose emittance target does not resolve keeps the model's own emission
 (section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the
 output stays complete. A severity the reader does not know is read as `data_loss`, so a category
 added by a newer converter cannot pass as success.
+
+An `omitted` category is an intended omission (#811): the record is in the source, an optional or
+required field is absent, and no value is invented. It adds one line to `notices`, adds a row to
+the report's and manifest's `intended_omissions`, and leaves the output complete. Only an absent
+field of an otherwise sound record qualifies. A field that is present but short or unreadable
+(`reference_short_scale`, `room_marker_unreadable_flags`), a missing placement base or cell, and a
+missing armature race stay `data_loss` until retail evidence shows they are authored absences (unverified).
+
+Placement omission reasons describe the `DATA` available to the runtime projection.
+An in-house typed-field rejection can make it unavailable there even though the original
+short field remains in `inhouse_source_records.payload`. The low-level `insert_reference`
+subset helper has no report sink: it warns on the terminal but does not update these
+omission tables or an integration report. Full load-order exports persist the omission.
 
 A full load-order export clears and rewrites both tables inside its transaction, so a re-export
 replaces the counts instead of adding to them, and a repaired load order leaves the tables empty.
@@ -1712,13 +2376,36 @@ alongside the bases whose appearance they update. All eight existing `texture_se
 columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
 for selection, instance isolation, retail coverage, diagnostics and the unimplemented MATO limits.
 
+### 21. Authored local-light projections (#264/#364)
+
+Optional additions preserve compatibility with schema 3–9 packages. `lights.fade_status` and
+`references.radius_status` are nullable INTEGER columns: NULL means an older projection, 0 absent,
+1 valid (including zero; signed XRDS is legal), 2 malformed/non-finite (negative FNAM unsupported).
+For a valid LIGH reference the effective radius is base DATA radius plus raw XRDS, not replacement.
+Invalid inputs retain their original bytes in the existing canonical record archive.
+Repeated subrecords read the same way in the legacy and the in-house reader. A repeated `LIGH`
+`FNAM`: the first occurrence decides, so a short one followed by a valid one gives status 2. A repeated
+`REFR` `XRDS`: the first four-byte one wins, and a malformed one counts only when none is well-formed.
+
+`reference_light_data(reference_id INTEGER PRIMARY KEY, data_size INTEGER NOT NULL, fov_offset REAL,
+fade_offset REAL, end_distance_cap REAL, shadow_depth_bias REAL)` projects REFR XLIG without
+evaluating it. Missing XLIG has no row. Only 16/20-byte layouts yield floats; non-finite values are
+NULL. A complete export recreates the table; subset export removes/replaces rows for each exported
+reference. No FormIDs occur within XLIG, so remapping is unnecessary.
+
+See [point-lights.md](../engine/point-lights.md) for pinned layout sources, the bounded backend
+transform, fallback dispositions and unresolved native equations. Reconversion into a new pack is
+required for new columns; registered packs remain immutable.
+
 ## Optional terrain default metadata
 
 `terrain_default_texture` is generated after texture conversion for every pack. Its singleton
 row has `id = 0`, nullable `diffuse_path` and `normal_path` (canonical relative KTX2 paths),
 and nullable `source_diffuse` (the canonical DDS path used by the LOD bake). A null diffuse
-means white and has no normal or source. The engine probes for the table so old databases
-keep their white default. Invalid diffuse metadata warns and falls back to white without a
-normal. Invalid normal metadata warns and disables only the normal, keeping a valid diffuse.
+means white and has no normal or source. A null diffuse is written only for `--terrain-default
+white` (a labelled test option) or when no cell needs the default. The engine probes for the table
+so old databases keep their white default. A `skyrim-ini` default diffuse that cannot be used
+fails the conversion; no generated white texture replaces it (#811). Invalid normal metadata
+warns and disables only the normal, keeping a valid diffuse.
 This additive metadata does not change LAND geometry, the cell-cache format, or texture
 producer versions.

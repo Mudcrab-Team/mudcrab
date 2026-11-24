@@ -1,0 +1,3437 @@
+{
+  "apex_tick": 23,
+  "dt_seconds": 0.01666666753590107,
+  "first_delta_y": 5.666667938232422,
+  "landing_delta_y": 0.00997161865234375,
+  "landing_tick": 47,
+  "rest_position": [
+    5.409337973105721e-6,
+    52.38826370239258,
+    500.0
+  ],
+  "sampled_apex_rise": 67.08328247070312,
+  "samples": [
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        5.6666669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        5.6666669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        58.054931640625,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        5.4166669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        5.4166669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        63.47159957885742,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        5.1666669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        5.1666669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        68.63826751708984,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.9166669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.9166669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        73.554931640625,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.6666669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.6666669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        78.22159576416016,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.4166669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.4166669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        82.63825988769531,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.1666669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.1666669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        86.80492401123047,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.9166669845581055,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.9166669845581055,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        90.72158813476562,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.6666667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.6666667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        94.38825225830078,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.4166667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.4166667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        97.80491638183594,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.1666667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.1666667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        100.9715805053711,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.9166667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.9166667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        103.88824462890625,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.6666667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.6666667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        106.5549087524414,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.4166667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.4166667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        108.97157287597656,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.1666667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.1666667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        111.13823699951172,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.9166667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.9166667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        113.05490112304688,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.6666667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.6666667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        114.72156524658203,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.4166667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.4166667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        116.13822937011719,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.1666667461395264,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.1666667461395264,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        117.30489349365234,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.9166666865348816,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.9166666865348816,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        118.2215576171875,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.6666666865348816,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.6666666865348816,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        118.88822174072266,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.4166666865348816,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.4166666865348816,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        119.30488586425781,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.1666666567325592,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.1666666567325592,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        119.47154998779297,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.08333337306976318,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.08333337306976318,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        119.38821411132812,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.33333340287208557,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.33333340287208557,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        119.05487823486328,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.583333432674408,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.583333432674408,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        118.47154235839844,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.833333432674408,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.833333432674408,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        117.6382064819336,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.0833334922790527,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.0833334922790527,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        116.55487060546875,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.3333334922790527,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.3333334922790527,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        115.2215347290039,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.5833334922790527,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.5833334922790527,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        113.63819885253906,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.8333336114883423,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.8333336114883423,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        111.80486297607422,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.0833334922790527,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.0833334922790527,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        109.72152709960938,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.333333730697632,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.333333730697632,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        107.38819122314453,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.583333730697632,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.583333730697632,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        104.80485534667969,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.833333730697632,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.833333730697632,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        101.97151947021484,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.083333730697632,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.083333730697632,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        98.88818359375,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.333333730697632,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.333333730697632,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        95.55484771728516,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.583333730697632,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.583333730697632,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        91.97151184082031,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.833333730697632,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.833333730697632,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        88.13817596435547,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.083333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.083333969116211,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        84.05484008789062,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.333333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.333333969116211,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        79.72150421142578,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.583333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.583333969116211,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        75.13816833496094,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.833333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.833333969116211,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        70.3048324584961,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -5.083333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -5.083333969116211,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        65.22149658203125,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -5.333333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -5.333333969116211,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        59.888160705566406,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -5.583333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -5.583333969116211,
+        0.0
+      ],
+      "kcc_supported": false,
+      "position": [
+        5.409337973105721e-6,
+        54.30482482910156,
+        500.0
+      ]
+    },
+    {
+      "collision_count": 1,
+      "desired_translation": [
+        0.0,
+        -5.833333969116211,
+        0.0
+      ],
+      "effective_translation": [
+        -0.0000628496054559946,
+        -1.9065905809402466,
+        -0.0000314248027279973
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.39823532104492,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.009977561421692371,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "kcc_supported": true,
+      "position": [
+        -0.00005744026566389948,
+        52.38825607299805,
+        499.9999694824219
+      ]
+    }
+  ],
+  "schema": 1,
+  "surface": "production PhysicsFixturePlugin flat floor; raw post-Writeback Transform/KCC"
+}

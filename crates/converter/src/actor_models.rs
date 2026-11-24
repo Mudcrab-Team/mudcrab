@@ -5,8 +5,11 @@
 //! check that they exist before reading them. Nothing here reads raw
 //! `records.data`; the caller hands the merged record map in and gets rows back.
 
-use crate::esm::{extractors::SubrecordView, load_order::StableId, records::RawRecord};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::{
+    animation::authoring::{RaceAuthoring, read_race_authoring_fields},
+    esm::{extractors::SubrecordView, load_order::StableId, records::RawRecord},
+};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// `DefaultRace`, the armature race every humanoid body is shared through.
 pub const DEFAULT_RACE_FORM_ID: u32 = 25;
@@ -150,10 +153,14 @@ pub struct ActorModelPartRow {
     pub npc_id: u32,
     /// The biped slot.
     pub slot: ActorModelSlot,
+    /// The `ARMA` FormID the part came from. Omission reports name it.
+    pub armature_id: u32,
     /// The `MOD2`/`MOD3` path, as the record wrote it.
     pub model_path: String,
     /// The armature's own `RNAM`: the NPC's race for an exact match, else `DefaultRace`.
-    pub armature_race_id: u32,
+    /// `None` when the armature has no readable `RNAM` (it matched through an additional race).
+    /// The column stays NULL; the converter never stores race 0 for it.
+    pub armature_race_id: Option<u32>,
     /// The armature's skin texture set for the NPC's sex (`NAM0` male, `NAM1` female), which the
     /// game applies over the part NIF's own textures.
     pub skin_texture_set_id: Option<u32>,
@@ -177,6 +184,9 @@ pub struct ActorModelCatalog {
     pub parts: Vec<ActorModelPartRow>,
     /// Diagnostics, sorted by `(npc_id, reason)`.
     pub diagnostics: Vec<ActorModelDiagnostic>,
+    /// Read failures for live RACE records keyed by FormID, including races without NPCs.
+    /// Full exports persist these as omissions.
+    pub race_authoring_errors: BTreeMap<u32, String>,
 }
 
 /// Resolves every `NPC_` base in `records` into a body/head catalog.
@@ -190,12 +200,40 @@ pub fn resolve_actor_models(
     records: &HashMap<u32, RawRecord>,
     plugin_ids: &HashMap<u32, StableId>,
 ) -> ActorModelCatalog {
+    resolve_actor_models_with_race_authoring(records, plugin_ids).0
+}
+
+/// Decodes the animation authoring of every live RACE once, for omissions and animation
+/// source rows. Body resolution still reads other RACE fields per NPC.
+pub(crate) fn resolve_actor_models_with_race_authoring(
+    records: &HashMap<u32, RawRecord>,
+    plugin_ids: &HashMap<u32, StableId>,
+) -> (ActorModelCatalog, BTreeMap<u32, RaceAuthoring>) {
     let mut catalog = ActorModelCatalog::default();
-    let mut npc_ids: Vec<u32> = records
-        .iter()
-        .filter(|(_, record)| &record.record_type == b"NPC_" && !record.is_deleted())
-        .map(|(id, _)| *id)
-        .collect();
+    let mut race_authoring = BTreeMap::new();
+    let mut npc_ids = Vec::new();
+    for (&id, record) in records {
+        match &record.record_type {
+            b"RACE" if !record.is_deleted() => {
+                let fields = record
+                    .subrecords
+                    .iter()
+                    .map(|(tag, data)| (tag.as_slice(), data.as_slice()));
+                match read_race_authoring_fields(fields) {
+                    Ok(authoring) => {
+                        race_authoring.insert(id, authoring);
+                    }
+                    Err(error) => {
+                        catalog
+                            .race_authoring_errors
+                            .insert(id, format!("{error:#}"));
+                    }
+                }
+            }
+            b"NPC_" if !record.is_deleted() => npc_ids.push(id),
+            _ => {}
+        }
+    }
     npc_ids.sort_unstable();
 
     for id in npc_ids {
@@ -256,18 +294,13 @@ pub fn resolve_actor_models(
         let race_view = SubrecordView::new(&race.subrecords);
 
         let skin_id = effective_skin(records, &view, &race_view, id, &mut catalog);
-        let authoring = crate::animation::authoring::read_race_authoring_fields(
-            race.subrecords
-                .iter()
-                .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
-        )
-        .ok();
-        let creature_project = authoring
+        let creature_project = race_authoring
+            .get(&race_id)
             .and_then(|row| {
                 if female {
-                    row.female_project
+                    row.female_project.as_deref()
                 } else {
-                    row.male_project
+                    row.male_project.as_deref()
                 }
             })
             .is_some_and(|project| !project.starts_with("meshes/actors/character/"));
@@ -311,7 +344,7 @@ pub fn resolve_actor_models(
     catalog
         .diagnostics
         .sort_by_key(|diagnostic| (diagnostic.npc_id, diagnostic.reason));
-    catalog
+    (catalog, race_authoring)
 }
 
 fn unresolved_row(id: u32, weight: Option<f32>) -> ActorModelRow {
@@ -465,7 +498,7 @@ fn npc_weight(view: &SubrecordView<'_>) -> Option<f32> {
 }
 
 /// `(armature, armature race)` pairs: race-compatible first, `DefaultRace` second.
-pub(crate) type ArmatureTiers = (Vec<(u32, u32)>, Vec<(u32, u32)>);
+pub(crate) type ArmatureTiers = (Vec<(u32, Option<u32>)>, Vec<(u32, Option<u32>)>);
 
 /// Splits an `ARMO`'s armatures by race compatibility, keeping authored order in each tier.
 ///
@@ -477,8 +510,8 @@ pub(crate) fn partition_armatures(
     armatures: &[u32],
     race_id: u32,
 ) -> ArmatureTiers {
-    let mut compatible: Vec<(u32, u32)> = Vec::new();
-    let mut default: Vec<(u32, u32)> = Vec::new();
+    let mut compatible: Vec<(u32, Option<u32>)> = Vec::new();
+    let mut default: Vec<(u32, Option<u32>)> = Vec::new();
     for &armature_id in armatures {
         let Some(armature) = records
             .get(&armature_id)
@@ -487,8 +520,9 @@ pub(crate) fn partition_armatures(
             continue;
         };
         let armature_view = SubrecordView::new(&armature.subrecords);
-        let armature_race_id = armature_view.get_form_id(b"RNAM").unwrap_or(0);
-        let exact_race = armature_race_id == race_id;
+        // A missing or short RNAM is no race at all. Never store race 0 as if it was authored.
+        let armature_race_id = armature_view.get_form_id(b"RNAM");
+        let exact_race = armature_race_id == Some(race_id);
         let additional_race = armature_view.get_form_ids(b"MODL").into_iter().any(|id| {
             id != 0
                 && id == race_id
@@ -498,8 +532,8 @@ pub(crate) fn partition_armatures(
         });
         if exact_race || additional_race {
             compatible.push((armature_id, armature_race_id));
-        } else if armature_race_id == DEFAULT_RACE_FORM_ID {
-            default.push((armature_id, DEFAULT_RACE_FORM_ID));
+        } else if armature_race_id == Some(DEFAULT_RACE_FORM_ID) {
+            default.push((armature_id, Some(DEFAULT_RACE_FORM_ID)));
         }
     }
     (compatible, default)
@@ -582,6 +616,7 @@ fn resolve_body(
             let candidate = ActorModelPartRow {
                 npc_id,
                 slot: ActorModelSlot::Body,
+                armature_id,
                 model_path: path,
                 armature_race_id,
                 skin_texture_set_id: view.get_form_id(skin_tag).filter(|id| *id != 0),
@@ -601,6 +636,7 @@ fn resolve_body(
         parts.push(ActorModelPartRow {
             npc_id,
             slot,
+            armature_id,
             model_path: path,
             armature_race_id,
             skin_texture_set_id: view.get_form_id(skin_tag).filter(|id| *id != 0),

@@ -1,5 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
+assertion_line: 176
 expression: document
 ---
 {
@@ -76,6 +77,17 @@ expression: document
   "extensionsUsed": [
     "KHR_materials_specular"
   ],
+  "extras": {
+    "mudcrabRoomSphere": {
+      "center": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 1.4142136573791504,
+      "version": 1
+    }
+  },
   "images": [
     {
       "uri": "../textures/generated_color.opensky-srgb.opensky-wrap0.ktx2"
@@ -99,6 +111,7 @@ expression: document
       },
       "extras": {
         "openSkyrim": {
+          "alphaProperty": null,
           "lightingShaderType": "default",
           "normalConvention": "directx",
           "shaderBlock": 2,
@@ -132,6 +145,16 @@ expression: document
   ],
   "meshes": [
     {
+      "extras": {
+        "mudcrabDrawableSphere": {
+          "center": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "radius": 1.4142136573791504
+        }
+      },
       "name": "GeneratedQuad",
       "primitives": [
         {

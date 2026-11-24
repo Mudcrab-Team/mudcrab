@@ -35,10 +35,28 @@ warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
 code 1. Compatibility notices remain visible without affecting completeness or
 the exit code; a mixed run retains both severities and stays incomplete.
-Recoverable configured-default land texture fallbacks are also `notices`: an unusable
-diffuse uses generated white, while an unusable optional normal leaves a valid diffuse intact.
+An unusable optional default land normal is a `notice` and leaves a valid diffuse intact. An
+unusable default land diffuse fails the conversion; no generated white texture replaces it (#811).
+`--terrain-default white` still selects white on purpose.
 These advisories alone do not make the report or manifest incomplete or make the CLI exit 1;
 failures that prevent publishing usable output still fail conversion.
+
+**Intended omissions (#811).** A retail record can exist in the source and have no usable
+value, for example a `LAND` without `VHGT`. The converter omits it and invents nothing. This is
+not a reader failure, so it is not a warning. The reader counts it apart from skipped records and
+reports one `notice` per plugin, record type and reason class. The report lists it in
+`intended_omissions`. The manifest lists it in the additive `intended_omissions` array of
+`{source, record_type, class, count, first_example}` rows. The journal keeps each event in
+`record_diagnostics` with category `omission` and action `omitted`. Intended omissions never
+clear `record_data_complete` or `complete`. A parse error, an unexpected layout or an unknown
+subrecord is not an intended omission: it stays a warning and still marks the run incomplete.
+Only the classes in `intended_omission_class` and the `omitted` projection severity
+(`db-schema.md` §19) qualify. A site is listed there only when the field is absent from the record.
+A field that is present but short, empty or unreadable stays data loss (a `VHGT` with no bytes is
+not an absent `VHGT`). Both record readers apply the same boundary for `LAND`. Known gap: a
+`WRLD` with a present but empty `EDID` is not checked yet. It passes framing and gets a worldspace
+row with no data-loss row (unverified whether retail ships one). Older manifests and notes
+without the field read as empty.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
 and `--reuse-assets` use the same severity and completeness rules when they
@@ -80,7 +98,9 @@ subrecords whose schema occurrences unambiguously agree on localized type and ba
 A null ID does not require its declared bank. Explicitly resolved
 empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
-then defaults to STRINGS.
+then defaults to STRINGS. A schema resolve/selector failure in this bank walk
+keeps the existing signature-default fallback and emits a field warning naming
+the record, field and failed step. The bank walk stays bounded to 32 steps.
 Ordinary plugin text and English string banks use Windows-1252, including bytes
 that happen to form valid UTF-8. Banks in another language are read as UTF-8, as
 Skyrim SE's non-English banks are (Cyrillic, Polish), falling back to Windows-1252
@@ -97,7 +117,7 @@ they are not identified as a versioned projection. Exact version-1 and version-2
 legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
 Adapter-14 metadata recognizes the exact adapter-10, adapter-11, adapter-12 and adapter-13
-retained-asset contracts (adapter 13 adds placed database rows; adapter 14 adds the STAT MODS
+retained-asset contracts (adapter 13 adds placed database rows; adapter 14 also recovers malformed LAND items and adds the STAT MODS
 alternate-texture table and the `object-texture-swap-geometry-index-v1` NIF contract, so retained DDS and PEX
 candidates stay reusable and NIF output is rebuilt), and legacy projection 6 recognizes the exact
 projection-4 and projection-5 contracts, with matching original schema/add-on bytes, reader fields and combined settings
@@ -125,9 +145,11 @@ without raw VFS inputs. It does not regenerate them from unauthenticated current
 Data. Historical derived files without proof, unavailable individual derived
 outputs (including read, copy or hash failures) and unknown stray runtime files
 are omitted with one counted, bounded notice; verified neighboring assets remain
-unchanged. Partial derived copies are removed when possible; cleanup failures
-are counted in that same notice without aborting the rebuild. These optional omissions
-do not make the metadata rebuild incomplete. Use normal conversion to regenerate
+unchanged. Derived copies are verified in isolated scratch before publication.
+Scratch cleanup failures and leftover destination directories produce bounded
+notices; an unremovable final-path file or symlink aborts the rebuild to prevent
+publishing unverified bytes. Optional omissions do not make the metadata rebuild
+incomplete. Use normal conversion to regenerate
 derived outputs. Recorded ordinary assets retain their checksum requirements.
 Unknown source producer identities are rejected by the retained-asset route.
 Plugin filename keys use Unicode lowercase after native Windows-1252 decoding,
@@ -213,10 +235,12 @@ construction accepts placeholders in any slot; a nonzero texture with missing
 converted images still fails its
 existing lookup checks. Original native fields and padding remain in the source
 table independently of these derived caches, including superseded slot
-assignments, native NULLs and their weights. The preserved cache is auxiliary;
-the engine continues to load only the runtime cache. The cache layout and
-runtime selection are unchanged; normal conversion and metadata rebuild
-regenerate both caches and the layer table.
+assignments, native NULLs and their weights. Both readers produce the complete
+preserved cache for grass baking; legacy selection keeps its existing priority
+and FormID tie breaker. The terrain renderer continues to load the capped runtime
+cache. The cache layout and runtime selection are unchanged. Normal conversion
+and metadata rebuild regenerate both caches; in-house output also regenerates
+its source layer table.
 
 Explicit player selection is available through `--plugins-file FILE`. Optional `--skyrim-ccc-file FILE` overrides the game-folder Creation list, and `--skyrim-ini-file FILE` supplies General test-file settings without reading ambient profiles. These options also exist as `PipelineConfig.plugins_file`, `skyrim_ccc_file` and `skyrim_ini_file`. Selection rules and recoverable missing-master behavior are documented in [the database specification](db-schema.md). Automatic discovery remains the default.
 
@@ -232,7 +256,7 @@ MO2 also checks the longest installed owner, using all root plugin identities in
 
 Metadata rebuilds use the source package's checksum-matched plugin order for archive priority. The longest installed direct-Data owner must appear in that order before an archive supplies current LOD settings or terrain diffuse inputs. Verified source assets remain retained.
 
-Default-only terrain sources are collected only when the rebuilt cell cache needs the configured Skyrim land default. Default-only images are regenerated from current source bytes and are not compared with retained asset hashes. Unusable default archive entries or loose overrides are omitted with advisory notices so default publication can fall back to white or omit only the normal. A path also named by an LTEX remains an ordinary required source with strict extraction, overlay and source-identity checks.
+Default-only terrain sources are collected only when the rebuilt cell cache needs the configured Skyrim land default. Default-only images are regenerated from current source bytes and are not compared with retained asset hashes. Unusable default archive entries or loose overrides are omitted with advisory notices. Publication then omits only an unusable normal; an unusable diffuse fails the conversion (#811). A path also named by an LTEX remains an ordinary required source with strict extraction, overlay and source-identity checks.
 
 Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
 
@@ -476,11 +500,17 @@ the output locks, verifies existing outputs, updates the manifest and database,
 and publishes transactionally with recovery of the last good output after an
 interrupted swap. Missing winning sources remain failures; known authoring resources and geometryless overlay templates are recorded as excluded.
 Repaired outputs retain per-kind asset settings and source/integrity proofs.
+After finalizing model bounds, repair re-bakes and validates the staged grass cache,
+reuses unchanged cells from the published cache, and publishes it in the same transaction.
+Packs without `cell_cache_preserved.rkyv` need normal conversion to regenerate the full
+terrain projection, or a metadata rebuild using a complete verified asset pack.
+Repair does not substitute the capped runtime terrain cache.
 The manifest records record-data completeness separately from asset failures.
 Only normal conversion or a metadata rebuild can establish that proof from a
 fresh record read. Asset repair preserves unresolved record loss and missing
 historical proof: corrected assets may publish, but the pack remains incomplete
-and the repair CLI warns and exits `1`. Run normal conversion to recheck record
+and the repair CLI warns and exits `1`. Grass warnings from the repair bake also
+clear the proof; advisory notices do not. Run normal conversion to recheck record
 data; verified assets remain eligible for reuse. A healthy record source with
 only asset failures can become complete after repair. Preview remains separate
 from publication and succeeds when its assets and recorded record proof are valid.
@@ -675,3 +705,40 @@ Conversion failed after 0:12:31 during Textures: failed to convert textures\rock
 asset in flight rather than the run. The manifest is written once, at the end of a run, so a
 stopped run has recorded nothing as converted: the resume re-checks each staged file instead, and
 deleting the folder only costs the work the next run has to redo.
+
+
+## Input selection inventory
+
+Discovery counts input occurrences outside its selected policy by lowercase extension
+in the manifest's optional `ignored_inputs_by_extension` map. `<none>` groups paths
+without an extension. One bounded notice reports the total input count and number of
+extension groups; individual ignored paths stay out of that notice. These policy
+exclusions are notices and do not make a conversion incomplete. Conversion failures
+and malformed plugin records retain their existing warning/completeness behavior.
+
+| Input source or kind | Existing selection policy | Inventory treatment |
+| --- | --- | --- |
+| Loose DDS, NIF, PEX and LOD | Existing asset/LOD stages consume their supported paths | Accepted input kinds; selection is unchanged |
+| Loose HKX | Existing `meshes/**` path rule selects consumed skeleton/project/clip inputs | Other HKX paths count as ignored |
+| `interface/controls/pc/controlmap.txt`, `keyboard_english.txt`, `gamepad.txt` | Existing control-file publisher selects these three optional paths, loose or archived | Published inputs; not counted as ignored |
+| STRINGS, DLSTRINGS, ILSTRINGS | Existing localized reader selects required banks | Accepted loose input kind; unused individual keys/banks are outside this extension inventory |
+| ESM, ESP, ESL; BSA, BA2 | Existing plugin activation and archive policy select usable inputs | Containers/plugins are metadata inputs, not ignored extensions; inactive containers are not inspected |
+| `plugins.txt`, `loadorder.txt`, `Skyrim.ccc` at Data root | Existing selection authority | Not counted as unsupported content |
+| Enabled archive entries | Actual extraction selection (`runtime-english`, converter superset, or `All`) remains authoritative | Every filtered entry counts, including nonselected language/path variants; `All` filters no entries |
+| MO2 loose inputs | Existing resolved overlay contributes only its winning source for each path | Same loose-kind inventory; losing loose sources are not counted again |
+| Other loose kinds, including WAV, SWF and TRI | Existing pipeline leaves them unconverted | Count each occurrence by extension |
+
+Each enabled archive contributes its full directory inventory on fresh extraction and
+cache reuse. Counts are recomputed for every run, rather than accumulated from a prior
+manifest. An archive that fails after its directory scan keeps those counts, while an
+archive whose directory cannot be read before the scan completes contributes none.
+A metadata rebuild keeps the base manifest's counts, because it reuses the
+recorded inventory instead of re-reading source inputs. Archive copies and loose copies
+are distinct discovered input occurrences; this inventory does not claim to count only
+final VFS winners. Existing
+`excluded_inputs` still records per-path authoring-resource reasons independently.
+The inventory shares the existing converter-input selection predicate for supported
+paths. The three optional control files are published outside that predicate, so the
+counter skips their own path list. Stages that publish additional inputs outside the
+predicate must also update the counter's supported set and its regression test. No
+input-selection rule is added here.

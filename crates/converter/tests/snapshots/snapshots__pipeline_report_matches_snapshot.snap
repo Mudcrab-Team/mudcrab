@@ -66,6 +66,7 @@ expression: report
     "cell_cache.rkyv",
     "cell_cache_preserved.rkyv",
     "conversion-manifest.json",
+    "grass_cache.rkyv",
     "inhouse-database-profile.json",
     "inhouse-reader-diagnostics.json",
     "integration-report.json",
@@ -102,7 +103,7 @@ expression: report
   "database_cache_files": 0,
   "database_cache_hit": false,
   "database_cache_key": "[database_cache_key]",
-  "database_runtime_records_built": 35,
+  "database_runtime_records_built": 36,
   "elapsed_ms": "[elapsed_ms]",
   "inputs_by_kind": {
     "dds": 7,
@@ -121,10 +122,12 @@ expression: report
     "references_total": 9,
     "room_graph": {
       "invalid_markers_skipped": 0,
+      "invalid_occluders_skipped": 0,
       "links": 0,
       "non_box_rooms_skipped": 0,
       "objects_in_no_room": 0,
       "objects_in_several_rooms": 0,
+      "occluders": 0,
       "overlap_rows": 0,
       "portals": 0,
       "portals_with_extra_pairs": 0,
@@ -153,8 +156,11 @@ expression: report
   "lod_gpu_chunks": 0,
   "lod_warnings": [],
   "notices": [
-    "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"
+    "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks",
+    "Object LOD: 1 worldspace(s) with terrain LOD have no level 16, 8 or 4 object blocks in the game data"
   ],
+  "object_lod_chunks": 0,
+  "object_lod_elapsed_ms": "[object_lod_elapsed_ms]",
   "phase_elapsed_ms": {
     "archive_ingestion_and_loose_overlay": "[elapsed_ms]",
     "artifact_validation": "[elapsed_ms]",

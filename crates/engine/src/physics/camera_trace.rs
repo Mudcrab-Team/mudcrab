@@ -149,7 +149,7 @@ pub(super) fn write_walk_camera_trace_row(
     // `grounded` and the vertical velocity are the controller's state after the latest tick. A
     // body that keeps `grounded = 0` with a growing downward velocity is falling, not stepping.
     let (grounded, vertical_velocity) = walk.single().map_or((0, 0.0), |state| {
-        (u8::from(state.grounded), state.vertical_velocity)
+        (u8::from(state.grounded()), state.vertical_velocity())
     });
     let (b, f, c) = (body.translation, feet, view.translation);
     let written = writeln!(

@@ -162,6 +162,9 @@ impl ShotsFile {
 /// One camera pose, rendered to `<out>/<name>.png`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Shot {
+    /// Draw grass for this shot; omitted fields preserve normal rendering.
+    #[serde(default = "grass_enabled_by_default")]
+    pub grass: bool,
     /// Output file stem: the engine writes `<out>/<name>.png`.
     pub name: String,
     /// The worldspace of an exterior shot, or `None` when the file leaves it to `--worldspace`.
@@ -187,6 +190,11 @@ pub struct Shot {
     /// `<out>/<name>.stages.json`.
     #[serde(default)]
     pub probes: Vec<crate::hdr_probe::ProbePoint>,
+}
+
+/// Preserve grass for existing shot files regardless of their names.
+fn grass_enabled_by_default() -> bool {
+    true
 }
 
 impl Shot {
@@ -370,7 +378,7 @@ pub fn skip_reason(shot: &Shot, worldspace_id: u32) -> Option<String> {
 // The settle rule
 // ---------------------------------------------------------------------------------------------
 
-/// What the settle rule reads, so that the rule is a pure function of the counts.
+/// What the settle rule reads, including enabled grass work and current failures.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SettleCounts {
     /// Cells submitted to the database but not yet resident.
@@ -394,6 +402,13 @@ pub struct SettleCounts {
     /// view with one of these was drawn from something the engine refused, and a shot of it is
     /// not the reference the run is trying to reproduce. Counted since this shot started settling.
     pub validation_failures: u64,
+    /// Enabled grass is still generating/admitting batches or waiting for their main draws.
+    /// Missing grass metrics also count as pending while grass is enabled.
+    /// Accepted capture receipts record this field as the boolean false.
+    pub grass_pending: bool,
+    /// Current grass pool rejections and renderer/model failures. These are not compared with
+    /// the shot's historical failure baseline: an already-failed grass view cannot settle.
+    pub grass_failures: u64,
     /// The renderer's final path is running and the warm-up has passed.
     pub renderer_ready: bool,
     /// Frames the counts have been quiet for, before this frame.
@@ -453,8 +468,27 @@ impl Failures {
 }
 
 impl SettleCounts {
-    /// What the streamer and the renderer say is still pending, with the quiet window so far. The
-    /// failure fields hold only the failures that happened after `baseline`.
+    /// Read enabled grass at observation time. Missing metrics remain pending, and current
+    /// grass failures are never subtracted as history from an earlier shot's baseline.
+    pub(crate) fn read_grass(
+        &mut self,
+        enabled: bool,
+        cpu: Option<&crate::grass::GrassMetrics>,
+        renderer: Option<&crate::grass_render::GrassRenderMetrics>,
+    ) {
+        self.grass_pending = enabled
+            && (!cpu.is_some_and(|metrics| metrics.ready)
+                || !renderer.is_some_and(|metrics| metrics.ready));
+        self.grass_failures = if enabled {
+            cpu.map_or(0, |metrics| metrics.failures)
+                .saturating_add(renderer.map_or(0, |metrics| metrics.failures))
+        } else {
+            0
+        };
+    }
+
+    /// Base streaming/renderer counts, with their failures measured after `baseline`. The capture
+    /// system adds current grass readiness and failures when grass is enabled.
     pub fn read(
         streaming: &StreamingMetrics,
         renderer: &RendererMetrics,
@@ -464,7 +498,7 @@ impl SettleCounts {
     ) -> Self {
         let now = Failures::read(streaming, renderer);
         Self {
-            loading_cells: streaming.loading_cells,
+            loading_cells: streaming.loading_cells + streaming.loading_large_reference_cells,
             active_requests: streaming.active_requests,
             pending_asset_instances: streaming.pending_asset_instances,
             pending_surface_instances: streaming.pending_surface_instances,
@@ -477,6 +511,8 @@ impl SettleCounts {
             validation_failures: now
                 .validation_failures
                 .saturating_sub(baseline.validation_failures),
+            grass_pending: false,
+            grass_failures: 0,
             renderer_ready,
             quiet_frames,
             pending_lod_queries: streaming.pending_lod_queries,
@@ -486,11 +522,13 @@ impl SettleCounts {
         }
     }
 
-    /// Adds room culling's graph reads when the world has its startup resources.
+    /// Only culled shots depend on room graph reads for settling and capture receipts.
     pub fn with_room_graphs(
         self,
         room_culling: Option<&crate::room_culling::RoomCullingState>,
+        no_room_culling: bool,
     ) -> Self {
+        let room_culling = room_culling.filter(|_| !no_room_culling);
         Self {
             pending_room_graphs: room_culling.map_or(0, |state| state.pending_reads()),
             failed_room_graphs: room_culling.map_or(0, |state| state.failed_reads()),
@@ -520,6 +558,8 @@ impl SettleCounts {
             && self.failed_cells == 0
             && self.asset_load_failures == 0
             && self.validation_failures == 0
+            && !self.grass_pending
+            && self.grass_failures == 0
             && self.pending_room_graphs == 0
             && self.failed_room_graphs == 0
             && self.renderer_ready
@@ -530,7 +570,7 @@ impl SettleCounts {
         format!(
             "loading_cells={} active_requests={} pending_assets={} pending_surfaces={} \
              arming={} retiring={} failed_cells={} asset_load_failures={} validation_failures={} \
-             renderer_ready={}",
+             grass_pending={} grass_failures={} renderer_ready={}",
             self.loading_cells,
             self.active_requests,
             self.pending_asset_instances,
@@ -540,6 +580,8 @@ impl SettleCounts {
             self.failed_cells,
             self.asset_load_failures,
             self.validation_failures,
+            self.grass_pending,
+            self.grass_failures,
             self.renderer_ready
         ) + &format!(
             " lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?} room_graphs={} room_graph_failures={}",
@@ -711,6 +753,11 @@ enum Phase {
 }
 
 impl ShotsRun {
+    /// ON/OFF capture pairs keep placement and suppress only grass draws.
+    pub(crate) fn grass_draws_off(&self) -> bool {
+        self.file.shots.get(self.shot).is_some_and(|s| !s.grass)
+    }
+
     pub fn new(file: ShotsFile, output_dir: PathBuf, worldspace_id: u32) -> Self {
         Self {
             file,
@@ -760,6 +807,21 @@ impl ShotsRun {
     fn discard_previous_outputs(&self, shot: &Shot) -> Result<(), String> {
         discard_previous_shot(&self.shot_path(shot))?;
         discard_previous_shot(&self.stages_path(shot))
+    }
+
+    /// Clear run-wide counts before settlement writes; per-capture cleanup never removes them.
+    fn prepare_output_directory(&mut self) -> Result<(), String> {
+        if !self.directory_made {
+            fs::create_dir_all(&self.output_dir).map_err(|error| {
+                format!(
+                    "could not make the output directory {}: {error}",
+                    self.output_dir.display()
+                )
+            })?;
+            discard_previous_shot(&self.output_dir.join("grass-counts.jsonl"))?;
+            self.directory_made = true;
+        }
+        Ok(())
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -865,7 +927,96 @@ impl ShotsRun {
     }
 }
 
+/// Capture evidence from the actual resident worker batches, deduplicated by species.
+/// Frustum counts refer to projected roots, not occlusion-tested pixels or primitive draws.
+fn grass_capture_counts(
+    run: &ShotsRun,
+    batches: &Query<&crate::grass::GrassBatch>,
+    config: &crate::config::EngineConfig,
+    phase: &str,
+) -> Result<(), String> {
+    let shot = &run.file.shots[run.shot];
+    let (sy, cy) = shot.yaw.to_radians().sin_cos();
+    let (sp, cp) = shot.pitch.to_radians().sin_cos();
+    let tx = (shot.hfov.to_radians() * 0.5).tan();
+    let ty = tx / run.file.aspect();
+    let (start, end) = config.effective_grass_fade();
+    let mut species = std::collections::BTreeMap::<u32, [u64; 5]>::new();
+    for batch in batches {
+        let counts = species.entry(batch.grass_id).or_default();
+        counts[0] += batch.instances.len() as u64;
+        if !run.grass_draws_off() {
+            let local_eye = Vec3::new(
+                shot.position[0] - batch.grid[0] as f32 * 4096.0,
+                shot.position[2],
+                -(shot.position[1] - batch.grid[1] as f32 * 4096.0),
+            );
+            counts[4] += crate::grass::submitted_instance_count(
+                &batch.instances,
+                batch.slot_count,
+                local_eye,
+                start,
+                end,
+                config.grass_enable_fade,
+            ) as u64;
+        }
+        for instance in batch.instances.iter() {
+            let p = [
+                batch.grid[0] as f32 * 4096.0 + f32::from(instance.position[0]) * 4096.0 / 65535.0,
+                batch.grid[1] as f32 * 4096.0 + f32::from(instance.position[1]) * 4096.0 / 65535.0,
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0,
+            ];
+            let [dx, dy, dz] = std::array::from_fn(|i| p[i] - shot.position[i]);
+            let horizontal = dx * sy + dy * cy;
+            let depth = horizontal * cp - dz * sp;
+            let right = dx * cy - dy * sy;
+            let up = horizontal * sp + dz * cp;
+            if depth <= 0.1 || right.abs() > depth * tx || up.abs() > depth * ty {
+                continue;
+            }
+            counts[1] += 1;
+            if depth <= 2100.0 {
+                counts[3] += 1;
+            }
+            let distance = dx.hypot(dy);
+            let fraction = if config.grass_enable_fade {
+                ((end - distance) / (end - start).max(1.0)).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            if (instance.candidate_slot() as f32) < fraction * batch.slot_count as f32 {
+                counts[2] += 1;
+            }
+        }
+    }
+    let value = serde_json::json!({"shot": shot.name, "phase": phase, "grass_off": run.grass_draws_off(),
+        "columns": ["spawned_resident", "roots_in_frustum", "fade_kept_roots_in_frustum", "roots_in_first_30m", "submitted_single_primitive_instances"],
+        "visible_after_toggle": !run.grass_draws_off(), "wind_rendered": false, "species": species});
+    let path = run.output_dir.join("grass-counts.jsonl");
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{value}"))
+        .map_err(|error| {
+            format!(
+                "grass count evidence {phase} write to {} failed: {error}",
+                path.display()
+            )
+        })
+}
+
+/// Capture resources, including the opt-in controls and resident species-count query.
+type GrassShotReadiness<'w, 's> = (
+    Res<'w, crate::config::EngineConfig>,
+    Option<Res<'w, crate::grass::GrassMetrics>>,
+    Option<Res<'w, crate::grass_render::GrassRenderMetrics>>,
+    Query<'w, 's, &'static crate::grass::GrassBatch>,
+    Option<Res<'w, crate::grass_render::GrassCaptureControls>>,
+);
+
 #[allow(clippy::too_many_arguments)]
+/// Pose, settle and capture each view, including enabled grass generation and draw readiness.
 fn run_shots(
     mut commands: Commands,
     time: Res<Time>,
@@ -875,6 +1026,7 @@ fn run_shots(
     mut camera: Query<(&mut Transform, &mut Projection), With<StreamingCamera>>,
     streaming: Res<StreamingMetrics>,
     renderer: Res<RendererMetrics>,
+    grass_readiness: GrassShotReadiness<'_, '_>,
     mut exit: MessageWriter<AppExit>,
     profiler: Res<crate::profiling::ProfilingState>,
     uploads: Res<crate::terrain_upload::TerrainMeshUploadReadiness>,
@@ -883,6 +1035,7 @@ fn run_shots(
     transfers: Res<crate::capture_frame::TransferReadiness>,
     room_culling: Option<Res<crate::room_culling::RoomCullingState>>,
 ) {
+    let (config, grass, grass_renderer, grass_batches, controls) = grass_readiness;
     // Borrowed once: the shot is taken from the file without cloning it, and the arms below still
     // write the run's other fields, which the borrow checker allows field by field.
     let run = &mut *run;
@@ -896,6 +1049,11 @@ fn run_shots(
         } else {
             AppExit::Success
         });
+        return;
+    }
+    if let Err(message) = run.prepare_output_directory() {
+        run.fail(message);
+        run.enter(Phase::Done);
         return;
     }
     let Ok((mut transform, mut projection)) = camera.single_mut() else {
@@ -924,18 +1082,6 @@ fn run_shots(
                 run.note(line);
                 run.advance();
                 return;
-            }
-            if !run.directory_made {
-                run.directory_made = true;
-                if let Err(error) = fs::create_dir_all(&run.output_dir) {
-                    let message = format!(
-                        "could not make the output directory {}: {error}",
-                        run.output_dir.display()
-                    );
-                    run.fail(message);
-                    run.enter(Phase::Done);
-                    return;
-                }
             }
             place_camera(
                 shot,
@@ -1007,7 +1153,9 @@ fn run_shots(
                 .unwrap_or(0.0) as usize;
             counts.pending_specializations = *retries.0.lock().unwrap();
             counts.pending_render_transfers = *transfers.0.lock().unwrap();
-            let counts = counts.with_room_graphs(room_culling.as_deref());
+            counts.read_grass(config.grass, grass.as_deref(), grass_renderer.as_deref());
+            let counts =
+                counts.with_room_graphs(room_culling.as_deref(), config.shots_no_room_culling);
             // The window is counted in before it is read, so a view that has been quiet for
             // `SETTLE_QUIET_FRAMES` frames running is photographed on that very frame: the log's
             // `frames=` is then the constant, not one more (the count read here is the previous
@@ -1031,6 +1179,14 @@ fn run_shots(
                     );
                 }
                 run.window_size = Some((run.file.width, run.file.height));
+                if controls.as_ref().is_some_and(|c| c.capture)
+                    && let Err(message) =
+                        grass_capture_counts(run, &grass_batches, &config, "settled")
+                {
+                    run.fail(message);
+                    run.advance();
+                    return;
+                }
                 let path = run.shot_path(shot);
                 if let Err(message) = discard_previous_shot(&path) {
                     // The old image would be taken for this shot's, so the shot fails instead.
@@ -1081,6 +1237,14 @@ fn run_shots(
                         }
                     }
                     None => {}
+                }
+                if controls.as_ref().is_some_and(|c| c.capture)
+                    && let Err(message) =
+                        grass_capture_counts(run, &grass_batches, &config, "captured")
+                {
+                    run.fail(message);
+                    run.advance();
+                    return;
                 }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
@@ -1178,6 +1342,7 @@ fn request_capture(
                         "requested_rotation_runtime_xyzw": rotation,
                         "requested_vertical_fov_radians": fov,
                         "captured_frame": receipt,
+                        "grass_tuning": receipt.grass_tuning,
                         "settle_counts": counts,
                         "timed_out": run.timed_out,
                         "image": path,
@@ -1369,7 +1534,7 @@ impl ShotsRun {
 /// `image` is taken by value because `Image::try_into_dynamic` consumes it (bevy_image 0.19.0,
 /// `image_texture_conversion.rs:168`); the observer only has a borrow of the event, so it clones,
 /// as Bevy's own `save_to_disk` does (`screenshot.rs:137`).
-fn decode_shot(image: Image) -> Result<image::RgbImage, String> {
+pub(crate) fn decode_shot(image: Image) -> Result<image::RgbImage, String> {
     Ok(image
         .try_into_dynamic()
         .map_err(|error| format!("the captured image could not be understood: {error}"))?
@@ -1564,6 +1729,44 @@ mod tests {
     fn assert_close(actual: Vec3, expected: Vec3) {
         let difference = (actual - expected).abs().max_element();
         assert!(difference < 1.0e-5, "{actual:?} != {expected:?}");
+    }
+
+    /// Names cannot silently change grass visibility; the explicit field can.
+    #[test]
+    fn grass_visibility_is_explicit_and_counts_are_cleared() {
+        let mut file = reference_file();
+        file.shots[0].name = "fog-off".into();
+        assert!(file.shots[0].grass);
+        let dir = tempfile::tempdir().unwrap();
+        let mut run = ShotsRun::new(file, dir.path().to_owned(), 60);
+        assert!(!run.grass_draws_off());
+        let explicit: Shot = serde_json::from_value(serde_json::json!({
+            "name": "grass-on", "grass": false, "position": [0,0,0],
+            "yaw": 0, "pitch": 0, "hfov": 75
+        }))
+        .unwrap();
+        run.file.shots[0] = explicit;
+        assert!(run.grass_draws_off());
+        let path = dir.path().join("grass-counts.jsonl");
+        fs::write(&path, "stale").unwrap();
+        run.prepare_output_directory().unwrap();
+        assert!(!path.exists());
+        for index in 0..2 {
+            run.shot = index;
+            let mut counts = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(counts, "{{\"shot\":{index},\"phase\":\"settled\"}}").unwrap();
+            run.discard_previous_outputs(&run.file.shots[0]).unwrap();
+            writeln!(counts, "{{\"shot\":{index},\"phase\":\"captured\"}}").unwrap();
+            run.prepare_output_directory().unwrap();
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 4);
+        let mut rerun = ShotsRun::new(reference_file(), dir.path().to_owned(), 60);
+        rerun.prepare_output_directory().unwrap();
+        assert!(!path.exists());
     }
 
     #[test]
@@ -2149,6 +2352,14 @@ mod tests {
                 validation_failures: 1,
                 ..ready
             },
+            SettleCounts {
+                grass_pending: true,
+                ..ready
+            },
+            SettleCounts {
+                grass_failures: 1,
+                ..ready
+            },
         ];
         for counts in pending {
             assert!(!counts.is_quiet(), "{counts:?}");
@@ -2202,6 +2413,8 @@ mod tests {
             asset_load_failures: 2,
             validation_failures: 5,
             failed_lod_work: 5,
+            grass_pending: false,
+            grass_failures: 0,
             renderer_ready: true,
             quiet_frames: 7,
             ..default()
@@ -2332,6 +2545,7 @@ mod tests {
         }
     }
 
+    /// A route rebase preserves its frozen capture pose and visits every remaining step.
     #[test]
     fn route_freezes_capture_pose_and_executes_every_step_after_rebase() {
         let (mut file, _) = crate::matched_route::MatchedRoute::parse_for_test(include_str!(
@@ -2343,6 +2557,7 @@ mod tests {
         run.route_checkpoints = Some(BTreeSet::from([0, 2]));
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .init_resource::<crate::config::EngineConfig>()
             .insert_resource(RenderOrigin(IVec2::ZERO))
             .init_resource::<StreamingMetrics>()
             .init_resource::<RendererMetrics>()
@@ -2400,6 +2615,239 @@ mod tests {
         assert!(app.world().resource::<ShotsRun>().failed);
         assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
         assert!(!output.path().join("route-000002-transition.png").exists());
+    }
+
+    /// Exercise the installed shots system with a posed camera and a ready final renderer.
+    fn g3_shots_app(output: &Path, grass: bool) -> App {
+        let mut file = reference_file();
+        file.shots.truncate(1);
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_secs(3));
+        time.advance_by(std::time::Duration::from_millis(1));
+        let mut app = App::new();
+        app.insert_resource(crate::config::EngineConfig { grass, ..default() })
+            .insert_resource(time)
+            .insert_resource(bevy::diagnostic::FrameCount::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(StreamingMetrics::default())
+            .init_resource::<crate::profiling::ProfilingState>()
+            .init_resource::<crate::terrain_upload::TerrainMeshUploadReadiness>()
+            .insert_resource(crate::capture_frame::RetryReadiness(std::sync::Arc::new(
+                std::sync::Mutex::new(Some(0)),
+            )))
+            .insert_resource(crate::capture_frame::TransferReadiness(
+                std::sync::Arc::new(std::sync::Mutex::new(Some(0))),
+            ))
+            .insert_resource(RendererMetrics {
+                gpu_preprocessing_active: true,
+                gpu_culling_active: true,
+                indirect_drawing_active: true,
+                occlusion_culling_views: 1,
+                hzb_views: 1,
+                indirect_phase_buffers: 1,
+                indirect_batch_sets: 1,
+                proof_frames: 1,
+                ..default()
+            })
+            .add_message::<AppExit>()
+            .add_plugins(ShotsPlugin {
+                run: ShotsRun::new(file, output.to_owned(), 60),
+            });
+        app.world_mut().spawn((
+            StreamingCamera,
+            Transform::default(),
+            Projection::Perspective(PerspectiveProjection::default()),
+        ));
+        app
+    }
+
+    /// Advance the actual capture system without moving the clock into either timeout.
+    fn g3_shots_frames(app: &mut App, frames: u32) {
+        for _ in 0..frames {
+            app.update();
+        }
+    }
+
+    /// Generation and admitted-but-undrawn batches both restart the real shot's quiet window.
+    #[test]
+    fn g3_shots_wait_for_generation_and_rendered_batches() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = g3_shots_app(directory.path(), true);
+        app.init_resource::<crate::grass::GrassMetrics>()
+            .insert_resource(crate::grass_render::GrassRenderMetrics {
+                ready: true,
+                failures: 0,
+            });
+        g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Settle);
+        assert_eq!(app.world().resource::<ShotsRun>().counts.quiet_frames, 0);
+
+        app.world_mut()
+            .resource_mut::<crate::grass::GrassMetrics>()
+            .ready = true;
+        g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES - 1);
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Settle);
+        app.world_mut()
+            .resource_mut::<crate::grass_render::GrassRenderMetrics>()
+            .ready = false;
+        app.update();
+        assert_eq!(app.world().resource::<ShotsRun>().counts.quiet_frames, 0);
+        g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES);
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Settle);
+
+        app.world_mut()
+            .resource_mut::<crate::grass_render::GrassRenderMetrics>()
+            .ready = true;
+        g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES - 1);
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Settle);
+        app.update();
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Capture);
+        assert!(!app.world().resource::<ShotsRun>().timed_out);
+    }
+
+    /// Missing grass resources cannot pass the installed shots gate when grass is enabled.
+    #[test]
+    fn g3_shots_require_both_enabled_grass_metrics() {
+        for missing in 0..3 {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = g3_shots_app(directory.path(), true);
+            if missing == 1 {
+                app.insert_resource(crate::grass::GrassMetrics {
+                    ready: true,
+                    ..default()
+                });
+            }
+            if missing == 0 {
+                app.insert_resource(crate::grass_render::GrassRenderMetrics {
+                    ready: true,
+                    failures: 0,
+                });
+            }
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+            assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Settle);
+        }
+    }
+
+    /// Active pool/model failures fail the real capture run before or after posing the shot.
+    #[test]
+    fn g3_shots_grass_failures_timeout_and_exit_with_error() {
+        for (model_failed, before_pose) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = g3_shots_app(directory.path(), true);
+            app.insert_resource(crate::grass::GrassMetrics {
+                ready: true,
+                ..default()
+            })
+            .insert_resource(crate::grass_render::GrassRenderMetrics {
+                ready: true,
+                failures: 0,
+            });
+            if !before_pose {
+                app.update();
+            }
+            app.world_mut()
+                .resource_mut::<crate::grass::GrassMetrics>()
+                .failures = u64::from(!model_failed);
+            app.world_mut()
+                .resource_mut::<crate::grass_render::GrassRenderMetrics>()
+                .failures = u64::from(model_failed);
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+            assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Settle);
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs_f32(SETTLE_TIMEOUT_SECONDS));
+            app.update();
+            let run = app.world().resource::<ShotsRun>();
+            assert_eq!(run.phase, Phase::Capture);
+            assert!(run.timed_out && run.failed);
+            assert!(run.counts.describe().contains("grass_failures=1"));
+
+            // Complete the production observer's result without a GPU readback. The capture
+            // phase must retain the settle failure through logging and the final AppExit.
+            let path = run.shot_path(&run.file.shots[0]);
+            write_shot(&decode_shot(test_image()).unwrap(), &path).unwrap();
+            app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
+            app.update();
+            assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
+            app.update();
+            let exits = app.world().resource::<Messages<AppExit>>();
+            let mut cursor = exits.get_cursor();
+            assert!(cursor.read(exits).any(|exit| exit.is_error()));
+            let log = fs::read_to_string(directory.path().join("shots.log")).unwrap();
+            assert!(log.contains("timed_out"), "{log}");
+        }
+    }
+
+    /// A late settled-count append failure fails the installed shots run.
+    #[test]
+    fn grass_count_evidence_write_failures_fail_settled_shots() {
+        assert_grass_count_write_failure(false);
+    }
+
+    /// A late captured-count append failure fails the installed shots run.
+    #[test]
+    fn grass_count_evidence_write_failures_fail_captured_shots() {
+        assert_grass_count_write_failure(true);
+    }
+
+    /// Obstruct the evidence path after output preparation, in the selected production phase.
+    fn assert_grass_count_write_failure(captured: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = g3_shots_app(directory.path(), false);
+        app.insert_resource(crate::grass_render::GrassCaptureControls { capture: true });
+        app.update();
+        if captured {
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+            assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Capture);
+            fs::rename(
+                directory.path().join("grass-counts.jsonl"),
+                directory.path().join("settled-counts.jsonl"),
+            )
+            .unwrap();
+            app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
+        }
+        fs::create_dir(directory.path().join("grass-counts.jsonl")).unwrap();
+        if captured {
+            app.update();
+        } else {
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+        }
+        assert!(
+            app.world().resource::<ShotsRun>().failed,
+            "count evidence failure must fail the shot: captured={captured}"
+        );
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
+        app.update();
+        let exits = app.world().resource::<Messages<AppExit>>();
+        let mut cursor = exits.get_cursor();
+        assert!(cursor.read(exits).any(|exit| exit.is_error()));
+        let log = fs::read_to_string(directory.path().join("shots.log")).unwrap();
+        assert!(log.contains("grass count evidence"), "{log}");
+    }
+
+    /// Disabled grass keeps existing shots behavior, regardless of absent or failing resources.
+    #[test]
+    fn g3_shots_disabled_grass_preserves_capture() {
+        for stale_metrics in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = g3_shots_app(directory.path(), false);
+            if stale_metrics {
+                app.insert_resource(crate::grass::GrassMetrics {
+                    failures: 3,
+                    ..default()
+                })
+                .insert_resource(crate::grass_render::GrassRenderMetrics {
+                    ready: false,
+                    failures: 5,
+                });
+            }
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+            let run = app.world().resource::<ShotsRun>();
+            assert_eq!(run.phase, Phase::Capture);
+            assert!(!run.failed && !run.timed_out);
+        }
     }
 
     /// An image the size a shot's capture arrives at, so the writer can be exercised without a

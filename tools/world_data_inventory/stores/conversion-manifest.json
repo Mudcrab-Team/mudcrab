@@ -1,0 +1,25 @@
+{
+  "evidence": [
+    {
+      "anchor": "pub ignored_inputs_by_extension: BTreeMap<String, u64>,",
+      "path": "crates/converter/src/cache.rs"
+    },
+    {
+      "anchor": "manifest.save(&staging.join(\"conversion-manifest.json\"))?",
+      "path": "crates/converter/src/pipeline.rs"
+    }
+  ],
+  "format_version": 1,
+  "owner": "converter pipeline maintainers (#751)",
+  "reason": "The optional ignored_inputs_by_extension member records counts of inputs excluded by the selected policy, including discovered loose inputs and archive entries. The aggregate is conversion provenance outside SQLite and is omitted when empty.",
+  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
+  "states": {
+    "decoded": "unknown",
+    "mapped": "unknown",
+    "preserved": "source_preserved",
+    "projected": "source_projected",
+    "query_dependent": "unknown",
+    "semantic_use": "unknown"
+  },
+  "store": "conversion-manifest.json"
+}

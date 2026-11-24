@@ -41,8 +41,11 @@ const PLAYER_FORM_ID: u32 = 0x0000_0007;
 const PLAYER_RACE_FORM_ID: u32 = 0x0000_000A;
 /// Fixture-local `fJumpHeightMin`; the retail setting uses `0x000A_BEF6`.
 const JUMP_HEIGHT_FORM_ID: u32 = 0x0000_000B;
-/// `NPC_Default_MT`, the `MOVT` the engine selects for an unset race link.
+/// `NPC_Default_MT`, the `MOVT` that the default objects below name for an unset race link.
 const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
+/// The single `DOBJ`. The fixture keeps its own low FormIDs: `Skyrim.esm`'s `00000031` would
+/// collide with the cell blocks that start at [`CELL_BASE_FORM_ID`].
+const DEFAULT_OBJECTS_FORM_ID: u32 = 0x0000_000C;
 /// `NPC_Default_MT`'s `SPED` speeds (left, right, forward and back; walk and
 /// run each), the values `Skyrim.esm` carries, plus the three rotation rates.
 const NPC_DEFAULT_MOVT_SPEEDS: [f32; 11] = [
@@ -290,6 +293,7 @@ fn write_plugin(
     bytes.extend_from_slice(&texture_set_record(spec)?);
     bytes.extend_from_slice(&static_record(spec)?);
     bytes.extend_from_slice(&movement_type_record()?);
+    bytes.extend_from_slice(&default_objects_record()?);
     bytes.extend_from_slice(&player_race_record()?);
     bytes.extend_from_slice(&player_record()?);
     bytes.extend_from_slice(&jump_height_record()?);
@@ -506,6 +510,23 @@ fn movement_type_record() -> Result<Vec<u8>> {
         *b"MOVT",
         NPC_DEFAULT_MOVT_FORM_ID,
         &[(*b"EDID", cstring("NPC_Default_MT")), (*b"SPED", speeds)],
+    )
+}
+
+/// The `DOBJ` whose `DMWL` and `DMRN` default movement types name `NPC_Default_MT`,
+/// as in `Skyrim.esm`. The engine reads them for the player race, which has no links.
+fn default_objects_record() -> Result<Vec<u8>> {
+    let pairs = [*b"DMWL", *b"DMRN"]
+        .into_iter()
+        .flat_map(|key| [key, NPC_DEFAULT_MOVT_FORM_ID.to_le_bytes()].concat())
+        .collect();
+    record(
+        *b"DOBJ",
+        DEFAULT_OBJECTS_FORM_ID,
+        &[
+            (*b"EDID", cstring("DefaultObjectManager")),
+            (*b"DNAM", pairs),
+        ],
     )
 }
 
@@ -1028,7 +1049,7 @@ mod tests {
     /// gone, and this constant stands in for it. A deliberate change to the
     /// exterior bytes refreshes it in the same commit, which is what keeps the
     /// change visible.
-    const EXTERIOR_ONLY_HASH: u64 = 0xBAC9_2B58_4586_B322;
+    const EXTERIOR_ONLY_HASH: u64 = 0xDC40_5877_8E25_2BE9;
 
     /// FNV-1a over every byte of `bytes`.
     fn fnv1a(bytes: &[u8]) -> u64 {

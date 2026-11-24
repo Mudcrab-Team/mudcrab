@@ -286,7 +286,7 @@ fn cached_land(output: &Path, name: &str) -> CachedLand {
 }
 
 /// Assert both layer projections, untouched geometry, and complete SQL preservation.
-fn assert_published_layers(output: &Path) {
+fn assert_published_layers(output: &Path, expected_priority: u32) {
     let preserved = cached_land(output, "cell_cache_preserved.rkyv");
     let runtime = cached_land(output, "cell_cache.rkyv");
     assert_eq!(
@@ -331,7 +331,7 @@ fn assert_published_layers(output: &Path) {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!((cell, priority), (CELL_ID, 2));
+    assert_eq!((cell, priority), (CELL_ID, expected_priority));
     assert_eq!(
         rkyv::from_bytes::<Vec<TerrainLayer>, rkyv::rancor::Error>(&blob).unwrap(),
         expected_preserved_layers(),
@@ -372,7 +372,11 @@ fn assert_published_layers(output: &Path) {
 }
 
 /// Full source and canonical archives retain every assignment, unused byte, and weight.
-fn assert_source_and_canonical(output: &Path, fields: &[(Vec<u8>, Vec<u8>)]) {
+fn assert_source_and_canonical(
+    output: &Path,
+    fields: &[(Vec<u8>, Vec<u8>)],
+    expected_priority: u32,
+) {
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     let (source, priority, payload): (u32, u32, Vec<u8>) = db
         .query_row(
@@ -381,7 +385,7 @@ fn assert_source_and_canonical(output: &Path, fields: &[(Vec<u8>, Vec<u8>)]) {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!((source, priority), (LAND_SOURCE_ID, 2));
+    assert_eq!((source, priority), (LAND_SOURCE_ID, expected_priority));
     assert_eq!(payload, frame_fields(fields));
     let canonical: Vec<u8> = db
         .query_row(
@@ -417,8 +421,8 @@ fn assert_source_and_canonical(output: &Path, fields: &[(Vec<u8>, Vec<u8>)]) {
 async fn over_capacity_layers_publish_and_rebuild_with_link_notices() {
     let fixture = Fixture::new();
     let output = fixture.publish(&[], false).await;
-    assert_published_layers(&output);
-    assert_source_and_canonical(&output, &fixture.fields);
+    assert_published_layers(&output, 2);
+    assert_source_and_canonical(&output, &fixture.fields, 2);
     let expected_payload = frame_fields(&fixture.fields);
     let expected_header = record(b"LAND", LAND_SOURCE_ID, 0, &expected_payload)[..24].to_vec();
     let mut seen = 0;
@@ -463,8 +467,8 @@ async fn over_capacity_layers_publish_and_rebuild_with_link_notices() {
     drain.await.unwrap();
     let report = result.unwrap();
     common::assert_reader_notice_publication(&report, &rebuilt);
-    assert_published_layers(&rebuilt);
-    assert_source_and_canonical(&rebuilt, &fixture.fields);
+    assert_published_layers(&rebuilt, 2);
+    assert_source_and_canonical(&rebuilt, &fixture.fields, 2);
     for (name, bytes) in cache_bytes {
         assert_eq!(
             fs::read(output.join(name)).unwrap(),
@@ -473,13 +477,13 @@ async fn over_capacity_layers_publish_and_rebuild_with_link_notices() {
         );
         assert_eq!(fs::read(rebuilt.join(name)).unwrap(), bytes);
     }
-    assert_published_layers(&output);
-    assert_source_and_canonical(&output, &fixture.fields);
+    assert_published_layers(&output, 2);
+    assert_source_and_canonical(&output, &fixture.fields, 2);
 }
 
-/// Malformed fields and compressed overrides stay local, preserving accepted layers and neighbors.
+/// Paint items recover locally; an unreadable compressed override retains the latest usable LAND.
 #[tokio::test]
-async fn malformed_over_capacity_overrides_keep_prior_layers_and_valid_neighbors() {
+async fn malformed_over_capacity_overrides_keep_usable_layers_and_valid_neighbors() {
     let fixture = Fixture::new();
     let mut short_weights = fixture.fields.clone();
     short_weights.push(assignment(b"ATXT", 4, 0, 67));
@@ -515,8 +519,8 @@ async fn malformed_over_capacity_overrides_keep_prior_layers_and_valid_neighbors
     let output = fixture
         .publish(&["BadWeights.esp", "BadQuadrant.esp", "Torn.esp"], true)
         .await;
-    assert_published_layers(&output);
-    assert_source_and_canonical(&output, &fixture.fields);
+    assert_published_layers(&output, 4);
+    assert_source_and_canonical(&output, &bad_quadrant, 4);
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     for slot in 3..=5 {
         for local in [0x0D01, 0x0D02] {
@@ -535,9 +539,23 @@ async fn malformed_over_capacity_overrides_keep_prior_layers_and_valid_neighbors
     let diagnostics: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
             .unwrap();
-    for name in ["badweights.esp", "badquadrant.esp", "torn.esp"] {
-        assert_eq!(diagnostics["decoder"][name]["skipped_records"], 1);
+    for name in ["badweights.esp", "badquadrant.esp"] {
+        assert_eq!(diagnostics["decoder"][name]["skipped_records"], 0);
     }
+    // Decoder loss remains visible for losing candidates; runtime preservation
+    // reports paint recovery only for the accepted winning LAND.
+    assert_eq!(
+        diagnostics["decoder"]["badweights.esp"]["skipped_fields"],
+        1
+    );
+    assert!(diagnostics["adapter"]["badweights.esp"].is_null());
+    assert!(
+        diagnostics["adapter"]["badquadrant.esp"][1]
+            .as_str()
+            .unwrap()
+            .contains("omitted 2 malformed LAND texture items")
+    );
+    assert_eq!(diagnostics["decoder"]["torn.esp"]["skipped_records"], 1);
     let accepted_payload = frame_fields(&fixture.fields);
     let mut seen = 0;
     let summary = visit_source_history(
@@ -551,10 +569,10 @@ async fn malformed_over_capacity_overrides_keep_prior_layers_and_valid_neighbors
             let raw = version.raw.as_ref().unwrap();
             assert_eq!(version.runtime_form_id, Some(LAND_GLOBAL_ID));
             assert_eq!(version.source_form_id, LAND_SOURCE_ID);
+            assert_eq!(version.runtime_fallback_before_latest_source, seen == 2);
             if seen == 0 {
                 assert_eq!(version.status, "accepted");
-                assert!(version.accepted_source_winner);
-                assert!(version.runtime_fallback_before_latest_source);
+                assert!(!version.accepted_source_winner);
                 assert_eq!(
                     raw.stored_payload.as_deref(),
                     Some(accepted_payload.as_slice())
@@ -562,9 +580,13 @@ async fn malformed_over_capacity_overrides_keep_prior_layers_and_valid_neighbors
             } else {
                 let (name, flags, payload) = &cases[seen - 1];
                 assert_eq!(version.supplying_plugin.to_lowercase(), name.to_lowercase());
-                assert_eq!(version.status, "skipped");
-                assert!(!version.accepted_source_winner);
-                assert!(version.rejection_reason.is_some());
+                let recoverable = seen < 3;
+                assert_eq!(
+                    version.status,
+                    if recoverable { "accepted" } else { "skipped" }
+                );
+                assert_eq!(version.accepted_source_winner, seen == 2);
+                assert_eq!(version.rejection_reason.is_some(), !recoverable);
                 assert_eq!(version.flags, *flags);
                 assert_eq!(raw.stored_payload.as_deref(), Some(payload.as_slice()));
             }
@@ -573,7 +595,10 @@ async fn malformed_over_capacity_overrides_keep_prior_layers_and_valid_neighbors
         },
     )
     .unwrap();
-    assert_eq!(seen, 4, "every rejected override remains in source history");
+    assert_eq!(
+        seen, 4,
+        "every accepted or rejected override remains in source history"
+    );
     assert!(summary.fully_raw_available);
     assert!(!summary.typed_runtime_decoding_attempted);
 }

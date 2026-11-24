@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#762)",
+  "reason": "Records placement sources whose archived payload changed before the next authored link index refresh.",
+  "table": "reference_authored_changes"
+}

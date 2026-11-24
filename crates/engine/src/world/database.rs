@@ -1,3 +1,4 @@
+use super::components::CELL_SIZE;
 use super::enable_state::{EnableStateError, EnableStateResolver, InitialEnableInputs};
 use bevy::prelude::Resource;
 use color_eyre::{Result, eyre::WrapErr};
@@ -7,7 +8,7 @@ use shared::lod::{
     ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path, object_chunk_payload_path,
 };
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::Path,
     sync::{
         Arc,
@@ -39,9 +40,13 @@ pub struct ReferenceRow {
     /// New-game enable-state snapshot, including parent chains. All rows remain available;
     /// this bootstrap value does not represent subsequent script/quest/save state.
     pub initially_enabled: bool,
+    /// The enable chain could not be resolved. The ordinary spawn path skips this row.
+    pub enable_state_unresolved: bool,
     /// The placed reference carries the Multibound flag. Its authored policy, including `NONE`,
     /// must not be replaced with geometric room membership from an older conversion.
     pub has_multibound_override: bool,
+    /// A versioned interior room rule initially attaches this reference to a named room.
+    pub named_room_target: bool,
     /// The winning `ACHR` header's `Starts Dead` flag (`0x200`). Only actor references read it;
     /// other record types assign that bit another meaning. The engine has no death pose or
     /// ragdoll, so a corpse keeps its bind pose instead of playing a standing idle.
@@ -64,7 +69,7 @@ pub struct ReferenceRow {
     /// a `LIGH`. `None` for every other reference, and for every reference in a database converted
     /// before lights were exported.
     pub light: Option<LightRow>,
-    /// The reference's own light radius (`XRDS`), which wins over [`LightRow::radius`]. `None` when
+    /// The reference's signed light-radius offset (`XRDS`), added to [`LightRow::radius`]. `None` when
     /// the reference carries no override, and in a database converted before the column existed.
     pub light_radius_override: Option<f32>,
     /// The 8-bit sRGB colour the reference's `XEMI` light or region lends its model's
@@ -105,6 +110,26 @@ pub struct LightRow {
     pub color: [u8; 3],
     /// `DATA`'s flags, uninterpreted; see the flag bits in [`crate::lights`].
     pub flags: u32,
+    /// Authored FNAM; absent/invalid values use a labelled compatibility fallback.
+    pub fade: Option<f32>,
+    /// 0 absent, 1 valid (including zero), 2 invalid; None for older projections.
+    pub fade_status: Option<u8>,
+    /// Authored DATA falloff, retained even where the backend cannot evaluate it.
+    pub falloff: Option<f32>,
+    /// The placing reference's XLIG projection, absent in older packages.
+    pub reference_data: Option<ReferenceLightRow>,
+    /// Placing reference's XRDS state: 0 absent, 1 valid signed offset, 2 malformed.
+    pub radius_status: Option<u8>,
+}
+
+/// Raw XLIG inputs, not effective multipliers. NULL fields retain malformed/non-finite status.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceLightRow {
+    pub data_size: u32,
+    pub fov_offset: Option<f32>,
+    pub fade_offset: Option<f32>,
+    pub end_distance_cap: Option<f32>,
+    pub shadow_depth_bias: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +147,12 @@ pub enum DatabaseRequest {
         key: CellKey,
         queued_at: Instant,
     },
+    LoadLargeReferences {
+        key: CellKey,
+        omissions: usize,
+        cancelled: Arc<AtomicBool>,
+        reply: Sender<std::result::Result<LargeReferenceRows, String>>,
+    },
     LoadLodChunks {
         generation: u64,
         query: LodChunkQuery,
@@ -134,6 +165,12 @@ pub enum DatabaseRequest {
         queued_at: Instant,
     },
     Shutdown,
+}
+
+#[derive(Debug)]
+pub struct LargeReferenceRows {
+    pub(crate) references: Vec<ReferenceRow>,
+    pub(crate) missing: usize,
 }
 
 #[derive(Debug)]
@@ -197,6 +234,18 @@ pub struct LodObjectResponse {
     pub generation: u64,
     pub worldspace_id: u32,
     pub result: std::result::Result<Vec<LodChunkMetadata>, LodQueryFailure>,
+    /// The worldspace's shared atlas, when its chunks reference one (format 3). `Ok(None)` for a
+    /// pack whose chunks embed the atlas.
+    pub atlas: std::result::Result<Option<LodObjectAtlas>, LodQueryFailure>,
+}
+
+/// The shared object LOD atlas of a worldspace: a KTX2 file every object chunk of the worldspace
+/// references (the additive `lod_object_atlases` table).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LodObjectAtlas {
+    pub worldspace_id: u32,
+    pub payload_path: String,
+    pub content_hash: String,
 }
 
 /// Whether an asynchronous query failed temporarily or rejected invalid metadata.
@@ -492,6 +541,7 @@ fn unpack_color(value: u32) -> [u8; 3] {
 
 #[derive(Resource, Default)]
 pub struct AssetCatalog {
+    pub(crate) large_references: LargeReferenceIndex,
     object_texture_swaps: crate::object_materials::ObjectTextureCatalog,
     landscape_diffuse: std::collections::HashMap<u32, String>,
     landscape_normal: std::collections::HashMap<u32, String>,
@@ -691,6 +741,7 @@ impl AssetCatalog {
             (None, None)
         };
         Ok(Self {
+            large_references: large_reference_index(&connection)?,
             default_land,
             object_texture_swaps: crate::object_materials::ObjectTextureCatalog::read(&connection)?,
             landscape_diffuse,
@@ -1034,6 +1085,27 @@ fn worker(
                     break;
                 }
             }
+            DatabaseRequest::LoadLargeReferences {
+                key,
+                omissions,
+                cancelled,
+                reply,
+            } => {
+                if cancelled.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let result = match &mut setup {
+                    Ok((connection, query)) => {
+                        load_large_references(connection, query, key, omissions)
+                            .map_err(|error| format!("{error:#}"))
+                    }
+                    Err(error) => Err(error.clone()),
+                };
+                // A demotion can drop the receiver while SQL is running. Keep SQL failures.
+                if let Err(crossbeam_channel::SendError(Err(error))) = reply.send(result) {
+                    bevy::log::warn!(?key, %error, "large-reference request failed after cancellation");
+                }
+            }
             DatabaseRequest::LoadLodChunks {
                 generation,
                 query,
@@ -1072,19 +1144,30 @@ fn worker(
                 worldspace_id,
                 queued_at: _,
             } => {
-                let result = match &setup {
-                    Ok((connection, _)) => load_lod_object_chunks(connection, worldspace_id)
-                        .map_err(LodQueryFailure::from_error),
-                    Err(error) => Err(LodQueryFailure {
-                        transient: false,
-                        reason: error.clone(),
-                    }),
+                let (result, atlas) = match &setup {
+                    Ok((connection, _)) => (
+                        load_lod_object_chunks(connection, worldspace_id)
+                            .map_err(LodQueryFailure::from_error),
+                        load_lod_object_atlas(connection, worldspace_id)
+                            .map_err(LodQueryFailure::from_error),
+                    ),
+                    Err(error) => (
+                        Err(LodQueryFailure {
+                            transient: false,
+                            reason: error.clone(),
+                        }),
+                        Err(LodQueryFailure {
+                            transient: false,
+                            reason: error.clone(),
+                        }),
+                    ),
                 };
                 if lod_object_responses
                     .send(LodObjectResponse {
                         generation,
                         worldspace_id,
                         result,
+                        atlas,
                     })
                     .is_err()
                 {
@@ -1242,6 +1325,68 @@ pub fn load_lod_object_chunks(
         )
     })
     .collect()
+}
+
+/// The shared object LOD atlas of a worldspace, from the additive `lod_object_atlases` table.
+///
+/// `Ok(None)` for a pack without that table or without a row for the worldspace: its chunks embed
+/// the atlas. A row with a non-canonical path or hash is an error.
+pub fn load_lod_object_atlas(
+    connection: &Connection,
+    worldspace_id: u32,
+) -> Result<Option<LodObjectAtlas>> {
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_atlases')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(None);
+    }
+    let row: Option<(String, String)> = connection
+        .query_row(
+            "SELECT payload_path, content_hash FROM lod_object_atlases WHERE worldspace_id=?1",
+            [worldspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let Some((payload_path, content_hash)) = row else {
+        return Ok(None);
+    };
+    let canonical = shared::lod::object_atlas_path(worldspace_id);
+    color_eyre::eyre::ensure!(
+        is_safe_relative_asset_path(&payload_path) && payload_path == canonical,
+        "object LOD atlas of worldspace {worldspace_id} has unsafe or non-canonical path {payload_path:?}; expected {canonical:?}"
+    );
+    color_eyre::eyre::ensure!(
+        is_canonical_sha256(&content_hash),
+        "object LOD atlas of worldspace {worldspace_id} has an invalid content hash"
+    );
+    Ok(Some(LodObjectAtlas {
+        worldspace_id,
+        payload_path,
+        content_hash,
+    }))
+}
+
+/// Checks that the shared atlas file exists under `assets` and matches its recorded SHA-256. A
+/// missing or damaged atlas is an error that names the file.
+pub fn verify_lod_object_atlas(assets: &Path, atlas: &LodObjectAtlas) -> Result<()> {
+    crate::streaming::lod::verify_payload_hash(
+        assets.join(&atlas.payload_path),
+        atlas.content_hash.clone(),
+    )
+    .map_err(|failure| {
+        color_eyre::eyre::eyre!(
+            "the shared object LOD atlas {} failed its integrity check: {}",
+            atlas.payload_path,
+            failure.reason()
+        )
+    })
 }
 
 /// Checks that every object LOD chunk's file exists under `assets` and matches its recorded
@@ -1431,7 +1576,7 @@ const LIGHT_COLUMNS: &str = "l.radius,l.color_r,l.color_g,l.color_b,l.flags";
 /// reads as unlit, with the column order unchanged.
 const ABSENT_LIGHT_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL";
 
-/// The reference's own `XRDS` light radius, which wins over the record's. The column arrived with
+/// The reference's signed XRDS radius offset, added to the base radius. The column arrived with
 /// the `lights` table in conversion schema 4; a database from before it has no such column.
 const RADIUS_OVERRIDE_COLUMN: &str = "r.radius_override";
 const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
@@ -1550,6 +1695,7 @@ struct ReferenceQuery {
     columns: String,
     joins: String,
     parent_sql: String,
+    has_named_room_targets: bool,
     enable_states: EnableStateResolver,
     enable_errors: HashSet<EnableStateError>,
 }
@@ -1633,18 +1779,315 @@ impl ReferenceQuery {
             0 => "0,NULL,0",
             _ => "r.header_flags,r.enable_parent_id,r.enable_parent_flags",
         };
+        let optional_light_column = |name: &str| -> Result<String> {
+            let present: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('lights') WHERE name=?1)",
+                [name],
+                |row| row.get(0),
+            )?;
+            Ok(if present {
+                format!("l.{name}")
+            } else {
+                "NULL".into()
+            })
+        };
+        let has_radius_status: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('references') WHERE name='radius_status')",
+            [], |row| row.get(0),
+        )?;
+        let radius_status_column = if has_radius_status {
+            "r.radius_status"
+        } else {
+            "NULL"
+        };
+        let fade_column = optional_light_column("fade")?;
+        let falloff_column = optional_light_column("falloff")?;
+        let fade_status_column = optional_light_column("fade_status")?;
+        let light_data_count: usize = connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('reference_light_data') WHERE name IN \
+             ('reference_id','data_size','fov_offset','fade_offset','end_distance_cap','shadow_depth_bias')",
+            [], |row| row.get(0),
+        )?;
+        let reference_light_columns = if light_data_count == 6 {
+            joins.push_str(" LEFT JOIN reference_light_data rl ON rl.reference_id=r.id");
+            "rl.data_size,rl.fov_offset,rl.fade_offset,rl.end_distance_cap,rl.shadow_depth_bias"
+        } else {
+            "NULL,NULL,NULL,NULL,NULL"
+        };
+        let has_assignment_columns: bool = connection.query_row(
+            "SELECT (SELECT count(*) FROM pragma_table_info('room_graph_stats')
+                         WHERE name IN ('name','value'))=2
+                AND (SELECT count(*) FROM pragma_table_info('room_reference_rules')
+                         WHERE name IN ('reference_id','cell_id','assignment','target_ref'))=4",
+            [],
+            |row| row.get(0),
+        )?;
+        let has_named_room_targets = has_assignment_columns
+            && connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)
+                    AND EXISTS(SELECT 1 FROM room_graph_stats WHERE name='assignment_version' AND value=1)",
+                [],
+                |row| row.get(0),
+            )?;
         Ok(Self {
             columns: format!(
                 "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
                  {door_columns},{emittance_columns},{reference_enable_columns},\
-                 {STATIC_FLAGS_COLUMN}"
+                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
+            has_named_room_targets,
             enable_states: EnableStateResolver::default(),
             enable_errors: HashSet::new(),
         })
     }
+}
+
+#[derive(Default)]
+pub(crate) struct LargeReferenceIndex {
+    pub(crate) members: HashMap<CellKey, HashSet<u32>>,
+    bucket_omissions: HashMap<CellKey, usize>,
+    world_omissions: HashMap<u32, usize>,
+    unlocated_omissions: usize,
+}
+
+impl LargeReferenceIndex {
+    pub(crate) fn omissions(&self, key: CellKey) -> usize {
+        let CellKey::Exterior { worldspace_id, .. } = key else {
+            return 0;
+        };
+        self.bucket_omissions
+            .get(&key)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(
+                self.world_omissions
+                    .get(&worldspace_id)
+                    .copied()
+                    .unwrap_or(0),
+            )
+            .saturating_add(self.unlocated_omissions)
+    }
+
+    fn omit(&mut self, worldspace_id: u32, key: Option<CellKey>, count: usize) {
+        let total = match key {
+            Some(cell) => self.bucket_omissions.entry(cell).or_default(),
+            None => self.world_omissions.entry(worldspace_id).or_default(),
+        };
+        *total = total.saturating_add(count);
+    }
+}
+
+fn rnam_cell(worldspace_id: u32, grid_x: i16, grid_y: i16) -> CellKey {
+    CellKey::Exterior {
+        worldspace_id,
+        grid_x: i32::from(grid_x),
+        grid_y: i32::from(grid_y),
+    }
+}
+
+fn large_reference_index(connection: &Connection) -> Result<LargeReferenceIndex> {
+    let mut index = LargeReferenceIndex::default();
+    let (membership, omissions, world_flags): (bool, bool, bool) = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='large_references'),
+                EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='large_reference_omissions'),
+                EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='worldspace_environment')",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if !(membership && omissions && world_flags) {
+        if membership || omissions {
+            bevy::log::warn!(
+                "large-reference membership has no completeness or worldspace data; keeping object LOD"
+            );
+        }
+        return Ok(index);
+    }
+    let mut malformed = 0;
+    let mut unknown_flags = HashSet::new();
+    let mut members = connection.prepare(
+        "SELECT l.worldspace_id,l.grid_x,l.grid_y,l.reference_id,e.data_flags
+         FROM large_references l LEFT JOIN worldspace_environment e ON e.worldspace_id=l.worldspace_id",
+    )?;
+    let mut rows = members.query([])?;
+    while let Some(row) = rows.next()? {
+        let Ok(worldspace_id) = row.get::<_, u32>(0) else {
+            malformed += 1;
+            index.unlocated_omissions += 1;
+            continue;
+        };
+        let (Ok(x), Ok(y)) = (row.get::<_, i16>(1), row.get::<_, i16>(2)) else {
+            malformed += 1;
+            index.omit(worldspace_id, None, 1);
+            continue;
+        };
+        let key = rnam_cell(worldspace_id, x, y);
+        match (row.get::<_, u32>(3), row.get::<_, Option<u32>>(4)) {
+            // skyrim_decomp#821 G02: fixed-center worldspaces skip per-cell promotion.
+            (Ok(id), Ok(Some(flags))) if id != 0 => {
+                if flags & 0x40 == 0 {
+                    index.members.entry(key).or_default().insert(id);
+                }
+            }
+            (_, Ok(None)) => {
+                unknown_flags.insert(worldspace_id);
+            }
+            _ => {
+                malformed += 1;
+                index.omit(worldspace_id, Some(key), 1);
+            }
+        }
+    }
+    let has_removals: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('large_reference_omissions')
+          WHERE name='confirmed_removed_count')",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut omissions = if has_removals {
+        connection.prepare(
+            "SELECT worldspace_id,grid_x,grid_y,omitted_count,confirmed_removed_count
+             FROM large_reference_omissions",
+        )?
+    } else {
+        connection.prepare(
+            "SELECT worldspace_id,grid_x,grid_y,omitted_count,0 FROM large_reference_omissions",
+        )?
+    };
+    let mut rows = omissions.query([])?;
+    while let Some(row) = rows.next()? {
+        let Ok(worldspace_id) = row.get::<_, u32>(0) else {
+            malformed += 1;
+            index.unlocated_omissions += 1;
+            continue;
+        };
+        let key = match (row.get::<_, Option<i16>>(1), row.get::<_, Option<i16>>(2)) {
+            (Ok(Some(x)), Ok(Some(y))) => Some(rnam_cell(worldspace_id, x, y)),
+            (Ok(None), Ok(None)) => None,
+            _ => {
+                malformed += 1;
+                index.omit(worldspace_id, None, 1);
+                continue;
+            }
+        };
+        match (row.get::<_, usize>(3), row.get::<_, usize>(4)) {
+            (Ok(0), Ok(removed)) if removed > 0 && key.is_some() => {}
+            (Ok(omitted), Ok(removed)) if omitted > 0 && (removed == 0 || key.is_some()) => {
+                index.omit(worldspace_id, key, omitted);
+            }
+            (omitted, _) => {
+                malformed += 1;
+                index.omit(worldspace_id, key, omitted.unwrap_or(0).max(1));
+            }
+        }
+    }
+    for &worldspace_id in &unknown_flags {
+        index.omit(worldspace_id, None, 1);
+    }
+    if malformed > 0
+        || !unknown_flags.is_empty()
+        || !index.bucket_omissions.is_empty()
+        || !index.world_omissions.is_empty()
+    {
+        let omitted = index
+            .bucket_omissions
+            .values()
+            .chain(index.world_omissions.values())
+            .fold(index.unlocated_omissions, |sum, count| {
+                sum.saturating_add(*count)
+            });
+        bevy::log::warn!(
+            malformed,
+            omitted,
+            ?unknown_flags,
+            "large-reference catalog has incomplete inputs"
+        );
+    }
+    Ok(index)
+}
+
+/// Check the winning placement before converting to grid coordinates or doing cell arithmetic.
+pub(crate) fn large_reference_in_bucket(reference: &ReferenceRow, x: i32, y: i32) -> bool {
+    reference
+        .position
+        .iter()
+        .chain(&reference.rotation)
+        .all(|value| value.is_finite())
+        && reference.scale.is_finite()
+        && [(x, reference.position[0]), (y, reference.position[1])]
+            .into_iter()
+            .all(|(grid, position)| {
+                let min = f64::from(grid) * f64::from(CELL_SIZE);
+                (min..min + f64::from(CELL_SIZE)).contains(&f64::from(position))
+            })
+}
+
+fn load_large_references(
+    connection: &Connection,
+    query: &mut ReferenceQuery,
+    key: CellKey,
+    mut missing: usize,
+) -> Result<LargeReferenceRows> {
+    let CellKey::Exterior {
+        worldspace_id,
+        grid_x,
+        grid_y,
+    } = key
+    else {
+        color_eyre::eyre::bail!("large-reference request for interior {key:?}");
+    };
+    let args = params![worldspace_id, grid_x, grid_y];
+    // The exterior index follows the winning placement, including persistent references.
+    // STAND-IN(#913): Keep LOD when an override moves a member out of its WRLD.RNAM bucket.
+    let count: usize = connection.prepare_cached(
+        "SELECT count(*) FROM large_references WHERE worldspace_id=?1 AND grid_x=?2 AND grid_y=?3",
+    )?.query_row(args, |row| row.get(0))?;
+    let sql = format!(
+        "SELECT {} FROM large_references lr JOIN \"references\" r ON r.id=lr.reference_id
+         JOIN exterior_spatial x ON x.id=r.id AND x.worldspace_id=lr.worldspace_id{} \
+         WHERE lr.worldspace_id=?1 AND lr.grid_x=?2 AND lr.grid_y=?3 ORDER BY lr.reference_id",
+        query.columns, query.joins,
+    );
+    let mut references = Vec::new();
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map(args, map_reference)?;
+    for row in rows {
+        let (mut reference, inputs) = match row {
+            Ok(pair) => pair,
+            Err(error @ rusqlite::Error::SqliteFailure(..)) => return Err(error.into()),
+            Err(error) => {
+                bevy::log::warn!(?key, %error, "malformed large-reference placement omitted");
+                continue;
+            }
+        };
+        if !large_reference_in_bucket(&reference, grid_x, grid_y) {
+            continue;
+        }
+        match resolve_reference_enable(connection, query, reference.form_id, inputs) {
+            Ok(Some(enabled)) => {
+                reference.initially_enabled = enabled;
+                references.push(reference);
+            }
+            Ok(None) => {}
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<rusqlite::Error>(),
+                    Some(rusqlite::Error::SqliteFailure(..))
+                ) =>
+            {
+                return Err(error);
+            }
+            Err(error) => {
+                bevy::log::warn!(?key, %error, "malformed large-reference enable state omitted");
+            }
+        }
+    }
+    missing = missing.saturating_add(count.saturating_sub(references.len()));
+    Ok(LargeReferenceRows {
+        references,
+        missing,
+    })
 }
 
 fn load_cell(
@@ -1690,37 +2133,72 @@ fn load_cell(
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
     };
-    let mut references = Vec::with_capacity(rows.len());
-    for (mut reference, inputs) in rows {
-        let state = query
-            .enable_states
-            .resolve(reference.form_id, inputs, |parent| {
-                connection
-                    .prepare_cached(&query.parent_sql)?
-                    .query_row([parent], |row| map_enable_inputs(row, 0))
-                    .optional()
-            })
-            .wrap_err_with(|| format!("enable state of reference {:08X}", reference.form_id))?;
-        reference.initially_enabled = match state {
-            Ok(enabled) => enabled,
-            Err(error) => {
-                if query.enable_errors.insert(error) {
-                    bevy::log::warn!(
-                        "reference {:08X}: {error}; unresolved references will not spawn",
-                        reference.form_id
-                    );
-                }
-                false
-            }
-        };
-        references.push(reference);
-    }
+    let named_room_targets = if matches!(key, CellKey::Interior(_)) && query.has_named_room_targets
+    {
+        connection
+            .prepare_cached(
+                "SELECT r.id FROM room_reference_rules p
+                 JOIN \"references\" r ON r.id=p.reference_id AND r.cell_id=p.cell_id
+                 WHERE p.cell_id=?1 AND p.assignment='target' AND p.target_ref IS NOT NULL",
+            )?
+            .query_map([cell_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<HashSet<u32>>>()?
+    } else {
+        HashSet::new()
+    };
+    let references = resolve_reference_rows(connection, query, rows, &named_room_targets)?;
     Ok(CellPayload {
         generation,
         key,
         cell_id,
         references,
     })
+}
+
+fn resolve_reference_rows(
+    connection: &Connection,
+    query: &mut ReferenceQuery,
+    rows: Vec<(ReferenceRow, InitialEnableInputs)>,
+    named_room_targets: &HashSet<u32>,
+) -> Result<Vec<ReferenceRow>> {
+    let mut references = Vec::with_capacity(rows.len());
+    for (mut reference, inputs) in rows {
+        reference.named_room_target = named_room_targets.contains(&reference.form_id);
+        let enabled = resolve_reference_enable(connection, query, reference.form_id, inputs)?;
+        reference.initially_enabled = enabled == Some(true);
+        reference.enable_state_unresolved = enabled.is_none();
+        references.push(reference);
+    }
+    Ok(references)
+}
+
+/// Missing or ambiguous parent data is distinct from an authored disabled state.
+fn resolve_reference_enable(
+    connection: &Connection,
+    query: &mut ReferenceQuery,
+    form_id: u32,
+    inputs: InitialEnableInputs,
+) -> Result<Option<bool>> {
+    let state = query
+        .enable_states
+        .resolve(form_id, inputs, |parent| {
+            connection
+                .prepare_cached(&query.parent_sql)?
+                .query_row([parent], |row| map_enable_inputs(row, 0))
+                .optional()
+        })
+        .wrap_err_with(|| format!("enable state of reference {form_id:08X}"))?;
+    match state {
+        Ok(enabled) => Ok(Some(enabled)),
+        Err(error) => {
+            if query.enable_errors.insert(error) {
+                bevy::log::warn!(
+                    "reference {form_id:08X}: {error}; unresolved references will not spawn"
+                );
+            }
+            Ok(None)
+        }
+    }
 }
 
 fn map_enable_inputs(
@@ -1754,6 +2232,22 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             radius,
             color: [row.get(20)?, row.get(21)?, row.get(22)?],
             flags: row.get(23)?,
+            radius_status: row.get(STATIC_FLAGS_INDEX + 9)?,
+            fade: row.get(STATIC_FLAGS_INDEX + 1)?,
+            fade_status: row.get(STATIC_FLAGS_INDEX + 8)?,
+            falloff: row.get(STATIC_FLAGS_INDEX + 2)?,
+            reference_data: row
+                .get::<_, Option<u32>>(STATIC_FLAGS_INDEX + 3)?
+                .map(|data_size| {
+                    Ok::<_, rusqlite::Error>(ReferenceLightRow {
+                        data_size,
+                        fov_offset: row.get(STATIC_FLAGS_INDEX + 4)?,
+                        fade_offset: row.get(STATIC_FLAGS_INDEX + 5)?,
+                        end_distance_cap: row.get(STATIC_FLAGS_INDEX + 6)?,
+                        shadow_depth_bias: row.get(STATIC_FLAGS_INDEX + 7)?,
+                    })
+                })
+                .transpose()?,
         }),
         None => None,
     };
@@ -1795,9 +2289,11 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         ReferenceRow {
             form_id: row.get(0)?,
             initially_enabled: true,
+            enable_state_unresolved: false,
             has_multibound_override: enable_inputs.header_flags
                 & shared::records::MULTIBOUND_REFERENCE_FLAG
                 != 0,
+            named_room_target: false,
             starts_dead: enable_inputs.header_flags & ACTOR_STARTS_DEAD != 0,
             cell_id: row.get(1)?,
             base_form_id: row.get(2)?,
@@ -1991,6 +2487,192 @@ mod tests {
              ALTER TABLE \"references\" ADD COLUMN enable_parent_flags INTEGER;",
             )
             .unwrap();
+    }
+
+    fn large_reference_fixture(connection: &Connection) -> CellKey {
+        fixture(connection);
+        assert!(
+            large_reference_index(connection)
+                .unwrap()
+                .members
+                .is_empty()
+        );
+        connection
+            .execute_batch(
+                "CREATE TABLE large_references(worldspace_id,grid_x,grid_y,reference_id);
+             CREATE TABLE large_reference_omissions(worldspace_id,grid_x,grid_y,omitted_count);
+             CREATE TABLE worldspace_environment(worldspace_id,data_flags);
+             INSERT INTO worldspace_environment VALUES(60,0),(61,64),(62,NULL),(63,0);
+             INSERT INTO large_references VALUES(60,2,-3,31),(61,2,-3,31),(62,2,-3,31);",
+            )
+            .unwrap();
+        rnam_cell(60, 2, -3)
+    }
+
+    fn large_reference_rows(connection: &Connection, key: CellKey) -> LargeReferenceRows {
+        let index = large_reference_index(connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default()).unwrap();
+        load_large_references(connection, &mut query, key, index.omissions(key)).unwrap()
+    }
+
+    #[test]
+    fn large_reference_buckets_require_winning_exterior_world_not_the_parent_cell() {
+        let connection = Connection::open_in_memory().unwrap();
+        let key = large_reference_fixture(&connection);
+        assert_eq!(
+            large_reference_index(&connection).unwrap().members,
+            HashMap::from([(key, HashSet::from([31]))])
+        );
+        connection
+            .execute_batch(
+                r#"INSERT INTO large_references VALUES(60,2,-3,32),(60,2,-3,33);
+               INSERT INTO "references" VALUES(32,11,20,8250,-12150,55,0,0,0,1);
+               INSERT INTO "references" VALUES(33,12,20,8250,-12150,55,0,0,0,1);
+               INSERT INTO cells VALUES(11,NULL,NULL,NULL),(12,63,2,-3);
+               INSERT INTO exterior_spatial VALUES(33,8250,8250,-12150,-12150,55,55,12,63);"#,
+            )
+            .unwrap();
+        let rows = large_reference_rows(&connection, key);
+        assert_eq!(rows.missing, 2);
+        assert_eq!(rows.references.len(), 1);
+        assert_eq!(rows.references[0].form_id, 31);
+        assert_eq!(rows.references[0].cell_id, 99);
+    }
+
+    #[test]
+    fn large_reference_catalog_counts_bad_grid_types_and_persisted_omissions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        let key = large_reference_fixture(&connection);
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
+             CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+             CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+             INSERT INTO large_references VALUES(60,'bad',-3,30),(60,2,-3,'bad');
+             INSERT INTO large_reference_omissions VALUES(60,2,-3,2),(60,NULL,NULL,3),(60,3,-3,5);",
+            )
+            .unwrap();
+        let index = AssetCatalog::open(&path).unwrap().large_references;
+        assert_eq!(index.members[&key], HashSet::from([31]));
+        assert_eq!(index.omissions(key), 7);
+        assert_eq!(index.omissions(rnam_cell(60, 3, -3)), 9);
+        // The optional catalog remains usable and does not prevent interior loads.
+        assert_eq!(
+            load_cell(&connection, 1, CellKey::Interior(99))
+                .unwrap()
+                .references
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn confirmed_removals_do_not_count_as_large_reference_omissions() {
+        let connection = Connection::open_in_memory().unwrap();
+        let key = large_reference_fixture(&connection);
+        connection
+            .execute_batch(
+                "ALTER TABLE large_reference_omissions ADD COLUMN confirmed_removed_count;
+             INSERT INTO large_reference_omissions
+             VALUES(60,2,-3,0,1),(60,3,-3,2,1),(60,4,-3,0,'bad'),(60,5,-3,0,0);",
+            )
+            .unwrap();
+        let index = large_reference_index(&connection).unwrap();
+        assert_eq!(index.members[&key], HashSet::from([31]));
+        assert_eq!(index.omissions(key), 0);
+        assert_eq!(index.omissions(rnam_cell(60, 3, -3)), 2);
+        assert_eq!(index.omissions(rnam_cell(60, 4, -3)), 1);
+        assert_eq!(index.omissions(rnam_cell(60, 5, -3)), 1);
+        assert_eq!(
+            large_reference_rows(&connection, key).references[0].form_id,
+            31
+        );
+    }
+
+    #[test]
+    fn large_reference_query_counts_extreme_positions_and_unresolved_enable_state() {
+        let connection = Connection::open_in_memory().unwrap();
+        let key = large_reference_fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute_batch(
+                r#"INSERT INTO large_references VALUES(60,2,-3,30),(60,2,-3,32),(60,2,-3,33);
+               UPDATE "references" SET pos_x=-1e30 WHERE id=30;
+               UPDATE "references" SET enable_parent_id=99,enable_parent_flags=0 WHERE id=31;
+               INSERT INTO "references" VALUES(32,10,20,8250,-12150,55,0,0,0,1,2048,NULL,NULL);
+               INSERT INTO "references" VALUES(33,10,20,8250,-12150,55,0,0,0,1,0,NULL,NULL);
+               INSERT INTO exterior_spatial VALUES(32,8250,8250,-12150,-12150,55,55,10,60);
+               INSERT INTO exterior_spatial VALUES(33,8250,8250,-12150,-12150,55,55,10,60);"#,
+            )
+            .unwrap();
+        let rows = large_reference_rows(&connection, key);
+        assert_eq!(rows.missing, 2);
+        assert_eq!(
+            rows.references
+                .iter()
+                .map(|row| (row.form_id, row.initially_enabled))
+                .collect::<Vec<_>>(),
+            [(32, false), (33, true)]
+        );
+        let payload = load_cell(&connection, 1, key).unwrap();
+        for (id, unresolved) in [(31, true), (32, false)] {
+            let row = payload
+                .references
+                .iter()
+                .find(|row| row.form_id == id)
+                .unwrap();
+            assert!(!row.initially_enabled);
+            assert_eq!(row.enable_state_unresolved, unresolved);
+        }
+    }
+
+    #[test]
+    fn disconnected_large_reference_reply_logs_sql_error() {
+        use crate::bug_report::logging::{RecentLogs, report_log_layer};
+        use bevy::{
+            log::tracing_subscriber::{Registry, prelude::*},
+            prelude::App,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        fixture(&Connection::open(&path).unwrap());
+        let (requests, inbox) = unbounded();
+        let (reply, receiver) = bounded(1);
+        drop(receiver);
+        requests
+            .send(DatabaseRequest::LoadLargeReferences {
+                key: rnam_cell(60, 2, -3),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                omissions: 0,
+                reply,
+            })
+            .unwrap();
+        requests.send(DatabaseRequest::Shutdown).unwrap();
+        let mut app = App::new();
+        let subscriber = Registry::default().with(report_log_layer(&mut app));
+        tracing::subscriber::with_default(subscriber, || {
+            worker(
+                path,
+                WorldDatabaseFeatures::default(),
+                inbox,
+                unbounded().0,
+                unbounded().0,
+                unbounded().0,
+            );
+        });
+        let diagnostics = app.world().resource::<RecentLogs>().snapshot();
+        assert!(
+            diagnostics.contains("large-reference request failed after cancellation"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("no such table: large_references"),
+            "{diagnostics}"
+        );
     }
 
     #[test]
@@ -2219,6 +2901,85 @@ mod tests {
     }
 
     #[test]
+    /// Pin the shared resolver's literal initial-state rules through real database loading.
+    fn shared_initial_enable_rules_preserve_database_loading_states() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        type FixtureRow = (u32, u32, Option<u32>, Option<u32>, bool);
+        let rows: &[FixtureRow] = &[
+            (100, 2048, None, None, false),
+            (101, 0, None, None, true),
+            (102, 16384, None, None, true),
+            (103, 2048, Some(0), Some(1), false),
+            (104, 0, Some(0), None, true),
+            (110, 2048, Some(101), Some(0), true),
+            (111, 0, Some(100), Some(0), false),
+            (112, 0, Some(100), Some(1), true),
+            (113, 0, Some(100), Some(952044802), false),
+            (114, 2048, Some(112), Some(1), false),
+            (115, 0, Some(999), Some(1), false),
+            (116, 0, Some(117), Some(1), false),
+            (117, 0, Some(116), Some(0), false),
+            (118, 0, Some(118), Some(1), false),
+            (119, 2048, Some(20), Some(0), true),
+            (120, 0, Some(20), Some(1), false),
+        ];
+        for &(id, flags, parent, parent_flags, _) in rows {
+            connection.execute(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale,header_flags,enable_parent_id,enable_parent_flags)
+                 VALUES(?1,600,20,0,0,0,0,0,0,1,?2,?3,?4)",
+                params![id, flags, parent, parent_flags],
+            ).unwrap();
+        }
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        for _ in 0..2 {
+            let payload =
+                super::load_cell(&connection, &mut query, 1, CellKey::Interior(600)).unwrap();
+            assert_eq!(payload.references.len(), 16);
+            for &(id, _, _, _, enabled) in rows {
+                let reference = payload
+                    .references
+                    .iter()
+                    .find(|row| row.form_id == id)
+                    .unwrap();
+                assert_eq!(reference.initially_enabled, enabled, "reference {id}");
+            }
+            assert_eq!(query.enable_errors.len(), 3);
+        }
+        assert_eq!(
+            query.enable_states.decision_inputs(114),
+            Some(vec![
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 114,
+                    inputs: InitialEnableInputs {
+                        header_flags: 2048,
+                        parent_id: Some(112),
+                        parent_flags: 1
+                    },
+                },
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 112,
+                    inputs: InitialEnableInputs {
+                        header_flags: 0,
+                        parent_id: Some(100),
+                        parent_flags: 1
+                    },
+                },
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 100,
+                    inputs: InitialEnableInputs {
+                        header_flags: 2048,
+                        parent_id: None,
+                        parent_flags: 0
+                    },
+                },
+            ])
+        );
+    }
+
+    #[test]
     fn authored_multibound_override_survives_the_existing_database_projection() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
@@ -2233,6 +2994,43 @@ mod tests {
         assert!(unrestricted.references[0].has_multibound_override);
         let automatic = load_cell(&connection, 1, CellKey::Interior(10)).unwrap();
         assert!(!automatic.references[0].has_multibound_override);
+    }
+
+    #[test]
+    fn versioned_named_room_targets_are_identified_before_streaming() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection.execute_batch(
+            "CREATE TABLE room_graph_stats(name TEXT PRIMARY KEY, value INTEGER);
+             INSERT INTO room_graph_stats VALUES('visibility_version',2),('assignment_version',1);
+             CREATE TABLE room_reference_rules(reference_id INTEGER PRIMARY KEY,cell_id INTEGER,assignment TEXT,target_ref INTEGER);
+             INSERT INTO room_reference_rules VALUES(30,10,'target',1),(31,99,'target',1);
+             INSERT INTO \"references\" VALUES(32,99,20,0,0,0,0,0,0,1),(33,99,20,0,0,0,0,0,0,1);
+             INSERT INTO room_reference_rules VALUES(32,99,'none',NULL),(33,99,'auto',NULL);",
+        ).unwrap();
+        let interior = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        let targets: Vec<_> = interior
+            .references
+            .iter()
+            .filter(|row| row.named_room_target)
+            .map(|row| row.form_id)
+            .collect();
+        assert_eq!(targets, [31]);
+        assert!(
+            exterior_payload(&connection)
+                .references
+                .iter()
+                .all(|row| !row.named_room_target)
+        );
+
+        connection
+            .execute(
+                "DELETE FROM room_graph_stats WHERE name='assignment_version'",
+                [],
+            )
+            .unwrap();
+        let legacy = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert!(legacy.references.iter().all(|row| !row.named_room_target));
     }
 
     #[test]
@@ -3720,6 +4518,11 @@ mod tests {
                 radius: 256.0,
                 color: [255, 150, 80],
                 flags: 8,
+                fade: None,
+                fade_status: None,
+                falloff: None,
+                reference_data: None,
+                radius_status: None,
             })
         );
         assert_eq!(
@@ -4050,5 +4853,49 @@ mod tests {
                 .iter()
                 .all(|reference| reference.door.is_none())
         );
+    }
+
+    #[test]
+    fn the_shared_object_atlas_row_is_read_validated_and_hash_checked() {
+        let connection = Connection::open_in_memory().unwrap();
+        // A pack without the table: its chunks embed the atlas.
+        assert_eq!(load_lod_object_atlas(&connection, 60).unwrap(), None);
+        connection
+            .execute_batch(
+                "CREATE TABLE lod_object_atlases(worldspace_id INTEGER PRIMARY KEY, payload_path TEXT NOT NULL, content_hash TEXT NOT NULL);",
+            )
+            .unwrap();
+        assert_eq!(load_lod_object_atlas(&connection, 60).unwrap(), None);
+        let hash = "ab".repeat(32);
+        connection
+            .execute(
+                "INSERT INTO lod_object_atlases VALUES (60, 'lod/0000003c/objects_atlas.opensky-srgb.ktx2', ?1)",
+                [&hash],
+            )
+            .unwrap();
+        let atlas = load_lod_object_atlas(&connection, 60).unwrap().unwrap();
+        assert_eq!(
+            atlas.payload_path,
+            "lod/0000003c/objects_atlas.opensky-srgb.ktx2"
+        );
+        // A missing file is an error that names the atlas, not a silent skip.
+        let assets = tempfile::tempdir().unwrap();
+        let message = format!(
+            "{:#}",
+            verify_lod_object_atlas(assets.path(), &atlas).unwrap_err()
+        );
+        assert!(message.contains("shared object LOD atlas"), "{message}");
+        // A non-canonical path or a bad hash is refused.
+        connection
+            .execute("UPDATE lod_object_atlases SET payload_path='../x.ktx2'", [])
+            .unwrap();
+        assert!(load_lod_object_atlas(&connection, 60).is_err());
+        connection
+            .execute(
+                "UPDATE lod_object_atlases SET payload_path='lod/0000003c/objects_atlas.opensky-srgb.ktx2', content_hash='nope'",
+                [],
+            )
+            .unwrap();
+        assert!(load_lod_object_atlas(&connection, 60).is_err());
     }
 }

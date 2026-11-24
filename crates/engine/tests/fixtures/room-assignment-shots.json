@@ -1,0 +1,90 @@
+{
+  "width": 1400,
+  "height": 1050,
+  "shots": [
+    {
+      "name": "BleakFallsBarrow01-joined-master-walk",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        -576,
+        -3520,
+        -2944
+      ],
+      "yaw": 0,
+      "pitch": 0,
+      "hfov": 75,
+      "note": "Joined master 234060, looking along the cave ramp; local model floor/ceiling at this XY are +160/+766, eye is +512 above reference 232714."
+    },
+    {
+      "name": "BleakFallsBarrow01-joined-slave-walk",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        448,
+        -5056,
+        -2400
+      ],
+      "yaw": 90,
+      "pitch": 0,
+      "hfov": 75,
+      "note": "Slave 234037 resolves to master 234060; camera inside the cave segment, toward the slave portal. Source model floor/ceiling are +12/+699, eye is +288 above reference 232664."
+    },
+    {
+      "name": "GallowsRock01-outside-in",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4591.9990234375,
+        -3999.9999993006177,
+        160.0
+      ],
+      "yaw": 90.00000250447816,
+      "pitch": -0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass."
+    },
+    {
+      "name": "GallowsRock01-outside-away",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4591.9990234375,
+        -3999.9999993006177,
+        160.0
+      ],
+      "yaw": 270.0000025044782,
+      "pitch": 0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass. Looking away into the back side of the level shell; full-render equality is not an oracle for portal restriction here."
+    },
+    {
+      "name": "GallowsRock01-inside-out",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4623.9990234375,
+        -4000.0000006993823,
+        160.0
+      ],
+      "yaw": 270.0000025044782,
+      "pitch": 0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass. This box-inside view faces exposed back sides of the shell; authored sphere ownership differs from full rendering here, so equality is not an original-game oracle."
+    },
+    {
+      "name": "GallowsRock01-inside-in",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4623.9990234375,
+        -4000.0000006993823,
+        160.0
+      ],
+      "yaw": 90.00000250447816,
+      "pitch": -0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass."
+    }
+  ]
+}

@@ -80,16 +80,22 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "bb07b368d792b341b743e03954a56f4c2c7d69f8d1c9afbe27b6bc8073d2b349",
-    "pex": "36a71880028a9c1d6bcd8b3c1cf149805dbe384a48a765bab57df47a3cbea565"
+    "nif": "33d8946c62c28124f7f820b91c3312c3eddd0df04060dfb8ff274a20905982d9",
+    "pex": "a9bb6648b0b0c8336196718a7f00773a39e6bd08fb94a3e6b1f4e1d76319e50d"
   },
   "complete": true,
-  "configuration_hash": "101deff2afbfbcd4112e9f85a46e67f3c48f40f45740f3d35761c2776b94d180",
+  "configuration_hash": "f19ba84a7c0a5f2de94c62d7177b93221ec9fe746ba5fa05ffd36a585b5dcfdd",
   "entries": {
+    "derived/grass-cache": {
+      "output": "grass_cache.rkyv",
+      "output_hash": "[output_hash]",
+      "output_size": 20,
+      "source_hash": "[source_hash]"
+    },
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 2356,
+      "output_size": 2560,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {

@@ -184,7 +184,8 @@ fn copied_summaries_keep_their_source_order() {
     assert_eq!(copied.first_by_category, source.first_by_category);
     assert_eq!(copied.invalid_links, 1);
     let serialized = serde_json::to_value(&copied).unwrap();
-    assert_eq!(serialized.as_object().unwrap().len(), 7);
+    assert_eq!(serialized["retired_base_placements"], 0);
+    assert_eq!(serialized.as_object().unwrap().len(), 8);
 }
 
 /// Full-text ties remain distinct even when both field and reason display prefixes match.

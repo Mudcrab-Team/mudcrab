@@ -183,8 +183,8 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
         let other = path.parent().unwrap().join("Other.esp");
         let merged = EsmParser::merge_plugins(&[path, other]).unwrap();
         // Invalid required NAME links cannot publish guessed targets. The final
-        // complete candidate and the other plugin's header-only record still survive.
-        assert_eq!(merged.len(), 2);
+        // complete placements from both plugins survive alongside their statics.
+        assert_eq!(merged.len(), 4);
         assert_eq!(merged[&0xFE00_0800].subrecords[0].1, b"Winner\0");
         assert_eq!(merged[&0xFE00_1800].subrecords[0].1, b"Other\0");
         return;
@@ -203,14 +203,27 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
             .concat(),
         ));
     }
-    records.extend(record(b"REFR", 0x0800, 0, sub(b"EDID", b"Winner\0")));
+    let placed = |id, name: &[u8]| {
+        let base = 0x801u32;
+        [
+            record(b"STAT", base, 0, sub(b"EDID", b"PlacementBase\0")),
+            record(
+                b"REFR",
+                id,
+                0,
+                [sub(b"EDID", name), sub(b"NAME", &base.to_le_bytes())].concat(),
+            ),
+        ]
+        .concat()
+    };
+    records.extend(placed(0x0800, b"Winner\0"));
     let path = plugin(dir.path(), "Uncompacted.esp", &[], 0x200, records);
     plugin(
         dir.path(),
         "Other.esp",
         &[],
         0x200,
-        record(b"REFR", 0x1800, 0, sub(b"EDID", b"Other\0")),
+        placed(0x1800, b"Other\0"),
     );
     // A separate test process captures real stderr without global logger or
     // file-descriptor changes that could interfere with parallel tests.

@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Missing or unsupported LGTM DATA leaves DATA-derived lighting columns NULL while other fields can still publish. Field-level semantics remain deferred.",
+  "table": "lighting_templates"
+}

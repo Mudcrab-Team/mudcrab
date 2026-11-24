@@ -56,7 +56,18 @@ def mask(text):
 
     Newlines and column positions are kept, so line numbers stay valid.
     """
+    return mask_with_comments(text)[0]
+
+
+def mask_with_comments(text):
+    """Return `(code, comments)`.
+
+    `code` is `mask(text)`. `comments` holds the `(start, end)` spans of the comments in
+    `text`, so a caller can read a marker from a comment. The silent-failure ratchet calls
+    this function, so both ratchets agree about what is code.
+    """
     out = list(text)
+    comments = []
     n = len(text)
 
     def blank(start, end):
@@ -70,6 +81,7 @@ def mask(text):
         if text.startswith("//", i):
             end = text.find("\n", i)
             end = n if end < 0 else end
+            comments.append((i, end))
             blank(i, end)
             i = end
             continue
@@ -86,6 +98,7 @@ def mask(text):
                         break
                 else:
                     j += 1
+            comments.append((i, j))
             blank(i, j)
             i = j
             continue
@@ -132,7 +145,7 @@ def mask(text):
             i = quote + 1  # a lifetime such as `'a`
             continue
         i += 1
-    return "".join(out)
+    return "".join(out), comments
 
 
 def matching_bracket(code, start):

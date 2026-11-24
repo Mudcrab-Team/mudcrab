@@ -5,15 +5,13 @@
 //! that splits the triangles into runs. The base game's 2,392 object shapes all satisfy
 //! "segment primitive counts sum to the triangle count", which the NIF parser enforces.
 //!
-//! This reader returns the shapes as plain data and keeps two things opaque on purpose:
-//! - the segment table (`flag`, `value`, `num_primitives`) as stored, because the meaning of the
-//!   middle value is not decoded;
-//! - every `BSDistantObjectLargeRefExtraData` block as raw bytes, because large-reference
-//!   semantics are not decoded (about 64% of base-game object shapes are large references).
+//! The reader preserves stored segment ranges and the raw large-reference blocks. It reads the
+//! Boolean from each shape's linked `BSDistantObjectLargeRefExtraData` block.
+//! See https://github.com/Mudcrab-Team/skyrim_decomp/pull/821 G04.
 //!
 //! Vertex positions are block-local as stored. A retail block carries a shape transform
-//! (translation and a scale of 4 in the base game) that the importer applies; it is returned
-//! here unapplied.
+//! (a translation to the block origin, and a scale equal to the block level: 4 at level 4, 16 at
+//! level 16) that the importer applies; it is returned here unapplied.
 
 use crate::mesh::{MeshConverter, parse_skyrim_header};
 use color_eyre::{
@@ -30,6 +28,8 @@ pub const LARGE_REF_BLOCK_TYPE: &str = "BSDistantObjectLargeRefExtraData";
 pub struct ObjectLodVertex {
     pub position: [f32; 3],
     pub normal: Option<[f32; 3]>,
+    /// Model-space axes for the atlas red and green channels (skyrim_decomp#948 G03).
+    pub atlas_basis: Option<[[f32; 3]; 2]>,
     pub uv: Option<[f32; 2]>,
     /// Vertex colour as stored (`R, G, B, A`).
     pub color: Option<[u8; 4]>,
@@ -39,8 +39,8 @@ pub struct ObjectLodVertex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectLodSegment {
     pub flag: u8,
-    /// Not decoded; kept as stored.
-    pub value: u32,
+    /// Start in the shape’s index buffer, in indices (skyrim_decomp#816, G02).
+    pub start_index: u32,
     /// Triangles in this segment. All segments of a shape sum to its triangle count.
     pub num_primitives: u32,
 }
@@ -50,11 +50,16 @@ pub struct ObjectLodSegment {
 pub struct ObjectLodShape {
     /// Index of the block in the file.
     pub block_index: usize,
+    /// True when the shape references a true BSDistantObjectLargeRefExtraData marker.
+    pub large_reference: bool,
+    /// Serialized `NiAVObject` flags. The runtime grouped-draw flags in skyrim_decomp#675 B3
+    /// are a different field and are unavailable to this reader.
+    pub flags: u32,
     /// Shape translation as stored (not applied to the vertices).
     pub translation: [f32; 3],
     /// Shape rotation as three columns (not applied).
     pub rotation_columns: [[f32; 3]; 3],
-    /// Shape scale as stored (not applied); 4.0 in the base game.
+    /// Shape scale as stored (not applied): the block level, 4.0 at level 4 and 16.0 at level 16.
     pub scale: f32,
     /// Raw block reference of the shader property, for the importer's material lookup.
     pub shader_property: u32,
@@ -95,6 +100,28 @@ impl ObjectLodFile {
     }
 }
 
+fn atlas_basis(x: f32, y: f32, z: f32, green: [u8; 3]) -> [[f32; 3]; 2] {
+    let signed = |value: f32| value * (2.0 / 255.0) - 1.0;
+    [
+        [x, signed(y), signed(z)],
+        green.map(|value| signed(f32::from(value))),
+    ]
+}
+
+#[test]
+fn packed_basis_preserves_float_x_and_decodes_the_signed_bytes() {
+    let [red, green] = atlas_basis(-0.25, 0.0, 255.0, [255, 127, 0]);
+    assert_eq!(
+        red.map(f32::to_bits),
+        [-0.25_f32, -1.0, 1.0].map(f32::to_bits)
+    );
+    assert_eq!(
+        [green[0], green[2]].map(f32::to_bits),
+        [1.0_f32, -1.0].map(f32::to_bits)
+    );
+    assert!((green[1] + 1.0 / 255.0).abs() < 1e-6);
+}
+
 /// Parses the bytes of one `.bto`. `label` only names the file in errors.
 ///
 /// Fails if the NIF is malformed, a shape has no vertex positions, or a triangle indexes past
@@ -102,6 +129,7 @@ impl ObjectLodFile {
 pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
     let (nif, diagnostics) = MeshConverter::parse_nif_bytes(bytes, label)?;
     let mut shapes = Vec::new();
+    let mut shape_extra_data = Vec::new();
     for shape in nif.get_seg_shapes() {
         let base = &shape.bs_tri_shape;
         let vertices = base
@@ -117,6 +145,12 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
                 Ok(ObjectLodVertex {
                     position: position.to_array(),
                     normal: vertex.normal.map(|normal| normal.to_array()),
+                    atlas_basis: vertex
+                        .bitangent_x
+                        .zip(vertex.bitangent_y)
+                        .zip(vertex.bitangent_z)
+                        .zip(vertex.tangent)
+                        .map(|(((x, y), z), green)| atlas_basis(x, y, z, green.to_array())),
                     uv: vertex.uv.map(|uv| uv.to_array()),
                     color: vertex.vertex_colors.map(|color| color.to_array()),
                 })
@@ -136,8 +170,11 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
             label.display(),
             vertices.len()
         );
+        shape_extra_data.push(base.av.extra_data_refs.clone());
         shapes.push(ObjectLodShape {
             block_index: 0,
+            large_reference: false,
+            flags: base.av.flags.bits(),
             translation: base.av.translation.0.0.to_array(),
             rotation_columns: base.av.rotation.0.0.to_cols_array_2d(),
             scale: base.av.scale.0,
@@ -149,7 +186,7 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
                 .iter()
                 .map(|segment| ObjectLodSegment {
                     flag: segment.flag,
-                    value: segment.value,
+                    start_index: segment.value,
                     num_primitives: segment.num_primitives,
                 })
                 .collect(),
@@ -191,8 +228,28 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
         seg_shape_indices.len(),
         shapes.len()
     );
-    for (shape, index) in shapes.iter_mut().zip(seg_shape_indices) {
+    let marker_blocks: BTreeMap<_, _> = large_ref_blocks
+        .iter()
+        .map(|block| (block.block_index, &block.bytes))
+        .collect();
+    for ((shape, index), extra_data) in shapes
+        .iter_mut()
+        .zip(seg_shape_indices)
+        .zip(shape_extra_data)
+    {
         shape.block_index = index;
+        for reference in extra_data {
+            let block = usize::try_from(reference).wrap_err("extra data index is out of range")?;
+            if let Some(bytes) = marker_blocks.get(&block) {
+                let flag = bytes.get(4).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "{} large-reference marker block {block} lacks a Boolean",
+                        label.display()
+                    )
+                })?;
+                shape.large_reference |= *flag != 0;
+            }
+        }
     }
 
     Ok(ObjectLodFile {
@@ -206,7 +263,7 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn push_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -220,13 +277,14 @@ mod tests {
     /// A `BSSubIndexTriShape` block. `with_positions` stores full-precision positions (a 16-byte
     /// vertex: three floats and a spare float); otherwise the block declares `vertices.len()`
     /// vertices without geometry data, which the NIF reader reads as vertices without positions.
-    fn shape_block(
+    pub(crate) fn shape_block(
         translation: [f32; 3],
         scale: f32,
         vertices: &[[f32; 3]],
         triangles: &[[u16; 3]],
         segments: &[(u8, u32, u32)],
         with_positions: bool,
+        with_uvs: bool,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
         push_u32(&mut bytes, u32::MAX); // name
@@ -247,21 +305,29 @@ mod tests {
         push_u32(&mut bytes, u32::MAX); // skin
         push_u32(&mut bytes, u32::MAX); // shader property: none
         push_u32(&mut bytes, u32::MAX); // alpha property
-        // Vertex descriptor: 4 dwords per vertex; flags 0x0401 are position and full precision.
-        let desc: u64 = 4 | (0x0401u64 << 44);
+        // Full-precision positions take four words. The optional half-float UV pair adds one.
+        let words = 4 + u64::from(with_uvs);
+        let uv_descriptor = if with_uvs {
+            (4 << 8) | (0x0002u64 << 44)
+        } else {
+            0
+        };
+        let desc = words | (0x0401u64 << 44) | uv_descriptor;
         bytes.extend(desc.to_le_bytes());
         bytes.extend((triangles.len() as u16).to_le_bytes());
         bytes.extend((vertices.len() as u16).to_le_bytes());
         if with_positions {
-            push_u32(
-                &mut bytes,
-                (vertices.len() * 16 + triangles.len() * 6) as u32,
-            );
+            let payload_bytes =
+                vertices.len() * (16 + 4 * usize::from(with_uvs)) + triangles.len() * 6;
+            push_u32(&mut bytes, u32::try_from(payload_bytes).unwrap());
             for vertex in vertices {
                 for value in vertex {
                     push_f32(&mut bytes, *value);
                 }
                 push_f32(&mut bytes, 0.0);
+                if with_uvs {
+                    push_u32(&mut bytes, 0x3800_3800); // (0.5, 0.5) as two half floats
+                }
             }
             for triangle in triangles {
                 for index in triangle {
@@ -282,7 +348,7 @@ mod tests {
     }
 
     /// A NIF 20.2.0.7 (user version 12, Bethesda version 100) holding `blocks` in order.
-    fn nif_bytes(blocks: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    pub(crate) fn nif_bytes(blocks: &[(&str, Vec<u8>)]) -> Vec<u8> {
         let mut types: Vec<&str> = Vec::new();
         for (name, _) in blocks {
             if !types.contains(name) {
@@ -320,7 +386,7 @@ mod tests {
         bytes
     }
 
-    const SHAPE: &str = "BSSubIndexTriShape";
+    pub(crate) const SHAPE: &str = "BSSubIndexTriShape";
     const LARGE_REF: &str = LARGE_REF_BLOCK_TYPE;
 
     fn label() -> &'static Path {
@@ -329,14 +395,16 @@ mod tests {
 
     #[test]
     fn reads_transforms_block_indices_and_exact_opaque_bytes() {
-        let first = shape_block(
+        let mut first = shape_block(
             [100.0, -200.0, 300.0],
             4.0,
             &[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]],
             &[[0, 1, 2]],
             &[(0, 9, 1)],
             true,
+            false,
         );
+        first.splice(4..8, [1_u32.to_le_bytes(), 0_u32.to_le_bytes()].concat());
         let second = shape_block(
             [0.0; 3],
             1.0,
@@ -344,6 +412,7 @@ mod tests {
             &[[2, 1, 0], [0, 1, 2]],
             &[(0, 5, 1), (0, 6, 1)],
             true,
+            false,
         );
         let opaque_a = vec![0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3];
         let opaque_b = vec![0x00, 0xFF, 0x7F];
@@ -372,7 +441,7 @@ mod tests {
             a.segments,
             vec![ObjectLodSegment {
                 flag: 0,
-                value: 9,
+                start_index: 9,
                 num_primitives: 1
             }]
         );
@@ -384,6 +453,8 @@ mod tests {
         assert_eq!((parsed.triangle_count(), parsed.vertex_count()), (3, 6));
 
         // The large-reference blocks come back untouched, with their block indices.
+        assert!(parsed.shapes[0].large_reference);
+        assert!(!parsed.shapes[1].large_reference);
         assert_eq!(parsed.large_ref_blocks.len(), 2);
         assert_eq!(parsed.large_ref_blocks[0].block_index, 0);
         assert_eq!(parsed.large_ref_blocks[0].block_type, LARGE_REF_BLOCK_TYPE);
@@ -404,6 +475,7 @@ mod tests {
             &[],
             &[],
             false,
+            false,
         );
         let error = read_object_lod(&nif_bytes(&[(SHAPE, shape)]), label()).unwrap_err();
         assert!(
@@ -421,6 +493,7 @@ mod tests {
             &[[0, 1, 3]],
             &[(0, 0, 1)],
             true,
+            false,
         );
         let error = read_object_lod(&nif_bytes(&[(SHAPE, shape)]), label()).unwrap_err();
         assert!(
@@ -432,5 +505,26 @@ mod tests {
     #[test]
     fn a_file_that_is_not_a_nif_is_an_error() {
         assert!(read_object_lod(b"not a nif", label()).is_err());
+    }
+
+    #[test]
+    fn the_shape_node_flags_are_read_from_the_node() {
+        let verts = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut block = shape_block(
+            [0.0; 3],
+            16.0,
+            &verts,
+            &[[0, 1, 2]],
+            &[(0, 0, 1)],
+            true,
+            false,
+        );
+        let file = |block: &[u8]| {
+            read_object_lod(&nif_bytes(&[(SHAPE, block.to_vec())]), label()).unwrap()
+        };
+        assert_eq!(file(&block).shapes[0].flags, 0);
+        // The flags word follows name, extra data and controller: offset 12.
+        block[12..16].copy_from_slice(&0x108u32.to_le_bytes());
+        assert_eq!(file(&block).shapes[0].flags, 0x108);
     }
 }

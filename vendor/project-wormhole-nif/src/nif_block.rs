@@ -21,7 +21,7 @@ pub enum NifBlock {
     BSFrustumFOVController(BSFrustumFOVController),
     BSFurnitureMarkerNode(BSFurnitureMarkerNode),
     BSLagBoneController(BSLagBoneController),
-    BSLeafAnimNode(BSLeafAnimNode),
+    BSLeafAnimNode(NiNode),
     BSLODTriShape(BSLODTriShape),
     BSLightingShaderProperty(BSLightingShaderProperty),
     BSLightingShaderPropertyColorController(BSLightingShaderPropertyColorController),
@@ -324,6 +324,27 @@ impl NifBlock {
                 Ok((i, NifBlock::BSFadeNode(result)))
             }
 
+            "BSLeafAnimNode" => {
+                let (i, result) = NiNode::parse(i)?;
+                Ok((i, NifBlock::BSLeafAnimNode(result)))
+            }
+
+            "BSBlastNode" => {
+                let (i, node) = NiNode::parse(i)?;
+                let (i, minimum) = le_u8(i)?;
+                let (i, maximum) = le_u8(i)?;
+                let (i, current) = le_u8(i)?;
+                Ok((
+                    i,
+                    NifBlock::BSBlastNode(BSBlastNode {
+                        node,
+                        minimum,
+                        maximum,
+                        current,
+                    }),
+                ))
+            }
+
             "BSTriShape" => {
                 let (i, result) = BSTriShape::parse(i)?;
                 let i = take_lod_shape_trailing_word(i);
@@ -369,6 +390,20 @@ impl NifBlock {
                     warn!("{} bytes left over after parsing BSMultiBoundNode", i.len());
                 }
                 Ok((i, NifBlock::BSMultiBoundNode(result)))
+            }
+
+            "NiSwitchNode" => {
+                let (i, node) = NiNode::parse(i)?;
+                let (i, flags) = le_u16(i)?;
+                let (i, active_child) = le_i32(i)?;
+                Ok((
+                    i,
+                    NifBlock::NiSwitchNode(NiSwitchNode {
+                        node,
+                        flags,
+                        active_child,
+                    }),
+                ))
             }
 
             "BSOrderedNode" => {
@@ -640,11 +675,14 @@ impl NifBlock {
 
     pub fn as_node(&self) -> Result<&NiNode, String> {
         match self {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Ok(node),
+            NifBlock::NiNode(node)
+            | NifBlock::BSFadeNode(node)
+            | NifBlock::BSLeafAnimNode(node) => Ok(node),
             NifBlock::BSMultiBoundNode(block) => Ok(&block.node),
             NifBlock::BSOrderedNode(block) => Ok(&block.node),
             NifBlock::NiBillboardNode(block) => Ok(&block.node),
             NifBlock::BSValueNode(block) => Ok(&block.node),
+            NifBlock::NiSwitchNode(block) => Ok(&block.node),
             _ => Err("Block is not a NiNode".to_string()),
         }
     }
@@ -658,7 +696,10 @@ pub struct BSBehaviorGraphExtraData {
 }
 #[derive(Debug)]
 pub struct BSBlastNode {
-    // TODO
+    pub node: NiNode,
+    pub minimum: u8,
+    pub maximum: u8,
+    pub current: u8,
 }
 #[derive(Debug)]
 pub struct BSBoneLODExtraData {
@@ -784,10 +825,6 @@ pub struct BSFurnitureMarkerNode {
 }
 #[derive(Debug)]
 pub struct BSLagBoneController {
-    // TODO
-}
-#[derive(Debug)]
-pub struct BSLeafAnimNode {
     // TODO
 }
 #[derive(Debug, NomLE)]
@@ -1550,7 +1587,9 @@ pub struct NiStringsExtraData {
 }
 #[derive(Debug)]
 pub struct NiSwitchNode {
-    // TODO
+    pub node: NiNode,
+    pub flags: u16,
+    pub active_child: i32,
 }
 #[derive(Debug)]
 pub struct NiTransformController {
@@ -1883,6 +1922,7 @@ pub struct NameIndex {
 #[derive(Debug, Clone)]
 pub struct NiAVObject {
     pub object: NiObjectNET,
+    pub extra_data_refs: Vec<u32>,
     pub flags: NiAVObjectFlags,
     pub translation: NifTranslation,
     pub rotation: NifRotation,
@@ -1922,6 +1962,7 @@ fn parse_compact_av_object(i: &[u8]) -> IResult<&[u8], NiAVObject, nom::error::E
         i,
         NiAVObject {
             object: NiObjectNET { name },
+            extra_data_refs: Vec::new(),
             flags,
             translation,
             rotation,
@@ -1940,8 +1981,11 @@ fn parse_counted_av_object(i: &[u8]) -> IResult<&[u8], NiAVObject, nom::error::E
             nom::error::ErrorKind::Count,
         )));
     }
+    let mut extra_data_refs = Vec::new();
     for _ in 0..extra_data_count {
-        (i, _) = le_u32(i)?;
+        let reference;
+        (i, reference) = le_u32(i)?;
+        extra_data_refs.push(reference);
     }
     let (i, _) = le_u32(i)?; // controller
     let (i, flags) = NiAVObjectFlags::parse(i)?;
@@ -1951,6 +1995,7 @@ fn parse_counted_av_object(i: &[u8]) -> IResult<&[u8], NiAVObject, nom::error::E
     let (i, collision_object) = MaxRef::parse(i)?;
     let av = NiAVObject {
         object: NiObjectNET { name },
+        extra_data_refs,
         flags,
         translation,
         rotation,
@@ -1994,8 +2039,17 @@ impl NiObjectNETTraits for NiAVObject {
 pub struct NiAVObjectFlags(u32);
 
 impl NiAVObjectFlags {
+    /// The flag word as stored.
+    pub fn bits(&self) -> u32 {
+        self.0
+    }
+
     pub fn hidden(&self) -> bool {
         self.0 & 0x0001 != 0
+    }
+
+    pub fn fixed_bound(&self) -> bool {
+        self.0 & 0x2000 != 0
     }
 
     pub fn mesh_collision(&self) -> bool {

@@ -1,0 +1,36 @@
+[
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "n": 3,
+    "apex_min": 73.758056640625,
+    "apex_median": 73.77734375,
+    "apex_max": 73.777587890625,
+    "native_rmse_median": 0.11124911170664593,
+    "native_max_error": 0.220947265625,
+    "native_flight_rmse_max": 0.00026200880278181226,
+    "mudcrab_rmse_median": 11.438995753332028,
+    "mudcrab_max_error": 28.494710286458314,
+    "native_passes": 3,
+    "observed_camera_hz_median": 60.88168861450933,
+    "camera_to_wall_ratio_median": 0.9979673411268806,
+    "observed_wall_dt_median": 0.01642530000000164,
+    "observed_controller_dt_median": 0.016333334147930145
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "n": 3,
+    "apex_min": 69.179931640625,
+    "apex_median": 69.18017578125,
+    "apex_max": 69.198486328125,
+    "native_rmse_median": 0.11228878337797836,
+    "native_max_error": 0.22509765625,
+    "native_flight_rmse_max": 0.0003615277873010952,
+    "mudcrab_rmse_median": 6.081868844279432,
+    "mudcrab_max_error": 17.92041015625,
+    "native_passes": 3,
+    "observed_camera_hz_median": 30.00660145231734,
+    "camera_to_wall_ratio_median": 0.998468900151872,
+    "observed_wall_dt_median": 0.03332600000000241,
+    "observed_controller_dt_median": 0.03333333507180214
+  }
+]

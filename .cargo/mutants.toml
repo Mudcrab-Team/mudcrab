@@ -1,0 +1,17 @@
+# `cargo mutants` settings (https://mutants.rs). The schedule and the dispatch form live in
+# .github/workflows/mutants.yml, and docs/contributing/mutants.md explains how to read a report.
+#
+# The scope of a run is a `--file` glob on the command line, not a key here: the workflow's `files`
+# input replaces the scheduled scope, and cargo-mutants adds config globs to command-line globs
+# instead of replacing them. Every exclusion below needs a reason.
+
+# Display and Debug implementations render text for a person. A test that pinned exact message
+# wording would break on a copy edit and would still miss a behavior change, so a surviving mutant
+# here says nothing about the quality of the reader tests. No file in the scheduled scope has one
+# today; this rule covers a wider manual run, for example crates/converter/src/config.rs:392.
+exclude_re = [
+  "replace <impl fmt::(Display|Debug) for .*>::fmt ->",
+]
+
+# Test modules are not listed here. cargo-mutants already skips `#[test]` functions and
+# `#[cfg(test)]` modules, so a glob for them would be a rule that never matches.

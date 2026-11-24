@@ -375,7 +375,7 @@ fn typed_targets_clear_wrong_kinds_inside_unions_and_alternate_textures() {
                 0x0100_1802,
                 0,
                 &[
-                    subrecord(b"NAME", &0x1402_u32.to_le_bytes()),
+                    subrecord(b"NAME", &0x1400_u32.to_le_bytes()),
                     subrecord(b"XESP", &wrong_parent),
                     subrecord(b"XLKR", &good_link),
                     subrecord(b"XLKR", &wrong_link),
@@ -383,6 +383,7 @@ fn typed_targets_clear_wrong_kinds_inside_unions_and_alternate_textures() {
                 ]
                 .concat(),
             ),
+            reference_record(0x0100_1803, 0x1402),
         ]
         .concat(),
     );
@@ -406,7 +407,7 @@ fn typed_targets_clear_wrong_kinds_inside_unions_and_alternate_textures() {
     let wrong = &result.records[&0x0200_1801];
     assert_eq!(word(&field(wrong, b"DNAM").canonical_bytes, 4), 0);
     let placed = &result.records[&0x0200_1802];
-    assert_eq!(field(placed, b"NAME").value, Value::FormId(0));
+    assert_eq!(field(placed, b"NAME").value, Value::FormId(0x0100_1400));
     assert_eq!(word(&field(placed, b"XESP").canonical_bytes, 0), 0);
     let links: Vec<_> = placed
         .fields
@@ -417,7 +418,9 @@ fn typed_targets_clear_wrong_kinds_inside_unions_and_alternate_textures() {
     assert_eq!(word(&links[0].canonical_bytes, 0), 0x0100_1402);
     assert_eq!(word(&links[0].canonical_bytes, 4), 0x0100_1403);
     assert_eq!(links[1].canonical_bytes, [0; 8]);
-    assert_eq!(result.diagnostics["consumer.esp"].invalid_links, 6);
+    assert!(!result.records.contains_key(&0x0200_1803));
+    assert_eq!(result.diagnostics["consumer.esp"].skipped_records, 1);
+    assert_eq!(result.diagnostics["consumer.esp"].invalid_links, 5);
     assert!(result.diagnostics["consumer.esp"].first_example.is_some());
 }
 
@@ -529,28 +532,44 @@ fn malformed_records_and_fields_keep_valid_neighbors() {
                 ]
                 .concat(),
             ),
-            static_record(0x1803, "After"),
+            record(
+                b"REFR",
+                0x1803,
+                0,
+                &[
+                    subrecord(b"NAME", &0x1800u32.to_le_bytes()),
+                    subrecord(b"XSCL", &[0, 0, 0]),
+                    subrecord(b"DATA", &transform()),
+                ]
+                .concat(),
+            ),
+            static_record(0x1804, "After"),
         ]
         .concat(),
     );
     let (_, result) = fixture.read();
     assert!(result.records.contains_key(&0x0100_1800));
     assert!(!result.records.contains_key(&0x0100_1801));
-    let partial = &result.records[&0x0100_1802];
+    assert!(!result.records.contains_key(&0x0100_1802));
+    let partial = &result.records[&0x0100_1803];
+    assert_eq!(
+        word(&field(partial, b"NAME").canonical_bytes, 0),
+        0x0100_1800
+    );
     assert!(
         !partial
             .fields
             .iter()
-            .any(|field| field.signature == *b"NAME")
+            .any(|field| field.signature == *b"XSCL")
     );
     assert_eq!(field(partial, b"DATA").canonical_bytes, transform());
     assert_eq!(
-        field(&result.records[&0x0100_1803], b"EDID").value,
+        field(&result.records[&0x0100_1804], b"EDID").value,
         Value::String("After".into())
     );
     let diagnostics = &result.diagnostics["broken.esp"];
-    assert_eq!(diagnostics.skipped_records, 1);
-    assert_eq!(diagnostics.skipped_fields, 1);
+    assert_eq!(diagnostics.skipped_records, 2);
+    assert_eq!(diagnostics.skipped_fields, 2);
     assert!(diagnostics.first_example.is_some());
 }
 

@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; publication #269)",
+  "reason": "Missing or short placement DATA omits the exterior spatial row and removes any stale row for that ID. Field-level semantics remain deferred.",
+  "table": "exterior_spatial"
+}

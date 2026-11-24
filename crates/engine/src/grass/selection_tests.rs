@@ -1,0 +1,801 @@
+use super::*;
+use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
+
+/// Per-spot selection counts the modelless middle nomination in its post-add admission limit.
+#[test]
+fn modelless_middle_species_keeps_authored_cap_slot() {
+    let mut placeholder = rule(2, 128.0);
+    placeholder.model_path.clear();
+    let cache = mapped(
+        vec![rule(1, 128.0), placeholder, rule(3, 128.0)],
+        cell(vec![layer(vec![1, 2, 3], 1.0, true)]),
+    );
+    for (configured, admitted) in [(1, 2), (2, 3)] {
+        let config = EngineConfig {
+            grass_max_types_per_texture: configured,
+            ..Default::default()
+        };
+        assert_eq!(config.effective_grass_species_cap(), admitted);
+        let generated = generate(&cache, 42, &config);
+        let ids: Vec<_> = generated
+            .batches
+            .iter()
+            .map(|batch| batch.grass_id)
+            .collect();
+        assert_eq!(ids, if admitted == 2 { vec![1] } else { vec![1, 3] });
+        assert!(
+            generated
+                .batches
+                .iter()
+                .all(|batch| !batch.instances.is_empty())
+        );
+    }
+}
+
+/// Reference selection and rendered grounding intentionally retain their distinct diagonals.
+#[test]
+fn reference_selection_and_committed_grounding_keep_distinct_contracts() {
+    let mut heights = vec![0.0; 1089];
+    heights[34] = 128.0;
+    assert_eq!(
+        sampling::sample(96.0, 80.0, &|i| heights[i], &|_| Some([0.0, 0.0, 1.0]))
+            .unwrap()
+            .height,
+        80.0
+    );
+    assert_eq!(sampling::committed_height(96.0, 80.0, &heights), 48.0);
+    heights.fill(16_408.25);
+    assert_eq!(
+        sampling::committed_height(4096.0, 4096.0, &heights),
+        16_408.25
+    );
+}
+
+/// Runtime grounding preserves fractional welded heights beyond binary16 Z precision.
+#[test]
+fn committed_fractional_height_survives_runtime_grounding() {
+    let source = cell(vec![layer(vec![7], 1.0, true)]);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let config = EngineConfig::default();
+    let reference = generate(&cache, 42, &config);
+    let surface = GrassTerrain::new(vec![16_408.25; 1089], None);
+    let runtime = generate_on_terrain(&cache, 42, &config, &surface);
+    assert_eq!(
+        reference.batches[0].instances.len(),
+        runtime.batches[0].instances.len()
+    );
+    for instance in runtime.batches[0].instances.iter() {
+        let batch = &runtime.batches[0];
+        assert_eq!(
+            batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0,
+            16_408.25
+        );
+    }
+}
+
+/// Runtime roots follow the committed fixed-diagonal mesh at their decoded packed XY.
+#[test]
+fn committed_nonplanar_grounding_matches_rendered_triangles() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.heights = (0..1089)
+        .map(|i| {
+            if (i % 33) % 2 == 1 && (i / 33) % 2 == 1 {
+                128.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let surface = GrassTerrain::new(source.heights.clone(), None);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let generated = generate_on_terrain(&cache, 42, &EngineConfig::default(), &surface);
+    assert!(!generated.batches.is_empty());
+    for batch in &generated.batches {
+        for instance in batch.instances.iter() {
+            let x = f32::from(instance.position[0]) * 4096.0 / 65535.0;
+            let y = f32::from(instance.position[1]) * 4096.0 / 65535.0;
+            let col = (x / 128.0).floor().min(31.0) as usize;
+            let row = (y / 128.0).floor().min(31.0) as usize;
+            let fx = x / 128.0 - col as f32;
+            let fy = y / 128.0 - row as f32;
+            let heights = surface.heights();
+            let [a, b, c, d] = [
+                row * 33 + col,
+                row * 33 + col + 1,
+                (row + 1) * 33 + col,
+                (row + 1) * 33 + col + 1,
+            ]
+            .map(|i| heights[i]);
+            // quadrant_triangles emits [a,b,c] and [b,d,c] on every square.
+            let expected = if fx + fy <= 1.0 {
+                a * (1.0 - fx - fy) + b * fx + c * fy
+            } else {
+                b * (1.0 - fy) + c * (1.0 - fx) + d * (fx + fy - 1.0)
+            };
+            let actual =
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0;
+            assert!(
+                (actual - expected).abs() < 0.005,
+                "root ({x},{y}): {actual} versus rendered {expected}"
+            );
+        }
+    }
+}
+
+/// Compact staging retains every finite half value, including signed zero and subnormals.
+#[test]
+fn half_height_staging_preserves_literal_and_finite_values() {
+    for (height, bits) in [
+        (0.0, 0x0000),
+        (-0.0, 0x8000),
+        (1.0, 0x3c00),
+        (-2.0, 0xc000),
+        (f32::from_bits(0x3380_0000), 0x0001),
+        (f32::from_bits(0x3880_0000), 0x0400),
+        (16_400.0, 0x7401),
+        (65_504.0, 0x7bff),
+        (-65_504.0, 0xfbff),
+    ] {
+        assert_eq!(stage_height(height), bits);
+        assert_eq!(staged_height(bits).to_bits(), height.to_bits());
+    }
+    for bits in 0..=u16::MAX {
+        if bits & 0x7c00 == 0x7c00 {
+            continue;
+        }
+        let height = staged_height(bits);
+        assert_eq!(stage_height(height), bits);
+        assert_eq!(sampling::half_round(height).to_bits(), height.to_bits());
+    }
+}
+
+/// Z staging must respect the existing dense-worker retained allocation ceiling.
+#[test]
+fn dense_staging_respects_retained_allocation_budget() {
+    let cache = mapped(
+        (1..=8).map(|id| rule(id, 20.0)).collect(),
+        cell(vec![
+            layer(vec![1, 2, 3, 4], 0.5, true),
+            layer(vec![5, 6, 7, 8], 0.5, false),
+        ]),
+    );
+    let config = EngineConfig {
+        grass_max_types_per_texture: 4,
+        ..EngineConfig::default()
+    };
+    let generated = generate(&cache, 42, &config);
+    assert_eq!(generated.batches.len(), 8);
+    assert_eq!(
+        generated
+            .batches
+            .iter()
+            .map(|b| b.instances.len())
+            .sum::<usize>(),
+        294_912
+    );
+    assert!(
+        generated.bytes <= 9_469_952,
+        "retained staging capacity exceeds the existing dense-worker budget: {}",
+        generated.bytes
+    );
+}
+
+/// A world root near zero must not be reconstructed from a lower-precision cell-local float.
+#[test]
+fn observed_world_root_retains_small_half_coordinates() {
+    let (world, local) = root_coordinates(-0.12212, 0.0, -4096.0);
+    assert_eq!(world.to_bits(), 0xbdfa_2000);
+    assert_eq!(local, 4095.878);
+    assert_ne!(world, -4096.0 + local);
+}
+
+/// Diagnostics observe all selections and leave the production stream and batches unchanged.
+#[test]
+fn observer_accounts_for_mask_without_changing_production() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.quadrants[0].exclusion.fill(255);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let config = EngineConfig::default();
+    let plain = generate(&cache, 42, &config);
+    let mut selected = 0;
+    let mut blocked = 0;
+    let observed = generate_observed(&cache, 42, &config, |p| {
+        selected += 1;
+        blocked += usize::from(p.obstructed);
+        assert!(p.is_base);
+        assert_eq!(p.form_id, 7);
+    });
+    assert_eq!(selected, 1024);
+    assert_eq!(blocked, 256);
+    assert_eq!(plain.batches[0].instances, observed.batches[0].instances);
+    assert_eq!(plain.batches[0].instances.len(), selected - blocked);
+}
+
+/// Binary16 rounding at high elevations must remain representable inside batch bounds.
+#[test]
+fn packed_height_bounds_include_half_rounded_surface() {
+    for (height, expected) in [
+        (16_392.0, 16_384.0),
+        (16_408.0, 16_416.0),
+        (12.0, 16.0),
+        (-12.0, -16.0),
+    ] {
+        let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+        source.heights.fill(height);
+        let cache = mapped(vec![rule(7, 128.0)], source);
+        let generated = generate(&cache, 42, &EngineConfig::default());
+        let batch = &generated.batches[0];
+        for instance in batch.instances.iter() {
+            let decoded =
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0;
+            assert_eq!(
+                decoded, expected,
+                "height {height} must not clip to the unrounded LAND extrema"
+            );
+        }
+    }
+}
+
+/// One flat synthetic cell with no proprietary records or assets.
+fn cell(layers: Vec<GrassLayer>) -> GrassCell {
+    GrassCell {
+        cell_id: 42,
+        worldspace_id: 3,
+        grid_x: 5,
+        grid_y: 7,
+        input_hash: [0; 32],
+        heights: vec![120.0; 1089],
+        normals: [0, 0, 127].repeat(1089),
+        vertex_colors: vec![],
+        water_height: None,
+        quadrants: (0..4)
+            .map(|quadrant| GrassQuadrant {
+                quadrant,
+                layers: layers.clone(),
+                exclusion: vec![0; 512],
+            })
+            .collect(),
+        obstruction_failures: vec![],
+        expanded_sampling: 0,
+    }
+}
+
+/// Author asymmetric ordered IDs independently of the sampler.
+fn layer(ids: Vec<u32>, weight: f32, base: bool) -> GrassLayer {
+    GrassLayer {
+        texture_form_id: 81,
+        is_base: base,
+        grass_ids: ids,
+        weights: vec![weight; 289],
+    }
+}
+
+/// A fully dense unconstrained rule with a controllable grid spacing.
+fn rule(id: u32, range: f32) -> GrassType {
+    GrassType {
+        form_id: id,
+        model_path: format!("meshes/test/{id}.glb"),
+        density: 100,
+        min_slope: 0,
+        max_slope: 90,
+        units_from_water: 0,
+        water_comparison: 0,
+        position_range: range,
+        height_range: 0.35,
+        color_range: 0.15,
+        wave_period: 2.5,
+        flags: 4,
+    }
+}
+
+/// Open the production mapped reader on purely synthetic serialized fields.
+fn mapped(types: Vec<GrassType>, cell: GrassCell) -> GrassCache {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        file.path(),
+        rkyv::to_bytes::<rkyv::rancor::Error>(&shared::grass::GrassCache {
+            version: GRASS_CACHE_VERSION,
+            types,
+            cells: vec![cell],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    GrassCache::open(file.path()).unwrap()
+}
+
+/// Per-spot admission distinguishes 25 from 26, binary support, base residual, and 16 entries.
+#[test]
+fn admission_uses_neighborhood_threshold_and_ordered_budget() {
+    let mut layers = vec![
+        layer(vec![9, 7, 11, 13], 0.001, true),
+        layer(vec![17], 25.0 / 255.0, false),
+        layer(vec![19], 0.0, false),
+    ];
+    layers[2].weights[0] = 26.0 / 255.0;
+    for id in 20..36 {
+        layers.push(layer(vec![id], 1.0, false));
+    }
+    let cache = mapped((7..36).map(|id| rule(id, 20.0)).collect(), cell(layers));
+    let entries = entries(
+        &cache.cell(42).unwrap().quadrants[0],
+        1,
+        1,
+        &EngineConfig::default(),
+    );
+    assert_eq!(entries.len(), 16);
+    assert_eq!(
+        entries
+            .iter()
+            .take(5)
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+        [9, 7, 11, 19, 20]
+    );
+    assert_eq!(
+        entries[0].weights, [1.0; 9],
+        "tiny base residual is full support"
+    );
+    assert_eq!(
+        entries[3].weights,
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    );
+}
+
+/// Repeated forms roll independently and zero-support base entries still consume admission.
+#[test]
+fn duplicate_entries_and_zero_base_are_not_collapsed() {
+    let cache = mapped(
+        vec![rule(7, 20.0)],
+        cell(vec![layer(vec![7], 0.0, true), layer(vec![7], 1.0, false)]),
+    );
+    let entries = entries(
+        &cache.cell(42).unwrap().quadrants[0],
+        1,
+        1,
+        &EngineConfig::default(),
+    );
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].weights, [0.0; 9]);
+    assert_eq!(entries[1].weights, [1.0; 9]);
+    let single = generate(&cache, 42, &EngineConfig::default());
+    assert_eq!(single.batches[0].instances.len(), 36864);
+    let doubled = mapped(
+        vec![rule(7, 20.0)],
+        cell(vec![layer(vec![7], 1.0, true), layer(vec![7], 1.0, false)]),
+    );
+    assert_eq!(
+        generate(&doubled, 42, &EngineConfig::default()).batches[0]
+            .instances
+            .len(),
+        73728
+    );
+}
+
+/// Position Range changes attempt counts rather than merely adding a fixed jitter span.
+#[test]
+fn position_range_controls_species_ratios_and_replay() {
+    let cache = mapped(
+        vec![rule(7, 20.0), rule(11, 40.0), rule(13, 257.0)],
+        cell(vec![layer(vec![7, 11, 13], 1.0, true)]),
+    );
+    let config = EngineConfig::default();
+    let generated = generate(&cache, 42, &config);
+    assert_eq!(
+        generated
+            .batches
+            .iter()
+            .map(|batch| (batch.grass_id, batch.instances.len()))
+            .collect::<Vec<_>>(),
+        [(7, 36864), (11, 9216)]
+    );
+    let replay = generate(&cache, 42, &config);
+    for (a, b) in generated.batches.iter().zip(&replay.batches) {
+        assert_eq!(a.instances, b.instances);
+        assert!(
+            a.instances
+                .windows(2)
+                .all(|pair| pair[0].candidate_slot() <= pair[1].candidate_slot())
+        );
+        assert!(
+            a.instances
+                .iter()
+                .all(|instance| instance.candidate_slot() < a.slot_count)
+        );
+    }
+    assert_eq!(grid_side(0.0, 20.0), 12);
+    assert_eq!(grid_side(-20.0, 20.0), 0);
+    assert_eq!(grid_side(60.0, 20.0), 4);
+}
+
+/// The shared stream responds to entry order, while the coordinate product determines its seed.
+#[test]
+fn entry_order_advances_the_shared_stream() {
+    let a = mapped(
+        vec![rule(7, 20.0), rule(11, 20.0)],
+        cell(vec![layer(vec![7, 11], 1.0, true)]),
+    );
+    let mut swapped = cell(vec![layer(vec![11, 7], 1.0, true)]);
+    swapped.cell_id = 43;
+    let b = mapped(vec![rule(7, 20.0), rule(11, 20.0)], swapped);
+    let config = EngineConfig::default();
+    assert_ne!(
+        generate(&a, 42, &config).batches[0].instances,
+        generate(&b, 43, &config).batches[0].instances
+    );
+    let mut same = cell(vec![layer(vec![7, 11], 1.0, true)]);
+    same.cell_id = 44;
+    let c = mapped(vec![rule(7, 20.0), rule(11, 20.0)], same);
+    assert_eq!(
+        generate(&a, 42, &config).batches[0].instances,
+        generate(&c, 44, &config).batches[0].instances
+    );
+}
+
+/// Final obstruction rejection preserves the stream used by surviving quadrants.
+#[test]
+fn exclusions_do_not_advance_or_reset_the_reference_stream() {
+    let unmasked = mapped(vec![rule(7, 20.0)], cell(vec![layer(vec![7], 1.0, true)]));
+    let mut blocked = cell(vec![layer(vec![7], 1.0, true)]);
+    blocked.quadrants[0].exclusion.fill(255);
+    let blocked = mapped(vec![rule(7, 20.0)], blocked);
+    let config = EngineConfig::default();
+    let baseline = generate(&unmasked, 42, &config);
+    let generated = generate(&blocked, 42, &config);
+    assert!((26000..29000).contains(&generated.batches[0].instances.len()));
+    let allowed: Vec<_> = baseline.batches[0]
+        .instances
+        .iter()
+        .filter(|instance| instance.position[0] > 32767 || instance.position[1] > 32767)
+        .copied()
+        .collect();
+    assert_eq!(allowed, *generated.batches[0].instances);
+}
+
+/// Density zero and a disabled explicit multiplier emit nothing, without fabricated batches.
+#[test]
+fn zero_density_and_large_spacing_are_empty() {
+    let mut zero = rule(7, 20.0);
+    zero.density = 0;
+    let cache = mapped(vec![zero], cell(vec![layer(vec![7], 1.0, true)]));
+    assert!(
+        generate(&cache, 42, &EngineConfig::default())
+            .batches
+            .is_empty()
+    );
+    let cache = mapped(vec![rule(7, 20.0)], cell(vec![layer(vec![7], 1.0, true)]));
+    for config in [
+        EngineConfig {
+            grass_density_multiplier: 0.0,
+            ..Default::default()
+        },
+        EngineConfig {
+            grass_min_spacing: 257.0,
+            ..Default::default()
+        },
+    ] {
+        assert!(generate(&cache, 42, &config).batches.is_empty());
+    }
+}
+
+/// Modes pin the sign of mode zero, inclusive boundaries, and the no-water behavior.
+#[test]
+fn water_boundaries_and_absent_water() {
+    assert!(water_allowed(80.0, Some(100.0), 20, 0));
+    assert!(!water_allowed(79.0, Some(100.0), 20, 0));
+    for (mode, at_zero) in [
+        (0, true),
+        (1, true),
+        (2, false),
+        (3, true),
+        (4, false),
+        (5, true),
+        (6, true),
+        (7, true),
+    ] {
+        assert_eq!(water_allowed(100.0, Some(100.0), 20, mode), at_zero);
+    }
+    assert!(water_allowed(0.0, None, 20, 0));
+    assert!(!water_allowed(0.0, None, 20, 2));
+    assert!(water_allowed(0.0, None, 20, 6));
+}
+
+/// Literal color-range endpoints and white saturation distinguish the former wider law.
+#[test]
+fn brightness_uses_reference_amplitude_and_ceiling() {
+    assert_eq!(brightness(1.0, 0.0, 0).0, 253);
+    assert_eq!(brightness(1.0, 1.0, 0).0, 0);
+    assert_eq!(brightness(1.0, 1.0, u32::MAX).0, 64);
+    assert_eq!(brightness(0.37, 0.0, 0).0, 94);
+    assert!(sampling::slope_allowed(0.8, 0, 40));
+    assert!(!sampling::slope_allowed(0.8, 0, 30));
+}
+
+/// Repeated GNAM fields consume separate prefix places before a later species.
+#[test]
+fn repeated_gnam_occurrences_consume_the_prefix() {
+    let cache = mapped(
+        vec![rule(7, 20.0), rule(11, 20.0), rule(13, 20.0)],
+        cell(vec![layer(vec![7, 7, 11, 13], 1.0, true)]),
+    );
+    let generated = generate(&cache, 42, &EngineConfig::default());
+    assert_eq!(
+        generated
+            .batches
+            .iter()
+            .map(|batch| (batch.grass_id, batch.instances.len()))
+            .collect::<Vec<_>>(),
+        [(7, 73728), (11, 36864)]
+    );
+}
+
+/// Distinct fitted and upright frames pin the reference's nonuniform angle distribution.
+#[test]
+fn orientation_angles_follow_the_reference_frame() {
+    assert_eq!(rotation(0, false), 128);
+    assert_eq!(rotation(1 << 31, false), 64);
+    assert_eq!(rotation(u32::MAX, false), 0);
+    assert_eq!(rotation(0, true), 64);
+    assert_eq!(rotation(1 << 31, true), 0);
+    assert_eq!(rotation(u32::MAX, true), 192);
+}
+
+/// Independent scalar-reference counts exercise failed density and conditional appearance rolls.
+#[test]
+fn sparse_density_and_rejected_land_filters_pin_stream_consumption() {
+    let mut first = rule(7, 20.0);
+    first.density = 30;
+    let mut second = rule(11, 40.0);
+    second.density = 70;
+    let config = EngineConfig::default();
+    for rejected in [0, 1, 2] {
+        let mut first = first.clone();
+        if rejected == 1 {
+            first.water_comparison = 2;
+        }
+        if rejected == 2 {
+            first.min_slope = 30;
+        }
+        let cache = mapped(
+            vec![first, second.clone()],
+            cell(vec![layer(vec![7, 11], 1.0, true)]),
+        );
+        let generated = generate(&cache, 42, &config);
+        let counts: Vec<_> = generated
+            .batches
+            .iter()
+            .map(|batch| (batch.grass_id, batch.instances.len()))
+            .collect();
+        let expected = if rejected == 0 {
+            vec![(7, 10855), (11, 6450)]
+        } else {
+            vec![(11, 6449)]
+        };
+        assert_eq!(counts, expected, "filter case {rejected}");
+    }
+}
+
+/// A committed surface with absent VCLR uses white, not old colours from its speculative cache.
+#[test]
+fn committed_absent_colours_do_not_reuse_cached_tint() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.vertex_colors = vec![0; 3267];
+    let mut species = rule(7, 20.0);
+    species.color_range = 0.0;
+    let cache = mapped(vec![species], source);
+    let config = EngineConfig::default();
+    assert!(
+        generate(&cache, 42, &config).batches[0]
+            .instances
+            .iter()
+            .all(|instance| instance.color == 0)
+    );
+    let surface = GrassTerrain::new(vec![120.0; 1089], None);
+    assert!(
+        generate_on_terrain(&cache, 42, &config, &surface).batches[0]
+            .instances
+            .iter()
+            .all(|instance| instance.color == 253)
+    );
+}
+
+/// An unrepresentable surface is skipped locally; another valid cell still generates normally.
+#[test]
+fn overflowing_half_height_is_skipped_without_poisoning_other_cells() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.heights.fill(70_000.0);
+    let bad = mapped(vec![rule(7, 128.0)], source);
+    assert!(
+        generate(&bad, 42, &EngineConfig::default())
+            .batches
+            .is_empty()
+    );
+    let good = mapped(vec![rule(7, 128.0)], cell(vec![layer(vec![7], 1.0, true)]));
+    assert_eq!(
+        generate(&good, 42, &EngineConfig::default()).batches[0]
+            .instances
+            .len(),
+        1024
+    );
+}
+
+/// Preserve authored direction ratios and their least-component tangent choice.
+#[test]
+fn authored_normal_bytes_survive_renderer_packing() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.normals = [101, 100, 127].repeat(1089);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let generated = generate(&cache, 42, &EngineConfig::default());
+    assert!(!generated.batches.is_empty());
+    for instance in generated.batches[0].instances.iter() {
+        assert_eq!(
+            instance.normal,
+            [101, 100, 127],
+            "normalizing into signed bytes loses the authored direction"
+        );
+        assert!(
+            instance.normal[1] < instance.normal[0],
+            "the authored tangent must select Y, without a new XY tie"
+        );
+    }
+}
+
+/// Integer edge splitting extrapolates; selected root bounds must include even masked extrema.
+#[test]
+fn selected_height_bounds_include_extrapolated_masked_roots() {
+    let heights = |i: usize| {
+        if (i % 33).is_multiple_of(2) {
+            16_384.0
+        } else {
+            16_392.0
+        }
+    };
+    let sample = sampling::sample(128.5, 0.0, &heights, &|_| Some([0.0, 0.0, 1.0])).unwrap();
+    assert_eq!(sample.height, 16_392.031);
+    assert_eq!(sampling::half_round(sample.height), 16_400.0);
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.grid_x = 0;
+    source.grid_y = 0;
+    source.heights = (0..1089).map(heights).collect();
+    source.quadrants[0].exclusion.fill(255);
+    source.quadrants[2].exclusion.fill(255);
+    let cache = mapped(vec![rule(7, 20.0)], source);
+    let mut observations = Vec::new();
+    let generated = generate_observed(&cache, 42, &EngineConfig::default(), |p| {
+        observations.push(p)
+    });
+    assert!(!generated.batches.is_empty());
+    assert!(
+        observations
+            .iter()
+            .any(|p| p.position[2] == 16_400.0 && p.obstructed),
+        "fixture must produce a masked extrapolated extremum"
+    );
+    for p in observations {
+        let decoded = p.height_min + f32::from(p.instance.position[2]) * p.height_span / 65535.0;
+        assert_eq!(
+            decoded, p.position[2],
+            "both half-Z endpoints must remain representable"
+        );
+        assert_eq!(p.height_min, generated.batches[0].height_min);
+        assert_eq!(p.height_span, generated.batches[0].height_span);
+    }
+}
+
+/// Exercise cached authored VCLR with committed terrain at the release worker ceilings.
+#[test]
+#[ignore = "performance"]
+fn performance_coloured_terrain_generation() {
+    use std::{hint::black_box, time::Duration};
+    assert_eq!(
+        env!("MUDCRAB_BUILD_OPT_LEVEL"),
+        "3",
+        "run budgets with --release at opt-level=3"
+    );
+    let mut source = cell(vec![
+        layer(vec![1, 2, 3, 4], 0.5, true),
+        layer(vec![5, 6, 7, 8], 0.5, false),
+    ]);
+    source.vertex_colors = (0..1089).flat_map(|i| [(i % 33 * 7) as u8; 3]).collect();
+    let cache = mapped((1..=8).map(|id| rule(id, 20.0)).collect(), source);
+    let mut surface = vec![120.0; 1089];
+    surface.extend((0..1089).map(|i| (i % 33) as f32 / 32.0));
+    let terrain = GrassTerrain::new(surface, None);
+    let mut timing_passed = true;
+    for (spacing, slots, millis) in [(64.0, 4096, 6), (32.0, 16384, 25), (20.0, 36864, 60)] {
+        let config = EngineConfig {
+            grass_min_spacing: spacing,
+            grass_max_types_per_texture: 4,
+            ..EngineConfig::default()
+        };
+        let warm = generate_on_terrain(&cache, 42, &config, &terrain);
+        assert_eq!(warm.batches.len(), 8);
+        let count: usize = warm.batches.iter().map(|b| b.instances.len()).sum();
+        assert!(count > 500 && count <= slots * 8);
+        assert!(warm.bytes + terrain.bytes() <= slots * 8 * 32 + 32 * 1024);
+        assert!(
+            warm.batches
+                .iter()
+                .flat_map(|b| b.instances.iter())
+                .any(|i| i.color < 100)
+        );
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let start = Instant::now();
+            let next = black_box(generate_on_terrain(
+                &cache,
+                42,
+                black_box(&config),
+                black_box(&terrain),
+            ));
+            times.push(start.elapsed());
+            assert_eq!(next.batches.len(), warm.batches.len());
+            for (a, b) in warm.batches.iter().zip(&next.batches) {
+                assert_eq!(a.grass_id, b.grass_id);
+                assert_eq!(a.instances, b.instances);
+            }
+        }
+        times.sort_unstable();
+        let strict_ceiling = Duration::from_millis(millis);
+        let allowance = super::grass_budget::grass_budget_allowance();
+        let ceiling = strict_ceiling.mul_f64(allowance);
+        timing_passed &= times[1] < ceiling;
+        eprintln!(
+            "coloured grass: spacing={spacing} instances={count} median={:?} strict_budget={strict_ceiling:?} allowance={allowance} effective_budget={ceiling:?}",
+            times[1]
+        );
+    }
+    assert!(
+        timing_passed,
+        "coloured grass generation timing budget exceeded; see spacing medians above"
+    );
+}
+
+/// A modelless first nomination keeps its cap slot and every conditional reference draw.
+#[test]
+fn modelless_species_preserves_following_reference_positions() {
+    let source = cell(vec![layer(vec![1, 2, 3, 4], 1.0, true)]);
+    for water_mode in [0, 2] {
+        let mut rules: Vec<_> = (1..=4)
+            .map(|id| rule(id, if id == 1 { 128.0 } else { 85.0 }))
+            .collect();
+        rules[0].density = 63;
+        rules[0].water_comparison = water_mode;
+        let reference = mapped(rules.clone(), source.clone());
+        let mut placeholders = rules;
+        placeholders[0].model_path.clear();
+        let actual = mapped(placeholders, source.clone());
+        let config = EngineConfig::default();
+        let collect = |cache: &GrassCache| {
+            let mut positions = Vec::new();
+            let generated = generate_observed(cache, 42, &config, |p| {
+                positions.push((p.form_id, p.position, p.appearance));
+            });
+            (generated, positions)
+        };
+        let (expected, mut reference_positions) = collect(&reference);
+        reference_positions.retain(|p| p.0 != 1);
+        let (actual, positions) = collect(&actual);
+        assert_eq!(
+            positions, reference_positions,
+            "valid species keep their exact reference draws and positions"
+        );
+        assert_eq!(
+            actual
+                .batches
+                .iter()
+                .map(|b| b.grass_id)
+                .collect::<Vec<_>>(),
+            [2, 3],
+            "modelless species emit nothing; fourth nomination remains outside the cap"
+        );
+        for batch in &actual.batches {
+            let expected = expected
+                .batches
+                .iter()
+                .find(|b| b.grass_id == batch.grass_id)
+                .unwrap();
+            assert_eq!(batch.instances, expected.instances);
+        }
+    }
+}

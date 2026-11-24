@@ -15,18 +15,42 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
-//! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 is retail's (`RF-SHADER-011`). In retail it affects near land only; here it also affects LOD land until a later change limits it |
+//! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 is retail's (Mudcrab #949). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
 //! | `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
+//! | `[Grass]` | `iMinGrassSize` | candidate-count spacing |
+//! | `[Grass]` | `iMaxGrassTypesPerTexure` | species cap per texture |
+//! | `[Grass]` | `fTexturePctThreshold` | minimum blended texture weight |
+//! | `[Grass]` | `iGrassCellRadius` | generated cell radius |
+//! | `[Grass]` | `fGrassStartFadeDistance` | fade start |
+//! | `[Grass]` | `fGrassFadeRange` | fade end minus fade start |
+//! | `[Grass]` | `fGrassMinStartFadeDistance` | reported slider bound |
+//! | `[Grass]` | `fGrassMaxStartFadeDistance` | reported slider bound |
+//! | `[Grass]` | `fGrassWindMagnitudeMin` | reported wind setting |
+//! | `[Grass]` | `fGrassWindMagnitudeMax` | reported wind setting |
+//! | `[Grass]` | `bDrawShaderGrass` | launch grass state unless a CLI switch overrides it |
+//! | `[Grass]` | `bEnableGrassFade` | distance thinning |
+//! | `[Grass]` | `bAllowCreateGrass` | reported legacy cache setting |
+//! | `[Grass]` | `bAllowLoadGrass` | reported legacy cache setting |
+//! | `[Grass]` | `bGenerateGrassDataFiles` | reported legacy cache setting |
 
 use crate::config::{EngineConfig, MAX_STREAM_RADIUS};
+use serde_json::{Value, json};
+use shared::grass_settings::{GrassSettings, Source};
 use std::{collections::HashMap, path::Path};
 
 /// The first cascade reaches 10 metres (700 Creation units); a smaller maximum would make the
 /// cascade builder's bounds invalid.
 const MIN_SUN_SHADOW_DISTANCE: f32 = 700.0;
+/// Raw merged value and provenance from the shared INI reader.
+#[derive(Debug)]
+struct IniValue {
+    value: String,
+    source: String,
+    line: usize,
+}
 
 /// `0` or `1`.
 fn parse_flag(raw: &str) -> Option<bool> {
@@ -87,13 +111,17 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
 /// Values from one or more INI files, keyed by lower-cased section and key.
 #[derive(Debug, Default)]
 pub struct SkyrimIni {
-    values: HashMap<(String, String), String>,
+    values: HashMap<(String, String), IniValue>,
+    sources: Vec<Source>,
 }
 
 impl SkyrimIni {
     /// Reads `path` over the values already read, as Skyrim layers its INI files.
     pub fn merge_file(&mut self, path: &Path) -> std::io::Result<()> {
-        self.merge_str(&std::fs::read_to_string(path)?);
+        let text = std::fs::read_to_string(path)?;
+        self.merge_named_str(&text, &path.display().to_string());
+        self.sources
+            .push(Source::from_bytes(path.to_owned(), text.as_bytes()));
         Ok(())
     }
 
@@ -101,8 +129,13 @@ impl SkyrimIni {
     /// case-insensitive; `;` and `#` start a comment line; a key outside any
     /// section and a line without `=` are skipped.
     pub fn merge_str(&mut self, text: &str) {
+        self.merge_named_str(text, "<INI text>");
+    }
+
+    /// Merge already read text while retaining its source for supported grass keys.
+    fn merge_named_str(&mut self, text: &str, source: &str) {
         let mut section = None;
-        for line in text.trim_start_matches('\u{feff}').lines() {
+        for (index, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
                 continue;
@@ -117,32 +150,42 @@ impl SkyrimIni {
             let (Some(section), Some((key, value))) = (&section, line.split_once('=')) else {
                 continue;
             };
-            let key = key.trim().to_ascii_lowercase();
+            let slot = (section.clone(), key.trim().to_ascii_lowercase());
             let value = value.trim();
-            let slot = (section.clone(), key);
-            // A later unusable value (in a later file, or later in the same file) must not replace an
-            // earlier usable one: `apply` would
-            // reject it and the earlier value would be lost. Report it here and keep the old one.
-            if is_usable(&slot.0, &slot.1, value) == Some(false) && self.values.contains_key(&slot)
-            {
+            if is_usable(&slot.0, &slot.1, value) == Some(false) {
+                let outcome = if self.values.contains_key(&slot) {
+                    "keeping the earlier usable value"
+                } else {
+                    "leaving the setting unchanged"
+                };
                 eprintln!(
-                    "warning: ignoring the later {}={value:?}; keeping the earlier usable value",
+                    "warning: {source}:{}: ignoring {}={value:?}; {outcome}",
+                    index + 1,
                     slot.1
                 );
                 continue;
             }
-            self.values.insert(slot, value.to_owned());
+            self.values.insert(
+                slot,
+                IniValue {
+                    value: value.to_owned(),
+                    source: source.to_owned(),
+                    line: index + 1,
+                },
+            );
         }
     }
 
+    /// Retrieve a merged scalar without changing the shared reader's parsing rules.
     fn get(&self, section: &str, key: &str) -> Option<&str> {
         self.values
             .get(&(section.to_ascii_lowercase(), key.to_ascii_lowercase()))
-            .map(String::as_str)
+            .map(|entry| entry.value.as_str())
     }
 
-    /// Applies every honoured key to `config`. A malformed value is reported and
-    /// leaves the setting as it was.
+    /// Apply terrain keys and retain the grass report. Grass runtime values apply
+    /// only while grass is enabled and its imported draw flag permits it. Malformed
+    /// values are reported and leave the corresponding configuration fields unchanged.
     pub fn apply(&self, config: &mut EngineConfig) {
         if let Some(raw) = self.get("General", "bAlwaysActive") {
             match parse_flag(raw) {
@@ -208,7 +251,64 @@ impl SkyrimIni {
                 None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
             }
         }
+        self.apply_grass(config);
     }
+
+    /// Apply supported grass scalars from the same merged values used for terrain.
+    fn apply_grass(&self, config: &mut EngineConfig) {
+        if !self.values.keys().any(|(section, _)| section == "grass") {
+            return;
+        }
+        let mut report = GrassSettings::default().report();
+        let keys: Vec<_> = report.settings.keys().cloned().collect();
+        let mut found = false;
+        for key in keys {
+            let Some(entry) = self.values.get(&("grass".into(), key.to_ascii_lowercase())) else {
+                continue;
+            };
+            found = true;
+            match parse_grass_value(&key, &report.settings[&key].default, &entry.value) {
+                Ok(value) => {
+                    report.assign(&key, value, entry.source.clone(), Some(entry.line));
+                }
+                Err(reason) => {
+                    eprintln!("warning: ignoring {key}={:?}; {reason}", entry.value);
+                }
+            }
+        }
+        if found {
+            report.sources = self.sources.clone();
+            config.apply_grass_settings(report);
+        }
+    }
+}
+
+/// Validate a supported grass scalar; malformed values follow the shared warn-and-ignore policy.
+fn parse_grass_value(key: &str, default: &Value, raw: &str) -> Result<Value, &'static str> {
+    if default.is_boolean() {
+        return match raw.to_ascii_lowercase().as_str() {
+            "1" | "true" => Ok(json!(true)),
+            "0" | "false" => Ok(json!(false)),
+            _ => Err("expected 0, 1, true or false"),
+        };
+    }
+    if default.is_i64() {
+        let value = raw
+            .parse::<i32>()
+            .map_err(|_| "expected a 32-bit integer")?;
+        if key == "iMinGrassSize" && value < 0 {
+            return Err("negative iMinGrassSize is unsupported");
+        }
+        return Ok(json!(value));
+    }
+    let value = raw.parse::<f64>().map_err(|_| "expected a finite number")?;
+    if !value.is_finite() || value < 0.0 || value > f32::MAX as f64 {
+        return Err("expected a finite, nonnegative f32-range number");
+    }
+    if key == "fTexturePctThreshold" && value > 1.0 {
+        return Err("texture threshold must be between 0 and 1");
+    }
+    Ok(json!(if value == 0.0 { 0.0 } else { value }))
 }
 
 #[cfg(test)]
@@ -376,14 +476,14 @@ mod tests {
             )
             .always_active
         );
-        // A TerrainManager distance: a negative later value keeps 1.5; 2.0 overrides.
+        // A TerrainManager distance: a negative later value keeps 1.75; 2.0 overrides.
         let config = layered(
-            "[TerrainManager]\nfSplitDistanceMult=1.5\n",
+            "[TerrainManager]\nfSplitDistanceMult=1.75\n",
             "[TerrainManager]\nfSplitDistanceMult=-1\n",
         );
-        assert_eq!(config.terrain_lod.split_distance_mult, 1.5);
+        assert_eq!(config.terrain_lod.split_distance_mult, 1.75);
         let config = layered(
-            "[TerrainManager]\nfSplitDistanceMult=1.5\n",
+            "[TerrainManager]\nfSplitDistanceMult=1.75\n",
             "[TerrainManager]\nfSplitDistanceMult=2.0\n",
         );
         assert_eq!(config.terrain_lod.split_distance_mult, 2.0);
@@ -405,7 +505,7 @@ mod tests {
         assert!(apply("[Display]\nbDrawLandShadows=0\nbDrawLandShadows=1\n").land_shadows);
     }
 
-    /// Terrain casts no sun shadow by default (retail `bDrawLandShadows` = 0, `RF-SHADER-011`);
+    /// Terrain casts no sun shadow by default (retail `bDrawLandShadows` = 0);
     /// the ini can turn it on, and a bad value changes nothing.
     #[test]
     fn draw_land_shadows_reads_zero_or_one() {

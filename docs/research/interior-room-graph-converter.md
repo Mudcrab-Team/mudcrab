@@ -1,8 +1,14 @@
 # Interior room graph: converter design (#188, converter half)
 
-Status: implemented in the converter (2026-10-06); this note is the design it follows. The engine
-reads these tables automatically. See [the runtime research](skyrim-room-culling.md) for evidence
-and conservative fallbacks.
+Status: historical converter design (2026-10-06). The original pivot/overlap projection below
+remains available for legacy readers. The 2026-11-15 native trace supersedes its assignment and
+`XLRM` interpretation: `XRMR[2]` is the master byte, linked slave bounds join a master room,
+and native static ownership uses the render bound's center and sphere/portal classification.
+The current converter preserves link order and explicit assignment rules, and emits source
+NIF spheres. See [the current schema](../specs/converters/db-schema.md#15-interior-room-graph-and-occlusion)
+and [native findings](skyrim-native-culling.md#authored-joins-and-object-assignment).
+The older counts and proposed behavior below describe the original investigation, not the
+current authored-assignment path.
 
 ## Summary
 
@@ -30,20 +36,24 @@ Subrecords on a marker reference, besides the usual `NAME` and `DATA` (position,
 |---|---|---|---|
 | `XPRM` | 32 | `float[3]` half-extents, `float[3]` colour/255, `float` unknown (0.2 room, 0.25 portal), `u32` shape (1 box, 2 sphere, 3 portal box) | every room, 2,611 portals |
 | `XMBO` | 12 | `float[3]`, equal to `XPRM[0..12]` on every room (the Creation Kit rejects a mismatch) | every room |
-| `XPOD` | 8 per pair | array of (origin, destination) `u32` FormID pairs (xEdit 4.1.5f defs, `wbArray` of a two-FormID struct): the rooms on either side; the masters only have one pair | 2,592 portals (121 with the second id 0, 20 without `XPOD`) |
-| `XRMR` | 4 | `u8` count of `XLRM` that follow, `u8` flags, `u16` unknown (0 or 1) | 1,991 rooms |
-| `LNAM` | 4 | `u32` FormID: lighting template for the room | follows `XRMR` when flag `0x80` is set |
-| `INAM` | 4 | `u32` FormID: image space for the room | follows `XRMR` when flag `0x40` is set |
+| `XPOD` | 8 per pair | array of (origin, destination) `u32` FormID pairs (xEdit 4.1.5f defs, `wbArray` of a two-FormID struct): the rooms on either side; the masters only have one pair | 2,592 fields on 2,612 portal markers. 17 fields have a literal zero destination and 20 markers have no `XPOD` |
+| `XRMR` | 4 | Two little-endian `u16` words. The first word's low 14 bits count the `XLRM` entries and its high two bits are flags. | 1,991 rooms |
+| `LNAM` | 4 | `u32` FormID of the room's lighting template | follows `XRMR` when flag `0x8000` is set in the first word |
+| `INAM` | 4 | `u32` FormID of the room's image space | follows `XRMR` when flag `0x4000` is set in the first word |
 | `XLRM` | 4 | `u32` FormID of another room in the same cell | 1,965 links |
 
 Checked against bytes:
 
-- The `XRMR` count equals the number of `XLRM` on every one of the 1,991 rooms.
-- The flags match the public names exactly: `0x80` with `LNAM` on 537 + 81 rooms, `0x40` with
+- Of the 2,612 portal markers in `Skyrim.esm`, 2,611 have exactly one 32-byte `XPRM` with
+  shape 3. The remaining marker has no primitive. The same check passed for all 312
+  portal markers in `Dawnguard.esm` and all 301 in `Dragonborn.esm`.
+- The `XRMR` count equals the number of `XLRM` on every one of the 1,991 rooms. The header
+  `00 01 00 00` declares 256 entries.
+- The flags match the public names exactly: `0x8000` with `LNAM` on 537 + 81 rooms, `0x4000` with
   `INAM` on 5 + 81, never one without the other. So rooms can carry their own lighting template
   and image space (618 and 86 rooms). That is lighting data, worth passing to the lighting plan
   (#129-#135); the converter can keep it at no cost.
-- The `u16` is 1 on 667 rooms and 0 on 1,324; no public source names it. Kept raw, not used.
+- The second `u16` is 1 on 667 rooms and 0 on 1,324. The converter keeps it raw.
 - `XLRM` links: all 1,965 point to a room in the same cell, 1,950 are mirrored by a link back, and
   only 25 join rooms that already share a portal. So a link joins rooms that have **no portal
   between them** but must be seen together (the Creation Kit's "linked rooms"). The engine should
@@ -80,7 +90,7 @@ CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarke
     half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL, -- XPRM[0..12]
     lighting_template_id INTEGER,              -- LNAM, NULL when absent
     image_space_id INTEGER,                    -- INAM, NULL when absent
-    flags INTEGER NOT NULL DEFAULT 0           -- XRMR flags byte | (XRMR u16 << 8), kept raw
+    flags INTEGER NOT NULL DEFAULT 0           -- XRMR byte 1 | (second XRMR word << 8), kept raw
 );
 CREATE INDEX IF NOT EXISTS idx_room_bounds_cell ON room_bounds(cell_id);
 
@@ -194,6 +204,6 @@ require them, and would then go in the same change that raises the engine's maxi
    Large objects whose pivot sits in one room but whose mesh reaches into another can vanish too
    early. The tutorial's authored `NONE` override addresses references that need cross-room
    visibility; our bounds-overlap rows are an additional geometric policy, not that override.
-3. The `XRMR` `u16` and the unknown `XPRM` float stay unexplained; both are kept raw or ignored.
+3. The converter stores the second `XRMR` word raw and ignores the unknown `XPRM` float.
 4. Whether Skyrim culls lights with rooms remains unverified by these sources. The engine keeps
    lights and shadow visibility independent of room-mesh culling.

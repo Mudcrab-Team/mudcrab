@@ -95,6 +95,22 @@ impl UnderwaterPass {
     }
 }
 
+/// Preparation and drawing use only the current frame's extracted underwater state.
+type ActiveUnderwaterView = With<UnderwaterPass>;
+
+/// The complete production draw query, shared with the CPU contract regression.
+type UnderwaterDrawView<'w, 's> = ViewQuery<
+    'w,
+    's,
+    (
+        &'static ViewTarget,
+        &'static DynamicUniformIndex<UnderwaterPass>,
+        &'static UnderwaterTextures,
+        &'static UnderwaterPipelineIds,
+    ),
+    ActiveUnderwaterView,
+>;
+
 /// The share of the blurred frame at view depth `d` (RF-WATER-053, far side only):
 /// `sat((d - focus) / range) * strength`.
 #[cfg(test)]
@@ -128,7 +144,9 @@ impl Plugin for UnderwaterPassPlugin {
             .add_systems(
                 Render,
                 (
-                    prepare_underwater_textures.in_set(RenderSystems::PrepareResources),
+                    (clear_inactive_underwater_views, prepare_underwater_textures)
+                        .chain()
+                        .in_set(RenderSystems::PrepareResources),
                     prepare_underwater_pipelines.in_set(RenderSystems::Prepare),
                 ),
             )
@@ -241,6 +259,31 @@ struct UnderwaterPipelineIds {
     horizontal: CachedRenderPipelineId,
     vertical: CachedRenderPipelineId,
     composite: CachedRenderPipelineId,
+    format: TextureFormat,
+}
+
+/// Views that still hold underwater state after the extracted effect has left them.
+type InactiveUnderwaterView = (
+    Without<UnderwaterPass>,
+    Or<(
+        With<UnderwaterTextures>,
+        With<UnderwaterPipelineIds>,
+        With<DynamicUniformIndex<UnderwaterPass>>,
+    )>,
+);
+
+/// Releases per-view state as soon as the extracted effect leaves the view.
+fn clear_inactive_underwater_views(
+    mut commands: Commands,
+    views: Query<Entity, InactiveUnderwaterView>,
+) {
+    for entity in &views {
+        commands.entity(entity).remove::<(
+            UnderwaterTextures,
+            UnderwaterPipelineIds,
+            DynamicUniformIndex<UnderwaterPass>,
+        )>();
+    }
 }
 
 fn prepare_underwater_pipelines(
@@ -248,7 +291,7 @@ fn prepare_underwater_pipelines(
     pipeline: Res<UnderwaterPipeline>,
     pipeline_cache: Res<PipelineCache>,
     mut pipelines: ResMut<SpecializedRenderPipelines<UnderwaterPipeline>>,
-    views: Query<(Entity, &ExtractedView), With<UnderwaterPass>>,
+    views: Query<(Entity, &ExtractedView), ActiveUnderwaterView>,
 ) {
     for (entity, view) in &views {
         let mut id = |stage| {
@@ -265,6 +308,7 @@ fn prepare_underwater_pipelines(
             horizontal: id(Stage::BlurHorizontal),
             vertical: id(Stage::BlurVertical),
             composite: id(Stage::Composite),
+            format: view.target_format,
         });
     }
 }
@@ -275,16 +319,37 @@ fn prepare_underwater_pipelines(
 struct UnderwaterTextures {
     first: CachedTexture,
     second: CachedTexture,
+    target: UnderwaterTarget,
+}
+
+/// The attachment contract for both blur textures and the view they will composite into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnderwaterTarget {
+    size: UVec2,
+    format: TextureFormat,
+}
+
+/// A resized or reformatted view waits until matching resources are prepared.
+fn underwater_resources_current(
+    target: UnderwaterTarget,
+    textures: UnderwaterTarget,
+    pipeline_format: TextureFormat,
+) -> bool {
+    target.size.x > 0 && target.size.y > 0 && target == textures && target.format == pipeline_format
 }
 
 fn prepare_underwater_textures(
     mut commands: Commands,
     mut cache: ResMut<TextureCache>,
     device: Res<RenderDevice>,
-    views: Query<(Entity, &ExtractedCamera, &ExtractedView), With<UnderwaterPass>>,
+    views: Query<(Entity, &ExtractedCamera, &ExtractedView), ActiveUnderwaterView>,
 ) {
     for (entity, camera, view) in &views {
-        let Some(size) = camera.physical_target_size else {
+        let Some(size) = camera
+            .physical_target_size
+            .filter(|size| size.x > 0 && size.y > 0)
+        else {
+            commands.entity(entity).remove::<UnderwaterTextures>();
             continue;
         };
         let mut texture = |label| {
@@ -308,21 +373,21 @@ fn prepare_underwater_textures(
         };
         let first = texture("underwater_blur_first");
         let second = texture("underwater_blur_second");
-        commands
-            .entity(entity)
-            .insert(UnderwaterTextures { first, second });
+        commands.entity(entity).insert(UnderwaterTextures {
+            first,
+            second,
+            target: UnderwaterTarget {
+                size,
+                format: view.target_format,
+            },
+        });
     }
 }
 
 /// Runs the blur pair and the composite for a view that is under water. Without the water depth
 /// snapshot (or when it is unresolved this frame) the composite leaves the frame as it is.
 fn run_underwater_pass(
-    view: ViewQuery<(
-        &ViewTarget,
-        &DynamicUniformIndex<UnderwaterPass>,
-        &UnderwaterTextures,
-        &UnderwaterPipelineIds,
-    )>,
+    view: UnderwaterDrawView,
     uniforms: Res<ComponentUniforms<UnderwaterPass>>,
     pipeline: Res<UnderwaterPipeline>,
     pipeline_cache: Res<PipelineCache>,
@@ -331,6 +396,19 @@ fn run_underwater_pass(
     mut ctx: RenderContext,
 ) {
     let (target, index, textures, ids) = view.into_inner();
+    if !underwater_resources_current(
+        UnderwaterTarget {
+            size: UVec2::new(
+                target.main_texture().width(),
+                target.main_texture().height(),
+            ),
+            format: target.main_texture_format(),
+        },
+        textures.target,
+        ids.format,
+    ) {
+        return;
+    }
     let Some(settings) = uniforms.uniforms().binding() else {
         return;
     };
@@ -423,6 +501,163 @@ fn run_underwater_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Matches the real draw query's component contract without allocating GPU objects.
+    fn draw_view_matches<D: bevy::ecs::query::QueryData, F: bevy::ecs::query::QueryFilter>(
+        _: std::marker::PhantomData<ViewQuery<D, F>>,
+        world: &mut World,
+        underwater: bool,
+    ) -> bool {
+        let mut present = vec![
+            world.register_component::<ViewTarget>(),
+            world.register_component::<DynamicUniformIndex<UnderwaterPass>>(),
+            world.register_component::<UnderwaterTextures>(),
+            world.register_component::<UnderwaterPipelineIds>(),
+        ];
+        if underwater {
+            present.push(world.register_component::<UnderwaterPass>());
+        }
+        world
+            .query_filtered::<D, F>()
+            .matches_component_set(&|id| present.contains(&id))
+    }
+
+    #[test]
+    fn production_draw_query_requires_current_underwater_state() {
+        let mut world = World::new();
+        let query = std::marker::PhantomData::<UnderwaterDrawView>;
+        assert!(draw_view_matches(query, &mut world, true));
+        assert!(
+            !draw_view_matches(query, &mut world, false),
+            "the production draw query must reject retained resources without current underwater state"
+        );
+    }
+
+    #[test]
+    fn production_plugin_registers_cleanup_before_texture_preparation() {
+        use bevy::{
+            app::SubApp,
+            asset::AssetApp,
+            ecs::{
+                schedule::Schedules,
+                system::{IntoSystem, System},
+            },
+        };
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Shader>();
+        let mut render = SubApp::new();
+        render.add_schedule(Render::base_schedule());
+        app.insert_sub_app(RenderApp, render);
+        app.add_plugins(UnderwaterPassPlugin);
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        let mut schedule = world.resource_mut::<Schedules>().remove(Render).unwrap();
+        schedule.initialize(world).unwrap();
+        let prepare = schedule
+            .graph()
+            .systems_in_set(RenderSystems::PrepareResources.intern())
+            .unwrap();
+        let systems: Vec<_> = schedule.systems().unwrap().collect();
+        let cleanup_type = IntoSystem::into_system(clear_inactive_underwater_views).system_type();
+        let textures_type = IntoSystem::into_system(prepare_underwater_textures).system_type();
+        let cleanup = systems
+            .iter()
+            .position(|(id, system)| prepare.contains(id) && system.system_type() == cleanup_type)
+            .expect("the production plugin registers inactive-view cleanup in PrepareResources");
+        let textures = systems
+            .iter()
+            .position(|(_, system)| system.system_type() == textures_type)
+            .unwrap();
+        assert!(
+            cleanup < textures,
+            "cleanup precedes texture preparation in the production schedule"
+        );
+    }
+
+    #[test]
+    fn removing_underwater_state_releases_retained_resources() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        let pass = UnderwaterPass::new(LinearRgba::new(0.1, 0.2, 0.3, 1.0), -500.0, 1600.0, 0.1);
+        let retained = UnderwaterPipelineIds {
+            horizontal: CachedRenderPipelineId::INVALID,
+            vertical: CachedRenderPipelineId::INVALID,
+            composite: CachedRenderPipelineId::INVALID,
+            format: TextureFormat::Rgba16Float,
+        };
+        let view = world.spawn((pass, retained)).id();
+        world
+            .run_system_once(clear_inactive_underwater_views)
+            .unwrap();
+        assert!(world.get::<UnderwaterPipelineIds>(view).is_some());
+        world.entity_mut(view).remove::<UnderwaterPass>();
+        world
+            .run_system_once(clear_inactive_underwater_views)
+            .unwrap();
+        assert!(world.get::<UnderwaterPipelineIds>(view).is_none());
+        world.entity_mut(view).insert((pass, retained));
+        world
+            .run_system_once(clear_inactive_underwater_views)
+            .unwrap();
+        assert!(world.get::<UnderwaterPipelineIds>(view).is_some());
+    }
+
+    #[test]
+    fn resized_and_reformatted_views_wait_for_matching_underwater_resources() {
+        let initial = UnderwaterTarget {
+            size: UVec2::new(800, 600),
+            format: TextureFormat::Rgba16Float,
+        };
+        let resized = UnderwaterTarget {
+            size: UVec2::new(1600, 900),
+            ..initial
+        };
+        let reformatted = UnderwaterTarget {
+            format: TextureFormat::Rgba8Unorm,
+            ..resized
+        };
+        assert!(underwater_resources_current(
+            initial,
+            initial,
+            initial.format
+        ));
+        assert!(!underwater_resources_current(
+            resized,
+            initial,
+            initial.format
+        ));
+        assert!(underwater_resources_current(
+            resized,
+            resized,
+            resized.format
+        ));
+        assert!(!underwater_resources_current(
+            reformatted,
+            resized,
+            resized.format
+        ));
+        assert!(!underwater_resources_current(
+            reformatted,
+            reformatted,
+            resized.format
+        ));
+        assert!(underwater_resources_current(
+            reformatted,
+            reformatted,
+            reformatted.format
+        ));
+        let minimized = UnderwaterTarget {
+            size: UVec2::ZERO,
+            ..initial
+        };
+        assert!(!underwater_resources_current(
+            minimized,
+            minimized,
+            minimized.format
+        ));
+    }
 
     #[test]
     fn the_blur_and_fog_shares_are_the_retail_ramps() {

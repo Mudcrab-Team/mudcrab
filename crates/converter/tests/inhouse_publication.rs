@@ -5,6 +5,14 @@ use rusqlite::Connection;
 use std::{fs, path::Path};
 
 /// Frame independent supplemental records beside the dummy-content world.
+/// An authored flat height field. A LAND without `VHGT` publishes nothing (#811).
+fn flat_vhgt() -> Vec<u8> {
+    let mut bytes = 0.0f32.to_le_bytes().to_vec();
+    bytes.extend(vec![0; 33 * 33]);
+    bytes.extend([0x19, 0x73, 0xb5]);
+    bytes
+}
+
 fn record(tag: &[u8; 4], id: u32, flags: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut payload = Vec::new();
     for (signature, bytes) in fields {
@@ -121,7 +129,8 @@ fn generate(data: &Path) {
         0xA01,
         0,
         &[
-            (b"DATA", 0xCu32.to_le_bytes().to_vec()),
+            (b"DATA", 0xDu32.to_le_bytes().to_vec()),
+            (b"VHGT", flat_vhgt()),
             (b"VCLR", vec![95; 33 * 33 * 3]),
             (b"ATXT", overlay.clone()),
             (b"VTXT", weight),
@@ -134,7 +143,8 @@ fn generate(data: &Path) {
         0xA02,
         0x800,
         &[
-            (b"DATA", 0x4u32.to_le_bytes().to_vec()),
+            (b"DATA", 0x5u32.to_le_bytes().to_vec()),
+            (b"VHGT", flat_vhgt()),
             (b"ATXT", overlay),
             (b"VTXT", invalid_weight),
         ],
@@ -474,12 +484,13 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
     assert!(output.join("cell_cache.rkyv").is_file());
     assert_eq!(
         db.query_row(
-            "SELECT length(heightmap), length(vclr) FROM land WHERE cell_id=2560",
+            "SELECT length(heightmap), vclr IS NULL FROM land WHERE cell_id=2560",
             [],
-            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
         )
         .unwrap(),
-        (0, 3267)
+        (1096, true),
+        "the authored flat height field; the winning LAND has no VCLR, so NULL, not an empty blob"
     );
     assert_eq!(
         db.query_row(
@@ -503,7 +514,7 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             .any(|bytes| bytes == b"VCLR")
     );
     assert!(
-        !original_texture_land
+        original_texture_land
             .windows(4)
             .any(|bytes| bytes == b"VHGT")
     );
@@ -517,7 +528,10 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
         .find(|cell| cell.cell_id == 0xA00)
         .unwrap();
     assert_eq!(texture_cell.heights, vec![0.0; 33 * 33]);
-    assert_eq!(texture_cell.vertex_colors, vec![95; 33 * 33 * 3]);
+    assert!(
+        texture_cell.vertex_colors.is_empty(),
+        "the winning texture-only LAND has no VCLR"
+    );
     let overlay = texture_cell
         .layers
         .iter()
@@ -527,7 +541,10 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
         (overlay.texture_form_id, overlay.quadrant, overlay.layer),
         (4, 2, 3)
     );
-    assert_eq!(overlay.weights[0].opacity, 0.625);
+    assert!(
+        overlay.weights.is_empty(),
+        "only the invalid paint weight is omitted"
+    );
     assert_eq!(
         db.query_row(
             "SELECT COUNT(*) FROM records WHERE form_id=2562",
@@ -535,7 +552,7 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        0
+        1
     );
     assert_eq!(
         db.query_row(
@@ -544,19 +561,19 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        0
+        1
     );
     assert!(
         diagnostic["decoder"]["skyrim.esm"]["skipped_records"]
             .as_u64()
             .unwrap()
-            >= 1
+            == 0
     );
     assert!(
-        diagnostic["decoder"]["skyrim.esm"]["first_by_category"]["record"]
+        diagnostic["adapter"]["skyrim.esm"][1]
             .as_str()
             .unwrap()
-            .contains("LAND")
+            .contains("malformed LAND texture items")
     );
     assert!(!output.join("vfs").exists());
     // The established tool must still decode records.data as rkyv after this export.
@@ -771,7 +788,7 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
                 ),
             ));
             worlds.extend(unordered_cell);
-            // A new genuinely heightless LAND remains usable beside rejected overrides.
+            // A new LAND without VHGT is omitted beside the rejected overrides.
             let mut new_cell = cell(0x0100_0D00, 50);
             new_cell.extend(group(
                 8,
@@ -854,7 +871,8 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
         (0xB40, 11.0),
     ] {
         let retained = cache.cells.iter().find(|cell| cell.cell_id == id).unwrap();
-        assert_eq!(retained.heights, vec![offset * 8.0; 33 * 33]);
+        let expected_offset = if id == 0xB20 { 99.0 } else { offset };
+        assert_eq!(retained.heights, vec![expected_offset * 8.0; 33 * 33]);
         assert_eq!(
             db.query_row(
                 "SELECT load_order FROM records WHERE form_id=?1",
@@ -862,14 +880,14 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
                 |row| row.get::<_, u32>(0)
             )
             .unwrap(),
-            0
+            u32::from(id == 0xB20)
         );
         assert_eq!(
             db.query_row("SELECT heightmap FROM land WHERE cell_id=?1", [id], |row| {
                 row.get::<_, Vec<u8>>(0)
             })
             .unwrap(),
-            vhgt(offset)
+            vhgt(expected_offset)
         );
     }
     for editor_id in ["Neighbor2306", "BadNegative.esp", "BadNonfinite.esp"] {
@@ -891,20 +909,23 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
         .unwrap(),
         0
     );
-    let heightless_cell = db
-        .query_row(
-            "SELECT cell_id FROM land WHERE length(heightmap)=0 AND vclr=?1",
+    // A new LAND without VHGT stays out of the database and the cache beside the rejected
+    // overrides: no zero heights are invented for it (#811).
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM land WHERE vclr=?1",
             [vec![111u8; 33 * 33 * 3]],
-            |row| row.get::<_, u32>(0),
+            |row| row.get::<_, u32>(0)
         )
-        .unwrap();
-    let heightless = cache
-        .cells
-        .iter()
-        .find(|cell| cell.cell_id == heightless_cell)
-        .unwrap();
-    assert_eq!(heightless.heights, vec![0.0; 33 * 33]);
-    assert_eq!(heightless.vertex_colors, vec![111; 33 * 33 * 3]);
+        .unwrap(),
+        0
+    );
+    assert!(
+        cache
+            .cells
+            .iter()
+            .all(|cell| cell.vertex_colors != vec![111; 33 * 33 * 3])
+    );
     assert!(cache.cells.iter().any(|cell| cell.cell_id == 0xA00));
     assert_eq!(
         db.query_row(

@@ -317,8 +317,12 @@ fn perk_condition_tabs_preserve_typed_groups_and_remapped_native_bytes() {
     fixture.plugin(
         "ConditionObjects.esm",
         1,
-        &[],
-        &[native::reference(0x2731), native::global(0x2749)].concat(),
+        &["Skyrim.esm"],
+        &[
+            native::reference_with_base(0x0100_2731, 0x0000_0014),
+            native::global(0x0100_2749),
+        ]
+        .concat(),
     );
     fixture.plugin(
         "ConditionLight.esl",

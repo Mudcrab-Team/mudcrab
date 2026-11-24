@@ -39,10 +39,6 @@
     model_space_world_normal,
 }
 
-#ifdef VISIBILITY_RANGE_DITHER
-#import bevy_pbr::pbr_functions::visibility_range_dither;
-#endif
-
 #ifdef OIT_ENABLED
 #import bevy_core_pipeline::oit::oit_draw
 #endif
@@ -266,7 +262,7 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
     let in = stock_vertex_output(skin_in);
 
 #ifdef VISIBILITY_RANGE_DITHER
-    visibility_range_dither(in.position, in.visibility_range_dither);
+    bevy_pbr::pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
 #endif
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);

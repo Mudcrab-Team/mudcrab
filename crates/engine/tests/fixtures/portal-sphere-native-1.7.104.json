@@ -1,0 +1,333 @@
+{
+  "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "function_rva": "0xfe9860",
+  "scope": "Native function instructions with a host cosf import bridge; no original-game experiment",
+  "tested_cases": 1617,
+  "mismatches": 0,
+  "cases": [
+    {
+      "center": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 0.25,
+      "intersects": true
+    },
+    {
+      "center": [
+        0.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        0.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        11.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        11.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        11.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        11.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 0.25,
+      "intersects": false
+    },
+    {
+      "center": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 1.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        0.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 1.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 1.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        0.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 1.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        11.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 1.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        11.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 1.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        11.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 1.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        11.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 1.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        15.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 1.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 1.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 1.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 1.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        0.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        0.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        11.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        11.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        11.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        11.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 4.0,
+      "intersects": true
+    },
+    {
+      "center": [
+        15.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 4.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        5.5,
+        -0.0
+      ],
+      "radius": 4.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        0.0,
+        -1.0
+      ],
+      "radius": 4.0,
+      "intersects": false
+    },
+    {
+      "center": [
+        15.0,
+        5.5,
+        -1.0
+      ],
+      "radius": 4.0,
+      "intersects": false
+    }
+  ]
+}

@@ -1,0 +1,452 @@
+{
+  "schema": 1,
+  "runtime_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "runs": [
+    {
+      "id": "train-60hz-1x-1",
+      "split": "train",
+      "repeat": 1,
+      "path": "traces/train-60hz-1x-1.bin.gz",
+      "sha256": "565956f51e9b3cb89d419b7f0912d96126c289b46e3e6a4697295cdf879cdb7c",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "b50ecd173a9e1aedf1bdae9ac61430d2d35737a58bbeb4b8d088401e075c82d3",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=1527079748\nuPersistentUuidData2=2435595273\nuPersistentUuidData1=32195924\nuPersistentUuidData0=2360493124\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 60,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "train-60hz-1x-2",
+      "split": "train",
+      "repeat": 2,
+      "path": "traces/train-60hz-1x-2.bin.gz",
+      "sha256": "dfc449076d19acd793fa376637af885413629f5e5763ec0ba8a09a342e9f3b2d",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "4446f6330f2ed725a93a365b2461da532d6ca132837a64e055b355e1660710ca",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=3651900051\nuPersistentUuidData2=2592062876\nuPersistentUuidData1=3249422925\nuPersistentUuidData0=4227270714\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 60,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "train-60hz-1x-3",
+      "split": "train",
+      "repeat": 3,
+      "path": "traces/train-60hz-1x-3.bin.gz",
+      "sha256": "42b2832ea4dd6b1b44d1b2965984938a9559d67d18d0a3f64953f96436eb934b",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "b6135332bfc138aa49cc47fa6dc98e8633ac3e5d1ec497ba20f805f54d10fb45",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=1772573183\nuPersistentUuidData2=2833324858\nuPersistentUuidData1=1533824004\nuPersistentUuidData0=3383724439\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 60,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "heldout-30hz-1x-1",
+      "split": "heldout",
+      "repeat": 1,
+      "path": "traces/heldout-30hz-1x-1.bin.gz",
+      "sha256": "a91b4bd2279d591c3758babfaee38166a3b04f633680299b77f368bdb3583b1c",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 30,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "884b51e50aea21707c48f4a1a5457c832e0f9b1ffa8c7e39f4f400fbe2f11ea4",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=2934584876\nuPersistentUuidData2=2172686473\nuPersistentUuidData1=1219054927\nuPersistentUuidData0=217604347\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 30,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "heldout-120hz-1x-1",
+      "split": "heldout",
+      "repeat": 1,
+      "path": "traces/heldout-120hz-1x-1.bin.gz",
+      "sha256": "533fe33f66621a54d85c2b8ee10ecc5b30db1700ef612607015806f4365875cd",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 120,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "27eecb233816acd357613df938d139a0700e9e29fec16b0a1d0f1b3c9c5c46e9",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=934870235\nuPersistentUuidData2=2473947530\nuPersistentUuidData1=3093250755\nuPersistentUuidData0=3749066111\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 120,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "heldout-60hz-0.5x-1",
+      "split": "heldout",
+      "repeat": 1,
+      "path": "traces/heldout-60hz-0.5x-1.bin.gz",
+      "sha256": "4ebed1b885af0bad3e6d90690310b75b700fa507ea6794fa1036726d1c140a61",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "8a28410cf9024f4d90bf2f41059bbc05fb0ae5ade90e3018bfeed68b25f29322",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=2079239072\nuPersistentUuidData2=2416448354\nuPersistentUuidData1=3818408253\nuPersistentUuidData0=1750151088\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "a1277b93f2e5dfaf5c1d6170a9e71d4cbc5a08a214bcd55c500793796ecbee04",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 60,
+      "time_multiplier": 0.5
+    },
+    {
+      "id": "heldout-30hz-1x-2",
+      "split": "heldout",
+      "repeat": 2,
+      "path": "traces/heldout-30hz-1x-2.bin.gz",
+      "sha256": "e82860705c18639a3731531a08dc13b6ee87d68f5e230bc847c957dfd7e3c76e",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 30,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "9dd18aa44739843d2374e9e3d060671be020ca6dc634c729a56a72841890ae92",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=3434241331\nuPersistentUuidData2=2243096673\nuPersistentUuidData1=197279782\nuPersistentUuidData0=4266380954\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 30,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "heldout-120hz-1x-2",
+      "split": "heldout",
+      "repeat": 2,
+      "path": "traces/heldout-120hz-1x-2.bin.gz",
+      "sha256": "3e2cd4e720147718a40f6b174f043e8abdcf6039c7290548168e5e5e7b34fcb7",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 120,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "fae8ecddfdc04521d48c7816194efb1a7760ea4b6cb15bc6012c8a0ede8b10c8",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=3233292320\nuPersistentUuidData2=3219810584\nuPersistentUuidData1=113657049\nuPersistentUuidData0=1468356224\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 120,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "heldout-60hz-0.5x-2",
+      "split": "heldout",
+      "repeat": 2,
+      "path": "traces/heldout-60hz-0.5x-2.bin.gz",
+      "sha256": "dc05c964cb5f3d55ce42980a01673fc732009091ff59144625ebf49e31e4ae57",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "5afead9c062551329abbd0ec1011ed94f6f946c884b0e42ee691555076a02ee9",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=2508842830\nuPersistentUuidData2=2998662297\nuPersistentUuidData1=3221638359\nuPersistentUuidData0=1508878939\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "a1277b93f2e5dfaf5c1d6170a9e71d4cbc5a08a214bcd55c500793796ecbee04",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 60,
+      "time_multiplier": 0.5
+    },
+    {
+      "id": "heldout-30hz-1x-3",
+      "split": "heldout",
+      "repeat": 3,
+      "path": "traces/heldout-30hz-1x-3.bin.gz",
+      "sha256": "e0a4405041fa5e15246a06cc466c2a71e07baa76faf47cee8194cbaf9a613c6d",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 30,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "350a06a1f691082a183dedb6f9f5124a7c42eb657193d0dba74e94aa808cf635",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=515137176\nuPersistentUuidData2=2480643740\nuPersistentUuidData1=483739795\nuPersistentUuidData0=102740100\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 30,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "heldout-120hz-1x-3",
+      "split": "heldout",
+      "repeat": 3,
+      "path": "traces/heldout-120hz-1x-3.bin.gz",
+      "sha256": "fdfd1cc007f8affd0a524d373d68927d4e9ada2b53b2dc97adbf78031567e671",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 120,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "a0aea5d31b410305e60e14f39e9bf1e7143ce0a1b0f295e79dac203f68852a66",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=2335266665\nuPersistentUuidData2=2521387462\nuPersistentUuidData1=2439137428\nuPersistentUuidData0=75333152\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "c65ed95a0b65c2271b8cdf2018e0698f454eca64eae040d50861fee3080b0b15",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 120,
+      "time_multiplier": 1.0
+    },
+    {
+      "id": "heldout-60hz-0.5x-3",
+      "split": "heldout",
+      "repeat": 3,
+      "path": "traces/heldout-60hz-0.5x-3.bin.gz",
+      "sha256": "1782e916d7f84841300f7cc7f60bd3963a87485f4778f17212a0ec6c09cb52dc",
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "32402b7cbb7ef970d15f946a7bce8a5ee2f2e192c161110d3d49973b57a4157d",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=939240745\nuPersistentUuidData2=2201671268\nuPersistentUuidData1=3980674957\nuPersistentUuidData0=2559631455\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "a1277b93f2e5dfaf5c1d6170a9e71d4cbc5a08a214bcd55c500793796ecbee04",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "dll_sha256": "73073aabb6eb9d85cab5f4179a894d1f77a341ddee9519896eb8d2bff13a5837",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "frame_cap": 60,
+      "time_multiplier": 0.5
+    }
+  ],
+  "attempts": [
+    {
+      "id": "train-60hz-1x-1",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "train-60hz-1x-2",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "train-60hz-1x-3",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-30hz-1x-1",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-120hz-1x-1",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-60hz-0.5x-1",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-30hz-1x-2",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-120hz-1x-2",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-60hz-0.5x-2",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-30hz-1x-3",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-120hz-1x-3",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "heldout-60hz-0.5x-3",
+      "attempt": 1,
+      "exit_code": 0
+    }
+  ]
+}

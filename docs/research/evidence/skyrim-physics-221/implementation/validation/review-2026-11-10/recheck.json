@@ -1,0 +1,47 @@
+{
+  "input_sha256": "27d4ca7949c8aabe82a3f387a2993a98aaeb6746f8b4a5d0e55a52e6958ed4fd",
+  "unique_training": 3,
+  "unique_heldout": 12,
+  "replay": {
+    "baseline": {
+      "n": 12,
+      "passes": 0,
+      "maximum_rmse": 15.181785630790774,
+      "maximum_pointwise_error": 36.202089310625
+    },
+    "current": {
+      "n": 12,
+      "passes": 12,
+      "maximum_rmse": 0.11414554895231227,
+      "maximum_pointwise_error": 0.22509765625
+    }
+  },
+  "headless": {
+    "baseline": {
+      "first_delta_y": 5.666667938232422,
+      "sampled_apex_rise": 67.08328247070312,
+      "apex_tick": 23,
+      "landing_tick": 47
+    },
+    "current": {
+      "first_delta_y": 5.126792907714844,
+      "sampled_apex_rise": 71.47846221923828,
+      "apex_tick": 27,
+      "landing_tick": 51
+    }
+  },
+  "native_inputs": {
+    "status": "passed",
+    "accepted": 4,
+    "attempts": 6,
+    "failed": 2,
+    "archive_sha256": "6e3125c4a9fe4ff52790993ccf0e5769eb8ce1ef2ecb451e52835b1a95b8c4e1"
+  },
+  "chart_sha256": "7ddb7e6a86708d2745e5e00d1b70c37f9c859584ad135088a4768cb12edb737a",
+  "resolving_local_links": {
+    "docs/research/skyrim-physics-221-implementation.md": 19,
+    "docs/player-movement-record-map.md": 4,
+    "docs/research/evidence/skyrim-physics-221/implementation/baseline/README.md": 0,
+    "tools/skyrim-recorder/reference/jump-inputs-v4/implementation-inputs.md": 8
+  }
+}

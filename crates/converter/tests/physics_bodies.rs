@@ -85,6 +85,18 @@ fn assert_close(actual: &[f32], expected: &[f32], what: &str) {
 }
 
 #[test]
+fn malformed_motion_keeps_fixed_collision_export() {
+    let mut body = wall_body();
+    body.motion_system = 0;
+    let (_, collision) = convert(&[body]);
+    let [body] = collision.bodies.as_slice() else {
+        panic!("expected one exported body: {collision:?}");
+    };
+    assert_eq!(body.havok.motion_system, 0);
+    assert_eq!(body.kind, BodyKind::Fixed);
+}
+
+#[test]
 fn dynamic_and_fixed_box_bodies_round_trip_with_units() {
     let (gltf, asset) = convert(&[crate_body(), wall_body()]);
     assert_eq!(asset.version, COLLISION_ASSET_VERSION);

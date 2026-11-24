@@ -10,10 +10,10 @@ use bevy::{
 use bevy_rapier3d::prelude::*;
 use color_eyre::{
     Result,
-    eyre::{WrapErr, ensure},
+    eyre::{WrapErr, bail, ensure},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use shared::collision::CollisionBody;
+use shared::{collision::CollisionBody, records::ArchivedRecordData};
 use std::path::Path;
 
 mod camera_follow;
@@ -23,11 +23,17 @@ pub mod carry;
 mod feel_measure;
 #[cfg(test)]
 mod stair_tests;
+mod vertical;
 #[cfg(test)]
 mod view_interpolation_tests;
 mod walk_support;
 #[cfg(test)]
 mod walk_support_tests;
+
+use vertical::VerticalMotion;
+pub use vertical::{JumpHeight, ResolvedWalk};
+#[cfg(test)]
+mod jump_replay_tests;
 
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
@@ -39,9 +45,11 @@ use crate::{
 /// Fixed physics step: 60 Hz Rapier simulation (V15, V18).
 pub const PHYSICS_TIMESTEP: f32 = 1.0 / 60.0;
 const PLAYER_CONTROLLER_OFFSET: f32 = 2.0;
+/// The movement type both default objects name in Skyrim.esm. It is used only for a package
+/// whose `default_objects` table holds no rows, which was converted before that table existed.
 const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
-/// Shared downward gravity in Creation units/s^2 for WALK and tankards (V11, V15).
-pub const GRAVITY_CREATION_UNITS: f32 = 900.0;
+/// Existing engine rigid-body policy, independent of character motion.
+pub const RIGID_BODY_GRAVITY_CREATION: f32 = 900.0;
 /// Collision groups: world surfaces (V17).
 pub const GROUP_WORLD: Group = Group::GROUP_1;
 /// Collision groups: player capsule (V17).
@@ -61,7 +69,7 @@ pub const MAX_LINEAR_SPEED: f32 = 20_000.0;
 /// when their cell loads next, if earlier bodies have unloaded by then.
 pub const MAX_LIVE_DYNAMIC_CLUTTER: usize = 256;
 
-/// Provisional movement tuning, centralized (V10, V11, V12).
+/// Movement tuning with one source-attributed effective character jump height.
 #[derive(Debug, Clone, Resource)]
 pub struct MovementTuning {
     pub walk_speed: f32,
@@ -69,8 +77,7 @@ pub struct MovementTuning {
     /// Provisional sprint factor applied to the selected directional run speed.
     pub sprint_multiplier: f32,
     pub horizontal_acceleration: f32,
-    pub gravity: f32,
-    pub jump_launch: f32,
+    pub jump_height: JumpHeight,
     pub capsule_radius: f32,
     pub capsule_standing_height: f32,
     pub eye_height: f32,
@@ -83,9 +90,14 @@ pub struct MovementTuning {
 
 #[derive(Debug, Clone)]
 pub struct DirectionalMovementSpeeds {
-    /// Each pair is [walk, run], ordered left/right/forward/back.
-    pub directions: [[f32; 2]; 4],
+    /// The walk movement type's [walk, run] pairs, ordered left/right/forward/back.
+    pub walk_directions: [[f32; 2]; 4],
+    /// The run movement type's [walk, run] pairs, ordered left/right/forward/back.
+    pub run_directions: [[f32; 2]; 4],
     pub source: String,
+    /// Flagged conditions found while loading, logged once at startup. They are not errors, but
+    /// they change what the player can do or show that the package is out of date.
+    pub warnings: Vec<String>,
 }
 
 impl Default for MovementTuning {
@@ -95,8 +107,9 @@ impl Default for MovementTuning {
             run_speed: 300.0,
             sprint_multiplier: 1.5,
             horizontal_acceleration: 1800.0,
-            gravity: GRAVITY_CREATION_UNITS,
-            jump_launch: 340.0,
+            jump_height: JumpHeight::synthetic(
+                "synthetic unit actor; fJumpHeightMin=76; runtime reference scale=1 policy",
+            ),
             capsule_radius: 28.0,
             capsule_standing_height: 100.8,
             eye_height: 89.6,
@@ -108,22 +121,199 @@ impl Default for MovementTuning {
     }
 }
 
+/// One `MOVT` row: its eight directional speeds and where it came from.
+struct MovementProfile {
+    editor_id: String,
+    /// Left/right/forward/back, each as walk then run.
+    values: [f32; 8],
+    plugin: String,
+}
+
+impl MovementProfile {
+    fn directions(&self) -> [[f32; 2]; 4] {
+        std::array::from_fn(|direction| {
+            [self.values[direction * 2], self.values[direction * 2 + 1]]
+        })
+    }
+}
+
+/// The `DOBJ` default movement types that the converter exported.
+enum DefaultObjects {
+    /// The package has no `default_objects` table, so it was converted before the table existed.
+    /// It is the only case that keeps the earlier `NPC_Default_MT` rule, and it is flagged.
+    Absent,
+    /// Default object use code and the `MOVT` it names. A key that is absent has no default,
+    /// including in a package whose table is empty.
+    Exported(Vec<(String, u32)>),
+}
+
+impl DefaultObjects {
+    fn read(conn: &Connection) -> Result<Self> {
+        let has_table: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='default_objects')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Ok(Self::Absent);
+        }
+        let mut statement = conn.prepare("SELECT key, form_id FROM default_objects")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Self::Exported(rows))
+    }
+
+    /// The movement type of the default object `key` (`DMWL` or `DMRN`) for the race slot
+    /// `slot`, and how it was chosen.
+    fn movement_type(&self, slot: &str, key: &str) -> Result<(u32, String)> {
+        match self {
+            Self::Absent => Ok((
+                NPC_DEFAULT_MOVT_FORM_ID,
+                "legacy package without default objects".to_owned(),
+            )),
+            Self::Exported(rows) => rows
+                .iter()
+                .find(|(row_key, _)| row_key == key)
+                .map(|(_, id)| (*id, format!("DOBJ {key}")))
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "RACE {slot} is unset and the package has a default_objects table but no row for {key}. Run a metadata rebuild (--reuse-assets). If the load order has no DOBJ with {key}, the data holds no default"
+                    )
+                }),
+        }
+    }
+}
+
+/// Load a MOVT's speeds. Retail profiles hold zero speeds in some directions, so every
+/// speed must be finite and non-negative. A zero forward speed is data, not an error;
+/// the caller flags it.
+fn load_movement_profile(conn: &Connection, form_id: u32, via: &str) -> Result<MovementProfile> {
+    let selected: Option<MovementProfile> = conn
+        .query_row(
+            "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
+                m.forward_walk, m.forward_run, m.back_walk, m.back_run, \
+                COALESCE((SELECT MIN(p.name) FROM plugins p WHERE p.priority=m.load_order \
+                          HAVING COUNT(*)=1), '<unknown plugin>') \
+             FROM movement_types m \
+             WHERE m.id=?1",
+            params![form_id],
+            |row| {
+                Ok(MovementProfile {
+                    editor_id: row.get(0)?,
+                    values: [
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ],
+                    plugin: row.get(9)?,
+                })
+            },
+        )
+        .optional()?;
+    let profile = selected.ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "{via}: MOVT {form_id:08X} is missing from movement_types. Run a metadata rebuild (--reuse-assets)"
+        )
+    })?;
+    for (index, value) in profile.values.iter().enumerate() {
+        ensure!(
+            value.is_finite() && *value >= 0.0,
+            "{via}: MOVT {form_id:08X} SPED[{index}] is invalid: {value}"
+        );
+    }
+    Ok(profile)
+}
+
+/// A movement type that a race slot selected.
+struct SelectedMovementType {
+    /// How the slot chose it, for the source report.
+    via: String,
+    profile: MovementProfile,
+    /// The package has no `default_objects` table, so the earlier rule chose it.
+    legacy_rule: bool,
+    /// Flagged conditions, for the startup log.
+    warnings: Vec<String>,
+}
+
+/// The `MOVT` for one race movement slot, with a label for the source report.
+///
+/// Skyrim's race movement-type getter returns the race's own slot when it is set. Otherwise it
+/// returns the default object for that slot: `DMWL` ("Default MovementType: Walk") for `WKMV`
+/// and `DMRN` ("Default MovementType: Run") for `RNMV`. The getter is at `0x1403e64a0`; the
+/// slot-to-default mapping is at `0x140393860`. A default object that is missing is an
+/// error. No movement type is chosen for it. The one exception is a package without the
+/// `default_objects` table, which keeps the earlier rule and is flagged.
+fn load_race_movement_type(
+    conn: &Connection,
+    link: Option<u32>,
+    slot: &str,
+    defaults: &DefaultObjects,
+    forward: usize,
+) -> Result<SelectedMovementType> {
+    let key = if slot == "WKMV" { "DMWL" } else { "DMRN" };
+    let legacy_rule = link.is_none() && matches!(defaults, DefaultObjects::Absent);
+    let (id, via) = match link {
+        Some(id) => (id, format!("{slot} {id:08X}")),
+        None => {
+            let (id, origin) = defaults.movement_type(slot, key)?;
+            (id, format!("{slot} unset, {origin}"))
+        }
+    };
+    let profile = load_movement_profile(conn, id, &via)?;
+    if legacy_rule {
+        ensure!(
+            profile.editor_id == "NPC_Default_MT",
+            "MOVT 0003580D EDID is {}, expected NPC_Default_MT",
+            profile.editor_id
+        );
+    }
+    let mut warnings = Vec::new();
+    if profile.values[forward] == 0.0 {
+        warnings.push(format!(
+            "{slot} movement type {} ({id:08X}) has forward {} speed 0, so the player cannot move forward at that gait",
+            profile.editor_id,
+            if forward == 4 { "walk" } else { "run" }
+        ));
+    }
+    Ok(SelectedMovementType {
+        via,
+        profile,
+        legacy_rule,
+        warnings,
+    })
+}
+
 impl MovementTuning {
     pub fn capsule_half_height(&self) -> f32 {
         (self.capsule_standing_height * 0.5 - self.capsule_radius).max(1.0)
     }
 
-    /// Legacy packages lack `movement_types`. A package with the table must
-    /// contain a valid selected profile; otherwise it cannot claim record speeds.
+    /// Legacy packages lack `movement_types`. A package with the table must contain valid
+    /// profiles for the Player race's walk and run slots; otherwise it cannot claim record
+    /// speeds. A slot that the race leaves unset takes its default object's movement type.
     pub fn from_world_database(path: &Path) -> Result<Self> {
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .wrap_err_with(|| format!("opening movement records in {}", path.display()))?;
+        let conn = connection.unchecked_transaction()?;
         let has_table: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_types')",
             [], |row| row.get(0),
         )?;
         if !has_table {
-            return Ok(Self::default());
+            return Ok(Self {
+                jump_height: JumpHeight::synthetic(
+                    "legacy package without movement_types; synthetic unit actor; fJumpHeightMin=76; runtime reference scale=1 policy",
+                ),
+                ..Self::default()
+            });
         }
         let race_id: u32 = conn
             .query_row("SELECT race_id FROM npcs WHERE id=7", [], |row| row.get(0))
@@ -146,62 +336,38 @@ impl MovementTuning {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .wrap_err_with(|| {
-                format!("RACE {race_id:08X} movement links missing; reconvert assets")
+                format!("RACE {race_id:08X} movement links missing; run a metadata rebuild (--reuse-assets)")
             })?;
-        ensure!(
-            walk_link.is_none() && run_link.is_none(),
-            "RACE {race_id:08X} has WKMV={walk_link:?} RNMV={run_link:?}; first-pass NPC_Default_MT selection supports only unset race links"
-        );
-        let selected: Option<(String, [f32; 8], String)> = conn
-            .query_row(
-                "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
-                    m.forward_walk, m.forward_run, m.back_walk, m.back_run, \
-                    COALESCE(p.name, '<unknown plugin>') \
-             FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order \
-             WHERE m.id=?1",
-                params![NPC_DEFAULT_MOVT_FORM_ID],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        [
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
-                            row.get(8)?,
-                        ],
-                        row.get(9)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let (editor_id, values, plugin) = selected.ok_or_else(|| color_eyre::eyre::eyre!(
-            "movement_types exists but MOVT 0003580D NPC_Default_MT is missing; reconvert assets"
-        ))?;
-        ensure!(
-            editor_id == "NPC_Default_MT",
-            "MOVT 0003580D EDID is {editor_id}, expected NPC_Default_MT"
-        );
-        for (index, value) in values.iter().enumerate() {
-            ensure!(
-                value.is_finite() && *value > 0.0,
-                "MOVT 0003580D SPED[{index}] is invalid: {value}"
+        let defaults = DefaultObjects::read(&conn)?;
+        let walk = load_race_movement_type(&conn, walk_link, "WKMV", &defaults, 4)?;
+        let run = load_race_movement_type(&conn, run_link, "RNMV", &defaults, 5)?;
+        let mut warnings = Vec::new();
+        if walk.legacy_rule || run.legacy_rule {
+            warnings.push(
+                "package has no default_objects table (converted before default movement types were exported): an unset WKMV or RNMV uses NPC_Default_MT 0003580D by the earlier project rule. Run a metadata rebuild (--reuse-assets) to publish the table"
+                    .to_owned(),
             );
         }
+        warnings.extend(walk.warnings.iter().chain(&run.warnings).cloned());
+        let jump_height = load_player_jump_height(&conn, race_id)
+            .wrap_err("record-backed jump inputs are incomplete or unsupported")?;
         Ok(Self {
-            walk_speed: values[4],
-            run_speed: values[5],
+            jump_height,
+            walk_speed: walk.profile.values[4],
+            run_speed: run.profile.values[5],
             record_speeds: Some(DirectionalMovementSpeeds {
-                directions: [
-                    [values[0], values[1]],
-                    [values[2], values[3]],
-                    [values[4], values[5]],
-                    [values[6], values[7]],
-                ],
-                source: format!("MOVT 0003580D NPC_Default_MT ({plugin})"),
+                walk_directions: walk.profile.directions(),
+                run_directions: run.profile.directions(),
+                source: format!(
+                    "{}: {} ({}); {}: {} ({})",
+                    walk.via,
+                    walk.profile.editor_id,
+                    walk.profile.plugin,
+                    run.via,
+                    run.profile.editor_id,
+                    run.profile.plugin
+                ),
+                warnings,
             }),
             ..Self::default()
         })
@@ -223,8 +389,13 @@ impl MovementTuning {
         };
         let x = strafe.x.abs();
         let y = strafe.y.abs();
-        let lateral = speeds.directions[if strafe.x < 0.0 { 0 } else { 1 }][gait];
-        let longitudinal = speeds.directions[if strafe.y < 0.0 { 2 } else { 3 }][gait];
+        let directions = if gait == 0 {
+            &speeds.walk_directions
+        } else {
+            &speeds.run_directions
+        };
+        let lateral = directions[if strafe.x < 0.0 { 0 } else { 1 }][gait];
+        let longitudinal = directions[if strafe.y < 0.0 { 2 } else { 3 }][gait];
         let base = (lateral * x + longitudinal * y) / (x + y).max(1.0);
         if sprint {
             base * self.sprint_multiplier
@@ -232,6 +403,177 @@ impl MovementTuning {
             base
         }
     }
+}
+
+struct JumpInputRecord {
+    id: u32,
+    data: ArchivedRecordData,
+    source: String,
+}
+
+fn winning_plugin(conn: &Connection, priority: u32) -> Result<String> {
+    let mut statement = conn.prepare("SELECT name FROM plugins WHERE priority=?1")?;
+    let plugins = statement
+        .query_map([priority], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        plugins.len() <= 1,
+        "winning priority {priority} matches multiple plugins"
+    );
+    Ok(plugins
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "<unknown plugin>".into()))
+}
+
+fn jump_input_record(conn: &Connection, id: u32, expected: &str) -> Result<JumpInputRecord> {
+    let (kind, priority, bytes): (String, u32, Vec<u8>) = conn
+        .query_row(
+            "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .wrap_err_with(|| format!("missing canonical {expected} {id:08X}"))?;
+    ensure!(
+        kind == expected,
+        "record {id:08X} is {kind}, expected {expected}"
+    );
+    let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
+    aligned.extend_from_slice(&bytes);
+    let data = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&aligned)
+        .wrap_err_with(|| format!("invalid canonical archive for {expected} {id:08X}"))?;
+    Ok(JumpInputRecord {
+        id,
+        data,
+        source: format!(
+            "{expected} {id:08X} priority={priority} ({})",
+            winning_plugin(conn, priority)?
+        ),
+    })
+}
+
+impl JumpInputRecord {
+    fn field(&self, tag: &[u8; 4]) -> Result<Option<&[u8]>> {
+        let mut matches = self
+            .data
+            .subrecords
+            .iter()
+            .filter(|field| &field.tag == tag);
+        let field = matches.next().map(|field| field.data.as_slice());
+        ensure!(
+            matches.next().is_none(),
+            "record {:08X} has duplicate {} fields",
+            self.id,
+            String::from_utf8_lossy(tag)
+        );
+        Ok(field)
+    }
+
+    fn required(&self, tag: &[u8; 4], size: usize) -> Result<&[u8]> {
+        let bytes = self.field(tag)?.ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "record {:08X} lacks {}",
+                self.id,
+                String::from_utf8_lossy(tag)
+            )
+        })?;
+        ensure!(
+            bytes.len() == size,
+            "record {:08X} {} length {} is unsupported; expected {size}",
+            self.id,
+            String::from_utf8_lossy(tag),
+            bytes.len()
+        );
+        Ok(bytes)
+    }
+}
+
+fn load_player_jump_height(conn: &Connection, race_id: u32) -> Result<JumpHeight> {
+    let player = jump_input_record(conn, 7, "NPC_")?;
+    let acbs = player.required(b"ACBS", 24)?;
+    let female = u32::from_le_bytes(acbs[..4].try_into()?) & 1 != 0;
+    let template_flags = u16::from_le_bytes(acbs[18..20].try_into()?);
+    let template = player
+        .field(b"TPLT")?
+        .map(|bytes| bytes.try_into().map(u32::from_le_bytes))
+        .transpose()
+        .wrap_err("Player NPC_ TPLT must be four bytes")?;
+    const USE_TRAITS: u16 = 0x0001;
+    if template_flags & USE_TRAITS != 0 {
+        let template = template.filter(|id| *id != 0).ok_or_else(|| {
+            color_eyre::eyre::eyre!("Player NPC_ sets Use Traits but has no nonzero TPLT")
+        })?;
+        bail!(
+            "Player NPC_ inherits traits from TPLT {template:08X}; inherited jump inputs are unsupported"
+        );
+    }
+    // Raw RNAM may be file-relative. Its normalized identity comes from npcs.
+    player.required(b"RNAM", 4)?;
+    let npc_height = f32::from_le_bytes(player.required(b"NAM6", 4)?.try_into()?);
+    ensure!(
+        npc_height.is_finite() && npc_height > 0.0,
+        "Player NPC_ NAM6 height is invalid: {npc_height}"
+    );
+    let race = jump_input_record(conn, race_id, "RACE")?;
+    let data = race
+        .field(b"DATA")?
+        .ok_or_else(|| color_eyre::eyre::eyre!("RACE {race_id:08X} lacks DATA heights"))?;
+    ensure!(
+        matches!(data.len(), 124 | 128 | 164),
+        "RACE {race_id:08X} DATA length {} is unsupported; expected 124, 128, or 164 bytes",
+        data.len()
+    );
+    let heights = [
+        f32::from_le_bytes(data[16..20].try_into()?),
+        f32::from_le_bytes(data[20..24].try_into()?),
+    ];
+    ensure!(
+        heights
+            .iter()
+            .all(|height| height.is_finite() && *height > 0.0),
+        "RACE {race_id:08X} DATA heights are invalid: {heights:?}"
+    );
+    let race_height = heights[usize::from(female)];
+    let mut query = conn.prepare(
+        "SELECT id,value,load_order FROM movement_game_settings WHERE editor_id='fJumpHeightMin' COLLATE NOCASE"
+    ).wrap_err("missing movement_game_settings; reconvert assets")?;
+    let settings = query
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, f32>(1)?,
+                row.get::<_, u32>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        !settings.is_empty(),
+        "expected one effective fJumpHeightMin, found 0"
+    );
+    ensure!(
+        settings.len() == 1,
+        "expected one effective fJumpHeightMin, found {}; multiple GMST FormIDs with this EDID are unsupported; inspect plugin load order and settings",
+        settings.len()
+    );
+    let (setting_id, setting, priority) = settings[0];
+    ensure!(setting.is_finite(), "GMST fJumpHeightMin is nonfinite");
+    let actor_scale = race_height * npc_height;
+    ensure!(
+        actor_scale.is_finite(),
+        "Player NPC_/RACE height product overflows"
+    );
+    let reference_scale = 1.0;
+    let effective = setting * (actor_scale * reference_scale);
+    JumpHeight::new(
+        effective,
+        format!(
+            "GMST {setting_id:08X} fJumpHeightMin={setting} priority={priority} ({}); {}; sex={}; NAM6={npc_height}; {}; selected DATA height={race_height}; runtime reference scale=1 policy (no save mutation or swimming)",
+            winning_plugin(conn, priority)?,
+            player.source,
+            if female { "female" } else { "male" },
+            race.source,
+        ),
+    )
 }
 
 /// Debug tankard fixture bounds in Creation units (V15).
@@ -496,28 +838,34 @@ impl Plugin for PhysicsCorePlugin {
 }
 
 fn report_movement_tuning(tuning: Res<MovementTuning>) {
+    for warning in tuning
+        .record_speeds
+        .iter()
+        .flat_map(|speeds| &speeds.warnings)
+    {
+        warn!("WALK movement records: {warning}");
+    }
     let source = tuning
         .record_speeds
         .as_ref()
         .map_or("legacy provisional constants", |s| s.source.as_str());
     info!(
-        "WALK speeds: forward walk={} run={} Creation units/s (first-pass factor 1); provisional sprint={} ({}x directional run); source={source}; jump_launch={} and gravity={} provisional",
+        "WALK speeds: forward walk={} run={} Creation units/s (first-pass factor 1); provisional sprint={} ({}x directional run); source={source}; effective jump height={} Creation; jump source={}; character gravity=9.81 Havok; rigid-body gravity=900 Creation",
         tuning.walk_speed,
         tuning.run_speed,
         tuning.target_speed(Vec2::new(0.0, -1.0), false, true),
         tuning.sprint_multiplier,
-        tuning.jump_launch,
-        tuning.gravity
+        tuning.jump_height.creation(),
+        tuning.jump_height.source()
     );
 }
 
 fn configure_physics_gravity(
-    tuning: Res<MovementTuning>,
     mut configs: Query<&mut RapierConfiguration>,
     mut simulations: Query<&mut RapierContextSimulation>,
 ) {
     for mut config in &mut configs {
-        config.gravity = Vect::new(0.0, -tuning.gravity, 0.0);
+        config.gravity = Vect::new(0.0, -RIGID_BODY_GRAVITY_CREATION, 0.0);
     }
     // Raise Rapier's global linear cap (default 400 units/s) so falling clutter is not clipped;
     // the authored per-body limits are enforced by `clamp_dynamic_clutter_velocities`.
@@ -876,10 +1224,443 @@ mod tests {
         assert!(walk < run && run < sprint);
         assert_eq!(sprint, run * tuning.sprint_multiplier);
         assert!(tuning.horizontal_acceleration > 0.0);
-        assert_eq!(tuning.gravity, GRAVITY_CREATION_UNITS);
+        assert_eq!(tuning.jump_height.creation(), 76.0);
         assert_eq!(tuning.capsule_standing_height, 100.8);
         assert_eq!(tuning.eye_height, 89.6);
         assert_eq!(tuning.capsule_radius, 28.0);
+    }
+
+    fn fixture_record(kind: &[u8; 4], id: u32, fields: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (tag, data) in fields {
+            payload.extend_from_slice(tag);
+            payload.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            payload.extend_from_slice(data);
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&id.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&44_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    fn generated_player_database(directory: &Path) -> std::path::PathBuf {
+        use dummy_content::{esm, layout};
+        let base = directory.join("Skyrim.esm");
+        std::fs::write(
+            &base,
+            esm::plugin(&esm::Plugin {
+                author: layout::GENERATED_AUTHOR,
+                worldspace: layout::GENERATED_WORLDSPACE,
+                cells: &[esm::PRESET_EXTERIOR_CELL],
+                model_path: layout::GENERATED_MODEL_PATH,
+                diffuse: layout::GENERATED_DIFFUSE_PATH,
+                normal_texture: layout::GENERATED_NORMAL_PATH,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let header = fixture_record(
+            b"TES4",
+            0,
+            &[
+                (
+                    *b"HEDR",
+                    [1.7_f32.to_le_bytes().as_slice(), &[0; 8]].concat(),
+                ),
+                (*b"MAST", b"Skyrim.esm\0".to_vec()),
+                (*b"DATA", vec![0; 8]),
+            ],
+        );
+        // The unreferenced middle plugin makes patch-local slot one differ
+        // from the normalized global slot two of its newly authored race.
+        let middle = directory.join("Middle.esp");
+        std::fs::write(&middle, &header).unwrap();
+        let mut patch = header;
+        let mut acbs = vec![0; 24];
+        acbs[..4].copy_from_slice(&1_u32.to_le_bytes());
+        patch.extend(fixture_record(
+            b"NPC_",
+            7,
+            &[
+                (*b"EDID", b"Player\0".to_vec()),
+                (*b"RNAM", 0x0100_0811_u32.to_le_bytes().to_vec()),
+                (*b"ACBS", acbs),
+                (*b"NAM6", 1.2_f32.to_le_bytes().to_vec()),
+            ],
+        ));
+        let mut data = vec![0; 128];
+        data[16..20].copy_from_slice(&0.8_f32.to_le_bytes());
+        data[20..24].copy_from_slice(&1.25_f32.to_le_bytes());
+        patch.extend(fixture_record(
+            b"RACE",
+            0x0100_0811,
+            &[(*b"EDID", b"OverrideRace\0".to_vec()), (*b"DATA", data)],
+        ));
+        patch.extend(fixture_record(
+            b"GMST",
+            0x0100_0810,
+            &[
+                (*b"EDID", b"FJUMPHEIGHTMIN\0".to_vec()),
+                (*b"DATA", 100_f32.to_le_bytes().to_vec()),
+            ],
+        ));
+        let speeds = [
+            80.09_f32, 370.0, 79.75, 370.0, 80.1, 370.0, 71.93, 205.25, 3.0, 3.0, 3.0,
+        ];
+        patch.extend(fixture_record(
+            b"MOVT",
+            NPC_DEFAULT_MOVT_FORM_ID,
+            &[
+                (*b"EDID", b"NPC_Default_MT\0".to_vec()),
+                (
+                    *b"SPED",
+                    speeds
+                        .iter()
+                        .flat_map(|value| value.to_le_bytes())
+                        .collect(),
+                ),
+            ],
+        ));
+        let patch_path = directory.join("JumpOverride.esp");
+        std::fs::write(&patch_path, patch).unwrap();
+        let database = directory.join("skyrim_world.db");
+        converter::esm::EsmParser::convert_plugins(&[base, middle, patch_path], &database).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute("UPDATE plugins SET id=id+100", [])
+            .unwrap();
+        database
+    }
+
+    fn rewrite_jump_record(
+        conn: &Connection,
+        id: u32,
+        change: impl FnOnce(&mut ArchivedRecordData),
+    ) {
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mut aligned = rkyv::util::AlignedVec::<16>::new();
+        aligned.extend_from_slice(&bytes);
+        let mut record =
+            rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&aligned).unwrap();
+        change(&mut record);
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&record).unwrap();
+        conn.execute(
+            "UPDATE records SET data=?1 WHERE form_id=?2",
+            params![bytes.as_slice(), id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn packaged_jump_uses_winning_setting_sex_heights_and_normalized_race() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        let race: u32 = conn
+            .query_row("SELECT race_id FROM npcs WHERE id=7", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(race, 0x0200_0811);
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(tuning.jump_height.creation(), 100.0 * (1.25_f32 * 1.2_f32));
+        let source = tuning.jump_height.source();
+        assert!(source.contains("fJumpHeightMin=100"), "{source}");
+        assert!(source.contains("sex=female"), "{source}");
+        assert!(source.contains("NAM6=1.2"), "{source}");
+        assert!(source.contains("RACE 02000811"), "{source}");
+        assert!(source.contains("priority=2 (JumpOverride.esp)"), "{source}");
+        assert!(
+            tuning
+                .record_speeds
+                .as_ref()
+                .unwrap()
+                .source
+                .contains("JumpOverride.esp")
+        );
+        rewrite_jump_record(&conn, 7, |record| {
+            record
+                .subrecords
+                .iter_mut()
+                .find(|field| field.tag == *b"ACBS")
+                .unwrap()
+                .data[..4]
+                .copy_from_slice(&0_u32.to_le_bytes());
+        });
+        let male = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(male.jump_height.creation(), 100.0 * (0.8_f32 * 1.2_f32));
+        for setting in [-100.0_f32, 0.0] {
+            conn.execute(
+                "UPDATE movement_game_settings SET value=?1 WHERE editor_id='fJumpHeightMin'",
+                [setting],
+            )
+            .unwrap();
+            assert_eq!(
+                MovementTuning::from_world_database(&path)
+                    .unwrap()
+                    .jump_height
+                    .creation(),
+                setting * (0.8_f32 * 1.2_f32)
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_movt_priority_keeps_speeds_without_attributing_a_plugin() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("UPDATE plugins SET priority=1 WHERE priority=0", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE movement_types SET load_order=1 WHERE id=?1",
+            [NPC_DEFAULT_MOVT_FORM_ID],
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!((tuning.walk_speed, tuning.run_speed), (80.1, 370.0));
+        assert_eq!(
+            tuning.record_speeds.unwrap().source,
+            "WKMV unset, DOBJ DMWL: NPC_Default_MT (<unknown plugin>); \
+             RNMV unset, DOBJ DMRN: NPC_Default_MT (<unknown plugin>)"
+        );
+    }
+
+    #[test]
+    fn packaged_jump_requires_a_supported_race_data_layout() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        for size in [124, 128, 164, 24, 123, 129] {
+            rewrite_jump_record(&conn, 0x0200_0811, |record| {
+                record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"DATA")
+                    .unwrap()
+                    .data
+                    .resize(size, 0);
+            });
+            let result = MovementTuning::from_world_database(&path);
+            if matches!(size, 124 | 128 | 164) {
+                assert_eq!(result.unwrap().jump_height.creation(), 150.0);
+            } else {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(
+                    error.contains(&format!("DATA length {size} is unsupported")),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn packaged_jump_only_requires_local_traits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        for (flags, template, expected_error) in [
+            (0x0100_u16, Some(99_u32), None),
+            (0x0001, None, Some("has no nonzero TPLT")),
+            (0x0001, Some(0), Some("has no nonzero TPLT")),
+            (0x0101, Some(99), Some("inherits traits from TPLT 00000063")),
+        ] {
+            rewrite_jump_record(&conn, 7, |record| {
+                let acbs = record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"ACBS")
+                    .unwrap();
+                acbs.data[18..20].copy_from_slice(&flags.to_le_bytes());
+                record.subrecords.retain(|field| field.tag != *b"TPLT");
+                if let Some(id) = template {
+                    record.subrecords.push(shared::records::ArchivedSubRecord {
+                        tag: *b"TPLT",
+                        data: id.to_le_bytes().to_vec(),
+                    });
+                }
+            });
+            let result = MovementTuning::from_world_database(&path);
+            if let Some(message) = expected_error {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(error.contains(message), "{error}");
+            } else {
+                assert_eq!(result.unwrap().jump_height.creation(), 150.0);
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_jump_setting_edids_report_unsupported_plugin_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO movement_game_settings(id,editor_id,value,load_order) VALUES (?1,?2,?3,?4)",
+            params![0x0300_0810_u32, "fjumpheightmin", 64.0, 3],
+        )
+        .unwrap();
+        let error = format!(
+            "{:#}",
+            MovementTuning::from_world_database(&path).unwrap_err()
+        );
+        assert!(error.contains("found 2"), "{error}");
+        assert!(error.contains("multiple GMST FormIDs"), "{error}");
+        assert!(error.contains("inspect plugin load order"), "{error}");
+        assert!(!error.contains("reconvert"), "{error}");
+    }
+
+    #[test]
+    fn modern_jump_package_rejects_partial_malformed_duplicate_and_inherited_inputs() {
+        use shared::records::ArchivedSubRecord;
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        let original: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=7", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let assert_invalid = || assert!(MovementTuning::from_world_database(&path).is_err());
+        for failure in 0..8 {
+            rewrite_jump_record(&conn, 7, |record| match failure {
+                0 => record.subrecords.retain(|field| field.tag != *b"NAM6"),
+                1 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"NAM6")
+                        .unwrap()
+                        .data = vec![0; 3]
+                }
+                2 => record.subrecords.push(ArchivedSubRecord {
+                    tag: *b"NAM6",
+                    data: 1_f32.to_le_bytes().to_vec(),
+                }),
+                3 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"NAM6")
+                        .unwrap()
+                        .data = f32::NAN.to_le_bytes().to_vec()
+                }
+                4 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"ACBS")
+                        .unwrap()
+                        .data = vec![0; 16]
+                }
+                5 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"ACBS")
+                        .unwrap()
+                        .data[18..20]
+                        .copy_from_slice(&1_u16.to_le_bytes());
+                    record.subrecords.push(ArchivedSubRecord {
+                        tag: *b"TPLT",
+                        data: 99_u32.to_le_bytes().to_vec(),
+                    });
+                }
+                6 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"RNAM")
+                        .unwrap()
+                        .data = vec![0; 3]
+                }
+                7 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"NAM6")
+                        .unwrap()
+                        .data = 0_f32.to_le_bytes().to_vec()
+                }
+                _ => unreachable!(),
+            });
+            assert_invalid();
+            conn.execute("UPDATE records SET data=?1 WHERE form_id=7", [&original])
+                .unwrap();
+        }
+        rewrite_jump_record(&conn, 7, |record| {
+            record.subrecords.push(ArchivedSubRecord {
+                tag: *b"TPLT",
+                data: 99_u32.to_le_bytes().to_vec(),
+            })
+        });
+        assert!(
+            MovementTuning::from_world_database(&path).is_ok(),
+            "inactive template pointer can retain complete own fields"
+        );
+        conn.execute("UPDATE records SET data=x'000102' WHERE form_id=7", [])
+            .unwrap();
+        assert_invalid();
+        conn.execute("UPDATE records SET data=?1 WHERE form_id=7", [&original])
+            .unwrap();
+        let race_original: Vec<u8> = conn
+            .query_row(
+                "SELECT data FROM records WHERE form_id=33556497",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for failure in 0..4 {
+            rewrite_jump_record(&conn, 0x0200_0811, |record| {
+                let data = &mut record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"DATA")
+                    .unwrap()
+                    .data;
+                match failure {
+                    0 => data.truncate(23),
+                    1 => data[20..24].copy_from_slice(&f32::INFINITY.to_le_bytes()),
+                    2 => data[16..20].copy_from_slice(&(-1_f32).to_le_bytes()),
+                    3 => record.subrecords.push(ArchivedSubRecord {
+                        tag: *b"DATA",
+                        data: vec![0; 128],
+                    }),
+                    _ => unreachable!(),
+                }
+            });
+            assert_invalid();
+            conn.execute(
+                "UPDATE records SET data=?1 WHERE form_id=?2",
+                params![&race_original, 0x0200_0811_u32],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO movement_game_settings VALUES(999,'FJUMPHEIGHTMIN',76,2)",
+            [],
+        )
+        .unwrap();
+        assert_invalid();
+        conn.execute("DELETE FROM movement_game_settings WHERE id=999", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE movement_game_settings SET value=?1",
+            [f64::INFINITY],
+        )
+        .unwrap();
+        assert_invalid();
+        conn.execute("DELETE FROM movement_game_settings", [])
+            .unwrap();
+        assert_invalid();
     }
 
     #[test]
@@ -890,23 +1671,10 @@ mod tests {
         let legacy = MovementTuning::from_world_database(&path).unwrap();
         assert_eq!(legacy.run_speed, 300.0);
         assert!(legacy.record_speeds.is_none());
-        conn.execute_batch(
-            "CREATE TABLE npcs(id INTEGER PRIMARY KEY, race_id INTEGER);
-            CREATE TABLE records(form_id INTEGER PRIMARY KEY, record_type TEXT);
-            CREATE TABLE plugins(id INTEGER PRIMARY KEY, name TEXT);
-            CREATE TABLE race_movement_links(id INTEGER PRIMARY KEY, walk_movt_id INTEGER, run_movt_id INTEGER);
-            CREATE TABLE movement_types(id INTEGER PRIMARY KEY, editor_id TEXT,
-                left_walk REAL, left_run REAL, right_walk REAL, right_run REAL,
-                forward_walk REAL, forward_run REAL, back_walk REAL, back_run REAL,
-                load_order INTEGER);
-            INSERT INTO npcs VALUES(7, 79686);
-            INSERT INTO records VALUES(79686, 'RACE');
-            INSERT INTO race_movement_links VALUES(79686, NULL, NULL);
-            INSERT INTO plugins VALUES(0, 'Skyrim.esm');
-            INSERT INTO movement_types VALUES(219149, 'NPC_Default_MT',
-                80.09, 370, 79.75, 370, 80.1, 370, 71.93, 205.25, 0);",
-        )
-        .unwrap();
+        drop(conn);
+        std::fs::remove_file(&path).unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
         let tuning = MovementTuning::from_world_database(&path).unwrap();
         assert_eq!(tuning.walk_speed, 80.1);
         assert_eq!(tuning.run_speed, 370.0);
@@ -926,9 +1694,15 @@ mod tests {
             tuning.target_speed(Vec2::new(1.0, -1.0), false, false),
             370.0
         );
-        assert!(tuning.record_speeds.unwrap().source.contains("Skyrim.esm"));
+        assert!(
+            tuning
+                .record_speeds
+                .unwrap()
+                .source
+                .contains("JumpOverride.esp")
+        );
         conn.execute(
-            "UPDATE records SET record_type='STAT' WHERE form_id=79686",
+            "UPDATE records SET record_type='STAT' WHERE form_id=33556497",
             [],
         )
         .unwrap();
@@ -939,32 +1713,220 @@ mod tests {
                 .contains("expected RACE")
         );
         conn.execute(
-            "UPDATE records SET record_type='RACE' WHERE form_id=79686",
+            "UPDATE records SET record_type='RACE' WHERE form_id=33556497",
             [],
         )
         .unwrap();
-        conn.execute(
-            "UPDATE race_movement_links SET walk_movt_id=219149 WHERE id=79686",
-            [],
-        )
-        .unwrap();
+        // The generated package exports its default objects, and the source says so.
+        let speeds = MovementTuning::from_world_database(&path)
+            .unwrap()
+            .record_speeds
+            .unwrap();
         assert!(
-            MovementTuning::from_world_database(&path)
-                .unwrap_err()
-                .to_string()
-                .contains("supports only unset race links")
+            speeds
+                .source
+                .contains("WKMV unset, DOBJ DMWL: NPC_Default_MT"),
+            "{}",
+            speeds.source
         );
-        conn.execute(
-            "UPDATE race_movement_links SET walk_movt_id=NULL WHERE id=79686",
-            [],
-        )
-        .unwrap();
+        assert!(speeds.warnings.is_empty(), "{:?}", speeds.warnings);
+        // A package from before the table keeps the earlier rule, labelled and flagged.
+        conn.execute("DROP TABLE default_objects", []).unwrap();
+        let legacy = MovementTuning::from_world_database(&path)
+            .unwrap()
+            .record_speeds
+            .unwrap();
+        assert!(
+            legacy
+                .source
+                .contains("WKMV unset, legacy package without default objects"),
+            "{}",
+            legacy.source
+        );
+        let [warning] = legacy.warnings.as_slice() else {
+            panic!("expected one flagged warning: {:?}", legacy.warnings);
+        };
+        assert!(warning.contains("no default_objects table"), "{warning}");
+        assert!(warning.contains("NPC_Default_MT 0003580D"), "{warning}");
+        assert!(
+            warning.contains("metadata rebuild (--reuse-assets)"),
+            "{warning}"
+        );
         conn.execute("DELETE FROM movement_types", []).unwrap();
         assert!(
             MovementTuning::from_world_database(&path)
                 .unwrap_err()
                 .to_string()
                 .contains("MOVT 0003580D")
+        );
+    }
+
+    /// Adds a second movement type to a generated package: forward walk 50, forward run 250.
+    fn add_slow_movement_type(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO movement_types VALUES(847823, 'NPC_Slow_MT', 40, 200, 40, 200, 50, 250, 30, 150, 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_race_without_links_takes_the_default_movement_types() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        add_slow_movement_type(&conn);
+        // The race has no WKMV or RNMV. Each slot uses its own default object.
+        conn.execute_batch(
+            "INSERT OR REPLACE INTO default_objects VALUES('DMWL', 847823), ('DMRN', 219149);",
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!((tuning.walk_speed, tuning.run_speed), (50.0, 370.0));
+        let speeds = tuning.record_speeds.as_ref().unwrap();
+        assert_eq!(speeds.walk_directions[2], [50.0, 250.0]);
+        assert_eq!(speeds.run_directions[2], [80.1, 370.0]);
+        assert!(speeds.source.contains("WKMV unset, DOBJ DMWL: NPC_Slow_MT"));
+        assert!(
+            speeds
+                .source
+                .contains("RNMV unset, DOBJ DMRN: NPC_Default_MT")
+        );
+        // Walking forward uses the walk profile, and running forward uses the run profile.
+        assert_eq!(tuning.target_speed(Vec2::new(0.0, -1.0), true, false), 50.0);
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), false, false),
+            370.0
+        );
+    }
+
+    #[test]
+    fn a_race_with_links_uses_its_own_movement_types_not_the_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        add_slow_movement_type(&conn);
+        // Both defaults name the Default movement type, but the race links its own.
+        conn.execute_batch(
+            "INSERT OR REPLACE INTO default_objects VALUES('DMWL', 219149), ('DMRN', 219149);
+             UPDATE race_movement_links SET walk_movt_id=847823, run_movt_id=847823
+                 WHERE id=33556497;",
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!((tuning.walk_speed, tuning.run_speed), (50.0, 250.0));
+        let source = tuning.record_speeds.unwrap().source;
+        assert!(source.contains("WKMV 000CEFCF: NPC_Slow_MT"), "{source}");
+        assert!(source.contains("RNMV 000CEFCF: NPC_Slow_MT"), "{source}");
+        // One link set and one unset: only the unset slot uses its default.
+        conn.execute("UPDATE race_movement_links SET run_movt_id=NULL", [])
+            .unwrap();
+        let mixed = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!((mixed.walk_speed, mixed.run_speed), (50.0, 370.0));
+        // A link to a movement type the package does not hold is an error, not a default.
+        conn.execute("UPDATE race_movement_links SET walk_movt_id=999", [])
+            .unwrap();
+        let error = MovementTuning::from_world_database(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("WKMV 000003E7: MOVT 000003E7 is missing"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("metadata rebuild"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_or_unusable_default_object_invents_no_movement_type() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        // The package has the table, but no default for the unset run slot.
+        conn.execute("DELETE FROM default_objects WHERE key='DMRN'", [])
+            .unwrap();
+        let error = format!(
+            "{:#}",
+            MovementTuning::from_world_database(&path).unwrap_err()
+        );
+        assert!(error.contains("RNMV is unset"), "{error}");
+        assert!(error.contains("no row for DMRN"), "{error}");
+        assert!(error.contains("metadata rebuild"), "{error}");
+        // An empty table is not a legacy package: the defaults are missing, so it is an error.
+        conn.execute("DELETE FROM default_objects", []).unwrap();
+        let error = format!(
+            "{:#}",
+            MovementTuning::from_world_database(&path).unwrap_err()
+        );
+        assert!(error.contains("no row for DMWL"), "{error}");
+        // A default that names a movement type the package lacks is also an error.
+        conn.execute("INSERT INTO default_objects VALUES('DMWL', 219149)", [])
+            .unwrap();
+        conn.execute("INSERT INTO default_objects VALUES('DMRN', 999)", [])
+            .unwrap();
+        let error = MovementTuning::from_world_database(&path).unwrap_err();
+        assert!(error.to_string().contains("MOVT 000003E7 is missing"));
+    }
+
+    #[test]
+    fn a_zero_forward_speed_loads_and_is_flagged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        add_slow_movement_type(&conn);
+        conn.execute(
+            "UPDATE movement_types SET forward_run=0 WHERE id=847823",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE default_objects SET form_id=847823 WHERE key='DMRN'",
+            [],
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(tuning.run_speed, 0.0);
+        assert_eq!(tuning.target_speed(Vec2::new(0.0, -1.0), false, false), 0.0);
+        let speeds = tuning.record_speeds.unwrap();
+        let [warning] = speeds.warnings.as_slice() else {
+            panic!("expected one flagged warning: {:?}", speeds.warnings);
+        };
+        assert!(warning.contains("forward run speed 0"), "{warning}");
+        // A negative speed is still an error.
+        conn.execute(
+            "UPDATE movement_types SET forward_run=-1 WHERE id=847823",
+            [],
+        )
+        .unwrap();
+        let error = MovementTuning::from_world_database(&path).unwrap_err();
+        assert!(error.to_string().contains("SPED[5]"), "{error}");
+    }
+
+    #[test]
+    fn the_legacy_name_check_applies_only_to_the_fallback_not_to_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        add_slow_movement_type(&conn);
+        // A package from before the table: both slots link explicitly. One link names
+        // 0003580D under another editor ID, which is data and must load.
+        conn.execute_batch(
+            "DROP TABLE default_objects;
+             UPDATE movement_types SET editor_id='RenamedDefault_MT' WHERE id=219149;
+             UPDATE race_movement_links SET walk_movt_id=219149, run_movt_id=847823
+                 WHERE id=33556497;",
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        let speeds = tuning.record_speeds.unwrap();
+        assert!(speeds.source.contains("WKMV 0003580D: RenamedDefault_MT"));
+        assert!(speeds.warnings.is_empty(), "{:?}", speeds.warnings);
+        // An unset slot that falls back to the renamed 0003580D is rejected.
+        conn.execute("UPDATE race_movement_links SET run_movt_id=NULL", [])
+            .unwrap();
+        let error = MovementTuning::from_world_database(&path).unwrap_err();
+        assert!(
+            error.to_string().contains("expected NPC_Default_MT"),
+            "{error}"
         );
     }
 
@@ -1670,15 +2632,11 @@ pub struct WalkIntent {
 #[derive(Debug, Clone, Copy, Default, Resource)]
 pub(crate) struct SprintLatch(pub(crate) bool);
 
-/// Live walk state: horizontal velocity + vertical velocity (V10, V11).
+/// Horizontal motion and one owner of character flight history.
 #[derive(Debug, Clone, Copy, Default, Component)]
 pub struct WalkState {
     pub horizontal_velocity: Vec3,
-    pub vertical_velocity: f32,
-    pub grounded: bool,
-    pub jump_apex: f32,
-    pub jump_time: f32,
-    pub jump_active: bool,
+    vertical: VerticalMotion,
     /// Retail's InAir state (RF-CC-013). False while walking, including while the unsupported cast
     /// keeps hitting (a step down), so no fall state and no landing begin on a stair tread.
     pub airborne: bool,
@@ -1687,6 +2645,33 @@ pub struct WalkState {
     /// True for the one tick in which support returned after the air state (retail flag 0x80,
     /// RF-CC-015).
     pub landed: bool,
+}
+
+impl WalkState {
+    pub fn vertical_velocity(&self) -> f32 {
+        self.vertical.velocity_creation()
+    }
+
+    pub fn grounded(&self) -> bool {
+        self.vertical.grounded()
+    }
+
+    pub fn jump_active(&self) -> bool {
+        self.vertical.jump_active()
+    }
+
+    fn jump_launched(&self) -> bool {
+        self.vertical.just_launched()
+    }
+
+    /// Apex from actual resolved positions, retained after landing.
+    pub fn jump_apex(&self) -> f32 {
+        self.vertical.jump_apex()
+    }
+
+    pub fn velocity(&self) -> Vec3 {
+        self.horizontal_velocity + Vec3::Y * self.vertical_velocity()
+    }
 }
 
 /// Upward search budget when entering WALK inside geometry (V8).
@@ -1727,12 +2712,8 @@ pub fn integrate_walk(
     intent: &WalkIntent,
     tuning: &MovementTuning,
     dt: f32,
-    grounded: bool,
+    resolved: ResolvedWalk,
 ) {
-    // Rapier's ground probe can remain true for several steps after takeoff.
-    // Upward jump velocity must survive that proximity signal until ascent ends.
-    let grounded = grounded && !(state.jump_active && state.vertical_velocity > 0.0);
-    state.grounded = grounded;
     let wish = intent.wish_dir * intent.target_speed;
     let current = state.horizontal_velocity;
     let max_delta = tuning.horizontal_acceleration * dt;
@@ -1742,26 +2723,9 @@ pub fn integrate_walk(
     } else {
         current + delta.normalize_or_zero() * max_delta
     };
-    if grounded {
-        state.vertical_velocity = 0.0;
-        if state.jump_active {
-            state.jump_active = false;
-        }
-        if intent.jump_pressed {
-            state.vertical_velocity = tuning.jump_launch;
-            state.jump_active = true;
-            state.jump_apex = 0.0;
-            state.jump_time = 0.0;
-        }
-    } else {
-        state.vertical_velocity -= tuning.gravity * dt;
-        if state.jump_active {
-            state.jump_time += dt;
-            state.jump_apex = state
-                .jump_apex
-                .max(state.vertical_velocity * state.jump_time);
-        }
-    }
+    state
+        .vertical
+        .advance(&tuning.jump_height, resolved, intent.jump_pressed, dt);
 }
 
 type WalkBodyQuery<'w, 's> = Query<
@@ -1791,6 +2755,7 @@ fn neutralize_blocked_walk_input(
 
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
+    fixed_time: Res<Time<Fixed>>,
     mode: Res<MoveMode>,
     hold: Option<Res<WalkSpawnHold>>,
     mut intent: ResMut<WalkIntent>,
@@ -1814,6 +2779,7 @@ pub fn walk_movement_system(
         controller.translation = None;
         return;
     }
+    let dt = fixed_time.delta_secs();
     // Rapier's grounded flag stands in for retail's kSupport.
     let supported = output.map(|o| o.grounded).unwrap_or(false);
     let rapier = context.single().ok();
@@ -1822,35 +2788,37 @@ pub fn walk_movement_system(
     // pending jump, the cast decides (RF-CC-013): a hit keeps walking and glides (RF-CC-014), a
     // miss starts the air state.
     let jump_pending = intent.jump_pressed;
-    let walking_unsupported = !supported && !state.airborne && !state.jump_active;
+    let walking_unsupported = !supported && !state.airborne && !state.jump_active();
     let glide = walking_unsupported
         && !jump_pending
         && rapier.as_ref().is_some_and(|context| {
             walk_support::unsupported_cast_hits(context, entity, &body, capsule, &controller)
         });
     let jump_from_walking = walking_unsupported && jump_pending;
-    let previous_vertical = state.vertical_velocity;
+    let previous_vertical = state.vertical_velocity();
     // RF-CC-015: landing is the first supported step after the air state. It is decided from the
     // state before this tick's integration, so a jump launched on the same tick keeps it: the
     // integration clears the old jump and starts the new one.
     let landing =
-        supported && state.airborne && !(state.jump_active && state.vertical_velocity > 0.0);
+        supported && state.airborne && !(state.jump_active() && state.vertical_velocity() > 0.0);
     integrate_walk(
         &mut state,
         &intent,
         &tuning,
-        PHYSICS_TIMESTEP,
-        supported || glide || jump_from_walking,
+        dt,
+        ResolvedWalk {
+            y: body.translation.y,
+            grounded: supported || glide || jump_from_walking,
+        },
     );
     intent.jump_pressed = false;
     state.landed = false;
     // The tick that launches a jump starts the air state at the launch height (RF-CC-013), before
     // this tick's displacement. Rapier can keep reporting support for a few ticks after take-off,
     // so support does not count while the jump is rising (RF-CC-015: landing needs support).
-    // `integrate_walk` sets the jump time to 0 on an accepted launch and adds the step to it on every
-    // later air tick, so this also finds a relaunch on the tick the previous jump lands.
-    let launched = state.jump_active && state.jump_time == 0.0;
-    let rising = state.jump_active && state.vertical_velocity > 0.0;
+    // VerticalMotion records accepted launches, including a relaunch on the landing tick.
+    let launched = state.jump_launched();
+    let rising = state.jump_active() && state.vertical_velocity() > 0.0;
     if launched {
         state.airborne = true;
         state.fall_start_height = body.translation.y;
@@ -1864,8 +2832,9 @@ pub fn walk_movement_system(
     } else if glide {
         // RF-CC-013, RF-CC-014: a hit keeps the walking state; 4 x gravity accelerates the body
         // onto the surface. No fall state, no fall start height, no landing.
-        state.vertical_velocity =
-            walk_support::glide_vertical_velocity(previous_vertical, PHYSICS_TIMESTEP);
+        state
+            .vertical
+            .glide(body.translation.y, previous_vertical, dt);
     } else if !state.airborne {
         // RF-CC-013: a miss, or a jump launched from a cast hit, starts the air state.
         state.airborne = true;
@@ -1875,14 +2844,14 @@ pub fn walk_movement_system(
     // runs the same walking step (RF-CC-014), so the surface below gives the normal there too.
     let mut wish = state.horizontal_velocity;
     if (supported || glide)
-        && !state.jump_active
+        && !state.jump_active()
         && let Some(context) = rapier.as_ref()
         && let Some(normal) =
             walk_support::support_normal(context, entity, &body, &controller, &tuning)
     {
         wish = walk_support::slope_velocity(wish, normal, controller.max_slope_climb_angle.cos());
     }
-    let mut displacement = (wish + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
+    let mut displacement = (wish + Vec3::Y * state.vertical_velocity()) * dt;
     if glide && let Some(context) = rapier.as_ref() {
         // RF-CC-014: the pull of a cast hit moves the body straight down. Rapier runs the
         // controller before syncing transforms, so the query pose is overridden as for a step up.
@@ -1905,7 +2874,7 @@ pub fn walk_movement_system(
         displacement.y = 0.0;
     }
     if supported
-        && !state.jump_active
+        && !state.jump_active()
         && let Some(context) = rapier.as_ref()
         && let Some(rise) = walk_step_rise(
             context,
@@ -1927,8 +2896,7 @@ pub fn walk_movement_system(
             body.rotation.inverse() * (Vec3::Y * rise),
             Quat::IDENTITY,
         ));
-        state.grounded = false;
-        state.vertical_velocity = 0.0;
+        state.vertical.leave_support();
         displacement.y = 0.0;
     }
     controller.translation = Some(displacement);
@@ -2802,11 +3770,29 @@ mod walk_tests {
             target_speed: tuning.run_speed,
             jump_pressed: false,
         };
-        integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, true);
+        integrate_walk(
+            &mut state,
+            &intent,
+            &tuning,
+            PHYSICS_TIMESTEP,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
+        );
         let expected = tuning.horizontal_acceleration * PHYSICS_TIMESTEP;
         assert!((state.horizontal_velocity.x - expected).abs() < 0.01);
         for _ in 0..600 {
-            integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, true);
+            integrate_walk(
+                &mut state,
+                &intent,
+                &tuning,
+                PHYSICS_TIMESTEP,
+                ResolvedWalk {
+                    y: 0.0,
+                    grounded: true,
+                },
+            );
         }
         assert!((state.horizontal_velocity.length() - tuning.run_speed).abs() < 0.5);
     }
@@ -2819,14 +3805,35 @@ mod walk_tests {
             jump_pressed: true,
             ..default()
         };
-        integrate_walk(&mut state, &air_jump, &tuning, PHYSICS_TIMESTEP, false);
-        assert!(state.vertical_velocity < 0.0);
+        integrate_walk(
+            &mut state,
+            &air_jump,
+            &tuning,
+            PHYSICS_TIMESTEP,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: false,
+            },
+        );
+        assert!(state.vertical_velocity() < 0.0);
         let grounded_jump = WalkIntent {
             jump_pressed: true,
             ..default()
         };
-        integrate_walk(&mut state, &grounded_jump, &tuning, PHYSICS_TIMESTEP, true);
-        assert!((state.vertical_velocity - tuning.jump_launch).abs() < f32::EPSILON);
+        integrate_walk(
+            &mut state,
+            &grounded_jump,
+            &tuning,
+            PHYSICS_TIMESTEP,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
+        );
+        let expected = ((2.0_f32 * 9.81 * (76.0 * f32::from_bits(0x3c6a_161e))).sqrt()
+            - 9.81 * 1.35 * PHYSICS_TIMESTEP)
+            * f32::from_bits(0x428b_fb85);
+        assert!((state.vertical_velocity() - expected).abs() < 0.0001);
     }
 
     #[test]
@@ -2911,7 +3918,7 @@ pub(crate) mod headless {
         let (transform, state, output) = query.single(app.world()).expect("player body");
         (
             transform.translation,
-            state.grounded || output.map(|o| o.grounded).unwrap_or(false),
+            state.grounded() || output.map(|o| o.grounded).unwrap_or(false),
         )
     }
 }
@@ -3023,7 +4030,16 @@ mod world_startup_tests {
         let ground = floor(&mut app, true);
         {
             let mut state = app.world_mut().get_mut::<WalkState>(entity).unwrap();
-            state.vertical_velocity = -900.0;
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &MovementTuning::default(),
+                1.0,
+                ResolvedWalk {
+                    y: 500.0,
+                    grounded: false,
+                },
+            );
             state.horizontal_velocity = Vec3::X * 300.0;
         }
         tick(&mut app, 20);
@@ -3311,7 +4327,7 @@ mod world_startup_tests {
         let entity = body(&mut app);
         let state = app.world().get::<WalkState>(entity).unwrap();
         assert_eq!(state.horizontal_velocity, Vec3::ZERO);
-        assert_eq!(state.vertical_velocity, 0.0);
+        assert_eq!(state.vertical_velocity(), 0.0);
         assert!(!app.world().resource::<SprintLatch>().0);
     }
 
@@ -3319,17 +4335,23 @@ mod world_startup_tests {
     fn tcl_cancels_hold_and_round_trips() {
         let mut app = world_app();
         let entity = body(&mut app);
-        app.world_mut()
-            .get_mut::<WalkState>(entity)
-            .unwrap()
-            .vertical_velocity = -900.0;
+        integrate_walk(
+            &mut app.world_mut().get_mut::<WalkState>(entity).unwrap(),
+            &WalkIntent::default(),
+            &MovementTuning::default(),
+            1.0,
+            ResolvedWalk {
+                y: 500.0,
+                grounded: false,
+            },
+        );
         app.world_mut().resource_mut::<SprintLatch>().0 = true;
         crate::console::execute_line(app.world_mut(), "tcl");
         assert_eq!(
             app.world()
                 .get::<WalkState>(entity)
                 .unwrap()
-                .vertical_velocity,
+                .vertical_velocity(),
             0.0
         );
         assert!(!app.world().resource::<SprintLatch>().0);
@@ -4082,7 +5104,7 @@ mod simulation_tests {
     }
 
     #[test]
-    fn jump_ascent_survives_ground_probe_and_lands_on_descent() {
+    fn jump_gravity_and_apex_follow_the_highest_resolved_position() {
         let tuning = MovementTuning::default();
         let mut state = WalkState::default();
         integrate_walk(
@@ -4093,27 +5115,41 @@ mod simulation_tests {
             },
             &tuning,
             PHYSICS_TIMESTEP,
-            true,
+            ResolvedWalk {
+                y: 100.0,
+                grounded: true,
+            },
         );
-        for step in 1..=10 {
+        // Each sample is the position returned by collision resolution on the preceding tick.
+        for (y, gravity_multiplier, apex) in [
+            (104.0, 1.0, 4.0),
+            (104.0, 1.35, 4.0),
+            (101.0, 1.35, 4.0),
+            (103.0, 1.35, 4.0),
+            (105.0, 1.0, 5.0),
+        ] {
+            let before = state.vertical_velocity();
             integrate_walk(
                 &mut state,
                 &WalkIntent::default(),
                 &tuning,
                 PHYSICS_TIMESTEP,
-                true,
+                ResolvedWalk { y, grounded: false },
             );
-            assert!(state.jump_active);
-            assert!(!state.grounded);
+            let expected_drop = 9.81 * 69.99125 * PHYSICS_TIMESTEP * gravity_multiplier;
             assert!(
-                (state.vertical_velocity
-                    - (tuning.jump_launch - tuning.gravity * PHYSICS_TIMESTEP * step as f32))
-                    .abs()
-                    < 0.01
+                (before - state.vertical_velocity() - expected_drop).abs() < 0.001,
+                "resolved y={y}"
             );
+            assert_eq!(state.jump_apex(), apex, "resolved y={y}");
         }
-        // A new press cannot relaunch while the ground probe overlaps ascent.
-        let before = state.vertical_velocity;
+    }
+
+    #[test]
+    fn jump_ascent_survives_ground_probe_and_lands_on_descent() {
+        let tuning = MovementTuning::default();
+        let mut state = WalkState::default();
+        let mut y = 0.0;
         integrate_walk(
             &mut state,
             &WalkIntent {
@@ -4122,16 +5158,36 @@ mod simulation_tests {
             },
             &tuning,
             PHYSICS_TIMESTEP,
-            true,
+            ResolvedWalk { y, grounded: true },
         );
-        assert!(state.vertical_velocity < before);
-        while state.vertical_velocity > 0.0 {
+        for _ in 0..10 {
+            y += state.vertical_velocity() * PHYSICS_TIMESTEP;
+            let before = state.vertical_velocity();
+            integrate_walk(
+                &mut state,
+                &WalkIntent {
+                    jump_pressed: true,
+                    ..default()
+                },
+                &tuning,
+                PHYSICS_TIMESTEP,
+                ResolvedWalk { y, grounded: true },
+            );
+            assert!(state.jump_active());
+            assert!(!state.grounded());
+            assert!(
+                state.vertical_velocity() < before,
+                "proximity support relaunched ascent"
+            );
+        }
+        while state.vertical_velocity() > 0.0 {
+            y += state.vertical_velocity() * PHYSICS_TIMESTEP;
             integrate_walk(
                 &mut state,
                 &WalkIntent::default(),
                 &tuning,
                 PHYSICS_TIMESTEP,
-                false,
+                ResolvedWalk { y, grounded: false },
             );
         }
         integrate_walk(
@@ -4139,11 +5195,14 @@ mod simulation_tests {
             &WalkIntent::default(),
             &tuning,
             PHYSICS_TIMESTEP,
-            true,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
         );
-        assert!(state.grounded);
-        assert!(!state.jump_active);
-        assert_eq!(state.vertical_velocity, 0.0);
+        assert!(state.grounded());
+        assert!(!state.jump_active());
+        assert_eq!(state.vertical_velocity(), 0.0);
     }
 
     #[test]
@@ -4171,7 +5230,6 @@ mod simulation_tests {
             apex = apex.max(headless::player_pose(&mut app).0.y);
         }
         let (landing, grounded) = headless::player_pose(&mut app);
-        // v^2/2g = 340^2/1800 ~ 64 units of apex above rest.
         assert!(
             apex - rest_y > 30.0,
             "jump apex {apex} too low above rest {rest_y}"
@@ -4245,37 +5303,41 @@ pub fn clamp_pitch(pitch: f32) -> f32 {
 
 /// Mouse yaw in radians per count: `fMouseHeadingSensitivity * fMouseHeadingXScale` times the
 /// movement type's rotate speed. 0.000785 for walk and run, half of that while sprinting
-/// (RF-CAM-010).
-pub fn yaw_radians_per_count(sprinting: bool) -> f32 {
+/// (RF-CAM-010), at 1.0x. The multiplier scales only `fMouseHeadingSensitivity`.
+pub fn yaw_radians_per_count(sprinting: bool, sensitivity_multiplier: f32) -> f32 {
     let rotate_speed = if sprinting {
         ROTATE_SPEED_SPRINTING_MT
     } else {
         ROTATE_SPEED_DEFAULT_MT
     };
-    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_X_SCALE * rotate_speed
+    let heading_sensitivity = MOUSE_HEADING_SENSITIVITY * sensitivity_multiplier;
+    heading_sensitivity * MOUSE_HEADING_X_SCALE * rotate_speed
 }
 
 /// Mouse pitch in radians per count: `fMouseHeadingSensitivity * fMouseHeadingYScale *
 /// fLookingSpeed`, 0.0010625 (RF-CAM-011). Retail also multiplies by a zoom ratio, which is 1
-/// outside zoom; the engine has no zoom state.
-pub fn pitch_radians_per_count() -> f32 {
-    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_Y_SCALE * LOOKING_SPEED
+/// outside zoom; the engine has no zoom state. The multiplier scales `fMouseHeadingSensitivity`.
+pub fn pitch_radians_per_count(sensitivity_multiplier: f32) -> f32 {
+    let heading_sensitivity = MOUSE_HEADING_SENSITIVITY * sensitivity_multiplier;
+    heading_sensitivity * MOUSE_HEADING_Y_SCALE * LOOKING_SPEED
 }
 
 /// Sample mouse motion into look intent; uncaptured pointer yields nothing (V6). Retail applies
 /// counts directly: no smoothing, no acceleration and no frame-time scaling (RF-CAM-010,
-/// RF-CAM-011).
+/// RF-CAM-011). The sensitivity multiplier scales the heading setting before axis factors.
 pub fn sample_look_intent(
     capture: &CursorCapture,
     mouse_delta: Vec2,
     sprinting: bool,
+    sensitivity_multiplier: f32,
     intent: &mut LookIntent,
 ) {
     if *capture != CursorCapture::Captured {
         return;
     }
-    intent.yaw -= mouse_delta.x * yaw_radians_per_count(sprinting);
-    intent.pitch = clamp_pitch(intent.pitch - mouse_delta.y * pitch_radians_per_count());
+    intent.yaw -= mouse_delta.x * yaw_radians_per_count(sprinting, sensitivity_multiplier);
+    intent.pitch =
+        clamp_pitch(intent.pitch - mouse_delta.y * pitch_radians_per_count(sensitivity_multiplier));
 }
 
 /// Noclip displacement from held keys relative to the view (V6).
@@ -4555,10 +5617,12 @@ fn cursor_lifecycle_system(
     }
 }
 
+/// Applies live heading sensitivity while retaining WALK sprint and NOCLIP movement types.
 fn look_input_system(
     capture: Res<CursorCapture>,
     mode: Res<MoveMode>,
     sprint: Res<SprintLatch>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
     mut mouse_motion: MessageReader<MouseMotion>,
     mut intent: ResMut<LookIntent>,
 ) {
@@ -4568,7 +5632,10 @@ fn look_input_system(
     }
     // Only WALK has a sprinting movement type; NOCLIP flight uses the default one.
     let sprinting = *mode == MoveMode::Walk && sprint.0;
-    sample_look_intent(&capture, delta, sprinting, &mut intent);
+    let sensitivity = settings
+        .as_deref()
+        .map_or(1.0, |settings| settings.mouse_sensitivity);
+    sample_look_intent(&capture, delta, sprinting, sensitivity, &mut intent);
 }
 
 fn noclip_flight_system(
@@ -4968,21 +6035,27 @@ mod noclip_tests {
         assert_eq!(clamp_pitch(0.3), 0.3);
     }
 
+    /// The default multiplier preserves main's walk/run and sprint movement-type yaw rates.
     #[test]
     fn mouse_yaw_per_count_follows_retail_rates() {
         // RF-CAM-010: 0.0125 * 0.02 * pi = 0.000785 rad per count walking and running,
         // 0.0125 * 0.02 * pi / 2 = 0.0003925 sprinting.
-        assert!((yaw_radians_per_count(false) - 0.000_785).abs() < 1.0e-6);
-        assert!((yaw_radians_per_count(true) - 0.000_392_5).abs() < 1.0e-6);
-        assert!((yaw_radians_per_count(true) * 2.0 - yaw_radians_per_count(false)).abs() < 1.0e-9);
+        assert!((yaw_radians_per_count(false, 1.0) - 0.000_785).abs() < 1.0e-6);
+        assert!((yaw_radians_per_count(true, 1.0) - 0.000_392_5).abs() < 1.0e-6);
+        assert!(
+            (yaw_radians_per_count(true, 1.0) * 2.0 - yaw_radians_per_count(false, 1.0)).abs()
+                < 1.0e-9
+        );
     }
 
+    /// The default multiplier preserves main's retail vertical rate.
     #[test]
     fn mouse_pitch_per_count_follows_retail_rate() {
         // RF-CAM-011: 0.0125 * 0.85 * 0.1 = 0.0010625 rad per count.
-        assert!((pitch_radians_per_count() - 0.001_062_5).abs() < 1.0e-7);
+        assert!((pitch_radians_per_count(1.0) - 0.001_062_5).abs() < 1.0e-7);
     }
 
+    /// Default-sensitivity counts retain distinct normal and sprint yaw rates.
     #[test]
     fn sampled_counts_turn_by_the_retail_rates() {
         let mut intent = LookIntent::default();
@@ -4990,6 +6063,7 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(100.0, 200.0),
             false,
+            1.0,
             &mut intent,
         );
         assert!((intent.yaw + 100.0 * 0.000_785).abs() < 1.0e-4);
@@ -4999,11 +6073,13 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(100.0, 0.0),
             true,
+            1.0,
             &mut sprinting,
         );
         assert!((sprinting.yaw + 100.0 * 0.000_392_5).abs() < 1.0e-4);
     }
 
+    /// Default-sensitivity input retains both exact standing pitch bounds.
     #[test]
     fn sampled_pitch_stops_at_plus_or_minus_ninety_degrees() {
         let mut intent = LookIntent::default();
@@ -5011,6 +6087,7 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(0.0, 1.0e6),
             false,
+            1.0,
             &mut intent,
         );
         assert_eq!(intent.pitch, -std::f32::consts::FRAC_PI_2);
@@ -5018,6 +6095,7 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(0.0, -2.0e6),
             false,
+            1.0,
             &mut intent,
         );
         assert_eq!(intent.pitch, std::f32::consts::FRAC_PI_2);
@@ -5107,6 +6185,7 @@ mod noclip_tests {
         assert!((stopping - 100.0 * 0.000_785).abs() < 1.0e-4, "{stopping}");
     }
 
+    /// Cursor release blocks look input even when sensitivity is explicitly supplied.
     #[test]
     fn uncaptured_pointer_yields_no_look_intent() {
         let mut intent = LookIntent::default();
@@ -5114,6 +6193,7 @@ mod noclip_tests {
             &CursorCapture::Released,
             Vec2::new(40.0, 20.0),
             false,
+            1.0,
             &mut intent,
         );
         assert_eq!(intent.yaw, 0.0);
@@ -5122,10 +6202,152 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(40.0, 20.0),
             false,
+            1.0,
             &mut intent,
         );
         assert!(intent.yaw < 0.0);
         assert!(intent.pitch < 0.0);
+    }
+
+    /// The default look input preserves the unrounded retail rates used by #709.
+    #[test]
+    fn mouse_sensitivity_default_uses_retail_axis_rates() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(100.0, 200.0),
+            false,
+            1.0,
+            &mut intent,
+        );
+        assert!((intent.yaw + 0.078_539_82).abs() < 1.0e-7, "{}", intent.yaw);
+        assert!((intent.pitch + 0.212_5).abs() < 1.0e-7, "{}", intent.pitch);
+    }
+
+    /// Scaling heading sensitivity retains sprint's half yaw and NOCLIP's default movement type.
+    #[test]
+    fn mouse_sensitivity_scales_heading_for_each_movement_type() {
+        let turn = |mode: MoveMode, sprinting: bool, mouse_sensitivity: f32| {
+            let mut app = App::new();
+            app.add_message::<MouseMotion>()
+                .insert_resource(CursorCapture::Captured)
+                .insert_resource(mode)
+                .insert_resource(SprintLatch(sprinting))
+                .insert_resource(LookIntent::default())
+                .insert_resource(crate::settings::RenderingSettings {
+                    mouse_sensitivity,
+                    ..default()
+                });
+            app.world_mut().write_message(MouseMotion {
+                delta: Vec2::new(100.0, 200.0),
+            });
+            app.world_mut().run_system_once(look_input_system).unwrap();
+            let look = app.world().resource::<LookIntent>();
+            Vec2::new(look.yaw, look.pitch)
+        };
+        for multiplier in [0.8, 1.0, 2.0, 4.0] {
+            let walk = turn(MoveMode::Walk, false, multiplier);
+            let sprint = turn(MoveMode::Walk, true, multiplier);
+            let noclip = turn(MoveMode::Noclip, true, multiplier);
+            let expected_walk = Vec2::new(-0.078_539_82, -0.212_5) * multiplier;
+            let expected_sprint = Vec2::new(-0.039_269_91, -0.212_5) * multiplier;
+            assert!((walk - expected_walk).length() < 1.0e-6, "{walk:?}");
+            assert!((sprint - expected_sprint).length() < 1.0e-6, "{sprint:?}");
+            assert_eq!(sprint.y, walk.y);
+            assert_eq!(noclip, walk, "NOCLIP must not use the WALK sprint latch");
+        }
+    }
+
+    /// Every multiplier retains the same exact retail standing pitch bounds.
+    #[test]
+    fn mouse_sensitivity_keeps_retail_pitch_limits_at_every_scale() {
+        assert_eq!(MAX_PITCH_RADIANS, std::f32::consts::FRAC_PI_2);
+        for multiplier in [0.8, 1.0, 2.0, 4.0] {
+            for sprinting in [false, true] {
+                let mut intent = LookIntent::default();
+                sample_look_intent(
+                    &CursorCapture::Captured,
+                    Vec2::new(0.0, 1.0e6),
+                    sprinting,
+                    multiplier,
+                    &mut intent,
+                );
+                assert_eq!(intent.pitch, -std::f32::consts::FRAC_PI_2);
+                sample_look_intent(
+                    &CursorCapture::Captured,
+                    Vec2::new(0.0, -2.0e6),
+                    sprinting,
+                    multiplier,
+                    &mut intent,
+                );
+                assert_eq!(intent.pitch, std::f32::consts::FRAC_PI_2);
+            }
+        }
+    }
+
+    /// Actual mouse input reads live preferences without a renderer or frame-time scaling.
+    #[test]
+    fn mouse_sensitivity_live_edits_scale_both_axes_without_time_scaling() {
+        let turn = |sensitivity: Option<f32>, seconds: f32| {
+            let mut app = App::new();
+            app.add_message::<MouseMotion>()
+                .insert_resource(CursorCapture::Captured)
+                .insert_resource(MoveMode::Walk)
+                .insert_resource(SprintLatch(false))
+                .insert_resource(LookIntent::default())
+                .insert_resource(Time::<()>::default());
+            if let Some(mouse_sensitivity) = sensitivity {
+                app.insert_resource(crate::settings::RenderingSettings {
+                    mouse_sensitivity,
+                    ..default()
+                });
+            }
+            app.world_mut()
+                .resource_mut::<Time<()>>()
+                .advance_by(std::time::Duration::from_secs_f32(seconds));
+            app.world_mut().write_message(MouseMotion {
+                delta: Vec2::new(100.0, 200.0),
+            });
+            app.world_mut().run_system_once(look_input_system).unwrap();
+            let intent = app.world().resource::<LookIntent>();
+            Vec2::new(intent.yaw, intent.pitch)
+        };
+        let baseline = turn(Some(1.0), 1.0 / 240.0);
+        assert_eq!(baseline, turn(Some(1.0), 1.0 / 20.0));
+        assert_eq!(baseline, turn(None, 1.0 / 60.0));
+        let double = turn(Some(2.0), 1.0 / 60.0);
+        assert!((double.x + 0.157_079_64).abs() < 1.0e-7);
+        assert!((double.y + 0.425).abs() < 1.0e-7);
+        assert!((turn(Some(0.8), 1.0 / 60.0) - baseline * 0.8).length() < 1.0e-7);
+
+        let mut app = App::new();
+        app.add_message::<MouseMotion>()
+            .insert_resource(CursorCapture::Captured)
+            .insert_resource(MoveMode::Walk)
+            .insert_resource(SprintLatch(false))
+            .insert_resource(LookIntent::default())
+            .insert_resource(crate::settings::RenderingSettings::default())
+            .add_systems(Update, look_input_system);
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::new(100.0, 200.0),
+        });
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .mouse_sensitivity = 2.0;
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::new(100.0, 200.0),
+        });
+        app.update();
+        let intent = app.world().resource::<LookIntent>();
+        assert!((Vec2::new(intent.yaw, intent.pitch) - baseline * 3.0).length() < 1.0e-7);
+        app.insert_resource(CursorCapture::Released);
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::splat(100.0),
+        });
+        app.update();
+        let stopped = app.world().resource::<LookIntent>();
+        assert!((Vec2::new(stopped.yaw, stopped.pitch) - baseline * 3.0).length() < 1.0e-7);
     }
 
     #[test]
@@ -6149,9 +7371,17 @@ mod teleport_tests {
             .query_filtered::<&mut WalkState, With<PlayerBody>>();
         {
             let mut state = query.single_mut(app.world_mut()).unwrap();
-            state.vertical_velocity = -900.0;
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &MovementTuning::default(),
+                1.0,
+                ResolvedWalk {
+                    y: 500.0,
+                    grounded: false,
+                },
+            );
             state.horizontal_velocity = Vec3::new(300.0, 0.0, 0.0);
-            state.grounded = true;
         }
         let target = Vec3::new(40_000.0, 900.0, -2_000.0);
         app.world_mut().write_message(TeleportPlayer {
@@ -6161,9 +7391,9 @@ mod teleport_tests {
         });
         app.update();
         let state = *query.single(app.world()).unwrap();
-        assert_eq!(state.vertical_velocity, 0.0);
+        assert_eq!(state.vertical_velocity(), 0.0);
         assert_eq!(state.horizontal_velocity, Vec3::ZERO);
-        assert!(!state.grounded);
+        assert!(!state.grounded());
         let mut body = app
             .world_mut()
             .query_filtered::<&Transform, With<PlayerBody>>();

@@ -34,6 +34,23 @@ A PR that touches several areas gets each of them.
 | `needs reconversion` | merging changes the converted output (a converter or database schema bump); players must run a full conversion again (times in [requirements.md](../specs/meta/requirements.md)) |
 | `behaviour change` | something that used to work one way now works another way; the PR's "For reviewers" says what |
 
+## Milestone
+
+| Label | Use |
+|---|---|
+| `needs milestone` | an open issue or pull request with no milestone; a maintainer assigns one ([workflow.md](workflow.md#milestones)) |
+
+The [milestone workflow](../../.github/workflows/milestone.yml) adds this label, comments once with how to fix it, and removes the label when a milestone is set. It creates the label if it is missing.
+
+## Size (PRs)
+
+| Label | Use |
+|---|---|
+| `size: L` | more than 2,000 changed hand-written lines; consider splitting ([workflow.md](workflow.md#splitting-a-large-pull-request)) |
+| `size: XL` | more than 5,000 changed hand-written lines; split before review |
+
+The [PR size workflow](../../.github/workflows/pr_size.yml) sets one of these labels, removes it when the pull request shrinks, and posts the split guidance once. Test and generated files do not count; the full exclusion list is in [scripts/pr_size.py](../../scripts/pr_size.py). The workflow token can label a pull request but cannot create repository labels, so a maintainer creates these two once from [`.github/labels.yml`](../../.github/labels.yml).
+
 ## Status (PRs)
 
 | Label | Use |

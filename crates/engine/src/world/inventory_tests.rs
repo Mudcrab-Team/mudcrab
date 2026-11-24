@@ -2,7 +2,7 @@
 use super::*;
 use converter::{config::RecordReader, esm::inhouse};
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command};
+use std::{collections::HashMap, fs, path::Path, process::Command};
 
 fn schema(connection: &Connection) -> Value {
     let objects = connection
@@ -184,6 +184,8 @@ fn world_data_inventory_extraction() {
         variants.push(json!({"id": format!("{name}-current"), "schema": name,
             "changes": [], "result": query_result(connection)}));
     }
+    let legacy_schema = schema(&legacy);
+    converter::esm::exporter::export_to_db(&legacy, &HashMap::new()).unwrap();
     let source_head = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(&root)
@@ -198,13 +200,20 @@ fn world_data_inventory_extraction() {
         "cell_cache_version": shared::CELL_CACHE_VERSION,
         "rusqlite_version": rusqlite::version(),
         "reader_identities": {"legacy": inhouse::reader_identity(RecordReader::Legacy), "inhouse": reader},
-        "schemas": {"create_tables": schema(&base), "legacy": schema(&legacy), "inhouse": schema(&published)},
+        "schemas": {"create_tables": schema(&base), "legacy": legacy_schema,
+            "inhouse": schema(&published), "subset": schema(&legacy)},
         "selector_denominator": 64, "variants": variants});
     let input = temporary.path().join("extraction.json");
     fs::write(&input, serde_json::to_vec_pretty(&extraction).unwrap()).unwrap();
     let output = std::env::var_os("WORLD_DATA_INVENTORY_OUTPUT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("report"));
+    // Keep the extraction even when the check below fails. A reviewer needs it to run
+    // `inventory.py --review-sources --extraction` for a new table or column.
+    if std::env::var_os("WORLD_DATA_INVENTORY_OUTPUT").is_some() {
+        fs::create_dir_all(&output).unwrap();
+        fs::copy(&input, output.join("extraction.json")).unwrap();
+    }
     let result = Command::new(python)
         .arg(root.join("tools/world_data_inventory/inventory.py"))
         .args(["--extraction"])
@@ -220,7 +229,4 @@ fn world_data_inventory_extraction() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
-    if std::env::var_os("WORLD_DATA_INVENTORY_OUTPUT").is_some() {
-        fs::copy(input, output.join("extraction.json")).unwrap();
-    }
 }

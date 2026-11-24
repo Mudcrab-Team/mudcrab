@@ -166,9 +166,10 @@ pub(crate) const RACE_ANIMATION_SOURCES_SQL: &str =
     race_id INTEGER NOT NULL, sex TEXT NOT NULL, skeleton_nif TEXT, project_hkx TEXT,
     PRIMARY KEY (race_id, sex));";
 
+/// Replaces the runtime rows with the supplied readable RACE authoring.
 pub(crate) fn replace_race_projection(
     connection: &rusqlite::Connection,
-    rows: Vec<(u32, RaceAuthoring)>,
+    rows: impl IntoIterator<Item = (u32, RaceAuthoring)>,
 ) -> rusqlite::Result<()> {
     connection.execute_batch(RACE_ANIMATION_SOURCES_SQL)?;
     connection.execute_batch("DELETE FROM race_animation_sources;")?;

@@ -1033,6 +1033,8 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "worldspaces",
             "cells",
             "references",
+            "large_reference_omissions",
+            "large_references",
             "exterior_spatial",
             "land",
             "statics",
@@ -1043,6 +1045,7 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "actor_model_parts",
             "movement_types",
             "race_movement_links",
+            "default_objects",
             "race_animation_sources",
             "movement_game_settings",
             "waters",
@@ -1055,9 +1058,15 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "script_property_values",
             "room_bounds",
             "room_portals",
+            "room_occluders",
+            "room_occluder_links",
             "room_links",
+            "room_reference_rules",
+            "room_model_bounds",
+            "room_graph_cells",
             "reference_rooms",
             "room_graph_stats",
+            "room_link_anomalies",
             "projection_omission_stats",
             "projection_omission_samples",
             "cell_environment",
@@ -1075,6 +1084,9 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "reference_linked_refs",
             "reference_activate_parents",
             "reference_details",
+            "reference_light_data",
+            "reference_authored_targets",
+            "reference_authored_changes",
             "door_links",
             "emittance",
         ];
@@ -1199,8 +1211,19 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             .map(|value| value.as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
         assert!(preserved.is_disjoint(&deferred_manifest));
+        assert!(preserved.contains("subset_nonplacement_deletions"));
+        assert_eq!(
+            archive_tables["subset_nonplacement_deletions"],
+            vec![vec![MoveSqlCell::Integer(4)]],
+        );
         // R6 creates add-on provenance even when empty; archive scope must classify it.
         assert!(preserved.contains("inhouse_schema_addons"));
+        assert!(preserved.contains("subset_nonplacement_deletions"));
+        assert_eq!(
+            archive_tables["subset_nonplacement_deletions"],
+            vec![vec![MoveSqlCell::Integer(4)]],
+            "archive retains the deleted LTEX identity"
+        );
         assert!(archive_tables["inhouse_schema_addons"].is_empty());
         assert_eq!(deferred_manifest, deferred.into_iter().collect());
         for table in archive_tables.keys() {

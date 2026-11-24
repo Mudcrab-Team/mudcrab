@@ -1,0 +1,11 @@
+# Retail grass light. RF-GRASS-004: no brightness, saturation or strength multiplier.
+# RF-GRASS-005: shadow floor = fShadowClampValue 0.3. Overrides can be edited while running.
+brightness = 1.0
+sun_angle_weight = 1.0
+sun_strength = 1.0
+shadow_strength = 1.0
+shadow_floor = 0.3
+ambient_strength = 1.0
+saturation = 1.0
+vclr_tint_strength = 1.0
+color_range_strength = 1.0

@@ -12,7 +12,7 @@
 //! code turned into a comment, or re-wrapped by `rustfmt`, is judged by what it really does. Marker
 //! checks read the raw text. The morph shader bounds have their own test in `vendored_morph_shader`.
 
-use crate::bevy_source::required_source;
+use crate::bevy_source::{read_source, required_source};
 use std::path::{Path, PathBuf};
 
 const PBR_MORPH: &str = "src/render/morph.rs";
@@ -24,6 +24,7 @@ const RENDER_PREPROCESSING: &str = "src/batching/gpu_preprocessing.rs";
 const MARKER_26504: &str = "mudcrab: bevyengine/bevy#26504";
 const MARKER_26095: &str = "mudcrab: bevyengine/bevy#26095";
 const MARKER_26588: &str = "mudcrab: bevyengine/bevy#26588";
+const MARKER_POWER_RAMP: &str = "mudcrab: ";
 
 fn vendor(crate_name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -191,6 +192,27 @@ fn check_patches(pbr: &Path, render: &Path) {
         "{PBR_CLUSTER} has the write-only metadata_staging_pending_buffers list again \
          (bevy#26588): GPU clustering leaks a buffer handle per view per frame"
     );
+
+    // Mudcrab's own fog falloff, not a Bevy change (#891): the weather's exterior fog is drawn by
+    // `FogFalloff::PowerRamp`. Without it the engine's fog would not build, or would draw nothing.
+    for (file, needed) in [
+        ("src/fog.rs", "PowerRamp {"),
+        ("src/render/fog.rs", "GPU_FOG_MODE_POWER_RAMP"),
+        ("src/render/mesh_view_types.wgsl", "FOG_MODE_POWER_RAMP"),
+        ("src/render/fog.wgsl", "fn power_ramp_fog("),
+        ("src/render/pbr_functions.wgsl", "power_ramp_fog("),
+    ] {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(needed),
+            "{file} lost the power ramp fog (`{needed}` or its `{MARKER_POWER_RAMP}` marker)"
+        );
+    }
+    assert!(
+        code(&required_source(pbr, "src/render/fog.wgsl"))
+            .contains("min(exp2(log2(s) * power), far_color.a)"),
+        "the power ramp fog shader no longer computes min(s^power, max)"
+    );
 }
 
 #[test]
@@ -257,21 +279,38 @@ fn the_vendored_bevy_fixes_are_present() {
     check_patches(&vendor("bevy_pbr"), &vendor("bevy_render"));
 }
 
-/// A copy of the vendored files the checks read, with `edit` applied to `target`.
+/// A copy of the vendored files the checks read, with `edit` applied to `target`. The files are
+/// written with LF endings.
 fn vendored_copy(target: &str, edit: impl Fn(String) -> String) -> tempfile::TempDir {
+    vendored_copy_with_endings(target, edit, "\n")
+}
+
+/// Like [`vendored_copy`], but written with `ending` as the line ending, as a checkout made with
+/// `core.autocrlf` would. `edit` always sees LF text: the sources are read through
+/// [`read_source`], so it does not depend on the checkout that runs the test.
+fn vendored_copy_with_endings(
+    target: &str,
+    edit: impl Fn(String) -> String,
+    ending: &str,
+) -> tempfile::TempDir {
     let copy = tempfile::tempdir().unwrap();
     for (crate_name, relative) in [
         ("bevy_pbr", PBR_MORPH),
         ("bevy_pbr", PBR_MESH),
         ("bevy_pbr", PBR_PREPROCESS),
         ("bevy_pbr", PBR_CLUSTER),
+        ("bevy_pbr", "src/fog.rs"),
+        ("bevy_pbr", "src/render/fog.rs"),
+        ("bevy_pbr", "src/render/mesh_view_types.wgsl"),
+        ("bevy_pbr", "src/render/fog.wgsl"),
+        ("bevy_pbr", "src/render/pbr_functions.wgsl"),
         ("bevy_render", RENDER_PREPROCESSING),
     ] {
         let destination = copy.path().join(crate_name).join(relative);
         std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
-        let text = std::fs::read_to_string(vendor(crate_name).join(relative)).unwrap();
+        let text = read_source(&vendor(crate_name).join(relative)).unwrap();
         let text = if relative == target { edit(text) } else { text };
-        std::fs::write(destination, text).unwrap();
+        std::fs::write(destination, text.replace('\n', ending)).unwrap();
     }
     copy
 }
@@ -281,6 +320,22 @@ fn check_copy(copy: &tempfile::TempDir) {
         &copy.path().join("bevy_pbr"),
         &copy.path().join("bevy_render"),
     );
+}
+
+#[test]
+#[should_panic(expected = "lost the power ramp fog")]
+fn dropping_the_power_ramp_shader_branch_fails() {
+    check_copy(&vendored_copy("src/render/pbr_functions.wgsl", |text| {
+        text.replace("power_ramp_fog(", "linear_fog(")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "no longer computes")]
+fn changing_the_power_ramp_formula_fails() {
+    check_copy(&vendored_copy("src/render/fog.wgsl", |text| {
+        text.replace("exp2(log2(s) * power)", "s")
+    }));
 }
 
 #[test]
@@ -413,4 +468,75 @@ fn commenting_out_a_pending_record_fails() {
             "            // pending_descriptors.insert(morph_target_main_entity);\n            continue;",
         )
     }));
+}
+
+/// The message of the panic that `run` raises, or `None` when it does not panic.
+fn panic_message(run: impl FnOnce()) -> Option<String> {
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err()?;
+    Some(
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_owned())
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// Intact and mutated sources give the same verdicts with LF and with CRLF endings on disk (a
+/// Windows checkout with `core.autocrlf`). The mutations are LF strings: they only change a CRLF
+/// checkout because the sources are normalised before the guards and the fixtures read them.
+#[test]
+fn every_line_ending_gives_the_same_verdicts() {
+    type Edit = fn(String) -> String;
+    let drop_loop: Edit = |text| {
+        text.replace(
+            "for view_phase_buffers in bin_unpacking_buffers.view_phase_buffers.values_mut() {",
+            "for view_phase_buffers in std::iter::empty::<&mut ViewPhaseBinUnpackingBuffers>() {",
+        )
+    };
+    let restore_continue: Edit =
+        |text| text.replace("pending_descriptors.insert(morph_target_main_entity);", "");
+    let drop_bind_group_clear: Edit = |text| text.replace("bin_unpacking_bind_groups.clear();", "");
+    for ending in ["\n", "\r\n"] {
+        let intact = vendored_copy_with_endings("", |text| text, ending);
+        let on_disk =
+            std::fs::read_to_string(intact.path().join("bevy_render").join(RENDER_PREPROCESSING))
+                .unwrap();
+        assert_eq!(
+            on_disk.contains("\r\n"),
+            ending == "\r\n",
+            "the copy really has {ending:?} endings"
+        );
+        check_copy(&intact);
+
+        for (file, edit, expected) in [
+            (
+                RENDER_PREPROCESSING,
+                drop_loop,
+                "lost `for view_phase_buffers in",
+            ),
+            (
+                PBR_MORPH,
+                restore_continue,
+                "must record a pending entity in both places",
+            ),
+            (
+                PBR_PREPROCESS,
+                drop_bind_group_clear,
+                "no longer clears the bin-unpacking",
+            ),
+        ] {
+            let mutated = vendored_copy_with_endings(file, edit, ending);
+            let message = panic_message(|| check_copy(&mutated))
+                .unwrap_or_else(|| panic!("{file} mutated: the check passed with {ending:?}"));
+            assert!(
+                message.contains(expected),
+                "{file} with {ending:?}: {message}"
+            );
+        }
+    }
 }

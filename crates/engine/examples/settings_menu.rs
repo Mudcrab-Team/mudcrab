@@ -42,7 +42,10 @@ fn main() {
     }
     App::new()
         .add_plugins(DefaultPlugins)
-        .insert_resource(EngineConfig::default())
+        .insert_resource(EngineConfig {
+            grass: false,
+            ..Default::default()
+        })
         .insert_resource(RenderingSettings::default())
         .init_resource::<ProfilingState>()
         .init_resource::<engine::color_pipeline::SceneGradeOverrides>()

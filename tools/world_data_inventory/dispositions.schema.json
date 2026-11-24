@@ -171,32 +171,9 @@
       ],
       "type": "object"
     },
-    "store": {
-      "additionalProperties": false,
-      "properties": {
-        "evidence": {
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "type": "array"
-        },
-        "owner": {
-          "type": "string"
-        },
-        "reason": {
-          "type": "string"
-        },
-        "states": {
-          "$ref": "#/$defs/states"
-        }
-      },
-      "required": [
-        "owner",
-        "reason",
-        "states",
-        "evidence"
-      ],
-      "type": "object"
+    "commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -245,30 +222,11 @@
         "type": "string"
       },
       "type": "array"
-    },
-    "reviewed_at_commit": {
-      "pattern": "^[0-9a-f]{40}$",
-      "type": "string"
-    },
-    "stores": {
-      "additionalProperties": {
-        "$ref": "#/$defs/store"
-      },
-      "type": "object"
-    },
-    "tables": {
-      "additionalProperties": {
-        "$ref": "#/$defs/policy"
-      },
-      "type": "object"
     }
   },
   "required": [
     "format_version",
-    "reviewed_at_commit",
     "fields",
-    "tables",
-    "stores",
     "blob_default",
     "legacy_shapes",
     "limitations"

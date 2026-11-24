@@ -1,0 +1,114 @@
+{
+  "base_commit": "ee686282126e369af0b68a8282db80dc7e10dd6a",
+  "logs": {
+    "clippy.log.gz": {
+      "compressed_sha256": "db524fe81d625498ae61989e81c46e03a3f49bfb739d96c7ea60d3a826f52dd7",
+      "uncompressed_sha256": "2db5abff5da9aadde13dc82acded0c6c0609d429d74fd4f7002f3271d69afb67"
+    },
+    "dependency-audit.log.gz": {
+      "compressed_sha256": "64f4139b4d30ac3715d443c427a464138f7df359d4eaad107017f564d032c0f0",
+      "uncompressed_sha256": "786aaf81ea56c0719d2216829ee74c2c29bdf7d7db6dec0e83f032249f75081f"
+    },
+    "doctests.log.gz": {
+      "compressed_sha256": "4f9b573d38ed10be8fff60aaeb7caf664cdfbb559bd76899123288374586b736",
+      "uncompressed_sha256": "10921c3cd9f456576a99b2570d813bfb850507d98751ce3efdbc1ca8877cb74f"
+    },
+    "format.log.gz": {
+      "compressed_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gpu-atlas.log.gz": {
+      "compressed_sha256": "c675e12782e4cae8c4c55cd3ecb5a273c98f679e9b75edabb5640dc736460713",
+      "uncompressed_sha256": "3bc3f990b2f4be21aa6f5ec8016d068af70567d8e0cdd03bb9b78d9a8e6bfa53"
+    },
+    "gpu-no-adapter.log.gz": {
+      "compressed_sha256": "8b92b1e2dc843d8a641cb99b44edfb7a09c4573d58dec4a5f44ce7bc7f4ee4e5",
+      "uncompressed_sha256": "956b3290ee9656d1df81ab2231af0d8676b5d29eca9fe1f9f2f503c7bfa2e8d9"
+    },
+    "gpu-texture.log.gz": {
+      "compressed_sha256": "c877532e6b962a0fb5b0648064526edd1c2ddc23488200e2e0a63d8694b720f3",
+      "uncompressed_sha256": "0e0c71260af0e4bbae5e2917c5ad0297add9ea996c1f318f2249ab9b4af50a34"
+    },
+    "jump-tests.log.gz": {
+      "compressed_sha256": "2f0e7f453bfb408f8b90ed8978ec08c16104c16bb6ca34ef7c34fb1362f09222",
+      "uncompressed_sha256": "c0fc76513f031ebae61c2a127a01130c1eadcfa7bcda75d089d595f6b883627d"
+    },
+    "lod-helpers.log.gz": {
+      "compressed_sha256": "eb2c5df9b8c5bff0dad87e2e468dbb64f5c75f5fd408b44961fc19f065f6c698",
+      "uncompressed_sha256": "7ac4de86042bbdbc796b1cad68576f7560080a0c0ae16f1d5f8c69cef8ac3667"
+    },
+    "native-v3-build.log.gz": {
+      "compressed_sha256": "2c13110757eafb6e7bd02d136d3446dc33ea93ebdb043fd2d7a8e883af4a4c75",
+      "uncompressed_sha256": "eebe0bb71697b622a09b26f17a0dd08eec76cb8bca291bfa7e8051f30f0b53a2"
+    },
+    "native-v4-build.log.gz": {
+      "compressed_sha256": "9eee5bbc99b804d49a4f5f9b95b21a9a9f8727bc3582601d629a0557345dcb47",
+      "uncompressed_sha256": "5718ddf7036815a3a63727618d51cad41f537562048a7d8c967a2adf5d16ddd4"
+    },
+    "nextest.log.gz": {
+      "compressed_sha256": "024aa7cd029c7640efbb130d10cc340a22a98e7d18148e80649fc2a3ff4b8598",
+      "uncompressed_sha256": "f9a80c6f4fbeb751d76f94c28c58e7f0bcc1b0016519ad5710b6f2438b368bcc"
+    },
+    "production-replay.log.gz": {
+      "compressed_sha256": "8648653882995171978e2aba73435016cdb34ba24bf8884ec36e212d6fe357c5",
+      "uncompressed_sha256": "348fdc395002db9d2d14491d5c3651654edc5382c87ff77d58926af52a195a45"
+    },
+    "python-capture.log.gz": {
+      "compressed_sha256": "f6f91bf0427fa70a9e0443a8da24d9b31bfc19a41e25bc437829a817f141dcb0",
+      "uncompressed_sha256": "0e70758ec14dcafc6b5014fa59c3effdbb791f110536bfa1e3283e8da5dd7cb4"
+    },
+    "python-scripts.log.gz": {
+      "compressed_sha256": "1cc7d57a8fa2eae5fe6d5fafe58f55e96ebe8a7fbe50c2050588db26e0970ee6",
+      "uncompressed_sha256": "9ab911395ca82077788d51d15fd8b0be9ef2e7f0e1c9bcdce5ccbd502b9f8ae4"
+    },
+    "record-comparison.log.gz": {
+      "compressed_sha256": "64baba4f28c6a9aef715b44532fea721c145cc0aee39709f38964297635c9f9a",
+      "uncompressed_sha256": "b1a5ac97559d4fd97011491d341ad6ee49b25771d65e629d9514b52a5ed5ad0c"
+    },
+    "schema-python311.log.gz": {
+      "compressed_sha256": "8236c4373b47de0d41c4c5104203ee89efc7268eaa5b1bdc4e9a4a8f43a7b932",
+      "uncompressed_sha256": "6712f8d44c1189adff00aff312183a218efdae76a50e41b95e74ec5a82ff33d3"
+    }
+  },
+  "recorded_utc": "2026-11-06T14:38:37.533588+00:00",
+  "software_vulkan": {
+    "driver_sha256": "a270dc1619a8f43494b65f795e5cb4dfdbefde9778691c1f69e13831423da635",
+    "package": "CachyOS vulkan-swrast 3:26.2.6-1 x86_64_v3",
+    "package_sha256": "119c09e1052891fc45eb6e53876457329558b147e476839b8790a7d05cae23ef",
+    "signature": "verified with pacman-key; CachyOS key 882DCFE48E2051D48E2562ABF3B607488DB35A47"
+  },
+  "source_files": {
+    ".github/workflows/run_tests.yml": "dbd93e4a75eee887dfb48bd36f6966b703512f1e969544c8f11ca56b51c279d7",
+    "crates/converter/tests/fixture_player_movement.rs": "e7e6829349eab7001221bed0e8fad58114f67a4e137993e892c2cc8057c4494d",
+    "crates/converter/tests/mo2_profile.rs": "59bae943adddfdd57931f884109df4cb45008b8e8fd26c2d20ef95fdb1e8923e",
+    "crates/converter/tests/plugin_discovery.rs": "e5f4317067f8d147d4bcc13da78dc93049b2e967afb7ba82bd280e2b4ce0b9a6",
+    "crates/converter/tests/plugins_txt_recovery.rs": "d647be9b938ac5119ac34fe22b7c71801a655730389b207b645c75c29c38c52a",
+    "crates/dummy-content/src/esm.rs": "e24941f5ffe1dd4570dcefd072322b481b7ffafc8cecee46a49852a5bec1c940",
+    "crates/engine/src/config.rs": "1fbfb988ab6b93529689ab0b8e0594b77d6348f625487981c9164fc19b626384",
+    "crates/engine/src/console.rs": "9fcf5566200ca473eb2c70c814dc9cb230302e67a960038caae4736ed828a44b",
+    "crates/engine/src/physics.rs": "0f6dd612615b8762207eac12ab4c45dce7ea6d9ee49567b51aca747fa53f7ec9",
+    "crates/engine/src/physics/jump_replay_tests.rs": "f2c6497f95315cb5dd950d634e1207c366f74ded6b5df3ab941353417a3adcfc",
+    "crates/engine/src/physics/stair_tests.rs": "15d017a0a01605e8f5cb0e177ac2d398f62a8c028e0baa8dd5c11e91d5a9d21e",
+    "crates/engine/src/physics/vertical.rs": "e19685bd893ae7588cc55ef69c4f9cb73508eaa872c2f5028c8dc0ad34fcf363",
+    "crates/engine/src/settings_ui.rs": "53bc2680d3fa22400df11263af9643f172f51fb7edca3ae4098665b6f7801c09",
+    "docs/research/evidence/skyrim-physics-221/implementation/recheck.py": "3b648d8e8dd35e746c29e94af40e13ba56a587fcce1a1547f04f9e725d8580e7",
+    "scripts/analyze_skyrim_jump_inputs.py": "be776a57dcf39a6d367277e94bb083e40086a98faae13ed38805c12c772ec183",
+    "scripts/capture_skyrim_jump.py": "f81276ed37f96df37bc4beeb09d34a03c5c3f8b327abe5227e73ca69f00c666a",
+    "scripts/capture_skyrim_jump_inputs.py": "6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad",
+    "scripts/check_skyrim_jump_runtime.py": "54e8118c93ff1b0d44c37f53567ea461ae9535eb38944b5ec1f7d95190acdaa5",
+    "scripts/evaluate_skyrim_jump.py": "3557fb6c4f0cc50137fb0baeba54a643e2b0fe42cd81933aef4315ff5f25f24d",
+    "scripts/inspect_skyrim_jump_inputs.py": "4a6c6a88af4f8b403a5827abf0a08b8d2a07c2cae0b1945933a8651ffa0c801f",
+    "scripts/inspect_skyrim_physics.py": "3296af04dd6653396d2a6e4f1aed7194c2f46fb138e9a278a308b99c0965567c",
+    "scripts/record_skyrim_motion.py": "a7507cab1867a64f29a687fa47311701d383d51968604e68367a35b3241db9a5",
+    "scripts/report_skyrim_jump.py": "2eadc89564d5cff4af4029fa4b5e3914093491275640db4791bae4ba976f7c50",
+    "scripts/report_skyrim_jump_runtime.py": "26a49cca8a220d09b74a36518a21b4ac3b39fd401ed7656eebe03a00ed8886f3",
+    "scripts/test_analyze_skyrim_jump_inputs.py": "8d2b7fe7e4d1794c03ccd0263b0bcf8439ed00fcba986b73865bd2d3434ee7c9",
+    "scripts/test_evaluate_skyrim_jump.py": "f4af9ac2a390348d5c8041ada61d29346cad491b2670df1399f92ef2fd61ce65",
+    "scripts/test_record_skyrim_motion.py": "8fcf43236b3ec3ebcf2cd48d308cd1f81e1d56b628524aeca001ed01d5206726",
+    "scripts/verify_skyrim_jump_inputs.py": "66ccf90ce13ba1ef21f9baf8d078a90fff6a02f5cb0fa31cae74c4d85321af46",
+    "tools/skyrim-recorder/build.py": "cd4839a8ad00e0aa1536730ac0d96b6127850098f4b431241318af855954282c",
+    "tools/skyrim-recorder/input.c": "115631931125dca681f185bb56790ed426102670ccc4c911b3b0ebe30bd5ac13",
+    "tools/skyrim-recorder/jump_inputs.h": "6256b7fb8f4c4e452c80b1ff9b477cf8b6606440273e98025b721507e30216d8",
+    "tools/skyrim-recorder/probe.cpp": "eb88789313b04946958efba6d50a89773fc0ff5694d10f4d7da5652e2603f304"
+  }
+}

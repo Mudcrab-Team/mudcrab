@@ -10,6 +10,8 @@
 //! `sample_diffuse` / `sample_normal` helpers in `terrain_merged.wgsl`: the per-vertex ids, the
 //! lookup table and the blend maths do not change.
 
+use crate::streaming::near_terrain_blend::{NearTerrainBlend, NearTerrainBlendSettings};
+
 use super::{
     classes::{MAX_CLASSES_PER_USAGE, TerrainClassKey},
     mesh::{
@@ -58,6 +60,14 @@ impl Default for MergedTerrainSettings {
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(TerrainClassKey)]
 pub struct MergedTerrainExtension {
+    #[uniform(121)]
+    seam_settings: NearTerrainBlendSettings,
+    #[texture(122, visibility(fragment))]
+    #[sampler(123, visibility(fragment))]
+    seam_overlay: Option<Handle<Image>>,
+    #[texture(124, visibility(fragment))]
+    #[sampler(125, visibility(fragment))]
+    seam_noise: Option<Handle<Image>>,
     // Diffuse classes. The sampler is tied to slot 0, which a valid table always fills; every
     // image carries the same repeating sampler (`terrain_layer_sampler`).
     #[texture(100, dimension = "2d_array", visibility(fragment))]
@@ -106,6 +116,29 @@ pub struct MergedTerrainExtension {
 }
 
 impl MergedTerrainExtension {
+    pub(crate) fn blend_differs(&self, blend: Option<&NearTerrainBlend>) -> bool {
+        match blend {
+            Some((settings, overlay, noise)) => {
+                self.seam_settings != *settings
+                    || self.seam_overlay.as_ref() != Some(overlay)
+                    || self.seam_noise.as_ref() != Some(noise)
+            }
+            None => self.seam_overlay.is_some(),
+        }
+    }
+
+    pub(crate) fn set_blend(&mut self, blend: Option<NearTerrainBlend>) {
+        if let Some((settings, overlay, noise)) = blend {
+            self.seam_settings = settings;
+            self.seam_overlay = Some(overlay);
+            self.seam_noise = Some(noise);
+        } else {
+            self.seam_settings = NearTerrainBlendSettings::default();
+            self.seam_overlay = None;
+            self.seam_noise = None;
+        }
+    }
+
     /// The material of a table whose classes are `diffuse` and `normal` (at most
     /// [`MAX_CLASSES_PER_USAGE`] each, in slot order) and whose lookup table is `entries`. More
     /// classes than the material has slots is an error, not a panic: the counts come from a file.
@@ -123,6 +156,9 @@ impl MergedTerrainExtension {
         }
         let slot = |handles: &[Handle<Image>], index: usize| handles.get(index).cloned();
         Ok(Self {
+            seam_settings: NearTerrainBlendSettings::default(),
+            seam_overlay: None,
+            seam_noise: None,
             diffuse_0: slot(diffuse, 0),
             diffuse_1: slot(diffuse, 1),
             diffuse_2: slot(diffuse, 2),

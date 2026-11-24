@@ -3,10 +3,12 @@
 
 use converter::mesh::{MeshConverter, SkeletonResolution, find_skeleton};
 use dummy_content::nif::{
-    BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinInstanceKind, SkinNormals,
-    StaticShape, legacy_dynamic_skinned_shape, legacy_dynamic_skinned_shape_with_normals,
-    legacy_lod_skinned_shape, legacy_nested_skinned_shape, legacy_skinned_shape,
-    legacy_skinned_shape_with_normals, static_shape, static_shape_with_bodies,
+    BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinController, SkinControllerTarget,
+    SkinInstanceKind, SkinNormals, StaticShape, legacy_dynamic_skinned_shape,
+    legacy_dynamic_skinned_shape_with_normals, legacy_lod_skinned_shape,
+    legacy_nested_skinned_shape, legacy_skinned_shape, legacy_skinned_shape_with_controller,
+    legacy_skinned_shape_with_normals, legacy_skinned_shape_with_transform_track,
+    legacy_skinned_shape_with_unattached_body, static_shape, static_shape_with_bodies,
 };
 use serde_json::Value;
 use std::{
@@ -54,6 +56,19 @@ fn spec<'a>(
         weights,
         with_geometry,
         joint_override,
+    }
+}
+
+fn fixed_pose_skin() -> LegacySkin<'static> {
+    LegacySkin {
+        bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+        ..spec(
+            SkinInstanceKind::Plain,
+            &SHUFFLED_PALETTE,
+            &[[0.75, 0.25, 0.0, 0.0]; 4],
+            true,
+            None,
+        )
     }
 }
 
@@ -460,9 +475,157 @@ fn legacy_bsdismember_skin_exports_skin() {
 
     let glb = read_glb(&glb_path);
     assert_skinned_primitives(&glb);
+    assert!(
+        glb.json["extras"]["mudcrabRoomSphere"].is_null(),
+        "external skeleton pose is not the source model's sphere"
+    );
     for (mesh_index, skin_index) in skinned_meshes(&glb) {
         let joints = glb.json["skins"][skin_index]["joints"].as_array().unwrap();
         assert!(!joints.is_empty(), "mesh {mesh_index} skin has no joints");
+    }
+    let local_path = directory.path().join("local-skin.glb");
+    MeshConverter::convert_nif_to_glb_with_skeleton(&nif_path, &local_path, None).unwrap();
+    let local = read_glb(&local_path);
+    assert_skinned_primitives(&local);
+    assert!(
+        local.json["extras"]["mudcrabRoomSphere"].is_null(),
+        "the non-identity inverse binds deform the mesh past its authored sphere"
+    );
+}
+
+#[test]
+fn truncated_skin_block_is_rejected_during_parsing() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("truncated.nif");
+    let output = input.with_extension("glb");
+    let mut bytes = legacy_skinned_shape(&fixed_pose_skin()).unwrap();
+    let header = parse_header(&bytes).unwrap();
+    let last = header.block_sizes.len() - 1;
+    bytes.truncate(header.block_start(last) + header.block_sizes[last] as usize - 1);
+    fs::write(&input, bytes).unwrap();
+
+    let error = MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap_err();
+    assert!(format!("{error:#}").contains(&format!("NIF block {last} is truncated")));
+    assert!(!output.exists());
+}
+
+#[test]
+fn transform_track_on_a_skin_bone_or_its_ancestor_omits_the_room_sphere() {
+    use dummy_content::nif::SkinTrackTarget;
+    let directory = tempfile::tempdir().unwrap();
+    let mut skin = fixed_pose_skin();
+    skin.name = "Bone0";
+    let convert = |label: &str, target_bone| {
+        let input = directory.path().join(format!("{label}.nif"));
+        let output = input.with_extension("glb");
+        fs::write(
+            &input,
+            legacy_skinned_shape_with_transform_track(&skin, target_bone).unwrap(),
+        )
+        .unwrap();
+        MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
+        let glb = read_glb(&output);
+        assert_skinned_primitives(&glb);
+        glb
+    };
+
+    let root_track = convert("root-track", SkinTrackTarget::Root);
+    assert!(root_track.json["extras"]["mudcrabRoomSphere"].is_object());
+    let bone_track = convert("bone-track", SkinTrackTarget::Bone);
+    assert!(bone_track.json["extras"]["mudcrabRoomSphere"].is_null());
+    let ancestor_track = convert("ancestor-track", SkinTrackTarget::Ancestor);
+    assert!(ancestor_track.json["extras"]["mudcrabRoomSphere"].is_null());
+    assert_eq!(root_track.bin, bone_track.bin);
+    assert_eq!(root_track.bin, ancestor_track.bin);
+}
+
+#[test]
+fn controllers_on_joint_ancestors_omit_the_room_sphere() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("skin.nif");
+    let output = input.with_extension("glb");
+    let skin = fixed_pose_skin();
+
+    for controller in [
+        SkinController::Direct,
+        SkinController::MultiTarget,
+        SkinController::NamedTrack,
+        SkinController::LagBone,
+    ] {
+        for (target, fixed) in [
+            (SkinControllerTarget::Joint, false),
+            (SkinControllerTarget::Ancestor, false),
+            (SkinControllerTarget::Unrelated, true),
+            (SkinControllerTarget::AboveSkinRoot, false),
+            (SkinControllerTarget::WeightedRoot, false),
+        ] {
+            fs::write(
+                &input,
+                legacy_skinned_shape_with_controller(&skin, controller, target).unwrap(),
+            )
+            .unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            let glb = read_glb(&output);
+            assert_skinned_primitives(&glb);
+            assert_eq!(
+                glb.json["extras"]["mudcrabRoomSphere"].is_object(),
+                fixed,
+                "{controller:?} on {target:?}",
+            );
+        }
+    }
+}
+
+#[test]
+fn only_supported_fixed_bodies_allow_a_skin_room_sphere() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("skin.nif");
+    let output = input.with_extension("glb");
+    let skin = fixed_pose_skin();
+    let mut body = dummy_content::nif::fixed_box_body("body");
+
+    for (motion, quality, fixed) in [
+        (7, 0, true),
+        (7, 1, true),
+        (0, 1, false),
+        (255, 1, false),
+        (5, 1, false),
+        (9, 1, false),
+        (7, 8, false),
+        (7, 255, false),
+    ] {
+        body.transform = (motion == 9).then_some(([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
+        body.motion_system = motion;
+        body.quality_type = quality;
+        fs::write(
+            &input,
+            legacy_skinned_shape_with_unattached_body(&skin, &body).unwrap(),
+        )
+        .unwrap();
+        let tag = if body.transform.is_some() {
+            "bhkRigidBodyT"
+        } else {
+            "bhkRigidBody"
+        };
+        assert_eq!(
+            MeshConverter::inspect_nif(&input)
+                .unwrap()
+                .block_types
+                .get(tag),
+            Some(&1)
+        );
+        MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+        let glb = read_glb(&output);
+        assert_skinned_primitives(&glb);
+        let sphere = glb.json["extras"].get("mudcrabRoomSphere");
+        if fixed {
+            assert!(
+                sphere.is_some_and(serde_json::Value::is_object),
+                "motion={motion}, quality={quality}"
+            );
+        } else {
+            assert!(sphere.is_none(), "motion={motion}, quality={quality}");
+        }
     }
 }
 

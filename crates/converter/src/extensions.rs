@@ -49,6 +49,7 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "climate_weathers",
     "climates",
     "conversion_cache",
+    "default_objects",
     "door_links",
     "emittance",
     "exterior_spatial",
@@ -68,6 +69,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "land",
     "landscape_texture_grasses",
     "landscape_textures",
+    "large_reference_omissions",
+    "large_references",
     "lighting_templates",
     "lights",
     "lod",
@@ -90,20 +93,35 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "record_overrides",
     "records",
     "reference_activate_parents",
+    "reference_authored_changes",
+    "reference_authored_targets",
     "reference_details",
+    // #488: authored reference light data (XLIG), a core projection.
+    "reference_light_data",
+    "reference_link_subset_sources",
     "reference_linked_refs",
     "reference_rooms",
     "references",
     "region_weathers",
     "room_bounds",
+    "room_graph_cells",
     "room_graph_stats",
+    "room_link_anomalies",
     "room_links",
+    "room_model_bounds",
+    "room_occluder_links",
+    "room_occluders",
+    "room_placement_edits",
+    "room_placement_layers",
     "room_portals",
+    "room_reference_rules",
     "schema_info",
     "script_properties",
     "script_property_values",
     "scripts",
     "statics",
+    "subset_nonplacement_deletions",
+    "subset_placement_deletions",
     "texture_sets",
     "waters",
     "weather_colors",
@@ -119,11 +137,14 @@ const MAIN_CORE_INDEXES: &[&str] = &[
     "idx_records_cell_id",
     "idx_records_type",
     "idx_reference_activate_parents_parent",
+    "idx_reference_authored_target",
     "idx_reference_linked_refs_target",
     "idx_reference_rooms_room",
     "idx_references_cell",
     "idx_room_bounds_cell",
+    "idx_room_occluders_cell",
     "idx_room_portals_cell",
+    "idx_room_reference_rules_cell",
     "idx_statics_editor_id",
     "record_diagnostics_form",
     "record_diagnostics_source",
@@ -950,15 +971,34 @@ mod tests {
     #[test]
     fn finalized_extensions_cannot_claim_core_tables_or_retired_door_identity() {
         let directory = output_with_tables(&[]);
+        let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
+        let order = crate::esm::load_order::LoadOrder::from_metadata(vec![], vec![]).unwrap();
+        crate::esm::exporter::export_to_db_with_load_order(
+            &connection,
+            &Default::default(),
+            &order,
+        )
+        .unwrap();
+        crate::esm::exporter::export_to_db(&connection, &Default::default()).unwrap();
+        assert!(table_exists(&connection, "subset_placement_deletions").unwrap());
         with_identity(directory.path(), "abc");
         let mut entry = custom_entry(directory.path(), "mudcrab.extra", "extra_table", "extra");
-        for table in ["door_links", "Door_Links", "emittance", "EMITTANCE"] {
+        for table in [
+            "door_links",
+            "Door_Links",
+            "emittance",
+            "EMITTANCE",
+            "reference_authored_targets",
+            "reference_authored_changes",
+            "subset_placement_deletions",
+        ] {
             entry.owns = ExtensionOwns {
                 tables: names(&[table]),
                 ..Default::default()
             };
             entry.sha256 = recompute_hash(directory.path(), &entry).unwrap();
-            assert!(refused(directory.path(), &[entry.clone()]).contains("core-owned"));
+            let error = refused(directory.path(), &[entry.clone()]);
+            assert!(error.contains("core-owned"), "{table}: {error}");
         }
         entry.id = DOOR_LINKS.to_owned();
         entry.owns = ExtensionOwns::default();

@@ -143,6 +143,8 @@ pub struct ValidatedNifMaterial {
     pub shader_block: u32,
     pub texture_set_block: Option<u32>,
     pub alpha_property_block: Option<u32>,
+    #[serde(default)]
+    pub alpha_property: Option<shared::nif_alpha::NifAlphaProperty>,
     pub shader_flags_1: u32,
     pub shader_flags_2: u32,
     pub base_color: [f32; 4],
@@ -574,6 +576,7 @@ fn publish_material(
         serde_json::json!(material.lighting_shader_type);
     output["extras"]["openSkyrim"]["shaderFlags1"] = serde_json::json!(material.shader_flags_1);
     output["extras"]["openSkyrim"]["shaderFlags2"] = serde_json::json!(material.shader_flags_2);
+    output["extras"]["openSkyrim"]["alphaProperty"] = serde_json::json!(material.alpha_property);
     publish_emissive(
         &mut output,
         material,
@@ -961,6 +964,9 @@ fn build_lighting_material(
         shader_block,
         texture_set_block: textures.as_ref().map(|(block, _)| *block),
         alpha_property_block,
+        alpha_property: alpha.map(|(_, property)| {
+            shared::nif_alpha::NifAlphaProperty::from_nif(property.flags.raw(), property.threshold)
+        }),
         shader_flags_1: flags_1,
         shader_flags_2: flags_2,
         base_color: [1.0, 1.0, 1.0, material_alpha],
@@ -1061,6 +1067,9 @@ fn build_effect_material(
         shader_block,
         texture_set_block: None,
         alpha_property_block,
+        alpha_property: alpha.map(|(_, property)| {
+            shared::nif_alpha::NifAlphaProperty::from_nif(property.flags.raw(), property.threshold)
+        }),
         shader_flags_1: flags_1,
         shader_flags_2: flags_2,
         base_color: color,
@@ -1455,6 +1464,7 @@ mod tests {
             shader_block: 4,
             texture_set_block: Some(5),
             alpha_property_block: (mode != NifAlphaMode::Opaque).then_some(6),
+            alpha_property: None,
             shader_flags_1: SLSF1_SPECULAR,
             shader_flags_2: 0,
             base_color: [1.0; 4],
@@ -2314,6 +2324,33 @@ mod tests {
     }
 
     #[test]
+    fn nif_alpha_property_round_trips_through_material_extras() {
+        use shared::nif_alpha::NifAlphaProperty;
+
+        for source in 0u8..=15 {
+            for destination in 0u8..=15 {
+                let mut material = fixture(NifAlphaMode::Cutout, false, false, false);
+                // Include reserved codes so the engine can diagnose them after export.
+                let flags = 0x1201 | (u16::from(source) << 1) | (u16::from(destination) << 5);
+                material.alpha_property = Some(NifAlphaProperty::from_nif(flags, 73));
+                let published = publish_specular_fixture(material);
+                let extras = &published["materials"][0]["extras"]["openSkyrim"]["alphaProperty"];
+                assert_eq!(
+                    serde_json::from_value::<NifAlphaProperty>(extras.clone()).unwrap(),
+                    NifAlphaProperty {
+                        blend_enabled: true,
+                        source_factor: source,
+                        destination_factor: destination,
+                        test_enabled: true,
+                        test_function: 4,
+                        threshold: 73,
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn publishes_core_pbr_alpha_emissive_and_double_sided_contract() {
         let mut material = fixture(NifAlphaMode::Cutout, true, true, false);
         material.base_color = [0.8, 0.7, 0.6, 0.4];
@@ -2474,6 +2511,20 @@ mod tests {
         let primitive = &document["meshes"][0]["primitives"][0];
         assert_eq!(primitive["material"], 0);
         assert_eq!(primitive["extras"]["openSkyrim"]["shapeBlock"], 42);
+        assert_eq!(
+            primitive["extras"]["openSkyrim"]["materialExclusion"],
+            "shape has no shader property"
+        );
+        assert!(shared::model_visibility::explicit_material_exclusion(
+            &primitive["extras"]
+        ));
+        assert!(shared::model_visibility::declared_non_rendering(
+            &document["materials"][0]
+        ));
+        assert!(shared::model_visibility::mask_cannot_render(
+            &document["materials"][0],
+            false
+        ));
         assert_eq!(document["materials"][0]["alphaMode"], "MASK");
         assert_eq!(document["materials"][0]["alphaCutoff"], 1.0);
         assert_eq!(

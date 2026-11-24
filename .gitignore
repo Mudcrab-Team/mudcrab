@@ -44,3 +44,9 @@ mod_cache/
 !.agents/skills/
 # Shared local storage (builds, packs, scratch, evidence)
 /.mudcrab-local/
+
+# World-data inventory: derived in CI and by tools/world_data_inventory/inventory.py. They hold source
+# fingerprints, so committing them makes every unrelated source change conflict. Never commit them.
+/docs/data-inventory/inventory.json
+/docs/data-inventory/report.md
+/tools/world_data_inventory/reviewed-sources.json

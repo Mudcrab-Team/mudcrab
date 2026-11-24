@@ -1,8 +1,8 @@
-//! Records the plugin rows that a runtime projection leaves out (#297).
+//! Records the plugin rows and fields that runtime projections leave out (#297).
 //!
-//! `insert_light` and `insert_emittance_sources` skip a record when its data cannot supply a row.
-//! Each skip is counted here under a stable category, with a bounded sample of FormIDs, and
-//! stored in the optional tables of `docs/specs/converters/db-schema.md` §18. The stored counts
+//! Runtime projections omit unusable rows or fields without inventing authored values.
+//! Each omission is counted here under a stable category, with a bounded sample of FormIDs, and
+//! stored in the optional tables of `docs/specs/converters/db-schema.md` §19. The stored counts
 //! reach `integration-report.json` and the conversion's warnings or notices, including when a
 //! metadata rebuild or a cached database republishes the snapshot.
 
@@ -24,13 +24,42 @@ pub const PROJECTION_OMISSION_TABLES_SQL: &str = r#"
 /// FormIDs kept per category; the count stays exact.
 pub const SAMPLE_LIMIT: usize = 8;
 
-/// Why a projection wrote no row for a record.
+/// Why a runtime projection omitted a record or one of its fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OmissionCategory {
     /// A `LIGH` without `DATA` gets no `lights` row.
     LightMissingData,
     /// A `LIGH` whose `DATA` is too short for the row's required fields gets no `lights` row.
     LightShortData,
+    /// A GRAS with missing or short DATA keeps its readable scalars and identity/model.
+    GrassUnusableData,
+    /// A placed record without a readable DATA transform keeps only its canonical row.
+    ReferenceUnusableData,
+    /// A placed record without a four-byte `NAME` (base form) gets no placement row.
+    ReferenceMissingBase,
+    /// A placed record whose `XSCL` is present but shorter than four bytes gets no placement row.
+    ReferenceShortScale,
+    /// A placed record with no parent cell gets no placement row.
+    ReferenceMissingCell,
+    /// A `WRLD` without an `EDID` gets no worldspace row.
+    WorldspaceMissingEditorId,
+    /// An `ARMA` without a readable `RNAM` gets a NULL armature race in its part rows.
+    ArmatureMissingRace,
+    /// A room marker whose `XRMR` header is present but unreadable gets no `room_bounds` row.
+    RoomMarkerUnreadableFlags,
+    /// A LAND without a `VHGT` height field gets no `land` row.
+    LandMissingHeights,
+    /// A LAND whose `VHGT` is present but empty gets no `land` row. The field is authored and
+    /// unusable, so this is data loss, not an intended omission.
+    LandUnusableHeights,
+    /// A PlaneMarker with unusable geometry gets no occluder row.
+    OccluderUnusableGeometry,
+    /// A PlaneMarker has malformed XORD or an unresolved target in an authored slot.
+    OccluderUnusableLinks,
+    /// An LGTM with missing or unsupported DATA keeps its other fields but no DATA lighting.
+    LightingTemplateUnusableData,
+    /// A RACE whose animation authoring cannot be read has no animation source rows.
+    RaceUnreadableAuthoring,
     /// An `XEMI` target that is not in the load order, or is deleted.
     EmittanceTargetAbsent,
     /// An `XEMI` target `LIGH` without a `DATA` long enough to hold its colour.
@@ -44,10 +73,25 @@ pub enum OmissionCategory {
 }
 
 impl OmissionCategory {
+    /// Stable report category name.
     pub fn name(self) -> &'static str {
         match self {
             Self::LightMissingData => "light_missing_data",
             Self::LightShortData => "light_short_data",
+            Self::GrassUnusableData => "grass_unusable_data",
+            Self::ReferenceUnusableData => "reference_unusable_data",
+            Self::ReferenceMissingBase => "reference_missing_base",
+            Self::ReferenceShortScale => "reference_short_scale",
+            Self::ReferenceMissingCell => "reference_missing_cell",
+            Self::WorldspaceMissingEditorId => "worldspace_missing_editor_id",
+            Self::ArmatureMissingRace => "armature_missing_race",
+            Self::RoomMarkerUnreadableFlags => "room_marker_unreadable_flags",
+            Self::LandMissingHeights => "land_missing_heights",
+            Self::LandUnusableHeights => "land_unusable_heights",
+            Self::OccluderUnusableGeometry => "occluder_unusable_geometry",
+            Self::OccluderUnusableLinks => "occluder_unusable_links",
+            Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
+            Self::RaceUnreadableAuthoring => "race_unreadable_authoring",
             Self::EmittanceTargetAbsent => "emittance_target_absent",
             Self::EmittanceLightUnusableData => "emittance_light_unusable_data",
             Self::EmittanceRegionNoWeather => "emittance_region_no_weather",
@@ -56,11 +100,30 @@ impl OmissionCategory {
         }
     }
 
-    /// A light that loses its `lights` row loses data the runtime would draw. An unresolved
-    /// emittance target keeps the model's own emission, the documented fallback.
+    /// Lost supported rows or fields warn and mark the conversion incomplete. An unresolved
+    /// emittance target keeps the model's own emission, the documented fallback. A record whose
+    /// source has no value to publish is an intended omission (#811): listed, never a failure.
+    ///
+    /// Only an absent field of a record whose other data is sound is intended. A field that is
+    /// present but short or unreadable, a missing placement base or cell, and a missing armature
+    /// race stay data loss until retail evidence shows they are authored absences (unverified).
     pub fn severity(self) -> Severity {
         match self {
-            Self::LightMissingData | Self::LightShortData => Severity::DataLoss,
+            Self::LandMissingHeights | Self::WorldspaceMissingEditorId => Severity::Omitted,
+            Self::LightMissingData
+            | Self::LightShortData
+            | Self::GrassUnusableData
+            | Self::ReferenceUnusableData
+            | Self::ReferenceMissingBase
+            | Self::ReferenceShortScale
+            | Self::ReferenceMissingCell
+            | Self::ArmatureMissingRace
+            | Self::RoomMarkerUnreadableFlags
+            | Self::LandUnusableHeights
+            | Self::OccluderUnusableGeometry
+            | Self::OccluderUnusableLinks
+            | Self::LightingTemplateUnusableData
+            | Self::RaceUnreadableAuthoring => Severity::DataLoss,
             Self::EmittanceTargetAbsent
             | Self::EmittanceLightUnusableData
             | Self::EmittanceRegionNoWeather
@@ -74,10 +137,13 @@ impl OmissionCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
-    /// A supported projection lost a row: the conversion warns and is incomplete.
+    /// A supported projection lost a row or field: the conversion warns and is incomplete.
     DataLoss,
     /// The runtime falls back to authored behaviour: the conversion notes it and stays complete.
     Fallback,
+    /// The source has no usable value, so the record is omitted and none is invented (#811).
+    /// The conversion notes it and stays complete; the manifest lists it.
+    Omitted,
 }
 
 impl Severity {
@@ -85,6 +151,7 @@ impl Severity {
         match self {
             Self::DataLoss => "data_loss",
             Self::Fallback => "fallback",
+            Self::Omitted => "omitted",
         }
     }
 
@@ -92,6 +159,7 @@ impl Severity {
     fn parse(name: &str) -> Self {
         match name {
             "fallback" => Self::Fallback,
+            "omitted" => Self::Omitted,
             _ => Self::DataLoss,
         }
     }

@@ -1,0 +1,62 @@
+{
+  "width": 1400,
+  "height": 1050,
+  "shots": [
+    {
+      "name": "GallowsRock01-outside-in",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4591.9990234375,
+        -3999.9999993006177,
+        160.0
+      ],
+      "yaw": 90.00000250447816,
+      "pitch": -0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass."
+    },
+    {
+      "name": "GallowsRock01-outside-away",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4591.9990234375,
+        -3999.9999993006177,
+        160.0
+      ],
+      "yaw": 270.0000025044782,
+      "pitch": 0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass. Looking away into the back side of the level shell; full-render equality is not an oracle for portal restriction here."
+    },
+    {
+      "name": "GallowsRock01-inside-out",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4623.9990234375,
+        -4000.0000006993823,
+        160.0
+      ],
+      "yaw": 270.0000025044782,
+      "pitch": 0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass."
+    },
+    {
+      "name": "GallowsRock01-inside-in",
+      "worldspace_id": null,
+      "interior_cell_id": 86643,
+      "position": [
+        4623.9990234375,
+        -4000.0000006993823,
+        160.0
+      ],
+      "yaw": 90.00000250447816,
+      "pitch": -0.0,
+      "hfov": 75.0,
+      "note": "Authored outside portal 0005A5F5; eye 16 Creation units from aperture, outside the 8-unit bypass."
+    }
+  ]
+}

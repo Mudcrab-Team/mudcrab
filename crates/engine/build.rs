@@ -20,6 +20,10 @@ fn git(root: &Path, arguments: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    println!(
+        "cargo:rustc-env=MUDCRAB_BUILD_OPT_LEVEL={}",
+        env::var("OPT_LEVEL").expect("Cargo supplies OPT_LEVEL")
+    );
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../..");
     println!("cargo:rerun-if-env-changed=MUDCRAB_BUILD_GIT_COMMIT");
     println!("cargo:rerun-if-env-changed=MUDCRAB_BUILD_GIT_DIRTY");

@@ -104,6 +104,29 @@ For writable variants, APFS clones can initially share blocks while keeping writ
 Hard links share writes and must only be used under an enforced immutable-file contract.
 Never hard-link mutable build directories or databases as a general deduplication scheme.
 
+## Archive extraction staging
+
+The converter writes temporary archive payloads beside their destinations. It keeps the
+run registry and lock in a private state directory outside the extraction root, so the
+root itself can be read-only when the destination directories are writable.
+
+- On Unix, the preferred directory is `$XDG_STATE_HOME/.mudcrab-extraction-state` when
+  `XDG_STATE_HOME` is an absolute path. Otherwise, it uses `~/.mudcrab-extraction-state`.
+  If it cannot create a registry there, it tries `.mudcrab-extraction-state-<effective UID>`
+  under the system temporary directory, usually `$TMPDIR` or `/tmp`.
+- On Windows, the directory is `%LOCALAPPDATA%\.mudcrab-extraction-state` when
+  `LOCALAPPDATA` is an absolute path. Otherwise, it uses your home directory.
+
+After an interrupted extraction, retry against the same root to reclaim verified staging
+files. Cleanup reports entries it skips, including legacy `.mudcrab-extract-run-*` entries
+in the extraction root. A staging prefix alone does not establish ownership.
+
+Stop all archive extractions for your account before removing any staging state. You can
+delete an empty state directory. For an abandoned run, remove only files you can verify
+belong to that run, and remove its payloads before its registry. The registry lets a retry
+find the payloads. Keep unknown files and symlinks, including any entries with a legacy
+prefix whose origin you cannot verify.
+
 ## Reference library
 
 `<storage>/reference/` is a local, read-only library of third-party modding references for

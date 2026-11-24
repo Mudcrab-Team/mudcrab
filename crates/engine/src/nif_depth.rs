@@ -4,10 +4,13 @@ use bevy::{
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     prelude::*,
     render::render_resource::{
-        AsBindGroup, CompareFunction, DepthStencilState, RenderPipelineDescriptor,
-        SpecializedMeshPipelineError,
+        AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, CompareFunction,
+        DepthStencilState, RenderPipelineDescriptor, SpecializedMeshPipelineError,
     },
 };
+
+// nif.xml AlphaFunction: SRC_ALPHA (6), ONE (0).
+pub const SOURCE_ALPHA_ADDITIVE: [u8; 2] = [6, 0];
 
 pub const DEPTH_TEST: u32 = 1 << 31;
 pub const DEPTH_WRITE: u32 = 1;
@@ -35,10 +38,21 @@ pub struct NifDepthState {
     pub decal: bool,
     pub alpha_mask: bool,
     pub cast_shadows: bool,
+    pub blend_factors: Option<[u8; 2]>,
+    pub uses_effect_emittance: bool,
 }
 
 impl NifDepthState {
     pub fn from_flags(flags_1: u32, flags_2: u32, alpha_mode: AlphaMode) -> Option<Self> {
+        Self::from_material(flags_1, flags_2, alpha_mode, None)
+    }
+
+    pub fn from_material(
+        flags_1: u32,
+        flags_2: u32,
+        alpha_mode: AlphaMode,
+        blend_factors: Option<[u8; 2]>,
+    ) -> Option<Self> {
         let depth_test = flags_1 & DEPTH_TEST != 0;
         let depth_write = depth_test && flags_2 & DEPTH_WRITE != 0;
         let decal = flags_1 & (DECAL | DYNAMIC_DECAL) != 0;
@@ -53,6 +67,12 @@ impl NifDepthState {
             decal,
             alpha_mask: matches!(alpha_mode, AlphaMode::Mask(_)),
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
+            blend_factors: if matches!(alpha_mode, AlphaMode::Mask(_)) {
+                None
+            } else {
+                blend_factors
+            },
+            uses_effect_emittance: false,
         })
     }
 
@@ -109,7 +129,7 @@ impl MaterialExtension for NifDepthExtension {
     }
 }
 
-fn specialize_nif_depth_descriptor(
+pub(super) fn specialize_nif_depth_descriptor(
     descriptor: &mut RenderPipelineDescriptor,
     state: NifDepthState,
 ) {
@@ -132,9 +152,54 @@ fn specialize_nif_depth_descriptor(
             fragment.shader_defs.push("MAY_DISCARD".into());
         }
     }
+    if let Some([source, destination]) = state.blend_factors
+        && let Some(color) = blend_component(source, destination)
+        && let Some(fragment) = descriptor.fragment.as_mut()
+    {
+        for target in fragment.targets.iter_mut().flatten() {
+            // Keep Bevy's alpha equation. A separate retail alpha equation is unverified.
+            let alpha = target.blend.unwrap_or(BlendState::ALPHA_BLENDING).alpha;
+            target.blend = Some(BlendState { color, alpha });
+        }
+    }
     if color_pass && let Some(depth) = descriptor.depth_stencil.as_mut() {
         state.apply(depth);
     }
+}
+
+// nif.xml AlphaFunction, documented in vendor/project-wormhole-nif/src/nif_enum.rs.
+fn blend_factor(value: u8) -> Option<BlendFactor> {
+    use BlendFactor::*;
+    Some(match value {
+        0 => One,
+        1 => Zero,
+        2 => Src,
+        3 => OneMinusSrc,
+        4 => Dst,
+        5 => OneMinusDst,
+        6 => SrcAlpha,
+        7 => OneMinusSrcAlpha,
+        8 => DstAlpha,
+        9 => OneMinusDstAlpha,
+        10 => SrcAlphaSaturated,
+        _ => return None,
+    })
+}
+
+pub fn valid_blend_factors([source, destination]: [u8; 2]) -> bool {
+    // SRC_ALPHA_SATURATE is valid only as a source factor.
+    source <= 10 && destination <= 9
+}
+
+fn blend_component(source: u8, destination: u8) -> Option<BlendComponent> {
+    if !valid_blend_factors([source, destination]) {
+        return None;
+    }
+    Some(BlendComponent {
+        src_factor: blend_factor(source)?,
+        dst_factor: blend_factor(destination)?,
+        operation: BlendOperation::Add,
+    })
 }
 
 fn shader_def_name(def: &bevy::shader::ShaderDefVal) -> &str {
@@ -184,7 +249,7 @@ mod tests {
     fn color_target() -> Option<ColorTargetState> {
         Some(ColorTargetState {
             format: TextureFormat::Rgba8UnormSrgb,
-            blend: None,
+            blend: Some(BlendState::ALPHA_BLENDING),
             write_mask: ColorWrites::ALL,
         })
     }
@@ -236,6 +301,65 @@ mod tests {
         assert_eq!(depth.depth_compare, Some(CompareFunction::GreaterEqual));
         assert_eq!(depth.depth_write_enabled, Some(true));
         assert_eq!(depth.bias.constant, DECAL_DEPTH_BIAS);
+    }
+
+    #[test]
+    fn additive_decal_uses_authored_blend_factors() {
+        let mut state = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Blend).unwrap();
+        state.blend_factors = Some(SOURCE_ALPHA_ADDITIVE);
+        let mut color = descriptor(vec![color_target()]);
+
+        specialize_nif_depth_descriptor(&mut color, state);
+
+        let fragment = color.fragment.unwrap();
+        let blend = fragment.targets[0].as_ref().unwrap().blend.unwrap();
+        assert_eq!(blend.color.src_factor, BlendFactor::SrcAlpha);
+        assert_eq!(blend.color.dst_factor, BlendFactor::One);
+        assert_eq!(blend.alpha, BlendState::ALPHA_BLENDING.alpha);
+        assert_eq!(
+            color.depth_stencil.unwrap().depth_write_enabled,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn authored_blend_preserves_cutout_and_ordinary_blend_routing() {
+        for mode in [AlphaMode::Mask(0.4), AlphaMode::Blend] {
+            assert!(
+                NifDepthState::from_material(
+                    DEPTH_TEST,
+                    DEPTH_WRITE,
+                    mode,
+                    Some(SOURCE_ALPHA_ADDITIVE)
+                )
+                .is_none()
+            );
+        }
+        let mask = NifDepthState::from_material(
+            DEPTH_TEST | DECAL,
+            DEPTH_WRITE,
+            AlphaMode::Mask(0.4),
+            Some(SOURCE_ALPHA_ADDITIVE),
+        )
+        .unwrap();
+        assert!(mask.alpha_mask);
+        assert_eq!(mask.blend_factors, None);
+    }
+
+    #[test]
+    fn authored_source_alpha_blend_keeps_bevys_alpha_component() {
+        let state =
+            NifDepthState::from_material(DEPTH_TEST | DECAL, 0, AlphaMode::Blend, Some([6, 7]))
+                .unwrap();
+        let mut pipeline = descriptor(vec![color_target()]);
+        specialize_nif_depth_descriptor(&mut pipeline, state);
+        assert_eq!(
+            pipeline.fragment.unwrap().targets[0]
+                .as_ref()
+                .unwrap()
+                .blend,
+            Some(BlendState::ALPHA_BLENDING)
+        );
     }
 
     #[test]

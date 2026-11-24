@@ -1,0 +1,592 @@
+//! Per-spot grass selection follows spud (MIT, chasmlol/spud), revision e5f2de4.
+//! Rust implementation and packed renderer adaptation; notice: grass/SPUD-MIT.txt.
+#[cfg(test)]
+#[path = "../../tests/support/grass_budget.rs"]
+mod grass_budget;
+
+use super::{GrassBatch, GrassInstance, GrassTerrain};
+use crate::{config::EngineConfig, world::grass_cache::GrassCache};
+use shared::grass::{ArchivedGrassQuadrant, GRASS_CELL_SIZE, GRASS_EXCLUSION_SIDE};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
+
+#[path = "fade_sort.rs"]
+mod fade_sort;
+#[path = "random.rs"]
+mod random;
+#[path = "sampling.rs"]
+mod sampling;
+use random::{CellRandom, signed};
+
+/// The historical majority-support experiment is not part of per-spot selection.
+pub const MAJORITY_GRASS_SUPPORT: bool = false;
+/// An independent spatial fade rank fits the renderer's existing 18-bit contract.
+const FADE_SLOTS: u32 = 1 << 18;
+
+pub struct GeneratedGrass {
+    pub batches: Vec<GrassBatch>,
+    pub generation_micros: u64,
+    pub bytes: usize,
+}
+
+struct Entry {
+    id: u32,
+    is_base: bool,
+    weights: [f32; 9],
+}
+
+/// Preserve GNAM and layer order, including repeated nominations and zero-support base entries.
+fn entries(
+    quadrant: &ArchivedGrassQuadrant,
+    x: usize,
+    y: usize,
+    config: &EngineConfig,
+) -> Vec<Entry> {
+    let mut result = Vec::with_capacity(16);
+    let center = y * 17 + x;
+    let nine = [
+        center - 18,
+        center - 17,
+        center - 16,
+        center - 1,
+        center,
+        center + 1,
+        center + 16,
+        center + 17,
+        center + 18,
+    ];
+    for layer in quadrant.layers.iter() {
+        let support = nine.map(|i| f32::from(layer.weights[i]));
+        if !layer.is_base
+            && !support
+                .iter()
+                .any(|weight| *weight > 25.0 / 255.0 && *weight >= config.grass_texture_threshold)
+        {
+            continue;
+        }
+        for id in layer
+            .grass_ids
+            .iter()
+            .take(config.effective_grass_species_cap())
+        {
+            if result.len() == 16 {
+                return result;
+            }
+            result.push(Entry {
+                id: (*id).into(),
+                is_base: layer.is_base,
+                weights: support.map(|weight| if weight > 0.0 { 1.0 } else { 0.0 }),
+            });
+        }
+    }
+    result
+}
+
+/// Bilinear binary-presence support at a pre-jitter subgrid center within the 3x3 spot.
+fn support(weights: &[f32; 9], x: f32, y: f32) -> f32 {
+    let col = x as usize;
+    let row = y as usize;
+    let fx = x - col as f32;
+    let fy = y - row as f32;
+    let i = col + 3 * row;
+    ((1.0 - fx) * weights[i] + weights[i + 1] * fx) * (1.0 - fy)
+        + ((1.0 - fx) * weights[i + 3] + weights[i + 4] * fx) * fy
+}
+
+/// Water modes follow the reference, including its no-water sentinel and unconstrained modes 6/7.
+pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {
+    let w = water.unwrap_or(-f32::MAX);
+    let u = f32::from(distance);
+    match mode {
+        0 => height >= w - u,
+        1 => w <= height && height <= w + u,
+        2 => height <= w - u,
+        3 => w - u <= height && height <= w,
+        4 => height >= w + u || height <= w - u,
+        5 => w - u <= height && height <= w + u,
+        _ => true,
+    }
+}
+
+/// The authored range bounds grid spacing; zero range uses the configured minimum safely.
+fn grid_side(position_range: f32, minimum: f32) -> usize {
+    if position_range < 0.0 {
+        return 0;
+    }
+    let authored = if position_range > 0.0 {
+        (256.0 / position_range) as usize
+    } else {
+        usize::MAX
+    };
+    authored.min((256.0 / minimum) as usize)
+}
+
+/// Encode the range relative to a bounded batch span.
+fn quantize(value: f32, span: f32) -> u16 {
+    (value / span * 65535.0).round().clamp(0.0, 65535.0) as u16
+}
+
+/// Keep an already rounded, finite binary16 height in the unpublished Z lane.
+fn stage_height(height: f32) -> u16 {
+    debug_assert!(height.is_finite());
+    let bits = height.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let magnitude = bits & 0x7fff_ffff;
+    let exponent = (magnitude >> 23) as i32 - 112;
+    if exponent <= 0 {
+        sign | (height.abs() * 16_777_216.0) as u16
+    } else {
+        sign | ((exponent as u16) << 10) | ((magnitude >> 13) & 0x3ff) as u16
+    }
+}
+
+/// Restore the exact selected height before final cell-range quantization.
+fn staged_height(bits: u16) -> f32 {
+    let sign = u32::from(bits & 0x8000) << 16;
+    let exponent = u32::from((bits >> 10) & 31);
+    let fraction = u32::from(bits & 0x3ff);
+    debug_assert!(exponent < 31);
+    if exponent == 0 {
+        let magnitude = fraction as f32 * f32::from_bits(0x3380_0000);
+        f32::from_bits(sign | magnitude.to_bits())
+    } else {
+        f32::from_bits(sign | ((exponent + 112) << 23) | (fraction << 13))
+    }
+}
+
+/// Retain the binary16 world root before cell-local float subtraction loses low bits near zero.
+fn root_coordinates(value: f32, block: f32, cell: f32) -> (f32, f32) {
+    let world = block + sampling::half_round(value - block);
+    (world, world - cell)
+}
+
+/// Keep distance thinning spatially distributed without advancing the placement random stream.
+fn fade_rank(mut value: u32) -> u32 {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7feb_352d);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846c_a68b);
+    (value ^ (value >> 16)) & (FADE_SLOTS - 1)
+}
+
+/// Apply the reference brightness range before adapting binary16 intensity to our byte contract.
+fn brightness(luma: f32, range: f32, word: u32) -> (u8, f32) {
+    let factor = (word as f32 * 1.164_153_2e-10 - 0.25) * range + (1.0 - range);
+    let value = luma * factor;
+    let value = if value >= 1.0 { 0.99 } else { value.max(0.0) };
+    (
+        (sampling::half_round(value) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        factor,
+    )
+}
+
+/// Adapt the reference sine/cosine orientation to the existing byte-angle contract.
+fn rotation(word: u32, fit_to_slope: bool) -> u8 {
+    let sine = signed(word).clamp(-1.0, 1.0);
+    let cosine = (1.0 - sine * sine).max(0.0).sqrt();
+    let angle = if fit_to_slope {
+        (-sine).atan2(cosine)
+    } else {
+        cosine.atan2(sine)
+    };
+    ((angle.rem_euclid(std::f32::consts::TAU) * (256.0 / std::f32::consts::TAU)).round() as u32
+        & 255) as u8
+}
+
+/// Generate using the baked original LAND fields (also usable for CPU species censuses).
+pub fn generate(cache: &GrassCache, cell_id: u32, config: &EngineConfig) -> GeneratedGrass {
+    let Some(cell) = cache.cell(cell_id) else {
+        return empty();
+    };
+    generate_field::<false>(
+        cache,
+        cell_id,
+        config,
+        cell.heights.len(),
+        |i| cell.heights[i].into(),
+        cell.water_height.as_ref().map(|h| (*h).into()),
+        None,
+        &mut |_| {},
+    )
+}
+
+/// A source selection event, including candidates later removed by obstruction.
+/// Instances and bounds describe final packing. Callbacks run after cell selection,
+/// in original generation order. Appearance words retain the reference frame inputs.
+pub struct Placement {
+    pub form_id: u32,
+    pub is_base: bool,
+    pub obstructed: bool,
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub luma: f32,
+    pub appearance: [u32; 3],
+    pub instance: GrassInstance,
+    pub height_min: f32,
+    pub height_span: f32,
+}
+
+/// Observe the same baked-LAND production generator without starting Bevy or a renderer.
+pub fn generate_observed(
+    cache: &GrassCache,
+    cell_id: u32,
+    config: &EngineConfig,
+    mut observe: impl FnMut(Placement),
+) -> GeneratedGrass {
+    let Some(cell) = cache.cell(cell_id) else {
+        return empty();
+    };
+    generate_field::<true>(
+        cache,
+        cell_id,
+        config,
+        cell.heights.len(),
+        |i| cell.heights[i].into(),
+        cell.water_height.as_ref().map(|h| (*h).into()),
+        None,
+        &mut observe,
+    )
+}
+
+/// Select against committed inputs, then ground packed roots on the rendered terrain triangles.
+pub(super) fn generate_on_terrain(
+    cache: &GrassCache,
+    cell_id: u32,
+    config: &EngineConfig,
+    terrain: &GrassTerrain,
+) -> GeneratedGrass {
+    let start = Instant::now();
+    let white = [1.0; 1089];
+    let mut result = generate_field::<false>(
+        cache,
+        cell_id,
+        config,
+        terrain.heights().len(),
+        |i| terrain.heights()[i],
+        terrain.0.water_height,
+        Some(terrain.luminance().unwrap_or(&white)),
+        &mut |_| {},
+    );
+    if !result.batches.is_empty() {
+        let heights = terrain.heights();
+        let minimum = heights.iter().copied().fold(f32::INFINITY, f32::min);
+        let maximum = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let span = (maximum - minimum).max(1.0);
+        for batch in &mut result.batches {
+            // New batches own their vectors. Ground at decoded XY so packing on a slope
+            // uses the same root coordinates as the renderer, including welded edges.
+            for instance in Arc::make_mut(&mut batch.instances) {
+                let [x, y] = [instance.position[0], instance.position[1]]
+                    .map(|value| f32::from(value) * GRASS_CELL_SIZE / 65535.0);
+                let height = sampling::committed_height(x, y, heights);
+                instance.position[2] = quantize(height - minimum, span);
+            }
+            batch.height_min = minimum;
+            batch.height_span = span;
+        }
+    }
+    result.generation_micros = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    result
+}
+
+/// A rejected or absent cell leaves the world usable without grass batches.
+fn empty() -> GeneratedGrass {
+    GeneratedGrass {
+        batches: vec![],
+        generation_micros: 0,
+        bytes: 0,
+    }
+}
+
+/// Roll entries in quadrant / odd-X / odd-Y / entry / grid-X / grid-Y order.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "observer extends the existing surface sampling inputs without changing their behavior"
+)]
+fn generate_field<const OBSERVE: bool>(
+    cache: &GrassCache,
+    cell_id: u32,
+    config: &EngineConfig,
+    height_count: usize,
+    height_at: impl Fn(usize) -> f32,
+    water: Option<f32>,
+    luminance: Option<&[f32]>,
+    observe: &mut impl FnMut(Placement),
+) -> GeneratedGrass {
+    let start = Instant::now();
+    let mut result = empty();
+    let Some(cell) = cache.cell(cell_id) else {
+        return result;
+    };
+    if config.validate_grass().is_err()
+        || height_count != 1089
+        || (0..height_count).any(|i| !height_at(i).is_finite())
+    {
+        return result;
+    }
+    // Reject an unusable source field locally, without poisoning other cells.
+    if (0..height_count).any(|i| {
+        let height = height_at(i);
+        let height = if cell.normals.len() == 3267 {
+            (height / 8.0).round() * 8.0
+        } else {
+            height
+        };
+        !sampling::half_round(height).is_finite()
+    }) {
+        tracing::warn!(
+            cell_id,
+            "skipping grass cell with heights outside binary16 range"
+        );
+        return result;
+    }
+    // The reference's integer edge split can extrapolate beyond vertex extrema.
+    // Keep exact selected half-Z until their shared cell range is known (spud MIT; SPUD-MIT.txt).
+    let mut height_min = f32::INFINITY;
+    let mut height_max = f32::NEG_INFINITY;
+    let mut invalid_roots = 0usize;
+    // OBSERVE=false never pushes, so production allocates no diagnostic event buffer.
+    let mut observations = Vec::new();
+    let cx = i32::from(cell.grid_x);
+    let cy = i32::from(cell.grid_y);
+    let cell_origin = [cx as f32 * 4096.0, cy as f32 * 4096.0];
+    let block_origin = [
+        (cx / 12 * 12) as f32 * 4096.0,
+        (cy / 12 * 12) as f32 * 4096.0,
+    ];
+    let mut rng = CellRandom::new(cx.wrapping_mul(cy) as u32);
+    let mut instances: BTreeMap<u32, Vec<GrassInstance>> = BTreeMap::new();
+    let mut ordinal = 0u32;
+    for quadrant in cell.quadrants.iter() {
+        let q = usize::from(quadrant.quadrant);
+        for x in (1..16).step_by(2) {
+            for y in (1..16).step_by(2) {
+                let origin = [
+                    (x * 128 + (q & 1) * 2048) as f32 + cell_origin[0] - 128.0,
+                    (y * 128 + (q >> 1) * 2048) as f32 + cell_origin[1] - 128.0,
+                ];
+                for entry in entries(quadrant, x, y, config) {
+                    let Some(rule) = cache.species(entry.id) else {
+                        continue;
+                    };
+                    let n = grid_side(rule.position_range.into(), config.grass_min_spacing);
+                    if n == 0 {
+                        continue;
+                    }
+                    let [slope_lower, slope_upper] =
+                        sampling::slope_bounds(rule.min_slope, rule.max_slope);
+                    let inv = 1.0 / n as f32;
+                    let half = 256.0 * inv * 0.5;
+                    let two = inv + inv;
+                    for j in 0..n {
+                        let jf = j as f32 + 0.5;
+                        let xoff = (half + half) * jf;
+                        for i in 0..n {
+                            let identity = ordinal;
+                            ordinal = ordinal.wrapping_add(1);
+                            let if_ = i as f32 + 0.5;
+                            let density = f32::from(rule.density) * 0.01;
+                            let chance = (support(
+                                &entry.weights.map(|weight| weight * density),
+                                two * jf,
+                                two * if_,
+                            ) * 32768.0
+                                * config.grass_density_multiplier)
+                                as i32;
+                            if chance == 0 || (rng.next() & 0x7fff) as i32 >= chance {
+                                continue;
+                            }
+                            let u1 = rng.next();
+                            let u2 = rng.next();
+                            let (world_x, px) = root_coordinates(
+                                signed(u1) * half + (xoff + origin[0]),
+                                block_origin[0],
+                                cell_origin[0],
+                            );
+                            let (world_y, py) = root_coordinates(
+                                signed(u2) * half + ((if_ * half) + (if_ * half) + origin[1]),
+                                block_origin[1],
+                                cell_origin[1],
+                            );
+                            let normal_at = |vertex: usize| {
+                                (cell.normals.len() == 3267).then(|| {
+                                    std::array::from_fn(|axis| {
+                                        f32::from(cell.normals[vertex * 3 + axis]) * 0.007_874_016
+                                    })
+                                })
+                            };
+                            let Some(sample) = sampling::sample(px, py, &height_at, &normal_at)
+                            else {
+                                continue;
+                            };
+                            if !water_allowed(
+                                sample.height,
+                                water,
+                                rule.units_from_water.into(),
+                                rule.water_comparison.into(),
+                            ) || !(slope_lower <= sample.normal[2]
+                                && sample.normal[2] <= slope_upper)
+                            {
+                                continue;
+                            }
+                            // Preserve the reference stream: appearance rolls happen after LAND filters,
+                            // even when MudCrab's separately baked obstruction mask rejects this blade.
+                            let u3 = rng.next();
+                            let u4 = rng.next();
+                            let u5 = rng.next();
+                            let rounded_height = sampling::half_round(sample.height);
+                            if !rounded_height.is_finite() {
+                                invalid_roots += 1;
+                                continue;
+                            }
+                            height_min = height_min.min(rounded_height);
+                            height_max = height_max.max(rounded_height);
+                            // A missing/unusable model still occupies its nomination slot and
+                            // consumes all reference draws, then contributes no visible plants.
+                            if rule.model_path.is_empty() {
+                                continue;
+                            }
+                            let qx = ((px / 2048.0) as usize).min(1);
+                            let qy = ((py / 2048.0) as usize).min(1);
+                            let mask = &cell.quadrants[qx + 2 * qy];
+                            let bit_x = (((px - qx as f32 * 2048.0) / 32.0) as usize).min(63);
+                            let bit_y = (((py - qy as f32 * 2048.0) / 32.0) as usize).min(63);
+                            let bit = bit_y * GRASS_EXCLUSION_SIDE + bit_x;
+                            let obstructed = mask.exclusion[bit / 8] & (1 << (bit % 8)) != 0;
+                            let luma = luminance
+                                .filter(|field| field.len() == 1089)
+                                .map(|field| field[sample.nearest])
+                                .unwrap_or_else(|| {
+                                    if cell.vertex_colors.len() == 3267 {
+                                        let i = sample.nearest * 3;
+                                        (f32::from(cell.vertex_colors[i]) * 0.003_921_569 * 0.31
+                                            + f32::from(cell.vertex_colors[i + 1])
+                                                * 0.003_921_569
+                                                * 0.37)
+                                            + f32::from(cell.vertex_colors[i + 2])
+                                                * 0.003_921_569
+                                                * 0.32
+                                    } else {
+                                        1.0
+                                    }
+                                });
+                            let (color, factor) = brightness(luma, rule.color_range.into(), u3);
+                            let range: f32 = rule.height_range.into();
+                            let instance = GrassInstance {
+                                position: [
+                                    quantize(px, GRASS_CELL_SIZE),
+                                    quantize(py, GRASS_CELL_SIZE),
+                                    // Temporary binary16 bits; finalized before publication.
+                                    stage_height(rounded_height),
+                                ],
+                                rotation: rotation(u4, rule.flags & 4 != 0),
+                                scale: ((1.0 + signed(u5) * range).clamp(0.0, 2.0) * 127.5).round()
+                                    as u8,
+                                color,
+                                // The shader normalizes these signed bytes. Preserve authored ratios and
+                                // least-component ties instead of rounding a normalized vector again.
+                                normal: if cell.normals.len() == 3267 {
+                                    std::array::from_fn(|axis| {
+                                        cell.normals[sample.nearest * 3 + axis]
+                                    })
+                                } else {
+                                    sample.normal.map(|value| (value * 127.0).round() as i8)
+                                },
+                                slot: fade_rank(identity)
+                                    | ((luma.clamp(0.0, 1.0) * 127.0).round() as u32) << 18
+                                    | ((((factor.clamp(-1.0, 1.0) + 1.0) * 63.5).round() as u32)
+                                        << 25),
+                            };
+                            if OBSERVE {
+                                observations.push(Placement {
+                                    form_id: entry.id,
+                                    is_base: entry.is_base,
+                                    obstructed,
+                                    position: [
+                                        world_x,
+                                        world_y,
+                                        sampling::half_round(sample.height),
+                                    ],
+                                    normal: sample.normal,
+                                    luma,
+                                    appearance: [u3, u4, u5],
+                                    instance,
+                                    height_min,
+                                    height_span: 1.0,
+                                });
+                            }
+                            if !obstructed {
+                                instances.entry(entry.id).or_default().push(instance);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if invalid_roots != 0 {
+        tracing::warn!(
+            cell_id,
+            invalid_roots,
+            "skipped grass roots outside binary16 range"
+        );
+    }
+    let height_min = if height_min.is_finite() {
+        height_min
+    } else {
+        0.0
+    };
+    let height_span = if height_max.is_finite() {
+        (height_max - height_min).max(1.0)
+    } else {
+        1.0
+    };
+    for mut placement in observations {
+        placement.height_min = height_min;
+        placement.height_span = height_span;
+        placement.instance.position[2] = quantize(placement.position[2] - height_min, height_span);
+        observe(placement);
+    }
+    for (id, mut values) in instances {
+        for instance in &mut values {
+            let height = staged_height(instance.position[2]);
+            instance.position[2] = quantize(height - height_min, height_span);
+        }
+        // Compact once per species before sorting and publication. Boxing gives the
+        // retained vector exact capacity while preserving the staged instance order.
+        let mut values = values.into_boxed_slice().into_vec();
+        fade_sort::sort(&mut values);
+        let Some(rule) = cache.species(id) else {
+            continue;
+        };
+        result.bytes += values.capacity() * std::mem::size_of::<GrassInstance>()
+            + rule.model_path.len()
+            + std::mem::size_of::<Vec<GrassInstance>>()
+            + 2 * std::mem::size_of::<usize>();
+        result.batches.push(GrassBatch {
+            cell_id,
+            grid: [cx, cy],
+            grass_id: id,
+            model_path: rule.model_path.as_str().to_owned(),
+            instances: Arc::new(values),
+            height_min,
+            height_span,
+            slot_count: FADE_SLOTS,
+            wave_period: rule.wave_period.into(),
+            flags: rule.flags,
+        });
+    }
+    result.bytes += result.batches.capacity() * std::mem::size_of::<GrassBatch>()
+        + std::mem::size_of::<GeneratedGrass>();
+    result.generation_micros = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    result
+}
+
+#[cfg(test)]
+#[path = "selection_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "committed_perf_probe.rs"]
+mod committed_perf_probe;

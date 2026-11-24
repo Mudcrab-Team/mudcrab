@@ -172,6 +172,8 @@ runner.run_one(args, {{'cache_policy': 'test'}}, run, lambda: {{}})
             run = {"mode": mode, "scenario": "normal", "run_id": mode,
                    "speed": 370, "route_secs": 45, "tail_secs": 10}
             commands[mode] = RUNNER.command(args, run, Path("/tmp/run"))
+        for command in commands.values():
+            self.assertIn("--no-grass", command)
         fixed = commands["fixed64"]
         self.assertNotIn("--adaptive-streaming", fixed)
         self.assertNotIn("--streaming-costs", fixed)

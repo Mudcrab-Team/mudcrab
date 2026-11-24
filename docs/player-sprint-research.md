@@ -9,7 +9,7 @@ Implementation base: #204 head `a83d61ab10f740f02c0bce3589429c8c4c09590c` (schem
 `MovementTuning::target_speed` currently evaluates:
 
 - Select walk column only when slow is requested and sprint is false; otherwise select run.
-- On main, both use the fixed NPC_Default_MT profile. With #246, select the walk or run profile according to that PR's resolver.
+- On main, both use the fixed NPC_Default_MT profile. With #812 (which rebuilds #246), the engine selects the walk and run profiles separately: an explicit race link wins, and an unset slot uses its default object (`DMWL` or `DMRN`).
 - For input `(sx, sy)`, use lateral and longitudinal speeds from that profile: `base = (lateral * abs(sx) + longitudinal * abs(sy)) / max(abs(sx) + abs(sy), 1)`.
 - When sprint is latched, return `base * sprint_multiplier`, whose default is `1.5`.
 

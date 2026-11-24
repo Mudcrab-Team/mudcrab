@@ -17,6 +17,10 @@ rendering window, whereas `--headless` normally removes that window. When both
 are supplied, `--hidden-window` retains the hidden render target. Hidden runs
 do not capture interactive mouse/controller input.
 
+Use the same shots file and asset pack with `--shots-no-room-culling` for a full-camera control.
+The capture still waits for room graph reads. In `shots.log`, `room_culling.drawn` equals
+`room_culling.listed` on each disabled frame.
+
 ## The shots file
 
 ```json
@@ -84,6 +88,12 @@ the camera's dedicated image target to `<out>/<name>.png`. A shot that has not s
 `--shots-settle-timeout` seconds (default 30 s; positive, finite, at most 600 s) is still captured, and the log says the timeout took it and what
 was still pending or which failures prevented settling. A new failure prevents that shot from
 settling even after pending work drains; its timeout capture fails the run.
+
+With grass enabled, settling also requires completed desired grass generation,
+batch admission, model attachment and actual grass draws. Missing grass metrics,
+current pool rejections and grass model failures prevent settling; an earlier
+failure that still affects grass cannot be hidden by posing the next shot. A
+timeout still captures the resident view for diagnosis and fails the run.
 
 `--shots-out` defaults to a `<file stem>-shots/` folder beside the shots file. `shots.log` there
 has one line per shot: its name, the frames it waited, whether it settled or timed out, the image's

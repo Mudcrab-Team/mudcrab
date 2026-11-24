@@ -1,0 +1,8 @@
+{
+  "tools/skyrim-recorder/build.py": "8b99edd85218d9026598a6ed8bd77a813a66e3589e8743cf1856e3e78ee5a388",
+  "tools/skyrim-recorder/probe.cpp": "9a2246ff441b2597bc00551ee62cfb01c3d775ac68492b7697c949c17ccb0e78",
+  "tools/skyrim-recorder/runtime.json": "6226fefa8981b45bae2e97d3f86ed842d89069a01f135ecbddad13cec5fa8733",
+  "tools/skyrim-recorder/input.c": "115631931125dca681f185bb56790ed426102670ccc4c911b3b0ebe30bd5ac13",
+  "scripts/record_skyrim_motion.py": "a007d5a1728855ae8896123a61e131350fbb2486cfae9b47359317a8a86f552c",
+  "scripts/test_record_skyrim_motion.py": "8fcf43236b3ec3ebcf2cd48d308cd1f81e1d56b628524aeca001ed01d5206726"
+}

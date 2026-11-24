@@ -182,6 +182,55 @@ fn word(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes[..4].try_into().unwrap())
 }
 
+#[test]
+fn rnam_removals_require_proven_tombstone_identity() {
+    let mut fixture = Fixture::new();
+    let mut world = sub(b"EDID", b"DeletionWorld\0");
+    for (x, member) in [(1u16, 7u32), (2, 8)] {
+        let [lo, hi] = x.to_le_bytes();
+        let key = [0, 0, lo, hi];
+        let rnam = [key, 1u32.to_le_bytes(), member.to_le_bytes(), key].concat();
+        world.extend(sub(b"RNAM", &rnam));
+    }
+    fixture.add(
+        "Base.esm",
+        &[],
+        1,
+        &[
+            native_record(b"WRLD", 60, 0, &world),
+            native_record(b"REFR", 0x0100_0007, 0x20, &[]),
+            native_record(b"REFR", 8, 0x20, &[]),
+        ]
+        .concat(),
+    );
+    let order = LoadOrder::read(&fixture.paths).unwrap();
+    let result = records::read_plugins(&fixture.paths, &order).unwrap();
+    assert_eq!(result.deleted_ids, std::collections::HashSet::from([7, 8]));
+
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        r#"CREATE TABLE worldspaces(id INTEGER PRIMARY KEY);
+           INSERT INTO worldspaces VALUES(60);
+           CREATE TABLE "references"(id INTEGER PRIMARY KEY);"#,
+    )
+    .unwrap();
+    db.execute_batch(super::super::large_references::TABLE_SQL)
+        .unwrap();
+    result.large_references.write(&db).unwrap();
+    let mut query = db
+        .prepare(
+            "SELECT grid_x,omitted_count,confirmed_removed_count
+             FROM large_reference_omissions WHERE worldspace_id=60 ORDER BY grid_x",
+        )
+        .unwrap();
+    let counts = query
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(counts, [(1_i32, 1_i32, 0_i32), (2, 0, 1)]);
+}
+
 /// Legacy flags must survive typed/runtime publication even in a localized plugin with no bank.
 #[test]
 fn r10_sndr_fnam_flags_publish_without_localization() {
@@ -238,11 +287,25 @@ fn r10_sndr_fnam_flags_publish_without_localization() {
 #[test]
 fn r10_navm_onam_reference_remaps_and_preserves_source() {
     let mut fixture = Fixture::new();
-    fixture.add("Base.esm", &[], 1, &[]);
+    fixture.add(
+        "Base.esm",
+        &[],
+        1,
+        &native_record(b"STAT", 0x910, 0, &sub(b"EDID", b"ReferenceBase\0")),
+    );
     fixture.add("Gap.esm", &[], 1, &[]);
     let source_link = 0x0100_0920u32;
     let payload = sub(b"ONAM", &source_link.to_le_bytes());
-    let mut body = native_record(b"REFR", source_link, 0, &sub(b"EDID", b"LiveReference\0"));
+    let mut body = native_record(
+        b"REFR",
+        source_link,
+        0,
+        &[
+            sub(b"EDID", b"LiveReference\0"),
+            sub(b"NAME", &0x910u32.to_le_bytes()),
+        ]
+        .concat(),
+    );
     body.extend(native_record(b"NAVM", 0x0100_0930, 0, &payload));
     body.extend(native_record(
         b"NAVM",
@@ -452,9 +515,10 @@ fn invariant_fixture(speed_count: usize) -> Fixture {
         0x8a0,
         &native_record(b"LAND", TERRAIN, 0, &terrain),
     ));
-    // A genuine heightless record also exercises native-null removal, implicit base
+    // A record with a flat authored height field (no height deltas) also exercises native-null removal, implicit base
     // insertion and capacity normalization; every source opacity remains valid.
-    let mut heightless = sub(b"BTXT", &layer(0, 2, 0));
+    let mut heightless = sub(b"VHGT", &heights(0.0));
+    heightless.extend(sub(b"BTXT", &layer(0, 2, 0)));
     for slot in 1..=8 {
         heightless.extend(sub(b"ATXT", &layer(0x0100_0a20, 2, slot)));
         heightless.extend(sub(b"VTXT", &weights(slot * 3, f32::from(slot) / 16.0)));

@@ -23,8 +23,8 @@ use crate::{
             WorldPosition, WorldTransform,
         },
         database::{
-            AssetCatalog, CellKey, CellPayload, DatabaseRequest, WaterColors, WaterNoise,
-            WorldDatabase,
+            AssetCatalog, CellKey, CellPayload, DatabaseRequest, ReferenceRow, WaterColors,
+            WaterNoise, WorldDatabase,
         },
         water::{FlatWater, FlatWaterBody},
     },
@@ -58,10 +58,15 @@ use std::time::Instant;
 
 pub(crate) mod admission;
 pub(crate) mod control;
+mod large_references;
+#[cfg(test)]
+mod local_light_tests;
 pub(crate) mod lod;
+pub(crate) mod lod_object_material;
 pub mod lod_objects;
 #[cfg(test)]
 mod merged_tests;
+pub(crate) mod near_terrain_blend;
 mod priority;
 pub(crate) mod requests;
 mod reservations;
@@ -139,11 +144,15 @@ pub enum StaticColliderSource {
 
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
+        if app.world().contains_resource::<Assets<Shader>>() {
+            lod_object_material::build(app);
+        }
         app.init_resource::<StreamingWorld>()
             .init_resource::<StreamingMetrics>()
             .init_resource::<StreamingCommitBudget>()
             .init_resource::<lod::LodStreaming>()
             .init_resource::<lod_objects::LodObjects>()
+            .init_resource::<large_references::LargeReferences>()
             .init_resource::<DiagnosticFallbackAssets>()
             .init_resource::<TerrainContinuity>()
             .init_resource::<SceneSpawnBatch>()
@@ -156,6 +165,18 @@ impl Plugin for StreamingPlugin {
             .init_resource::<crate::pacing::PacingTracker>()
             .add_observer(mark_world_instance_ready)
             .add_observer(lod::mark_lod_world_instance_ready)
+            .add_observer(lod_objects::mark_object_scene_ready)
+            .add_systems(
+                PostUpdate,
+                (
+                    lod_objects::update_object_visibility,
+                    lod_objects::tag_object_cells,
+                    large_references::resolve_visibility,
+                    lod_objects::hide_loaded_object_cells,
+                )
+                    .chain()
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            )
             .add_systems(
                 Update,
                 apply_land_shadow_policy.after(lod::update_terrain_lod_visibility),
@@ -176,16 +197,17 @@ impl Plugin for StreamingPlugin {
                     plan_cells,
                     despawn_cells,
                     lod::plan_lod_chunks,
-                    collect_cells,
+                    (collect_cells, large_references::update).chain(),
                     lod::collect_lod_chunks,
                     requests::dispatch_scene_requests,
                     arm_pending_models,
-                    track_asset_readiness,
+                    (track_asset_readiness, large_references::set_deadlines).chain(),
                     track_surface_readiness,
                     track_merged_surface_readiness,
                     lod::track_lod_readiness,
                     lod::batch_ready_lod_chunks,
                     lod::update_terrain_lod_visibility,
+                    near_terrain_blend::update_near_terrain_blend,
                     finish_streaming_commit_budget,
                     update_render_origin,
                     validate_streaming_lifecycle,
@@ -459,6 +481,7 @@ pub struct StreamingMetrics {
     pub retire_backlog_overflows: u64,
     pub resident_cells: usize,
     pub loading_cells: usize,
+    pub loading_large_reference_cells: usize,
     pub peak_resident_cells: usize,
     pub peak_loading_cells: usize,
     pub total_query_micros: u64,
@@ -486,6 +509,10 @@ pub struct StreamingMetrics {
     pub diagnostic_fallbacks: u64,
     pub canonical_fixture_validated: bool,
     pub terrain_patches_validated: u64,
+    /// Requested cell updates without a loaded near-terrain noise image.
+    pub near_terrain_blend_missing_noise: u64,
+    /// Requested cell updates without a ready near-terrain atlas.
+    pub near_terrain_blend_missing_atlas: u64,
     /// Exterior cells drawn as one merged mesh with the shared terrain material (#215).
     pub terrain_cells_merged: u64,
     /// Terrain cells drawn by the four-quadrant path: every cell when the merged path is absent
@@ -1128,10 +1155,13 @@ fn despawn_cells(world: &mut World) {
     retiring.sort_by_key(|(key, _)| cell_order_key(*key));
     let backlog = retiring.len();
     let overflow = backlog > backlog_bound;
+    if !overflow && let Some(large) = world.get_resource::<large_references::LargeReferences>() {
+        retiring.retain(|(key, _)| !large.holds_ordinary(*key));
+    }
     let budget = if overflow {
         backlog
     } else {
-        budget.min(backlog)
+        budget.min(retiring.len())
     };
     let started = Instant::now();
     let mut entities = 0usize;
@@ -1385,7 +1415,20 @@ fn collect_cells(
                         &mut metrics,
                         &mut profiler,
                     );
-                    let validation = validation.map(|settled| merged = settled);
+                    let validation = validation.and_then(|settled| {
+                        if config.grass
+                            && let Some(spawn) = &settled
+                        {
+                            // Merged welding updates its mesh rather than this snapshot. Grass
+                            // borrows the selected settled surface; water/material metadata stays.
+                            let (heights, normals) =
+                                crate::terrain_merge::mesh::cell_to_grid(&spawn.cell)?;
+                            terrain.heights = heights;
+                            terrain.normals = normals;
+                        }
+                        merged = settled;
+                        Ok(())
+                    });
                     if let Err(reason) = validation {
                         error!(cell = format_args!("{:08X}", payload.cell_id), %reason, "LAND failed strict validation");
                         metrics.failed_cells = metrics.failed_cells.saturating_add(1);
@@ -1405,6 +1448,16 @@ fn collect_cells(
                 }
                 let cell_id = payload.cell_id;
                 let drawn_merged = merged.is_some();
+                // Publish the exact surface used below by terrain meshes/colliders. The
+                // immutable field is copied once per commit only when grass is enabled.
+                let grass_terrain =
+                    if config.grass && matches!(payload.key, CellKey::Exterior { .. }) {
+                        terrain
+                            .as_ref()
+                            .map(crate::grass::GrassTerrain::from_snapshot)
+                    } else {
+                        None
+                    };
                 let root = spawn_cell(
                     &mut commands,
                     &asset_server,
@@ -1418,6 +1471,7 @@ fn collect_cells(
                     config.lights,
                     config.interactive_world_physics(),
                     requests::enabled(&config),
+                    large_references::window_enabled(config.stream_radius),
                     payload,
                     terrain,
                     merged,
@@ -1434,6 +1488,9 @@ fn collect_cells(
                         }
                         if let Some(runtime) = runtime.as_mut() {
                             runtime.bind_cell(response.key, root);
+                        }
+                        if let Some(terrain) = grass_terrain {
+                            commands.entity(root).insert(terrain);
                         }
                         streaming
                             .cells
@@ -1573,6 +1630,41 @@ fn roots_outside_window<'a>(
         })
 }
 
+/// Resolve a full-detail reference transform in the owning root's coordinate system.
+fn reference_placement(
+    key: CellKey,
+    reference: &ReferenceRow,
+) -> (
+    WorldPosition,
+    Transform,
+    Option<ExpectedModelBounds>,
+    Option<InstanceBounds>,
+) {
+    let creation_position = Vec3::from_array(reference.position);
+    let world_position = WorldPosition::from_creation_units(creation_position);
+    let translation = match key {
+        CellKey::Exterior { grid_x, grid_y, .. } => {
+            let cell_origin = IVec2::new(grid_x, grid_y);
+            creation_to_bevy(world_position.relative_to(cell_origin))
+        }
+        CellKey::Interior(_) => creation_to_bevy(creation_position),
+    };
+    let rotation = creation_rotation_to_bevy(reference.rotation);
+    let transform = Transform::from_translation(translation)
+        .with_rotation(rotation)
+        .with_scale(Vec3::splat(reference.scale));
+    let model_bounds = reference.bounds_valid.then(|| {
+        ExpectedModelBounds::new(
+            Vec3::from_array(reference.bounds_min),
+            Vec3::from_array(reference.bounds_max),
+        )
+    });
+    let model_bounds = model_bounds.flatten();
+    let bounds = model_bounds
+        .map(|bounds| InstanceBounds::transformed(bounds.min, bounds.max, transform.to_matrix()));
+    (world_position, transform, model_bounds, bounds)
+}
+
 /// Build a cell hierarchy and request its model scenes, recording their IDs for optional tracing.
 #[allow(clippy::too_many_arguments)]
 fn spawn_cell(
@@ -1588,6 +1680,7 @@ fn spawn_cell(
     lights: bool,
     terrain_physics: bool,
     schedule_scenes: bool,
+    manage_large_references: bool,
     payload: CellPayload,
     mut terrain: Option<TerrainSnapshot>,
     merged: Option<MergedSpawn>,
@@ -1654,6 +1747,17 @@ fn spawn_cell(
     if let CellKey::Exterior { grid_x, grid_y, .. } = payload.key {
         root_commands.insert(ExteriorCellGrid(IVec2::new(grid_x, grid_y)));
     }
+    let large_members = manage_large_references
+        .then(|| catalog.large_references.members.get(&payload.key))
+        .flatten();
+    if let Some(members) = large_members {
+        root_commands.insert(large_references::ordinary_members(
+            payload.key,
+            members,
+            &payload.references,
+            actor_catalog,
+        ));
+    }
     let root = root_commands.id();
     commands.entity(root).with_children(|parent| {
         if let Some(terrain) = terrain {
@@ -1661,7 +1765,9 @@ fn spawn_cell(
                 // Waiting for the render world from birth, like a quadrant: the grid's LOD tiles
                 // stay drawn until the bridge confirms the merged mesh drawn
                 // (`lod::update_terrain_lod_visibility`). The cell declares the shared material and
-                // every land texture array it binds.
+                // every land texture array it binds. The later seam material binds its atlas
+                // and noise after the swap. Merged surface accounting tracks the spawn resources
+                // only, so it omits these later bindings.
                 let surface = SwapSurface::new(material.id().untyped(), images.iter().copied());
                 let mut patch = parent.spawn((
                     Name::new("Terrain cell"),
@@ -1811,11 +1917,29 @@ fn spawn_cell(
                     }
                     _ => None,
                 };
+                // The flow maps of the east, south and south-east neighbours, which the flow
+                // program's shifted taps read at this cell's edges (RF-WATER-063). A neighbour
+                // without a map in the pack stays unbound.
+                let flow_neighbours: [Option<Handle<Image>>; 3] =
+                    flow_neighbour_paths(flow.as_ref().map(|(grid, _)| *grid), |cell| {
+                        catalog.water_flow_map(cell.x, cell.y)
+                    })
+                    .map(|path| {
+                        path.map(|path| {
+                            asset_server
+                                .load_builder()
+                                .with_settings(|settings: &mut ImageLoaderSettings| {
+                                    settings.is_srgb = false;
+                                })
+                                .load::<Image>(path)
+                        })
+                    });
                 let water_material = water_materials.add(water_material(
                     water_colors,
                     reflection.0.clone(),
                     flow_normal.clone(),
                     flow.clone(),
+                    flow_neighbours.clone(),
                     noise.map(|noise| (noise, noise_textures.clone())),
                     matches!(payload.key, CellKey::Interior(_)),
                 ));
@@ -1834,6 +1958,7 @@ fn spawn_cell(
                         cell_id: terrain.cell_id,
                         flow_normal,
                         flow,
+                        flow_neighbours,
                         noise: noise_textures.into_iter().flatten().collect(),
                     },
                     RenderLayers::layer(WATER_LAYER),
@@ -1849,29 +1974,16 @@ fn spawn_cell(
             if !reference.initially_enabled {
                 continue;
             }
-            let creation_position = Vec3::from_array(reference.position);
-            let world_position = WorldPosition::from_creation_units(creation_position);
-            let translation = match payload.key {
-                CellKey::Exterior { grid_x, grid_y, .. } => {
-                    let cell_origin = IVec2::new(grid_x, grid_y);
-                    creation_to_bevy(world_position.relative_to(cell_origin))
-                }
-                CellKey::Interior(_) => creation_to_bevy(creation_position),
-            };
-            let rotation = creation_rotation_to_bevy(reference.rotation);
-            let transform = Transform::from_translation(translation)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(reference.scale));
-            let model_bounds = reference.bounds_valid.then(|| {
-                ExpectedModelBounds::new(
-                    Vec3::from_array(reference.bounds_min),
-                    Vec3::from_array(reference.bounds_max),
-                )
-            });
-            let model_bounds = model_bounds.flatten();
-            let bounds = model_bounds.map(|bounds| {
-                InstanceBounds::transformed(bounds.min, bounds.max, transform.to_matrix())
-            });
+            let large_member =
+                large_members.is_some_and(|members| members.contains(&reference.form_id));
+            if large_member
+                && let CellKey::Exterior { grid_x, grid_y, .. } = payload.key
+                && !crate::world::database::large_reference_in_bucket(&reference, grid_x, grid_y)
+            {
+                continue;
+            }
+            let (world_position, transform, model_bounds, bounds) =
+                reference_placement(payload.key, &reference);
             // A referenced `NPC_` with a catalog row becomes one actor entity. A row the catalog
             // could not resolve, or one with no body to draw, skips the reference entirely: no
             // placeholder, no static mesh, and exactly one diagnostic naming the base FormID.
@@ -1903,14 +2015,25 @@ fn spawn_cell(
                 // instead of inserted here; see `render::add_placed_object_layer_propagation`.
                 Propagate(PLACED_OBJECT_RENDER_LAYERS),
             ));
+            if large_member {
+                entity.insert((
+                    large_references::LargeReferenceModel { ready: false },
+                    Visibility::Hidden,
+                ));
+            }
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
-            // Authored multibound policies and movable references override stored room membership.
-            if reference.has_multibound_override
-                || crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
-            {
-                entity.insert(crate::room_culling::RoomCullExempt);
+            crate::room_culling::mark_reference_exemptions(
+                &mut entity,
+                reference.base_record_type.as_deref(),
+                reference.has_multibound_override,
+            );
+            if reference.named_room_target {
+                entity.insert(crate::room_culling::NamedRoomAssignment::Initial {
+                    root,
+                    placement: transform.compute_affine(),
+                });
             }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
@@ -1981,11 +2104,14 @@ fn spawn_cell(
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.
-            if let Some(light) = reference
+            let evaluated_light = reference
                 .light
                 .as_ref()
-                .and_then(|row| crate::lights::point_light(row, reference.light_radius_override))
-            {
+                .map(|row| crate::lights::evaluate_light(row, reference.light_radius_override));
+            if let Some(evaluation) = &evaluated_light {
+                entity.insert(evaluation.clone());
+            }
+            if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
@@ -2934,6 +3060,9 @@ struct PendingWaterProfile {
     /// The cell's grid coordinates and flow map. It is optional: one that fails to load leaves the
     /// water on its noise layers instead of hiding it.
     flow: Option<(IVec2, Handle<Image>)>,
+    /// The east, south and south-east neighbours' flow maps (`None` where the pack has none). They
+    /// are optional too: one that fails to load leaves the cell clamping to its own edge texels.
+    flow_neighbours: [Option<Handle<Image>>; 3],
     /// The noise normal maps. They are optional detail: one that fails to load leaves the water
     /// flat instead of hiding it.
     noise: Vec<Handle<Image>>,
@@ -3039,6 +3168,7 @@ type PendingAssetQuery<'world, 'state> = Query<
         &'static GlobalTransform,
         &'static WorldTransform,
         Option<&'static ExpectedModelBounds>,
+        Option<&'static mut large_references::LargeReferenceModel>,
     ),
 >;
 
@@ -3267,7 +3397,7 @@ fn track_asset_readiness(
     mut commands: Commands,
     config: Res<EngineConfig>,
     asset_server: Res<AssetServer>,
-    pending: PendingAssetQuery,
+    mut pending: PendingAssetQuery,
     unarmed: Query<(), (With<PendingAssetProfile>, Without<WorldAssetRoot>)>,
     children: Query<&Children>,
     scene_extras: Query<&GltfSceneExtras>,
@@ -3300,7 +3430,9 @@ fn track_asset_readiness(
     // Live dynamic clutter bodies, including the ones this scan spawns (their commands are
     // deferred, so the query cannot see them yet). The cap bounds what a cell arrival can create.
     let mut live_clutter = clutter.iter().count();
-    for (entity, root, pending, local, global, world_transform, expected_bounds) in &pending {
+    for (entity, root, pending, local, global, world_transform, expected_bounds, large_model) in
+        &mut pending
+    {
         if completed_this_scan != 0
             && runtime
                 .as_ref()
@@ -3620,6 +3752,9 @@ fn track_asset_readiness(
             metrics.max_asset_ready_micros = metrics.max_asset_ready_micros.max(micros);
             profiler.record_completed_latency_micros("assets/model_ready", micros);
             profiler.event(&pending.path, "asset_ready", Some(micros as f64 / 1000.0));
+            if let Some(mut model) = large_model {
+                model.ready = true;
+            }
             commands.entity(entity).remove::<PendingAssetProfile>();
             completed_this_scan += 1;
         }
@@ -3871,11 +4006,10 @@ type UncastingTerrain = (
     Without<NotShadowCaster>,
 );
 
-/// Retail land does not cast sun shadows unless `bDrawLandShadows` is 1 (`RF-SHADER-011`,
-/// `0x1402b3380`: land shader flag 9 = the setting, default 0; flag 8, receiving, is always 1).
-/// Every terrain mesh - the merged cell, the quadrant patches, the LOD terrain sources and their
-/// generated batches - therefore gets [`NotShadowCaster`] unless the setting is on. Receiving is
-/// not touched. A mesh that already has the marker keeps it.
+/// Apply the default land-shadow policy from Mudcrab #949 to terrain meshes.
+/// A mesh that already has `NotShadowCaster` keeps it, including with land shadows enabled.
+/// This marker applies to directional, point, and spot lights. Receiving is unchanged.
+///
 ///
 /// Terrain is found through [`TerrainPatch`], [`TerrainCoverage`] and
 /// [`lod::terrain_batching::LandMesh`] on the mesh itself, and through the mesh children of a
@@ -4062,6 +4196,33 @@ fn track_surface_readiness(
                     );
                     if let Some(mut material) = water_materials.get_mut(&material.0) {
                         material.extension = material.extension.clone().with_flow(*grid, None);
+                    }
+                    profiler.increment("water/flow_fallbacks", 1);
+                }
+                SurfaceDependencyState::Ready => {}
+            }
+            // The neighbours' flow maps: while they load the water waits, and one that fails
+            // leaves the cell clamping to its own edge texels.
+            let neighbours: Vec<_> = pending.flow_neighbours.iter().flatten().cloned().collect();
+            match validate_surface_dependencies(
+                &asset_server,
+                &images,
+                &neighbours,
+                SurfaceImageKind::Water,
+                profile.decodes_colour_srgb(),
+            ) {
+                SurfaceDependencyState::Pending => continue,
+                SurfaceDependencyState::Failed(reason) => {
+                    warn!(
+                        cell = format_args!("{:08X}", pending.cell_id),
+                        %reason,
+                        "water neighbour flow map failed; the flow clamps at the cell edge"
+                    );
+                    if let Some(mut material) = water_materials.get_mut(&material.0) {
+                        material.extension = material
+                            .extension
+                            .clone()
+                            .with_flow_neighbours([None, None, None]);
                     }
                     profiler.increment("water/flow_fallbacks", 1);
                 }
@@ -4522,13 +4683,7 @@ fn validate_spawned_asset(
 fn has_explicit_material_exclusion(extras: &GltfExtras) -> bool {
     serde_json::from_str::<serde_json::Value>(&extras.value)
         .ok()
-        .and_then(|value| {
-            value
-                .pointer("/openSkyrim/materialExclusion")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some()
+        .is_some_and(|value| shared::model_visibility::explicit_material_exclusion(&value))
 }
 
 pub(crate) fn validate_standard_material(
@@ -4760,41 +4915,7 @@ fn spawned_model_path(model_path: Option<String>, base_is_marker: bool) -> Optio
 }
 
 pub(crate) fn converted_model_path(path: String) -> Option<String> {
-    // Converted assets are published with lowercase canonical paths, so the
-    // lookup must lowercase too (matching world-inspect's resolver).
-    // The filename is no marker signal: forges and the Civil War map flags carry
-    // "marker" and must draw. Editor markers are excluded by the base record's
-    // `Is Marker` flag (`spawned_model_path`) and, inside a mesh, by the converter's
-    // `EditorMarker` shape rule; the folder rules below stay as path-convention guards.
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    if normalized.starts_with("meshes/sky/")
-        || normalized.starts_with("sky/")
-        || normalized.starts_with("meshes/markers/")
-        || normalized.starts_with("markers/")
-        || normalized.starts_with("meshes/effects/")
-        || normalized.starts_with("effects/")
-    {
-        return None;
-    }
-    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
-    if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
-        return None;
-    }
-    let mut converted = std::path::PathBuf::from("meshes").join(without_prefix);
-    converted.set_extension("glb");
-    Some(converted.to_string_lossy().replace('\\', "/"))
-}
-
-/// Rejects a database-supplied relative path that could escape the assets
-/// root once re-rooted under `meshes/` with `PathBuf::join`. A `..` segment
-/// walks back out of the base directory, and a rooted or drive-prefixed path
-/// makes `PathBuf::join` replace the base entirely instead of appending to it
-/// (see the `std::path::PathBuf::push` docs). Every component must therefore
-/// be a plain, non-empty path segment.
-fn is_safe_relative_asset_path(path: &str) -> bool {
-    std::path::Path::new(path)
-        .components()
-        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    shared::world_assets::streamed_model_path(&path)
 }
 
 /// Orders stored layers, supplying the configured implicit base for an unpainted quadrant.
@@ -5551,6 +5672,20 @@ impl TerrainCoverage {
     }
 }
 
+/// The flow-map files of the east, south and south-east neighbours of a water cell that runs the
+/// flow program at `grid` (RF-WATER-063), through `map`, which gives a cell's file when the pack
+/// has one. A cell that does not run the flow program (`grid` is `None`) reads no neighbour: a
+/// cell next to a flow cell, such as (38, 15) over (38, 14), never takes its map.
+fn flow_neighbour_paths(
+    grid: Option<IVec2>,
+    map: impl Fn(IVec2) -> Option<String>,
+) -> [Option<String>; 3] {
+    match grid {
+        Some(grid) => crate::render::water_flow_neighbour_cells(grid).map(map),
+        None => [None, None, None],
+    }
+}
+
 /// The material for a cell's water from its catalog row: the record's colours, reflectivity factors,
 /// opacity and above-water fog, with Skyrim's DefaultWater for whatever the database does not carry.
 fn water_material(
@@ -5558,6 +5693,7 @@ fn water_material(
     reflection: Handle<Image>,
     flow_normal: Option<Handle<Image>>,
     flow: Option<(IVec2, Handle<Image>)>,
+    flow_neighbours: [Option<Handle<Image>>; 3],
     noise: Option<(&WaterNoise, [Option<Handle<Image>>; 3])>,
     interior: bool,
 ) -> WaterMaterial {
@@ -5608,7 +5744,9 @@ fn water_material(
                 colors.and_then(|colors| colors.fog).unwrap_or_default(),
             );
     if let Some((grid, flow_map)) = flow {
-        extension = extension.with_flow(grid, Some(flow_map));
+        extension = extension
+            .with_flow(grid, Some(flow_map))
+            .with_flow_neighbours(flow_neighbours);
     }
     // A water whose record bytes give no noise layers stays flat.
     if let Some((noise, textures)) = noise {
@@ -5702,6 +5840,36 @@ mod tests {
         );
     }
 
+    /// A flow cell binds the maps of its east, south and south-east neighbours where the pack has
+    /// them; a cell that does not run the flow program binds none, even beside a flow cell. The Sea
+    /// of Ghosts cells have maps for (38,13), (38,14), (39,14) and (40,14) (RF-WATER-065); (38,15)
+    /// has no water record of its own, uses DefaultWater, and must not take (38,14)'s map.
+    #[test]
+    fn a_flow_cell_reads_its_neighbours_maps_and_a_noise_cell_reads_none() {
+        let maps = [(38, 13), (38, 14), (39, 14), (40, 14)];
+        let file = |cell: IVec2| {
+            maps.contains(&(cell.x, cell.y))
+                .then(|| format!("flow.{}.{}.ktx2", cell.x, cell.y))
+        };
+        // (38,14): east (39,14) and south (38,13) exist, south-east (39,13) does not.
+        assert_eq!(
+            flow_neighbour_paths(Some(IVec2::new(38, 14)), file),
+            [
+                Some("flow.39.14.ktx2".to_owned()),
+                Some("flow.38.13.ktx2".to_owned()),
+                None
+            ]
+        );
+        // (38,15) runs the non-flow program (no flow grid): it binds nothing, though the map of
+        // (38,14), the cell south of it, is in the pack.
+        assert_eq!(flow_neighbour_paths(None, file), [None, None, None]);
+        // (40,14) is the last map: its east (41,14) and south (40,13) are absent.
+        assert_eq!(
+            flow_neighbour_paths(Some(IVec2::new(40, 14)), file),
+            [None, None, None]
+        );
+    }
+
     #[test]
     fn a_waters_catalog_fog_reaches_its_material() {
         use crate::world::database::{WaterFog, water_fixtures::water_record_with_fog};
@@ -5747,6 +5915,7 @@ mod tests {
                 Handle::default(),
                 None,
                 None,
+                [None, None, None],
                 None,
                 false,
             )
@@ -5791,7 +5960,15 @@ mod tests {
             underwater_fog: None,
         };
         let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
-        let material = water_material(Some(colors), Handle::default(), None, None, None, false);
+        let material = water_material(
+            Some(colors),
+            Handle::default(),
+            None,
+            None,
+            [None, None, None],
+            None,
+            false,
+        );
         // The water is drawn in Bevy's transmissive phase so it can refract the scene copy
         // (RF-WATER-049): an opaque alpha mode and a material that reads the transmission texture.
         assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
@@ -5817,7 +5994,15 @@ mod tests {
             .to_linear();
         assert!((sun.x - sunlight.red).abs() < 1.0e-6);
         assert_eq!(interior, 0.0);
-        let indoors = water_material(Some(colors), Handle::default(), None, None, None, true);
+        let indoors = water_material(
+            Some(colors),
+            Handle::default(),
+            None,
+            None,
+            [None, None, None],
+            None,
+            true,
+        );
         assert_eq!(indoors.extension.colours().3, 1.0);
     }
 
@@ -7068,7 +7253,25 @@ mod tests {
             converted_model_path("Markers/CivilWarMarkers/CWAttSpawn02.nif".into()),
             None
         );
-        assert_eq!(converted_model_path("Effects/FXRapids.nif".into()), None);
+        for path in [
+            r"Effects\FXcobwebRoundWall01.nif",
+            "Effects/./FXcobwebRoundWall01.nif",
+            "./Meshes/Effects/./FXcobwebRoundWall01.nif",
+            "meshes/effects/fxcobwebroundwall01.nif",
+        ] {
+            assert_eq!(
+                spawned_model_path(Some(path.into()), false).as_deref(),
+                Some("meshes/effects/fxcobwebroundwall01.glb")
+            );
+            assert!(spawned_model_path(Some(path.into()), true).is_none());
+        }
+        for path in [
+            "Effects/FXRapids.nif",
+            "Effects/./FXRapids.nif",
+            "Effects/../Effects/FXcobwebRoundWall01.nif",
+        ] {
+            assert_eq!(converted_model_path(path.into()), None);
+        }
     }
 
     #[test]
@@ -7855,6 +8058,435 @@ mod tests {
             worldspace_id: 60,
             grid_x,
             grid_y,
+        }
+    }
+
+    /// Replenish the real cell collector's allowance without installing the camera planner.
+    fn reset_grass_commit_test_budget(mut budget: ResMut<StreamingCommitBudget>) {
+        budget.remaining = 1;
+    }
+
+    /// Request and commit a fixture cell through the real database worker and cell collector.
+    fn commit_grass_test_cell(app: &mut App, id: u32, grid_x: i32) {
+        let key = CellKey::Exterior {
+            worldspace_id: 3,
+            grid_x,
+            grid_y: 0,
+        };
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(
+                key,
+                CellStatus::Loading {
+                    generation: u64::from(id),
+                },
+            );
+        app.world()
+            .resource::<WorldDatabase>()
+            .request(DatabaseRequest::Load {
+                generation: u64::from(id),
+                key,
+                queued_at: Instant::now(),
+            })
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.update();
+            if matches!(
+                app.world().resource::<StreamingWorld>().cells.get(&key),
+                Some(CellStatus::Resident { .. })
+            ) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture cell {id} did not commit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Run the quadrant-path control through commit, welding and asynchronous grass streaming.
+    fn welded_grass_test_app(max_slope: u8, water_height: Option<f32>) -> (App, tempfile::TempDir) {
+        welded_grass_test_app_on_path(max_slope, water_height, None)
+    }
+
+    /// Bake differing shared edges through quadrant, merged, or invalid-merged fallback terrain.
+    fn welded_grass_test_app_on_path(
+        max_slope: u8,
+        water_height: Option<f32>,
+        merged: Option<bool>,
+    ) -> (App, tempfile::TempDir) {
+        use shared::grass::{GrassCell, GrassLayer, GrassQuadrant, GrassType};
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("world.db");
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection.execute_batch(&format!(
+            "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES({});
+             CREATE TABLE cells(id INTEGER,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
+             INSERT INTO cells VALUES(41,3,0,0),(42,3,1,0);
+             CREATE TABLE land(cell_id INTEGER); INSERT INTO land VALUES(41),(42);
+             CREATE TABLE \"references\"(id INTEGER,cell_id INTEGER,base_form_id INTEGER,
+               pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
+             CREATE TABLE statics(id INTEGER,model_path TEXT,flags INTEGER,bounds_min_x REAL,bounds_min_y REAL,
+               bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER);
+             CREATE TABLE exterior_spatial(id INTEGER,worldspace_id INTEGER,minX REAL,minY REAL);",
+            shared::WORLD_DATABASE_SCHEMA_VERSION
+        )).unwrap();
+        drop(connection);
+        let mut resident = terrain_fixture(41, 10.0);
+        resident.layers.clear();
+        let mut arriving = terrain_fixture(42, 34.0);
+        arriving.layers.clear();
+        arriving.water_height = water_height;
+        for row in 0..33 {
+            arriving.heights[row * 33 + 1] = 100.0;
+        }
+        let cells = [&resident, &arriving].map(|terrain| shared::CachedLand {
+            cell_id: terrain.cell_id,
+            width: terrain.width,
+            height: terrain.height,
+            heights: terrain.heights.clone(),
+            normals: terrain.normals.clone(),
+            vertex_colors: terrain.vertex_colors.clone(),
+            layers: vec![],
+            water_height: terrain.water_height,
+            water_type_form_id: None,
+        });
+        let terrain_path = directory.path().join("cell_cache.rkyv");
+        std::fs::write(
+            &terrain_path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+                version: shared::CELL_CACHE_VERSION,
+                cells: cells.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let grass_path = directory.path().join("grass_cache.rkyv");
+        std::fs::write(
+            &grass_path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&shared::grass::GrassCache {
+                version: shared::grass::GRASS_CACHE_VERSION,
+                types: vec![GrassType {
+                    form_id: 7,
+                    model_path: "meshes/grass.glb".into(),
+                    density: 100,
+                    min_slope: 0,
+                    max_slope,
+                    units_from_water: 0,
+                    water_comparison: 0,
+                    position_range: 0.0,
+                    height_range: 0.0,
+                    color_range: 0.0,
+                    wave_period: 0.0,
+                    flags: 4,
+                }],
+                cells: vec![GrassCell {
+                    cell_id: 42,
+                    worldspace_id: 3,
+                    grid_x: 1,
+                    grid_y: 0,
+                    input_hash: [0; 32],
+                    obstruction_failures: vec![],
+                    expanded_sampling: 0,
+                    heights: arriving.heights.clone(),
+                    normals: vec![],
+                    vertex_colors: vec![],
+                    water_height,
+                    quadrants: (0..4)
+                        .map(|quadrant| GrassQuadrant {
+                            quadrant,
+                            layers: vec![GrassLayer {
+                                texture_form_id: 9,
+                                is_base: false,
+                                grass_ids: vec![7],
+                                weights: vec![1.0; 17 * 17],
+                            }],
+                            exclusion: vec![0; 512],
+                        })
+                        .collect(),
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(EngineConfig {
+                grass: true,
+                grass_min_spacing: 32.0,
+                grass_uploads_per_frame: 0,
+                ..default()
+            })
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(CellCache::open(&terrain_path).unwrap())
+            .insert_resource(crate::world::grass_cache::GrassCache::open(&grass_path).unwrap())
+            .insert_resource(WorldDatabase::open(&database_path).unwrap())
+            .init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .init_resource::<StreamingWorld>()
+            .init_resource::<StreamingCommitBudget>()
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<TerrainContinuity>()
+            .init_resource::<ProfilingState>()
+            .init_resource::<VisualProfile>()
+            .add_systems(
+                Update,
+                (reset_grass_commit_test_budget, collect_cells).chain(),
+            );
+        crate::grass::add_cpu_streaming_test_system(&mut app);
+        if let Some(valid) = merged {
+            install_grass_test_merged_terrain(
+                &mut app,
+                directory.path(),
+                &resident,
+                &arriving,
+                valid,
+            );
+        }
+        app.world_mut()
+            .spawn((StreamingCamera, Transform::from_xyz(4096.0, 200.0, 0.0)));
+        commit_grass_test_cell(&mut app, 41, 0);
+        commit_grass_test_cell(&mut app, 42, 1);
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !app.world().resource::<crate::grass::GrassMetrics>().ready {
+            app.update();
+            assert!(Instant::now() < deadline, "fixture grass did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .terrain_seam_points_welded,
+            33
+        );
+        if let Some(valid) = merged {
+            let metrics = app.world().resource::<StreamingMetrics>();
+            assert_eq!(metrics.terrain_cells_merged, if valid { 2 } else { 1 });
+            assert_eq!(
+                metrics.terrain_cells_merged_invalid,
+                if valid { 0 } else { 1 }
+            );
+            assert_eq!(
+                app.world_mut()
+                    .query_filtered::<Entity, With<MergedTerrainCell>>()
+                    .iter(app.world())
+                    .count(),
+                if valid { 2 } else { 1 },
+                "the regression must exercise actual merged terrain entities"
+            );
+        }
+        (app, directory)
+    }
+
+    /// Supply both neighboring meshes in one real chunk; an invalid arriving texture forces fallback.
+    fn install_grass_test_merged_terrain(
+        app: &mut App,
+        root: &std::path::Path,
+        resident: &TerrainSnapshot,
+        arriving: &TerrainSnapshot,
+        valid: bool,
+    ) {
+        use shared::terrain_mesh::{
+            CELL_MESH_VERTICES, TERRAIN_MESH_FORMAT_VERSION, TerrainChunkFile, terrain_chunk_path,
+        };
+        let cells = [resident, arriving]
+            .into_iter()
+            .map(|terrain| {
+                let mut cell = TerrainCellMesh {
+                    cell_id: terrain.cell_id,
+                    key: [0; 32],
+                    heights: vec![0.0; CELL_MESH_VERTICES],
+                    normals: vec![0; CELL_MESH_VERTICES * 3],
+                    vertex_colors: Vec::new(),
+                    slot_stride: 8,
+                    quadrant_slots: vec![0; 32],
+                    quadrant_slot_counts: [1; 4],
+                    weights: vec![0; CELL_MESH_VERTICES * 8],
+                };
+                crate::terrain_merge::mesh::write_grid(
+                    &mut cell,
+                    &terrain.heights,
+                    &terrain.normals,
+                );
+                if !valid && terrain.cell_id == arriving.cell_id {
+                    cell.quadrant_slots[0] = 0xBAD;
+                }
+                cell
+            })
+            .collect();
+        let path = root.join(terrain_chunk_path(3, 0, 0));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&TerrainChunkFile {
+                format_version: TERRAIN_MESH_FORMAT_VERSION,
+                worldspace_id: 3,
+                cells,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let table = crate::terrain_merge::classes::tests::vanilla_table(9);
+        app.insert_resource(TerrainMerge::with_state(
+            crate::terrain_merge::MergeState::Ready {
+                classes: Arc::new(TerrainClasses::from_table(table).unwrap()),
+                material: Handle::default(),
+                images: Arc::from([]),
+            },
+            root.to_path_buf(),
+        ));
+    }
+
+    /// Read the actual mesh's west-edge and adjacent heights independently of grass sampling.
+    fn welded_grass_mesh_edge(app: &mut App) -> (f32, f32) {
+        let root = app
+            .world_mut()
+            .query::<(Entity, &CellRef)>()
+            .iter(app.world())
+            .find(|(_, id)| id.0 == 42)
+            .unwrap()
+            .0;
+        let handles: Vec<_> = app
+            .world_mut()
+            .query_filtered::<(&Mesh3d, &ChildOf), With<TerrainPatch>>()
+            .iter(app.world())
+            .filter(|(_, parent)| parent.parent() == root)
+            .map(|(handle, _)| handle.0.clone())
+            .collect();
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        let mesh = handles
+            .iter()
+            .find_map(|handle| {
+                let mesh = meshes.get(handle).unwrap();
+                let VertexAttributeValues::Float32x3(positions) =
+                    mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+                else {
+                    panic!("terrain positions");
+                };
+                (positions[0][0] == 0.0 && positions[0][2] == 0.0)
+                    .then_some((positions[0][1], positions[1][1]))
+            })
+            .unwrap();
+        assert_eq!(
+            mesh,
+            (10.0, 100.0),
+            "the arriving west edge must really weld"
+        );
+        mesh
+    }
+
+    /// Grass Z and packed geometric normals follow the welded mesh, including edge triangles.
+    #[test]
+    fn grass_roots_and_normals_follow_committed_welded_terrain() {
+        let (mut app, _directory) = welded_grass_test_app(90, None);
+        assert_welded_grass_roots_and_normals(&mut app);
+    }
+
+    /// Compare packed grass roots and normals against the actual committed render mesh.
+    fn assert_welded_grass_roots_and_normals(app: &mut App) {
+        let (west, east) = welded_grass_mesh_edge(app);
+        let expected_normal = Vec3::new(-(east - west) / 128.0, 0.0, 1.0).normalize();
+        let batch = app
+            .world_mut()
+            .query::<&crate::grass::GrassBatch>()
+            .single(app.world())
+            .unwrap();
+        let mut checked = 0;
+        for instance in batch.instances.iter() {
+            let x = f32::from(instance.position[0]) * 4096.0 / 65535.0;
+            if x > 120.0 {
+                continue;
+            }
+            let z =
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0;
+            let expected = west + x / 128.0 * (east - west);
+            assert!(
+                (z - expected).abs() < 0.06,
+                "grass floats/buries at x={x}: {z} vs mesh {expected}"
+            );
+            let actual = Vec3::from_array(instance.normal.map(|v| f32::from(v) / 127.0));
+            assert!(
+                actual.distance(expected_normal) < 0.01,
+                "grass normal must follow welded triangle"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 100,
+            "fixture must generate many roots beside the shared edge"
+        );
+    }
+
+    /// Slope rejection uses the surface the player sees, rather than the old cache edge.
+    #[test]
+    fn grass_slope_rules_use_committed_welded_terrain() {
+        let (mut app, _directory) = welded_grass_test_app(30, None);
+        assert_welded_grass_slope(&mut app);
+    }
+
+    /// The welded west strip must fail a thirty-degree species slope limit.
+    fn assert_welded_grass_slope(app: &mut App) {
+        welded_grass_mesh_edge(app);
+        let batch = app
+            .world_mut()
+            .query::<&crate::grass::GrassBatch>()
+            .single(app.world())
+            .unwrap();
+        assert!(
+            batch
+                .instances
+                .iter()
+                .all(|instance| { f32::from(instance.position[0]) * 4096.0 / 65535.0 >= 127.95 }),
+            "the welded west triangle exceeds the species' 30-degree slope limit"
+        );
+    }
+
+    /// Above-water rules reject roots that only the pre-weld cached surface put above water.
+    #[test]
+    fn grass_water_rules_use_committed_welded_terrain() {
+        let (mut app, _directory) = welded_grass_test_app(90, Some(30.0));
+        assert_welded_grass_water(&mut app);
+    }
+
+    /// Above-water acceptance must use the welded height rather than the source archive.
+    fn assert_welded_grass_water(app: &mut App) {
+        let (west, east) = welded_grass_mesh_edge(app);
+        let batch = app
+            .world_mut()
+            .query::<&crate::grass::GrassBatch>()
+            .single(app.world())
+            .unwrap();
+        assert!(
+            batch
+                .instances
+                .iter()
+                .filter(|instance| { f32::from(instance.position[0]) * 4096.0 / 65535.0 < 120.0 })
+                .all(|instance| {
+                    let x = f32::from(instance.position[0]) * 4096.0 / 65535.0;
+                    west + x / 128.0 * (east - west) >= 29.95
+                }),
+            "an above-water species must not survive below the committed water surface"
+        );
+    }
+
+    /// Merged terrain and invalid-merged fallback retain the same root, slope and water contracts.
+    #[test]
+    fn g3_merged_and_fallback_grass_follow_welded_surface() {
+        for valid in [true, false] {
+            let (mut app, _directory) = welded_grass_test_app_on_path(90, None, Some(valid));
+            assert_welded_grass_roots_and_normals(&mut app);
+            let (mut app, _directory) = welded_grass_test_app_on_path(30, None, Some(valid));
+            assert_welded_grass_slope(&mut app);
+            let (mut app, _directory) = welded_grass_test_app_on_path(90, Some(30.0), Some(valid));
+            assert_welded_grass_water(&mut app);
         }
     }
 
@@ -8997,6 +9629,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             CellPayload {
                 generation: 1,
                 key: CellKey::Exterior {
@@ -9008,7 +9641,9 @@ mod tests {
                 references: vec![ReferenceRow {
                     form_id: 0x00F9907,
                     initially_enabled: true,
+                    enable_state_unresolved: false,
                     has_multibound_override: false,
+                    named_room_target: false,
                     starts_dead: false,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
@@ -10038,6 +10673,11 @@ mod tests {
             radius,
             color,
             flags,
+            fade: None,
+            fade_status: None,
+            falloff: None,
+            reference_data: None,
+            radius_status: None,
         }
     }
 
@@ -10052,7 +10692,9 @@ mod tests {
         ReferenceRow {
             form_id,
             initially_enabled: true,
+            enable_state_unresolved: false,
             has_multibound_override: false,
+            named_room_target: false,
             starts_dead: false,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
@@ -10094,6 +10736,9 @@ mod tests {
         mut water_materials: ResMut<Assets<WaterMaterial>>,
         mut profiler: ResMut<ProfilingState>,
     ) {
+        if root.0.is_some() {
+            return;
+        }
         root.0 = Some(
             spawn_cell(
                 &mut commands,
@@ -10106,6 +10751,7 @@ mod tests {
                 &mut water_materials,
                 IVec2::ZERO,
                 config.lights,
+                false,
                 false,
                 false,
                 CellPayload {
@@ -10138,7 +10784,7 @@ mod tests {
 
     /// An app that spawns one interior cell holding `references` through the real [`spawn_cell`],
     /// with the engine's lights flag set as `lights`.
-    fn spawn_reference_cell_app(references: Vec<ReferenceRow>, lights: bool) -> App {
+    pub(super) fn spawn_reference_cell_app(references: Vec<ReferenceRow>, lights: bool) -> App {
         spawn_reference_cell_app_with_catalog(references, lights, ActorCatalog::default())
     }
 
@@ -10201,6 +10847,9 @@ mod tests {
             false,
         );
         app.insert_resource(AssetCatalog::open(&path).unwrap());
+        // `spawn_queued_references` spawns one cell and then stops; clear the root so the
+        // update below spawns the references again against the catalogue with the swap rows.
+        app.insert_resource(SpawnedCellRoot::default());
         app.update();
         let mut query = app.world_mut().query::<(
             &FormId,
@@ -10974,7 +11623,7 @@ mod tests {
     }
 
     /// Every reference the cell spawned, by the form id it was placed with.
-    fn reference_entity(app: &App, form_id: u32) -> Entity {
+    pub(super) fn reference_entity(app: &App, form_id: u32) -> Entity {
         let root = app
             .world()
             .resource::<SpawnedCellRoot>()
@@ -11039,7 +11688,10 @@ mod tests {
                     Vec3::new(1.0, 1.0, 10.0),
                     Vec3::new(-1.0, 1.0, 10.0),
                 ],
-                rooms: [Some(0), Some(1)],
+                rooms: [
+                    crate::room_culling::PortalSide::Room(0),
+                    crate::room_culling::PortalSide::Room(1),
+                ],
             }],
             membership: [1, 2, 3]
                 .into_iter()
@@ -11078,6 +11730,38 @@ mod tests {
             &vec![meshes[0], meshes[2]],
             "NONE and unknown bounds stay visible while the bounded automatic static is culled"
         );
+    }
+
+    #[test]
+    fn only_named_room_targets_track_the_streamed_placement() {
+        use crate::room_culling::{NamedRoomAssignment, RoomCullExempt, RoomCullLegacyExempt};
+
+        let mut named = lit_reference(1, None, None);
+        named.base_record_type = Some("ACTI".to_owned());
+        named.named_room_target = true;
+        let mut unrestricted = lit_reference(2, None, None);
+        unrestricted.has_multibound_override = true;
+        let automatic = lit_reference(3, None, None);
+        let app = spawn_reference_cell_app(vec![named, unrestricted, automatic], false);
+        let world = app.world();
+        let reference = reference_entity(&app, 1);
+        assert!(world.get::<RoomCullLegacyExempt>(reference).is_some());
+        assert!(world.get::<RoomCullExempt>(reference).is_none());
+        let Some(NamedRoomAssignment::Initial { root, placement }) = world.get(reference) else {
+            panic!("streamed named target did not retain its original placement");
+        };
+        assert_eq!(*root, world.resource::<SpawnedCellRoot>().0.unwrap());
+        assert_eq!(
+            *placement,
+            world.get::<Transform>(reference).unwrap().compute_affine()
+        );
+        for id in [2, 3] {
+            assert!(
+                world
+                    .get::<NamedRoomAssignment>(reference_entity(&app, id))
+                    .is_none()
+            );
+        }
     }
 
     #[test]
@@ -11323,7 +12007,7 @@ mod tests {
                     armo_id: 0x5b69f,
                     armature_id: 0x5b6a2,
                     biped_mask: shared::actor_outfits::BIPED_BODY,
-                    armature_race_id: 25,
+                    armature_race_id: Some(25),
                     scene: "meshes/clothes/blacksmith/m/torso_1.glb".into(),
                 }],
             }],
@@ -11739,13 +12423,10 @@ mod tests {
         let (light_entity, light, marker) = lights[0];
         assert_eq!(marker.form_id, 0x100);
         assert_eq!(marker.cell_id, 99);
-        assert_eq!(
-            light.range, 850.8,
-            "the reference's XRDS radius wins over the record's 256"
-        );
+        assert_eq!(light.range, 1106.8, "signed XRDS adds to the record radius");
         assert_eq!(light.color, Color::srgb_u8(255, 200, 120));
         assert!(
-            (light.intensity - crate::lights::intensity_for_radius(850.8)).abs() < 1.0e3,
+            (light.intensity - crate::lights::intensity_for_radius(1106.8)).abs() < 1.0e3,
             "{}",
             light.intensity
         );
@@ -11886,7 +12567,7 @@ mod land_shadow_tests {
         !app.world().entity(entity).contains::<NotShadowCaster>()
     }
 
-    /// Retail: land casts no sun shadow by default (`RF-SHADER-011`, `bDrawLandShadows` = 0), on
+    /// Retail: land casts no sun shadow by default (`bDrawLandShadows` = 0), on
     /// every terrain path; other meshes keep casting.
     #[test]
     fn terrain_does_not_cast_sun_shadows_by_default() {

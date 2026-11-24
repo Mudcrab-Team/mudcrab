@@ -18,9 +18,9 @@ Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source
 | `shaders/terrain.wgsl` | Linear layer samples and normal data → weighted material response → PBR lighting | Authored normal conventions, layer semantics and specular response remain separate material probes. |
 | Bevy `pbr_functions.wgsl` | Lights + material → exposure-scaled linear RGB | `Exposure.ev100` uses Bevy's `2^-EV100 / 1.2`. Current 9.7 is pinned from the prior default, not a Skyrim value. Emission's exposure weight is material-owned; default emission is exposure-independent. |
 | `sky.rs`, `shaders/sky.wgsl` | Encoded weather-row mixing → one sRGB decode → linear palette brightness | Existing palette is a fixed clear-day approximation. Sky/fog palette values already occupy the composition domain; do not multiply them by camera exposure a second time. L2 owns authored state and its units. |
-| `DistanceFog` | Exposed surface RGB + linear fog palette → fogged linear RGB | Existing Bevy visibility-based atmospheric fog toward Fog Far stays explicit. Interiors in sky modes 1 and 2 use the cell's own fog as a linear approximation (power and far colour are not applied, see `interior-environment.md`); other interiors have no fog. L2 owns the remaining correction. |
+| `DistanceFog` | Exposed surface RGB + linear fog palette → fogged linear RGB | Exterior: the weather record's power ramp between its Fog Near and Fog Far colours, capped at its Max (see `sky.md#fog`). Interiors in sky modes 1 and 2 use the cell's own fog as a linear approximation (power and far colour are not applied, see `interior-environment.md`); other interiors have no fog. L2 owns the remaining correction. |
 | `render.rs` reflection camera | Scene at main-view exposure → `Rgba16Float`, tone mapping disabled | Floating linear target preserves values above 1. Reflection gate copies exposure even while inactive. Existing reflected layers and geometry selection remain unchanged. |
-| `shaders/water.wgsl` | Exposed water lighting + exposed linear reflection → blend → surface fog | Reflection receives neither a second lighting evaluation nor a display transform. Existing Fresnel/waves and reflection coverage are approximations. |
+| `shaders/water.wgsl` | Retail water mix: `lerp(lerp(refracted scene, body, a), reflection, m) + sun`, written opaque, then surface fog | The water shader does no PBR lighting; reflection receives neither a second lighting evaluation nor a display transform. See `docs/research/water.md` section 2.2 for the terms. |
 | `color_pipeline.rs` / scene cameras | HDR composition → selected Bevy transform (Tony by default) or explicit retail curve → selected post-tonemap grade → display encoding | Runtime starts with Cool Gray sky and the Sleeping Giant sRGB snapshot described below. The settings menu can select a Bevy transform on the Tony path. Explicit retail-curve selection owns camera tonemapping and stays active across unrelated settings changes. The saved `full` grade uses Bevy linear `post_saturation`, followed by sRGB brightness/contrast/tint from reported `ISSkyrimClearDAY` (0x00012F88, `Update.esm` winner) CNAM 1.5/1.135/1.4 and TNAM 0.42 toward 0.894/0.839/0.773. Contrast uses an artistic pivot of 0.18. EV100 remains a pinned Bevy baseline unless changed in the interactive settings. `HNAM` stays unapplied on the Tony path. The separate retail-curve experiment below uses White only. L4 owns adaptation and effective native state. |
 
 The previous non-HDR mesh path tone-mapped in each material shader. The custom sky shader bypassed that operation, and reflection RGB passed through tone mapping in both the reflection and water passes. HDR composition moves the tone transform after composition. The experimental cinematic grade adds a fullscreen shader pass. It changes images and consumes more render-target memory; target-hardware performance remains an acceptance requirement.
@@ -228,10 +228,13 @@ Two named visual presets preserve the approved look while allowing experiments:
 Vivid retains the existing clear-day configuration exactly. Cool Gray uses a light,
 slightly blue gray gradient and lower saturation. Both retain brightness 1.135,
 contrast 1.4, tint amount 0.42 and its existing RGB, EV100 9.7, and TonyMcMapface.
-Cool Gray uses one quarter of the original fog density, equivalent to visibility
-increasing from 48,300 to 193,200 Creation units. Its Fog Far color is a subdued
-snowy blue-white: `(210,222,235)` instead of `(116,168,203)` in sRGB bytes. Vivid retains the original
-fog color and density. Lights, shadows and camera pose remain unchanged. Sky
+Both looks start from the active weather record's sky and fog (see
+[sky.md](sky.md#fog)). Vivid uses them unchanged. Cool Gray is a Mudcrab-only look
+(ADR-0015): it replaces the sky gradient and the Fog Far color with a subdued
+snowy blue-white (`(210,222,235)` instead of the weather's `(116,168,203)` in sRGB
+bytes), and it draws the weather's fog four times as far out (its density scale 0.25
+divides the fog near and far distances). Both of these changes are Mudcrab-only; the
+`skyrim` profile takes neither. Lights, shadows and camera pose remain unchanged. Sky
 colors are authored inputs before tone mapping and grading, not final display RGB.
 
 Run `ScenePreset vivid`, `ScenePreset cool-gray`, or `ScenePreset toggle` in the

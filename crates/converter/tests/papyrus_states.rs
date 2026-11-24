@@ -187,8 +187,9 @@ impl Pex {
 fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
     let lua = Lua::new();
     runtime(&lua);
-    let mut grand = Pex::class("Grand", "", "", 1);
+    let mut grand = Pex::class("Grand", "", "", 2);
     grand.state("", vec![returns("Chain", 73), returns("OnlyGrand", 79)]);
+    grand.state("Ready", vec![returns("GrandStateOverParentDefault", 83)]);
     let mut parent_call = returns("Chain", 0);
     parent_call.locals = vec![TypedName {
         name: "result".into(),
@@ -223,6 +224,7 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
             returns("Value", 41),
             returns("InheritedState", 59),
             returns("Fallback", 57),
+            returns("GrandStateOverParentDefault", 81),
         ],
     );
     parent.state(
@@ -249,7 +251,8 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
         local function call(name) return rt:call_method(a, name, {}) end
         assert(call('iNhErItEdStAtE') == 61, 'parent named state')
         assert(call('OnlyParent') == 67 and call('OnlyGrand') == 79, 'ancestor fallback')
-        assert(call('Fallback') == 17, 'child empty state precedes parent per dispatch contract')
+        assert(call('Fallback') == 63, 'retail: active-state ancestry precedes child empty-state fallback')
+        assert(call('GrandStateOverParentDefault') == 83, 'retail: grandparent active state precedes parent default')
         assert(call('Chain') == 73, 'nested Parent calls use the defining class')
         assert(call('vIrTuAl') == 31, 'inherited code keeps the original receiver')
     "#,
@@ -337,17 +340,21 @@ fn undeclared_auto_state_uses_empty_fallback() {
         .unwrap()
         .call(runtime.clone())
         .unwrap();
-    let error = dispatch
+    // A missing method logs an error and gives None; it no longer raises (#630).
+    dispatch
         .call::<()>((
             runtime.clone(),
             failing.clone(),
             "Absent",
             lua.create_table().unwrap(),
         ))
-        .unwrap_err();
+        .unwrap();
+    let messages: Table = runtime.get("messages").unwrap();
+    let last: Table = messages.get(messages.raw_len()).unwrap();
+    assert_eq!(last.get::<String>("level").unwrap(), "error");
     assert!(
-        error
-            .to_string()
+        last.get::<String>("message")
+            .unwrap()
             .contains("unknown Papyrus method: StateFixture::Absent")
     );
     let value: i32 = dispatch
@@ -355,7 +362,7 @@ fn undeclared_auto_state_uses_empty_fallback() {
         .unwrap();
     assert_eq!(
         value, 93,
-        "another script still runs after Rust receives an invocation error"
+        "another script still runs after a logged script fault"
     );
 }
 
@@ -377,7 +384,7 @@ async fn old_script_abi_rebuilds_only_scripts_even_with_legacy_configuration() {
     rebuild_old_script_abi(1).await;
 }
 
-/// The immediately preceding emitter ABI also rebuilds with saved legacy settings.
+/// ABI-2 scripts rebuild with saved legacy settings.
 #[tokio::test]
 async fn abi_two_scripts_regenerate_case_insensitive_helpers() {
     rebuild_old_script_abi(2).await;
@@ -459,7 +466,15 @@ async fn rebuild_old_script_abi(abi: u32) {
     // Old saved configuration must not opt the current emitter back into prior-ABI reuse.
     let report = convert(legacy).await;
     assert_eq!(report.converted, scripts);
-    assert_eq!(report.cache_hits, manifest.entries.len() as u64 - scripts);
+    assert_eq!(
+        report.cache_hits,
+        manifest
+            .entries
+            .values()
+            .filter(|entry| entry.output != "grass_cache.rkyv")
+            .count() as u64
+            - scripts
+    );
     for entry in manifest
         .entries
         .values()
@@ -710,8 +725,10 @@ fn pex_state_dispatch_and_transitions() {
         assert(log[before_unknown+1] == 'empty-end:Quiet' and log[before_unknown+2] == 'empty-begin:Not Declared!')
         call(a, 'GotoState', 'Ready')
         assert(log[before_unknown+3] == 'empty-end:Not Declared!' and log[before_unknown+4] == 'empty-begin:Ready')
-        local ok, err = pcall(call, a, 'Absent')
-        assert(not ok and string.find(err, 'unknown Papyrus method'))
+        -- A missing method is a script fault: it logs an error and gives None (#630).
+        assert(call(a, 'Absent') == nil)
+        local last = rt.messages[#rt.messages]
+        assert(last.level == 'error' and string.find(last.message, 'unknown Papyrus method'))
         assert(call(b, 'Value') == 31, 'another script still runs after errors')
     "#).exec().unwrap();
 }

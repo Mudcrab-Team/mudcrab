@@ -6,6 +6,7 @@ use crate::{
     config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
     swap_bridge::SwapWaiting,
+    terrain_lod_noise::{LandNoise, LandNoiseMaterials, NoisyTerrainLodMaterial},
     visual_profile::VisualProfile,
     world::{
         components::{CELL_SIZE, StreamingCamera},
@@ -14,17 +15,14 @@ use crate::{
 };
 use bevy::{
     asset::{AssetLoadError, LoadState, RecursiveDependencyLoadState, io::AssetReaderError},
-    gltf::GltfAssetLabel,
+    gltf::{GltfAssetLabel, GltfMaterialName},
     mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
     tasks::{IoTaskPool, Task, block_on},
     world_serialization::{WorldAsset, WorldAssetRoot, WorldInstanceReady},
 };
 use sha2::{Digest, Sha256};
-use shared::lod::{
-    ChunkKey, LodOrigin, LodTier, TERRAIN_QUADRANT_INDEX_COUNT, TERRAIN_QUADRANT_VERTEX_COUNT,
-    nodes,
-};
+use shared::lod::{ChunkKey, LodOrigin, LodTier, TERRAIN_QUADRANT_INDEX_COUNT, nodes};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
@@ -81,6 +79,33 @@ pub(super) struct LodStreaming {
 }
 
 impl LodStreaming {
+    pub(super) fn near_terrain_overlay<'a>(
+        &self,
+        overlays: &'a Query<&TerrainLodOverlay>,
+        worldspace: u32,
+        centre: IVec2,
+        cell: IVec2,
+        distances: &TerrainLodDistances,
+    ) -> Option<(&'a Handle<Image>, IVec2, f32)> {
+        // stand-in(#939): The seam pairing is inferred. Query the loaded LOD tree at the
+        // land cell centre using Mudcrab's tier selector before full-detail visibility hides it.
+        let wanted = distances.terrain_tier(centre, cell, self.grid_origin)?;
+        let origin = LodOrigin::new(self.grid_origin.x, self.grid_origin.y);
+        for tier in LodTier::ALL.into_iter().filter(|tier| *tier >= wanted) {
+            let anchor = origin.chunk_for_cell(tier, cell.x, cell.y);
+            let key = ChunkKey::new(worldspace, tier, anchor);
+            if let Some(LodChunkStatus::Ready { root, .. }) = self.chunks.get(&key) {
+                let Ok(atlas) = overlays.get(*root) else {
+                    continue;
+                };
+                let relative = anchor.min_cell(tier);
+                let base = self.grid_origin + IVec2::new(relative.0, relative.1);
+                return Some((&atlas.0, base, tier.side_cells() as f32));
+            }
+        }
+        None
+    }
+
     fn query_ready(&self, tier: LodTier, now: Instant) -> bool {
         !self.requested_queries.contains(&tier)
             && self
@@ -192,6 +217,10 @@ pub(super) struct LodChunkGridOrigin {
     pub(super) grid_x: i64,
     pub(super) grid_y: i64,
 }
+
+/// The converted block's diffuse atlas, retained when batching replaces the source scene.
+#[derive(Component)]
+pub(super) struct TerrainLodOverlay(Handle<Image>);
 
 #[derive(Component)]
 pub(super) struct PendingLodChunk {
@@ -712,18 +741,25 @@ pub(super) fn track_lod_readiness(
     world_assets: Res<Assets<WorldAsset>>,
     meshes: Res<Assets<Mesh>>,
     children: Query<&Children>,
-    names: Query<&Name>,
+    names: (Query<&Name>, Query<&GltfMaterialName>),
     mesh_handles: Query<&Mesh3d>,
     materials: Query<&MeshMaterial3d<StandardMaterial>>,
     material_assets: Res<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut noise: LandNoiseMaterials,
     profile: Res<VisualProfile>,
     mut pending_chunks: Query<(Entity, &LodChunkRoot, &mut PendingLodChunk)>,
     mut streaming: ResMut<LodStreaming>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
+    let (names, material_names) = names;
     let started = Instant::now();
+    if noise.loading(&asset_server) {
+        return;
+    }
+    // A failed noise load leaves the chunks on their original materials.
+    let noise_image = noise.loaded(&asset_server);
     for (entity, root, mut pending) in &mut pending_chunks {
         let Some(asset) = pending.asset.clone() else {
             continue;
@@ -820,10 +856,47 @@ pub(super) fn track_lod_readiness(
                 pending.metadata.payload_path
             );
         }
+        let mut chunk_materials = HashMap::new();
+        let mut overlay = None;
         for (patch, coverage) in &patches {
+            if let (Some(image), Some(noisy_materials), Ok(primitives)) = (
+                noise_image.as_ref(),
+                noise.materials.as_deref_mut(),
+                children.get(*patch),
+            ) {
+                for primitive in primitives.iter() {
+                    if let Ok(material) = materials.get(primitive)
+                        && let Some(base) = material_assets.get(&material.0)
+                        && let Some(diffuse) = &base.base_color_texture
+                    {
+                        if overlay.is_none()
+                            && material_names.get(primitive).is_ok_and(|name| {
+                                name.0 == shared::lod::RETAIL_TERRAIN_MATERIAL_NAME
+                            })
+                        {
+                            overlay = Some(TerrainLodOverlay(diffuse.clone()));
+                        }
+                        let handle = chunk_materials.entry(material.0.id()).or_insert_with(|| {
+                            noisy_materials.add(NoisyTerrainLodMaterial {
+                                base: base.clone(),
+                                extension: LandNoise {
+                                    image: image.clone(),
+                                },
+                            })
+                        });
+                        commands
+                            .entity(primitive)
+                            .remove::<MeshMaterial3d<StandardMaterial>>()
+                            .insert(MeshMaterial3d(handle.clone()));
+                    }
+                }
+            }
             commands
                 .entity(*patch)
                 .insert((*coverage, TerrainSurfaceReady, Visibility::Hidden));
+        }
+        if let Some(overlay) = overlay {
+            commands.entity(entity).insert(overlay);
         }
         commands.entity(entity).insert(Visibility::Inherited);
         commands.entity(entity).remove::<PendingLodChunk>();
@@ -1439,6 +1512,8 @@ pub(super) fn update_terrain_lod_visibility(
             "lod/pending_terrain_selection_uploads",
             batches.pending_selection_uploads() as f64,
         );
+        // An estimate from the self-built quadrant's fixed fan: quadrants cut from a `.btr` block
+        // have their own triangle counts, so for them this is a quadrant count in disguise.
         profiler.set_gauge(
             "lod/batched_selected_triangles",
             (batched_quadrants * TERRAIN_QUADRANT_INDEX_COUNT / 3) as f64,
@@ -1616,27 +1691,32 @@ fn validate_lod_scene(
         }
     }
 
-    if seen.len() != source_cells.len() * 4 {
+    // The self-built chunk has four quadrants per source cell. A chunk cut from a `.btr` block has
+    // one to four: the retail mesh does not reach every quadrant at the edge of a worldspace. Every
+    // source cell still needs at least one, and none may be missing.
+    let covered: HashSet<IVec2> = seen.iter().map(|(grid, _)| *grid).collect();
+    if covered != source_cells || seen.len() > source_cells.len() * 4 {
         return Err(format!(
-            "{key:?} contains {} terrain quadrants for {} source cells; expected {}",
+            "{key:?} contains {} terrain quadrants over {} of {} source cells; every source cell needs one to four",
             seen.len(),
-            source_cells.len(),
-            source_cells.len() * 4
+            covered.len(),
+            source_cells.len()
         ));
     }
     Ok(patches)
 }
 
+/// Checks one terrain quadrant mesh. Two chunk kinds reach this: the converter's self-built
+/// quadrant (a fixed 65-vertex fan with vertex colours) and a quadrant cut from a `.btr` block
+/// (any vertex count, no vertex colours, with the tangent frame its normal map is stored in).
+/// Both need finite positions, UVs in 0..1, normals that match the positions, and whole
+/// triangles that index inside the mesh. Colours and tangents are optional but checked when present.
 fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
     if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
         return Err("mesh is not a triangle list".to_owned());
     }
     let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        Some(VertexAttributeValues::Float32x3(values))
-            if values.len() == TERRAIN_QUADRANT_VERTEX_COUNT =>
-        {
-            values
-        }
+        Some(VertexAttributeValues::Float32x3(values)) if values.len() >= 3 => values,
         _ => return Err("mesh has an invalid Float32x3 position count".to_owned()),
     };
     if !positions.iter().flatten().all(|value| value.is_finite()) {
@@ -1658,39 +1738,46 @@ fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
         _ => return Err("mesh UVs are missing, non-finite, or outside 0..1".to_owned()),
     }
     match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+        None => {}
         Some(VertexAttributeValues::Float32x4(values))
             if values.len() == positions.len()
                 && values
                     .iter()
                     .flatten()
                     .all(|value| value.is_finite() && (0.0..=1.0).contains(value)) => {}
-        _ => return Err("mesh colors are missing, non-finite, or outside 0..1".to_owned()),
+        Some(_) => return Err("mesh colors are non-finite, outside 0..1, or mismatched".to_owned()),
     }
-    let index_count = match mesh.indices() {
-        Some(Indices::U16(indices)) if indices.len() == TERRAIN_QUADRANT_INDEX_COUNT => {
-            if indices
-                .iter()
-                .any(|index| usize::from(*index) >= positions.len())
-            {
-                return Err("mesh has an out-of-range index".to_owned());
-            }
-            indices.len()
+    match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+        None => {}
+        Some(VertexAttributeValues::Float32x4(values))
+            if values.len() == positions.len()
+                && values.iter().flatten().all(|value| value.is_finite()) => {}
+        Some(_) => return Err("mesh tangents are non-finite or mismatched".to_owned()),
+    }
+    let in_range = |count: usize, any_out: bool| -> Result<(), String> {
+        if count < 3 || !count.is_multiple_of(3) {
+            return Err("mesh indices do not form complete triangles".to_owned());
         }
-        Some(Indices::U32(indices)) if indices.len() == TERRAIN_QUADRANT_INDEX_COUNT => {
-            if indices
-                .iter()
-                .any(|index| *index as usize >= positions.len())
-            {
-                return Err("mesh has an out-of-range index".to_owned());
-            }
-            indices.len()
+        if any_out {
+            return Err("mesh has an out-of-range index".to_owned());
         }
-        _ => return Err("mesh has an invalid triangle index count".to_owned()),
+        Ok(())
     };
-    if index_count % 3 != 0 {
-        return Err("mesh indices do not form complete triangles".to_owned());
+    match mesh.indices() {
+        Some(Indices::U16(indices)) => in_range(
+            indices.len(),
+            indices
+                .iter()
+                .any(|index| usize::from(*index) >= positions.len()),
+        ),
+        Some(Indices::U32(indices)) => in_range(
+            indices.len(),
+            indices
+                .iter()
+                .any(|index| *index as usize >= positions.len()),
+        ),
+        None => Err("mesh has an invalid triangle index count".to_owned()),
     }
-    Ok(())
 }
 
 /// The finest ready tier at least as coarse as the tier retail's terrain rule draws for `cell`
@@ -1939,6 +2026,104 @@ fn update_counts(
 mod tests {
     use super::*;
     use crate::world::database::LodChunkBounds;
+
+    #[test]
+    fn near_terrain_overlay_skips_a_ready_tier_without_an_atlas() {
+        use bevy::ecs::system::SystemState;
+
+        let mut world = World::new();
+        let mut images = Assets::<Image>::default();
+        let fine_atlas = images.add(Image::default());
+        let coarse_atlas = images.add(Image::default());
+        let fine_root = world.spawn_empty().id();
+        let coarse_root = world.spawn(TerrainLodOverlay(coarse_atlas.clone())).id();
+        let origin = LodOrigin::new(1, -3);
+        let centre = IVec2::new(origin.grid_x, origin.grid_y);
+        let cell = centre + IVec2::splat(4);
+        let worldspace = 1;
+        let distances = TerrainLodDistances::default();
+        let mut streaming = LodStreaming {
+            grid_origin: centre,
+            ..default()
+        };
+        for (tier, root) in [(LodTier::Tier4, fine_root), (LodTier::Tier8, coarse_root)] {
+            let anchor = origin.chunk_for_cell(tier, cell.x, cell.y);
+            streaming.chunks.insert(
+                ChunkKey::new(worldspace, tier, anchor),
+                LodChunkStatus::Ready { root, origin },
+            );
+        }
+        let mut state = SystemState::<Query<&TerrainLodOverlay>>::new(&mut world);
+        let overlays = state.get(&world).expect("the overlay query is valid");
+        assert_eq!(
+            streaming.near_terrain_overlay(&overlays, worldspace, centre, cell, &distances),
+            Some((&coarse_atlas, centre, 8.0))
+        );
+
+        world
+            .entity_mut(fine_root)
+            .insert(TerrainLodOverlay(fine_atlas.clone()));
+        let overlays = state.get(&world).expect("the overlay query is valid");
+        assert_eq!(
+            streaming.near_terrain_overlay(&overlays, worldspace, centre, cell, &distances),
+            Some((&fine_atlas, cell, 4.0))
+        );
+    }
+
+    /// A quadrant mesh the way the `.btr` importer writes it: any vertex count, a reference
+    /// normal and tangent for the normal map, and no vertex colours.
+    fn retail_quadrant_mesh(vertices: usize, indices: Vec<u32>) -> Mesh {
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            (0..vertices)
+                .map(|i| [i as f32, 0.0, 1.0])
+                .collect::<Vec<_>>(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; vertices])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.5, 0.5]; vertices])
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_TANGENT,
+            vec![[1.0, 0.0, 0.0, 1.0]; vertices],
+        )
+        .with_inserted_indices(Indices::U32(indices))
+    }
+
+    #[test]
+    fn a_quadrant_cut_from_a_retail_block_validates_with_any_vertex_count() {
+        assert_eq!(
+            validate_lod_quadrant_mesh(&retail_quadrant_mesh(5, vec![0, 1, 2, 2, 3, 4])),
+            Ok(())
+        );
+        assert_eq!(
+            validate_lod_quadrant_mesh(&retail_quadrant_mesh(3, vec![0, 1, 2])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_malformed_quadrant_mesh_is_refused_with_its_reason() {
+        let reason = |mesh: Mesh| validate_lod_quadrant_mesh(&mesh).unwrap_err();
+        assert!(reason(retail_quadrant_mesh(5, vec![0, 1, 5])).contains("out-of-range"));
+        assert!(reason(retail_quadrant_mesh(5, vec![0, 1, 2, 3])).contains("complete triangles"));
+        assert!(reason(retail_quadrant_mesh(5, vec![])).contains("complete triangles"));
+        assert!(reason(retail_quadrant_mesh(2, vec![0, 1, 1])).contains("position count"));
+        let mut no_uv = retail_quadrant_mesh(3, vec![0, 1, 2]);
+        no_uv.remove_attribute(Mesh::ATTRIBUTE_UV_0);
+        assert!(reason(no_uv).contains("UVs"));
+        let outside = retail_quadrant_mesh(3, vec![0, 1, 2])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[1.5, 0.5]; 3]);
+        assert!(reason(outside).contains("UVs"));
+        let bad_tangent = retail_quadrant_mesh(3, vec![0, 1, 2])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[f32::NAN, 0.0, 0.0, 1.0]; 3]);
+        assert!(reason(bad_tangent).contains("tangents"));
+        let bad_colour = retail_quadrant_mesh(3, vec![0, 1, 2])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[2.0, 0.0, 0.0, 1.0]; 3]);
+        assert!(reason(bad_colour).contains("colors"));
+    }
 
     #[test]
     fn a_spawned_lod_chunks_srgb_albedo_is_retagged_once_and_counted() {

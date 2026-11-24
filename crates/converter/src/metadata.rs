@@ -1,8 +1,10 @@
-//! Rebuild world metadata from package-matched plugins without reconverting assets.
+//! Rebuild world metadata from package-matched plugins and verified retained assets.
 //!
 //! Retained models, textures and scripts are verified against the source package's
-//! manifest, not refreshed from current Data. Data supplies checksum-matched plugins,
-//! LOD settings and terrain diffuse inputs. Use normal conversion after asset changes.
+//! manifest, not refreshed from current Data; scripts with a stale ABI or proof
+//! regenerate from checksum-matched Data, with local failures reported as incomplete
+//! publication. Data supplies checksum-matched plugins, LOD settings, optional PC
+//! controls and terrain diffuse inputs. Use normal conversion after asset changes.
 
 use crate::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
@@ -14,10 +16,15 @@ use crate::{
         can_reuse_meshes_for_producer, configuration_hash, default_gait_inputs, hash_bytes,
         hash_file, recover_script_abi,
     },
-    esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
+    esm::{
+        EsmParser,
+        cell_cache::{write_cell_cache, write_preserved_cell_cache},
+        exporter::validate_database,
+        grass_cache::write_grass_cache,
+    },
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
-    mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
+    mesh::{MeshConverter, NifSnapshot, prune_glb_texture_bytes, volcanic_normal_cache_suffix},
     pipeline::{
         LodWorkerOwnership, archive_load_order_priority, compile_lod_chunks,
         conversion_is_complete, convert_staged_scripts, discover, installed_archive_owners,
@@ -59,6 +66,10 @@ struct MetadataProvenance {
     retained_asset_configuration_hash: String,
     retained_asset_hashes: BTreeMap<String, String>,
     replay_verified_pruned_assets: BTreeSet<String>,
+    /// Grass cells newly baked during this metadata rebuild.
+    grass_baked_cells: usize,
+    /// Unchanged cells reused from the source package's valid grass cache.
+    grass_reused_cells: usize,
     /// What the rebuild did with each asset kind, and the settings proofs behind it.
     asset_kinds: BTreeMap<&'static str, KindProvenance>,
     /// Script ABI of the source pack's combined settings proof, and the one it was rebuilt to.
@@ -104,7 +115,7 @@ impl AssetPipeline {
     /// Publishes only to a new, disjoint directory. The source package and its
     /// retained GLB/KTX2/Luau bytes are never modified or relabeled in place.
     /// MO2 source selection is unsupported by this package-matched Data route.
-    /// Reader data-loss warnings keep the rebuilt report and manifest incomplete;
+    /// Reader and grass data-loss warnings keep the rebuilt report and manifest incomplete;
     /// successful compatibility notices do not affect their shared completeness rule.
     pub async fn rebuild_metadata_async(
         mut config: PipelineConfig,
@@ -422,6 +433,7 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter14_reader_identity(&schemas, &language),
                 ]
                 .into_iter()
                 .flatten()
@@ -432,6 +444,7 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
                     crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter14_reader_identity(&schemas, &language),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
@@ -601,7 +614,7 @@ fn stage_optional_default_source(
 ) -> Result<()> {
     let paths = BTreeSet::from([relative.to_owned()]);
     for archive in archives {
-        if let Err(error) = ArchiveExtractor::extract_paths(archive, vfs, &paths) {
+        if let Err(error) = ArchiveExtractor::extract_runtime_paths(archive, vfs, &paths) {
             discard_default_source(vfs, relative, &error, report)?;
         }
     }
@@ -697,7 +710,7 @@ async fn rebuild_into(
         &mut reuse_notices,
         !rebuild_scripts,
     )?;
-    let provenance = MetadataProvenance {
+    let mut provenance = MetadataProvenance {
         record_reader: crate::esm::inhouse::configured_reader_identity(config)?,
         retained_asset_record_reader: retained_reader.clone(),
         retained_asset_schema_json: retained_schemas.addon_bytes().map(<[u8]>::to_vec).collect(),
@@ -713,6 +726,8 @@ async fn rebuild_into(
             .unwrap_or_else(|| manifest.configuration_hash.clone()),
         retained_asset_hashes: retained.clone(),
         replay_verified_pruned_assets,
+        grass_baked_cells: 0,
+        grass_reused_cells: 0,
         asset_kinds,
         source_script_abi,
         script_abi: config.script_abi_version,
@@ -792,6 +807,31 @@ async fn rebuild_into(
     for archive in &archives {
         ArchiveExtractor::extract_lod_settings(archive, &vfs)?;
     }
+    // Reingest only the optional controls; verified meshes/textures/scripts remain retained.
+    let control_scratch = tempfile::tempdir_in(staging.parent().unwrap_or(staging))?;
+    let mut control_sources = BTreeMap::new();
+    for (index, archive) in archives.iter().enumerate() {
+        let root = control_scratch.path().join(index.to_string());
+        let provider = archive
+            .strip_prefix(&config.data_dir)
+            .unwrap_or(archive)
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let warnings =
+            match crate::controls::extract_archive(&mut control_sources, archive, &provider, &root)
+            {
+                Ok(warnings) => warnings,
+                Err(warning) => vec![warning],
+            };
+        report.warnings.extend(warnings);
+    }
+    for file in &files {
+        if let Ok(relative) = file.strip_prefix(&config.data_dir) {
+            crate::controls::record_loose(&mut control_sources, relative, file);
+        }
+    }
+    crate::controls::publish(staging, control_sources, &mut report)?;
     let loose: Vec<_> = files
         .iter()
         .filter(|path| {
@@ -831,7 +871,7 @@ async fn rebuild_into(
     // Both readers resolve localized names; decode only the selected plugin tables.
     let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
     for archive in &archives {
-        if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
+        if let Err(error) = ArchiveExtractor::extract_runtime_paths(archive, &vfs, &strings) {
             eprintln!(
                 "warning: {}: unable to extract localized names: {error}",
                 archive.display()
@@ -850,6 +890,7 @@ async fn rebuild_into(
     manifest.record_data_complete = Some(conversion.warnings.is_empty());
     report.warnings.extend(conversion.warnings);
     report.notices.extend(conversion.notices);
+    report.intended_omissions.extend(conversion.omissions);
     let phases = conversion.phases;
     let merged = conversion.records;
     validate_database(&Connection::open(&database)?)?;
@@ -858,6 +899,7 @@ async fn rebuild_into(
         crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
     } else {
         write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+        write_preserved_cell_cache(&merged, &staging.join("cell_cache_preserved.rkyv"))?;
     }
     crate::esm::inhouse::write_configured_reader_identity(staging, config)?;
     report.artifacts.push(PathBuf::from("record-reader.json"));
@@ -868,10 +910,10 @@ async fn rebuild_into(
         report
             .artifacts
             .push(PathBuf::from("inhouse-reader-diagnostics.json"));
-        report
-            .artifacts
-            .push(PathBuf::from("cell_cache_preserved.rkyv"));
     }
+    report
+        .artifacts
+        .push(PathBuf::from("cell_cache_preserved.rkyv"));
     // Merged terrain (#215) keeps only the records its stage reads. The LAND each cell keeps is
     // checked here, before the texture, mesh and LOD stages, so a bad load order fails in minutes;
     // the positions are the ones the cell cache above was ordered by.
@@ -902,7 +944,7 @@ async fn rebuild_into(
         BTreeSet::new()
     };
     for archive in &archives {
-        ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
+        ArchiveExtractor::extract_runtime_paths(archive, &vfs, &diffuse_paths)?;
     }
     let loose_diffuse: Vec<_> = files
         .iter()
@@ -942,6 +984,7 @@ async fn rebuild_into(
     )
     .await?;
     report.lod_elapsed_ms = lod_started.elapsed().as_millis();
+    crate::lod::retail_terrain_import::TerrainCheckpoint::remove_from(staging)?;
     // Merged terrain (#215) is rebuilt from the records like the database and the LOD chunks
     // are, so a rebuild with the option on produces it instead of ignoring the option.
     if config.merged_terrain {
@@ -965,19 +1008,45 @@ async fn rebuild_into(
     );
     report_projection_omissions(&mut report, &integration.projection_omissions);
     report.integration = Some(integration);
+    let grass = write_grass_cache(
+        &Connection::open(&database)?,
+        staging,
+        &staging.join("cell_cache_preserved.rkyv"),
+        Some(&source.join("grass_cache.rkyv")),
+        &staging.join("grass_cache.rkyv"),
+    )?;
+    provenance.grass_baked_cells = grass.baked_cells;
+    provenance.grass_reused_cells = grass.reused_cells;
+    // Unavailable geometry only limits the optional obstruction mask.
+    report.notices.extend(grass.notices());
+    let grass_warnings = grass.warnings();
+    if !grass_warnings.is_empty() {
+        // Retained asset repair cannot restore grass data omitted by this rebuild.
+        manifest.record_data_complete = Some(false);
+    }
+    report.warnings.extend(grass_warnings);
+    report.artifacts.push(PathBuf::from("grass_cache.rkyv"));
     report
         .artifacts
         .push(PathBuf::from("integration-report.json"));
-    // Albedo is embedded in new LOD payloads. Retained textures still match
-    // the source manifest; validate copied model dependencies separately. The merged terrain
-    // payloads (#215) are generated here too and are validated the same way.
-    let payloads = report
+    // Validate new LOD, merged terrain and grass payloads. Retained textures
+    // match the source manifest; validate copied model dependencies separately.
+    let rebuilt_artifacts = report
         .artifacts
         .iter()
-        .filter(|path| path.starts_with("lod") || path.starts_with("terrain"))
+        .filter(|path| {
+            path.starts_with("lod")
+                || path.starts_with("terrain")
+                || *path == Path::new("grass_cache.rkyv")
+        })
         .cloned()
         .collect::<Vec<_>>();
-    validate_artifacts(staging, &payloads, &BTreeMap::new(), config.cpu_jobs)?;
+    validate_artifacts(
+        staging,
+        &rebuilt_artifacts,
+        &BTreeMap::new(),
+        config.cpu_jobs,
+    )?;
     for path in retained.keys().filter(|path| path.ends_with(".glb")) {
         for dependency in MeshConverter::glb_texture_dependencies(&staging.join(path))? {
             ensure!(
@@ -1006,6 +1075,9 @@ async fn rebuild_into(
         )?);
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
+    crate::cache::merge_intended_omissions(&mut report.intended_omissions);
+    manifest.intended_omissions = report.intended_omissions.clone();
+    crate::cache::record_grass_artifact(manifest, staging)?;
     manifest.save(&staging.join("conversion-manifest.json"))?;
     fs::write(
         staging.join("metadata-source-conversion-manifest.json"),
@@ -1226,6 +1298,10 @@ fn copy_verified_assets_with(
         .collect();
     let mut expected = BTreeMap::new();
     for entry in manifest.entries.values() {
+        // Grass is regenerated from preserved terrain after model finalization.
+        if entry.output == "grass_cache.rkyv" {
+            continue;
+        }
         let kind = if entry.output.starts_with("meshes/") {
             AssetKind::Mesh
         } else if entry.output.starts_with("textures/") {
@@ -1431,31 +1507,178 @@ fn take_script_entries(manifest: &mut ConversionManifest) -> BTreeMap<String, Ca
         .collect()
 }
 
-/// Requires the scripts converted again from Data to come from the sources the source package
-/// recorded. Different Data would make the rebuilt scripts belong to another conversion.
+/// Authenticate winning source keys and hashes before decoding. Only a recorded extraction
+/// failure can explain an unavailable script; every available script must match its producer.
 fn verify_script_sources(
     recorded: &BTreeMap<String, CacheEntry>,
-    rebuilt: &BTreeMap<String, CacheEntry>,
+    available: &BTreeMap<String, String>,
+    unavailable: &BTreeMap<String, String>,
 ) -> Result<()> {
     let mut differing = recorded
         .iter()
         .filter(|(key, entry)| {
-            rebuilt
-                .get(*key)
-                .is_none_or(|rebuilt| rebuilt.source_hash != entry.source_hash)
+            available.get(*key).map_or_else(
+                || !unavailable.contains_key(*key),
+                |hash| hash != &entry.source_hash,
+            )
         })
         .map(|(key, _)| key)
-        .chain(rebuilt.keys().filter(|key| !recorded.contains_key(*key)));
+        .chain(available.keys().filter(|key| !recorded.contains_key(*key)))
+        .chain(
+            unavailable
+                .keys()
+                .filter(|key| !recorded.contains_key(*key)),
+        );
     if let Some(first) = differing.next() {
         let count = 1 + differing.count();
         let first: String = first.chars().take(256).collect();
         bail!(
             "script sources in Data differ from the source package ({count} of {} scripts; first: {first}); \
              run normal conversion to regenerate assets",
-            recorded.len().max(rebuilt.len())
+            recorded.len().max(available.len() + unavailable.len())
         );
     }
     Ok(())
+}
+
+/// Identified extraction failures and bounded diagnostics for unusable archive member names.
+#[derive(Default)]
+struct StagedScriptArchives {
+    unavailable: BTreeMap<String, String>,
+    skipped_names: u64,
+    warnings: Vec<String>,
+}
+
+/// Admit archive keys that remain stable through overlay and VFS source authentication.
+fn script_archive_member_key(path: &Path) -> Result<String> {
+    let key = canonical_asset_path(&path.to_string_lossy(), AssetKind::Script, "pex")?;
+    ensure!(
+        canonical_asset_path(&key, AssetKind::Script, "pex")? == key,
+        "script archive member name has an unstable canonical identity"
+    );
+    Ok(key)
+}
+
+/// Overlay complete archive selections, retrying failed batches one script at a time.
+/// Identified failed winners remove lower-priority bytes; unusable names produce local warnings.
+fn stage_script_archives(
+    config: &PipelineConfig,
+    staging: &Path,
+    archives: &[PathBuf],
+) -> Result<StagedScriptArchives> {
+    let vfs = staging.join("vfs");
+    let mut staged = StagedScriptArchives::default();
+    for (index, archive) in archives.iter().enumerate() {
+        let scratch = staging.join(format!(".metadata-script-archive-{index}"));
+        fs::create_dir(&scratch)?;
+        let mut skipped_names = 0u64;
+        let mut first_bad_name = None;
+        let extracted = {
+            let mut usable_key = |path: &Path| -> Result<Option<String>> {
+                match script_archive_member_key(path) {
+                    Ok(key) => Ok(Some(key)),
+                    Err(error) if config.fail_fast => Err(error).wrap_err_with(|| {
+                        format!(
+                            "unusable script member {} in {}",
+                            path.display(),
+                            archive.display()
+                        )
+                    }),
+                    Err(error) => {
+                        skipped_names = skipped_names.saturating_add(1);
+                        if first_bad_name.is_none() {
+                            let name: String = path.to_string_lossy().chars().take(256).collect();
+                            let reason: String = format!("{error:#}").chars().take(256).collect();
+                            first_bad_name = Some(format!("{name}: {reason}"));
+                        }
+                        Ok(None)
+                    }
+                }
+            };
+            let extracted: Vec<PathBuf> =
+                match ArchiveExtractor::extract_script_inputs(archive, &scratch) {
+                    Ok(extracted) => extracted.into_iter().map(|file| file.path).collect(),
+                    Err(error)
+                        if config.fail_fast || error.is::<crate::archive::StagingUnavailable>() =>
+                    {
+                        return Err(error).wrap_err_with(|| {
+                            format!("failed to extract scripts from {}", archive.display())
+                        });
+                    }
+                    Err(_) => {
+                        // A fresh directory gives each retry only its own fully written payload.
+                        fs::remove_dir_all(&scratch)?;
+                        fs::create_dir(&scratch)?;
+                        let selected = ArchiveExtractor::list_runtime_paths(archive)?
+                            .into_iter()
+                            .filter(|path| {
+                                path.extension()
+                                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
+                            });
+                        let mut extracted = Vec::new();
+                        for path in selected {
+                            let Some(key) = usable_key(&path)? else {
+                                continue;
+                            };
+                            match ArchiveExtractor::extract_runtime_paths(
+                                archive,
+                                &scratch,
+                                &BTreeSet::from([path.clone()]),
+                            ) {
+                                Ok(_) => extracted.push(path),
+                                Err(error) if error.is::<crate::archive::StagingUnavailable>() => {
+                                    return Err(error);
+                                }
+                                Err(error) => {
+                                    let destination = vfs.join(&key);
+                                    match fs::remove_file(&destination) {
+                                        Ok(()) => {}
+                                        Err(error)
+                                            if error.kind() == std::io::ErrorKind::NotFound => {}
+                                        Err(error) => {
+                                            return Err(error)
+                                                .wrap_err("failed to discard overridden script");
+                                        }
+                                    }
+                                    staged.unavailable.insert(
+                                        key.clone(),
+                                        format!(
+                                            "skipped script {key} from {}: {error:#}",
+                                            archive.display()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        extracted
+                    }
+                };
+            let mut admitted = Vec::new();
+            for path in extracted {
+                if let Some(key) = usable_key(&path)? {
+                    admitted.push((path, key));
+                }
+            }
+            admitted
+        };
+        let files: Vec<_> = extracted
+            .iter()
+            .map(|(path, _)| scratch.join(path))
+            .collect();
+        overlay_loose_assets(&scratch, &vfs, &files)?;
+        for (_, key) in extracted {
+            staged.unavailable.remove(&key);
+        }
+        fs::remove_dir_all(&scratch)?;
+        if let Some(first) = first_bad_name {
+            staged.skipped_names = staged.skipped_names.saturating_add(skipped_names);
+            staged.warnings.push(format!(
+                "skipped {skipped_names} script archive members with unusable names from {} (first: {first})",
+                archive.display()
+            ));
+        }
+    }
+    Ok(staged)
 }
 
 /// Converts the scripts again from the Data scripts for the current script ABI and replaces the
@@ -1472,10 +1695,10 @@ async fn rebuild_scripts_from_data(
     progress: &Sender<ProgressEvent>,
 ) -> Result<()> {
     let vfs = staging.join("vfs");
-    for archive in archives {
-        ArchiveExtractor::extract_script_inputs(archive, &vfs)
-            .wrap_err_with(|| format!("failed to extract scripts from {}", archive.display()))?;
-    }
+    let staged = stage_script_archives(config, staging, archives)?;
+    let mut unavailable = staged.unavailable;
+    report.skipped = report.skipped.saturating_add(staged.skipped_names);
+    report.warnings.extend(staged.warnings);
     let loose: Vec<_> = files
         .iter()
         .filter(|path| {
@@ -1485,24 +1708,23 @@ async fn rebuild_scripts_from_data(
         .cloned()
         .collect();
     overlay_loose_assets(&config.data_dir, &vfs, &loose)?;
+    let mut available = BTreeMap::new();
+    for path in discover(&vfs)?.into_iter().filter(|path| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
+    }) {
+        let relative = path.strip_prefix(&vfs)?;
+        let key = canonical_asset_path(&relative.to_string_lossy(), AssetKind::Script, "pex")?;
+        available.insert(key.clone(), hash_file(&path)?);
+        unavailable.remove(&key);
+    }
+    verify_script_sources(recorded, &available, &unavailable)?;
+    for (key, message) in unavailable {
+        manifest.failures.insert(key, message.clone());
+        report.warnings.push(message);
+        report.skipped += 1;
+    }
     convert_staged_scripts(config, staging, manifest, report, progress).await?;
-    ensure!(
-        manifest.failures.is_empty(),
-        "scripts failed to convert for the current script ABI; first: {}",
-        manifest
-            .failures
-            .values()
-            .next()
-            .cloned()
-            .unwrap_or_default()
-    );
-    let rebuilt: BTreeMap<String, CacheEntry> = manifest
-        .entries
-        .iter()
-        .filter(|(_, entry)| entry.output.starts_with("scripts/"))
-        .map(|(key, entry)| (key.clone(), entry.clone()))
-        .collect();
-    verify_script_sources(recorded, &rebuilt)?;
     // The helper belongs to the ABI like the scripts do, so it is the current embedded one.
     let runtime = staging.join("scripts/papyrus_runtime.luau");
     fs::create_dir_all(runtime.parent().unwrap())?;
@@ -1547,19 +1769,23 @@ fn verify_legacy_prune(
         "legacy pruned GLB replay requires raw source NIF {} for {glb}; this runtime package omits the source. Run a normal conversion into a new package, then reuse that package instead",
         nif.display()
     );
-    ensure!(
-        nif_source_hash(&nif, &source_key, source_textures)? == entry.source_hash
-            || nif_unrepaired_source_hash(&nif)? == entry.source_hash,
-        "pruned GLB source checksum mismatch: {glb}"
-    );
+    let suffix = volcanic_normal_cache_suffix(&source_key, source_textures);
+    let expected = suffix
+        .as_deref()
+        .and_then(|suffix| entry.source_hash.strip_suffix(suffix))
+        .unwrap_or(&entry.source_hash);
     let target = staging.join(glb);
-    // Older manifests hashed GLBs before pruning. Prove the exact original
-    // checksum and deterministic postprocess; arbitrary mutations still fail.
-    MeshConverter::convert_nif_to_glb(&nif, &target)?;
+    // Older manifests hashed GLBs before pruning. Replay the exact source
+    // proof before checking the original GLB and deterministic postprocess.
+    MeshConverter::convert_nif_with_local_resolution(
+        &NifSnapshot::read(&nif)?,
+        &target,
+        Some(expected),
+    )?;
     ensure!(
         hash_file(&target)? == entry.output_hash
             && fs::metadata(&target)?.len() == entry.output_size,
-        "cannot reproduce original pruned GLB checksum: {glb}"
+        "cannot reproduce original pruned GLB checksum: {glb}. Run a normal conversion into a new package, then reuse that package instead"
     );
     let original = fs::read(&target)?;
     let source_document = source.join(glb);
@@ -1641,7 +1867,7 @@ mod tests {
                     output_hash: hash_bytes(b"proven body"),
                 },
             );
-            // A nonempty destination directory makes both copy and remove_file fail
+            // A nonempty destination directory makes publication and remove_file fail
             // deterministically, without relying on permissions or a timing race.
             let blocked = staging.join(relative);
             fs::create_dir_all(&blocked).unwrap();
@@ -1981,7 +2207,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11, 12, 13] {
+        for adapter in [10, 11, 12, 13, 14] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -2006,7 +2232,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 14);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 15);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -2016,11 +2242,11 @@ mod metadata_schema_controls {
                 .is_err()
             );
             for (key, value) in [
-                // Rule: a metadata-only migration to adapter 14 accepts retained-asset sources
-                // of adapters 10 to 13 (the loop above) and nothing else. Adapter 8 and any
+                // Rule: a metadata-only migration to adapter 15 accepts retained-asset sources
+                // of adapters 10 to 14 (the loop above) and nothing else. Adapter 8 and any
                 // adapter newer than the producer are unproven and must regenerate assets.
                 ("adapter_version", serde_json::json!(8)),
-                ("adapter_version", serde_json::json!(15)),
+                ("adapter_version", serde_json::json!(16)),
                 ("schema_sha256", serde_json::json!("different-schema")),
                 ("schema_addons", serde_json::json!([])),
                 ("language", serde_json::json!("french")),
@@ -2056,6 +2282,56 @@ mod metadata_schema_controls {
         assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
     }
 
+    /// Adapter 13 source proofs preserve language and schemas without authorizing altered identities.
+    #[test]
+    fn adapter13_source_settings_preserve_exact_schema_and_language() {
+        for language in ["english", "french"] {
+            let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+            let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+                RecordReader::Inhouse,
+                &schemas,
+                language,
+            );
+            identity["adapter_version"] = serde_json::json!(13);
+            let config = PipelineConfig::new("Data", "output");
+            let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+            assert_eq!(recovered.language, language);
+            assert_eq!(
+                recovered.schemas().unwrap().addon_bytes().next().unwrap(),
+                ORIGINAL
+            );
+            assert_ne!(
+                crate::esm::inhouse::configured_reader_identity(&recovered).unwrap(),
+                identity
+            );
+            assert!(
+                settings_for_source_reader(
+                    &config,
+                    &identity,
+                    RuntimeSchemas::from_addon_bytes(&[REQUESTED]).unwrap(),
+                )
+                .is_err()
+            );
+            for (field, value) in [
+                ("adapter_version", serde_json::json!(99)),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("string_table_encoding", serde_json::json!("unproven")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[field] = value;
+                assert!(
+                    settings_for_source_reader(
+                        &config,
+                        &altered,
+                        RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap(),
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
     #[test]
     fn adapter13_retains_exact_non_english_source_settings() {
         let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
@@ -2065,6 +2341,17 @@ mod metadata_schema_controls {
         assert_eq!(recovered.language, "french");
         assert_eq!(identity["adapter_version"], 13);
         assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
+    }
+
+    #[test]
+    fn adapter14_retains_exact_source_settings_after_occlusion_metadata_update() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter14_reader_identity(&schemas, "french").unwrap();
+        let recovered =
+            settings_for_source_reader(&PipelineConfig::new("Data", "output"), &identity, schemas)
+                .unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(identity["adapter_version"], 14);
     }
 
     /// Missing old stamps remain unversioned; later metadata cannot infer a newer asset reader.
@@ -2138,6 +2425,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
+            serde_json::json!({"mode": "legacy", "projection_version": 99}),
             serde_json::json!({"mode": "legacy", "projection_version": 7}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
@@ -2149,6 +2437,46 @@ mod metadata_schema_controls {
                 )
                 .is_err()
             );
+        }
+    }
+
+    /// Projection-four/five source assets retain exact language and encoding identities.
+    #[test]
+    fn legacy_projection_four_source_settings_preserve_language_and_reject_unproven_variants() {
+        for (projection, language) in [(4, "english"), (4, "french"), (5, "english"), (5, "french")]
+        {
+            let config = PipelineConfig::new("Data", "output");
+            let mut identity = serde_json::json!({
+                "mode": "legacy", "projection_version": projection, "language": language,
+                "text_encoding": "windows-1252",
+            });
+            if language == "french" {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            let settings = settings_for_source_reader(
+                &config,
+                &identity,
+                RuntimeSchemas::from_addon_bytes(&[]).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(settings.record_reader, RecordReader::Legacy);
+            assert_eq!(settings.language, language);
+            for (field, value) in [
+                ("projection_version", serde_json::json!(99)),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[field] = value;
+                assert!(
+                    settings_for_source_reader(
+                        &config,
+                        &altered,
+                        RuntimeSchemas::from_addon_bytes(&[]).unwrap(),
+                    )
+                    .is_err()
+                );
+            }
         }
     }
 
@@ -2293,25 +2621,72 @@ mod per_kind_tests {
             .collect()
     }
 
+    /// Available script hashes describe raw winning PEX bytes independently of decoding.
+    fn script_hashes(items: &[(&str, &str)]) -> BTreeMap<String, String> {
+        items
+            .iter()
+            .map(|(name, hash)| (format!("scripts/{name}.pex"), (*hash).into()))
+            .collect()
+    }
+
     /// Rebuilt scripts are accepted only for exactly the recorded sources.
     #[test]
     fn rebuilt_scripts_must_match_the_recorded_sources() {
         let recorded = scripts(&[("a", "h1"), ("b", "h2")]);
-        verify_script_sources(&recorded, &recorded.clone()).unwrap();
+        verify_script_sources(
+            &recorded,
+            &script_hashes(&[("a", "h1"), ("b", "h2")]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         for (label, rebuilt) in [
-            ("changed hash", scripts(&[("a", "h1"), ("b", "other")])),
-            ("missing script", scripts(&[("a", "h1")])),
+            (
+                "changed hash",
+                script_hashes(&[("a", "h1"), ("b", "other")]),
+            ),
+            ("missing script", script_hashes(&[("a", "h1")])),
             (
                 "extra script",
-                scripts(&[("a", "h1"), ("b", "h2"), ("c", "h3")]),
+                script_hashes(&[("a", "h1"), ("b", "h2"), ("c", "h3")]),
             ),
         ] {
-            let error = verify_script_sources(&recorded, &rebuilt).unwrap_err();
+            let error = verify_script_sources(&recorded, &rebuilt, &BTreeMap::new()).unwrap_err();
             assert!(
                 error.to_string().contains("script sources in Data differ"),
                 "{label}: {error}"
             );
         }
+    }
+
+    /// One failed selected archive member permits only that recorded key to be unavailable.
+    #[test]
+    fn metadata_script_recovery_authenticates_each_available_and_unavailable_key() {
+        let recorded = scripts(&[("a", "h1"), ("b", "h2"), ("c", "h3")]);
+        let unavailable =
+            BTreeMap::from([("scripts/b.pex".into(), "archive member failed".into())]);
+        verify_script_sources(
+            &recorded,
+            &script_hashes(&[("a", "h1"), ("c", "h3")]),
+            &unavailable,
+        )
+        .unwrap();
+        for available in [
+            script_hashes(&[("a", "h1")]),
+            script_hashes(&[("a", "changed"), ("c", "h3")]),
+            script_hashes(&[("a", "h1"), ("c", "h3"), ("extra", "h4")]),
+        ] {
+            assert!(verify_script_sources(&recorded, &available, &unavailable).is_err());
+        }
+        let extra_failure =
+            BTreeMap::from([("scripts/extra.pex".into(), "archive member failed".into())]);
+        assert!(
+            verify_script_sources(
+                &recorded,
+                &script_hashes(&[("a", "h1"), ("b", "h2"), ("c", "h3")]),
+                &extra_failure,
+            )
+            .is_err()
+        );
     }
 
     /// Script entries leave the manifest and keep their source hashes; others stay.

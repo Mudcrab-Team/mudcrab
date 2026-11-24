@@ -45,7 +45,7 @@ use bevy::{
     render::occlusion_culling::OcclusionCulling,
     render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    render::view::screenshot::{Screenshot, save_to_disk},
+    render::view::screenshot::{Screenshot, ScreenshotCaptured},
     tasks::{IoTaskPool, TaskPoolBuilder},
     window::{MonitorSelection, PresentMode, WindowLevel, WindowPlugin, WindowPosition},
     winit::WinitSettings,
@@ -128,6 +128,70 @@ struct AssetDirectoryReadLock {
     _guard: shared::asset_lock::AssetLock,
 }
 
+/// Disable optional grass without a world or readable cache, keeping camera settings and
+/// screenshot readiness consistent with the resources startup actually installs. Cache failure
+/// also restores the non-grass terrain radii in both the config and live preferences.
+pub(crate) fn load_optional_grass_cache(
+    config: &mut EngineConfig,
+    world_active: bool,
+    preferences: Option<&mut (
+        crate::settings::RenderingSettings,
+        crate::settings::SettingsFile,
+    )>,
+) -> Option<crate::world::grass_cache::GrassCache> {
+    if !config.grass {
+        return None;
+    }
+    let cache = if !world_active {
+        if config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "--grass")
+        {
+            eprintln!("warning: --grass has no effect without a converted world");
+        }
+        None
+    } else {
+        match crate::world::grass_cache::GrassCache::open(
+            &config.assets_dir.join("grass_cache.rkyv"),
+        ) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                eprintln!("warning: grass disabled for this pack: {error}");
+                None
+            }
+        }
+    };
+    if cache.is_none() {
+        config.grass = false;
+        if let Some((stream_radius, unload_radius)) = config.grass_terrain_radii.take() {
+            config.stream_radius = stream_radius;
+            config.unload_radius = unload_radius;
+        }
+        if let Some((settings, file)) = preferences {
+            file.clear_grass_coverage(settings, config);
+        }
+    }
+    cache
+}
+
+/// Resolve the optional pack cache before validating enabled-grass requirements.
+pub(crate) fn prepare_optional_grass_cache(
+    config: &mut EngineConfig,
+    world_active: bool,
+    preferences: Option<&mut (
+        crate::settings::RenderingSettings,
+        crate::settings::SettingsFile,
+    )>,
+) -> Result<Option<crate::world::grass_cache::GrassCache>> {
+    let cache = load_optional_grass_cache(config, world_active, preferences);
+    config
+        .validate_grass()
+        .map_err(|reason| color_eyre::eyre::eyre!(reason))?;
+    Ok(cache)
+}
+
+/// Prepare the selected world or fixture and run the engine with its available optional resources.
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
     let mut preferences = config
@@ -137,6 +201,45 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     config.check_visual_profile()?;
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config, preferences.as_mut())?;
+    for diagnostic in &config.grass_settings_diagnostics {
+        eprintln!("grass settings: {diagnostic}");
+    }
+    if let Some(report) = &config.grass_settings_report {
+        for source in &report.sources {
+            eprintln!(
+                "grass INI: {} (SHA-256 {})",
+                source.path.display(),
+                source.sha256
+            );
+        }
+        for (key, setting) in &report.settings {
+            eprintln!(
+                "grass INI: {key}={} ({})",
+                setting.effective.value, setting.effective.source
+            );
+        }
+        for diagnostic in &report.diagnostics {
+            eprintln!(
+                "grass INI: {}:{} {}: {}",
+                diagnostic.source, diagnostic.line, diagnostic.key, diagnostic.reason
+            );
+        }
+    }
+    if config.grass {
+        let (start, end) = config.effective_grass_fade();
+        eprintln!(
+            "grass settings: spacing={}, radius={}, terrain radius={}, fade={} ({}..{}), INI types/texture={}, effective species/texture={}, texture threshold={}",
+            config.grass_min_spacing,
+            config.effective_grass_radius(),
+            config.stream_radius,
+            config.grass_enable_fade,
+            start,
+            end,
+            config.grass_max_types_per_texture,
+            config.effective_grass_species_cap(),
+            config.grass_texture_threshold
+        );
+    }
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
     let route = prepare_route(&mut config)?;
@@ -197,13 +300,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             extensions,
             notices,
         ))
-    } else if config.benchmark_only
-        || config.material_fixture
-        || config.terrain_water_fixture
-        || config.transform_bounds_fixture
-        || config.renderer_fixture
-        || config.physics_fixture
-    {
+    } else if !config.loads_world() {
         None
     } else {
         validate_runtime_assets(&config)?;
@@ -268,8 +365,47 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let terrain_merge = runtime_data
         .is_some()
         .then(|| crate::terrain_merge::TerrainMerge::open(&config.assets_dir));
-    let grade_source =
+    let mut grade_source =
         SceneGradeSource::load(&config, runtime_data.is_some() && !config.streaming_fixture)?;
+    // The sky and fog come from the active weather record (#891). A fixture run has no world
+    // database and keeps the built-in `SkyrimClear` palette.
+    let weather_note = match environment
+        .as_ref()
+        .filter(|_| runtime_data.is_some() && !config.streaming_fixture)
+    {
+        Some(catalog) => {
+            match crate::weather_sky::WeatherSky::default_for_world(catalog, config.worldspace_id) {
+                Ok(weather) => {
+                    if !weather.fog_omissions.is_empty() {
+                        eprintln!(
+                            "warning: weather {}: the record has no {}; the exterior draws no fog",
+                            weather.label(),
+                            weather.fog_omissions.join(", ")
+                        );
+                    }
+                    let note = format!("weather {}: sky and fog from the record", weather.label());
+                    grade_source.weather = Some(weather);
+                    note
+                }
+                // `skyrim` takes sky and fog from weather records, so it cannot start without one.
+                Err(error)
+                    if config.visual_profile == crate::visual_profile::VisualProfile::Skyrim =>
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "--visual-profile skyrim takes its sky and fog from a weather record: {error}"
+                    ));
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: weather: {error}; the {} look's built-in sky and fog stand in",
+                        config.visual_preset.name()
+                    );
+                    "no weather record: built-in preset sky and fog".to_owned()
+                }
+            }
+        }
+        None => "no world database: built-in preset sky and fog".to_owned(),
+    };
     let mut tone_map_source = SceneToneMapSource::load(&config, &grade_source)?;
     if let Some((settings, _)) = preferences.as_mut() {
         tone_map_source.bevy_tonemapping = crate::settings::TONE_MAPS[settings.tone_map];
@@ -286,12 +422,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             settings.show_resolved_grade(resolved.grade, resolved.post.pivot);
         }
     }
-    let sky_palette = grade_source.sky_palette(config.visual_preset);
+    let sky_palette = grade_source.sky_palette(config.visual_preset, config.game_hour);
     let movement_tuning = (interactive_world_physics
         && runtime_data.is_some()
         && !config.streaming_fixture)
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
+    let grass_cache =
+        prepare_optional_grass_cache(&mut config, runtime_data.is_some(), preferences.as_mut())?;
     let carry_tuning =
         (interactive_world_physics && runtime_data.is_some() && !config.streaming_fixture)
             .then(|| {
@@ -486,6 +624,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         },
         "visual profile active; changing it requires a restart"
     );
+    info!(weather = %weather_note, "exterior sky and fog source");
     if app
         .world()
         .resource::<EngineConfig>()
@@ -527,9 +666,16 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                 // where the route put it.
                 .add_systems(PreUpdate, drive_route);
         }
+        if let Some(cache) = grass_cache {
+            app.insert_resource(cache)
+                .add_plugins(crate::grass::GrassPlugin);
+        }
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
             app.add_plugins((WorldPlayerPlugin, crate::door_crossing::DoorCrossingPlugin));
+            if app.world().resource::<EngineConfig>().papyrus_scripts {
+                app.add_plugins(crate::papyrus_plugin::PapyrusScriptsPlugin);
+            }
             // `coc`/`coe` move the player, so they come with it, as `tcl` does: a run without a
             // player (a benchmark, `--shots`, headless) lists neither in Help.
             crate::cell_commands::register_cell_commands(&mut app);
@@ -593,8 +739,13 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // `RenderPlugin` only `init_resource`s its default handler, so this one wins wherever it is
     // inserted.
     app.insert_resource(RenderErrorHandler(handle_render_error));
+    let missing_nif_alpha = app
+        .world()
+        .resource::<crate::nif_material::MissingNifAlphaData>()
+        .clone();
     let exit = app.run();
     drop(app);
+    missing_nif_alpha.report();
     drop(streaming_fixture_dir);
     finished(&exit)
 }
@@ -602,8 +753,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
 /// Process exit code for a run that ended because the GPU device was lost.
 ///
 /// Distinct from 1 (any other failed run) and 2 (an unusable command line), so a benchmark or
-/// acceptance script can record a lost device apart from other failures. It does not clear the
-/// engine: a GPU fault or a command buffer the driver times out also loses the device.
+/// acceptance script can record a lost device apart from other failures. The run exits with this
+/// code only when Bevy reports `ErrorType::DeviceLost`. A failed Metal command buffer does not lose
+/// the device on wgpu 29: the device stays alive and the engine does not notice the failure, so
+/// this code does not cover it.
 pub const EXIT_DEVICE_LOST: u8 = 3;
 
 /// The run ended because the GPU device was lost.
@@ -735,6 +888,14 @@ fn world_gltf_plugin() -> bevy::gltf::GltfPlugin {
         default_sampler: terrain_layer_sampler(),
         ..default()
     }
+    .add_custom_vertex_attribute(
+        "OBJECT_ATLAS_RED",
+        crate::streaming::lod_object_material::RED_AXIS,
+    )
+    .add_custom_vertex_attribute(
+        "OBJECT_ATLAS_GREEN",
+        crate::streaming::lod_object_material::GREEN_AXIS,
+    )
 }
 
 /// Reads the `--shots` file, if one was given, and points the run at its first exterior pose: that
@@ -2522,6 +2683,7 @@ fn setup_world(
         Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
+        crate::room_culling::RoomCullingNear::SKYRIM,
         IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
@@ -2585,6 +2747,12 @@ fn setup_world(
         target = ?target,
         "Mudcrab runtime initialized"
     );
+}
+
+#[cfg(test)]
+pub(crate) fn add_test_world_camera(app: &mut App) {
+    app.insert_resource(EngineConfig::default())
+        .add_systems(Startup, setup_world);
 }
 
 fn initial_camera_ground_height(
@@ -2933,7 +3101,7 @@ fn bounded_auto_flight_direction(
 /// `refresh_console_ui` hides the overlay on the closing frame, before the capture resumes on the
 /// next update.
 fn add_camera_and_capture_systems(app: &mut App) {
-    app.add_systems(
+    app.init_resource::<AcceptanceCapture>().add_systems(
         Update,
         (
             fly_camera.run_if(console_closed),
@@ -2949,6 +3117,7 @@ fn fly_camera(
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
+    capture: Res<AcceptanceCapture>,
 ) {
     // Interactive player paths own the camera; automated camera paths keep legacy controls. A
     // shots run poses the camera itself, and a key press must not move a pose.
@@ -2985,10 +3154,6 @@ fn fly_camera(
     if keyboard.pressed(KeyCode::ShiftLeft) {
         direction -= Vec3::Y;
     }
-    let acceptance_capture_pending = config
-        .acceptance_screenshot
-        .as_ref()
-        .is_some_and(|path| !path.is_file());
     let speed = if config.auto_fly_speed > 0.0 {
         config.auto_fly_speed
     } else if keyboard.pressed(KeyCode::ControlLeft) {
@@ -2996,7 +3161,7 @@ fn fly_camera(
     } else {
         900.0
     };
-    if config.auto_fly_speed > 0.0 && !acceptance_capture_pending {
+    if config.auto_fly_speed > 0.0 && capture.ready(&config) {
         direction += bounded_auto_flight_direction(
             *transform.forward(),
             speed * time.delta_secs(),
@@ -3021,22 +3186,39 @@ const SCREENSHOT_GPU_WARMUP: std::time::Duration = std::time::Duration::from_sec
 fn capture_acceptance_screenshot(
     mut commands: Commands,
     config: Res<EngineConfig>,
-    mut state: Local<ScreenshotCaptureState>,
+    mut frames: Local<u32>,
+    mut capture: ResMut<AcceptanceCapture>,
     real_time: Res<Time<Real>>,
     streaming: Option<Res<StreamingMetrics>>,
     world_database: Option<Res<WorldDatabase>>,
     renderer: Res<RendererMetrics>,
+    grass: Option<Res<crate::grass::GrassMetrics>>,
+    grass_renderer: Option<Res<crate::grass_render::GrassRenderMetrics>>,
+    mut exit: MessageWriter<AppExit>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let Some(path) = &config.acceptance_screenshot else {
         return;
     };
-    state.frames = state.frames.saturating_add(1);
+    if config.grass
+        && world_database.is_some()
+        && (grass.as_ref().is_some_and(|metrics| metrics.failures > 0)
+            || grass_renderer
+                .as_ref()
+                .is_some_and(|metrics| metrics.failures > 0))
+    {
+        error!(
+            "grass failed to prepare the requested acceptance screenshot; inspect grass diagnostics and upload/cache budgets"
+        );
+        exit.write(AppExit::error());
+        return;
+    }
+    *frames = frames.saturating_add(1);
     let settled_frames = config
         .benchmark_warmup_frames
         .saturating_add(SCREENSHOT_SETTLE_FRAMES);
-    if state.captured
-        || state.frames < settled_frames
+    if *capture != AcceptanceCapture::Waiting
+        || *frames < settled_frames
         || real_time.elapsed() < SCREENSHOT_GPU_WARMUP
         || windows.is_empty()
     {
@@ -3047,7 +3229,13 @@ fn capture_acceptance_screenshot(
         .is_none_or(|metrics| screenshot_assets_ready(metrics, world_database.is_some(), &config));
     let renderer_ready = renderer.final_path_active()
         && (!config.renderer_fixture || renderer.renderer_fixture_validated);
-    if !assets_ready || !renderer_ready {
+    let grass_ready = screenshot_grass_ready(
+        &config,
+        world_database.is_some(),
+        grass.as_deref(),
+        grass_renderer.as_deref(),
+    );
+    if !assets_ready || !renderer_ready || !grass_ready {
         return;
     }
     if let Some(parent) = path.parent()
@@ -3058,8 +3246,21 @@ fn capture_acceptance_screenshot(
     }
     commands
         .spawn(Screenshot::primary_window())
-        .observe(save_to_disk(path.clone()));
-    state.captured = true;
+        .observe(save_acceptance_screenshot(path.clone()));
+    *capture = AcceptanceCapture::Requested;
+}
+
+/// Require successful grass generation and rendering when world grass is enabled.
+fn screenshot_grass_ready(
+    config: &EngineConfig,
+    world_streaming_active: bool,
+    grass: Option<&crate::grass::GrassMetrics>,
+    renderer: Option<&crate::grass_render::GrassRenderMetrics>,
+) -> bool {
+    !config.grass
+        || !world_streaming_active
+        || (grass.is_some_and(|metrics| metrics.ready && metrics.failures == 0)
+            && renderer.is_some_and(|metrics| metrics.ready && metrics.failures == 0))
 }
 
 fn screenshot_assets_ready(
@@ -3089,14 +3290,100 @@ fn screenshot_assets_ready(
         && (!config.physics_fixture || metrics.physics_fixture_validated)
 }
 
-#[derive(Default)]
-struct ScreenshotCaptureState {
-    frames: u32,
-    captured: bool,
+#[derive(Resource, Default, PartialEq, Eq)]
+pub(crate) enum AcceptanceCapture {
+    #[default]
+    Waiting,
+    Requested,
+    Saved,
+}
+
+impl AcceptanceCapture {
+    pub(crate) fn ready(&self, config: &EngineConfig) -> bool {
+        config
+            .acceptance_screenshot
+            .as_ref()
+            .is_none_or(|path| *self == Self::Saved && path.is_file())
+    }
+}
+
+pub(crate) fn save_acceptance_screenshot(
+    path: PathBuf,
+) -> impl FnMut(On<ScreenshotCaptured>, ResMut<AcceptanceCapture>) {
+    move |event, mut capture| match write_acceptance_screenshot(event.image.clone(), &path) {
+        Ok(()) => {
+            *capture = AcceptanceCapture::Saved;
+            info!(path = %path.display(), "saved acceptance screenshot");
+        }
+        Err(error) => {
+            error!(%error, path = %path.display(), "failed to save acceptance screenshot")
+        }
+    }
+}
+
+fn write_acceptance_screenshot(image: Image, path: &Path) -> Result<()> {
+    let format = image::ImageFormat::from_path(path)?;
+    let rgb = crate::shots::decode_shot(image).map_err(color_eyre::eyre::Error::msg)?;
+    // Finish encoding before opening the destination. Writing in place follows symlinks
+    // and preserves the existing file's ownership and access permissions.
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut encoded, format)?;
+    fs::write(path, encoded.into_inner())?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_follows_links_and_preserves_access_modes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("frames");
+        fs::create_dir(&target_dir).unwrap();
+        let reference = target_dir.join("reference");
+        fs::File::create(&reference).unwrap();
+        let target = target_dir.join("frame.png");
+        let link = dir.path().join("latest.png");
+        let intermediate = target_dir.join("current");
+        symlink("frames/current", &link).unwrap();
+        symlink("frame.png", &intermediate).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            fs::read_link(&intermediate).unwrap(),
+            Path::new("frame.png")
+        );
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode(),
+            reference.metadata().unwrap().permissions().mode()
+        );
+
+        let inode = target.metadata().unwrap().ino();
+        fs::write(&target, b"old frame").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert_eq!(target.metadata().unwrap().ino(), inode);
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("frames/current"));
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_leaves_a_socket_in_place() {
+        use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acceptance.png");
+        let _listener = UnixListener::bind(&path).unwrap();
+        assert!(write_acceptance_screenshot(Image::default(), &path).is_err());
+        assert!(path.metadata().unwrap().file_type().is_socket());
+    }
+
     /// Hidden macOS runs skip Bevy's GPU timing recorder. Visible runs, other platforms and the
     /// existing flag keep their behaviour.
     #[test]
@@ -3471,6 +3758,132 @@ mod tests {
         app.world_mut().get_mut::<Window>(entity).unwrap().visible = true;
         app.update();
         assert!(app.world().get::<Window>(entity).unwrap().visible);
+    }
+
+    /// Requested grass reports its lack of effect in non-world modes exactly once.
+    #[test]
+    fn requested_grass_without_a_world_warns_once() {
+        const PROBE: &str = "MUDCRAB_TEST_GRASS_NO_WORLD";
+        const WARNING: &str = "warning: --grass has no effect without a converted world";
+        if let Ok(mode) = std::env::var(PROBE) {
+            let args = match mode.as_str() {
+                "on" => vec!["--grass"],
+                "off" => vec!["--no-grass"],
+                _ => vec![],
+            };
+            let mut config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
+            assert!(load_optional_grass_cache(&mut config, false, None).is_none());
+            return;
+        }
+        for (mode, expected) in [("on", 1), ("off", 0), ("default", 0)] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::tests::requested_grass_without_a_world_warns_once",
+                    "--nocapture",
+                ])
+                .env(PROBE, mode)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            let stderr = String::from_utf8(result.stderr).unwrap();
+            assert_eq!(stderr.matches(WARNING).count(), expected, "{stderr}");
+        }
+    }
+
+    /// Inactive grass leaves the actual synthetic camera and sun equivalent to grass off.
+    #[test]
+    fn g3_inactive_grass_preserves_synthetic_camera_and_sun() {
+        /// Build the production camera setup without opening a window or renderer.
+        fn camera_settings(grass: bool) -> (Msaa, f32, Vec<f32>) {
+            let mut args = vec!["--benchmark-only"];
+            if grass {
+                args.push("--grass");
+            } else {
+                args.push("--no-grass");
+            }
+            let mut config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
+            assert!(load_optional_grass_cache(&mut config, false, None).is_none());
+            assert!(!config.grass, "grass must be inactive without a world");
+            let mut app = App::new();
+            app.insert_resource(config)
+                .add_systems(Startup, setup_world);
+            app.update();
+            let world = app.world_mut();
+            let (msaa, projection) = world.query::<(&Msaa, &Projection)>().single(world).unwrap();
+            let Projection::Perspective(projection) = projection else {
+                panic!("world camera must use perspective projection");
+            };
+            let camera = (*msaa, projection.far);
+            let cascades = world.query::<&CascadeShadowConfig>().single(world).unwrap();
+            (camera.0, camera.1, cascades.bounds.clone())
+        }
+        let disabled = camera_settings(false);
+        let requested = camera_settings(true);
+        assert_eq!(disabled.0, Msaa::Off);
+        assert_eq!(requested, disabled);
+    }
+
+    /// Unavailable grass never prevents world startup or leaves capture waiting for grass resources.
+    #[test]
+    fn optional_grass_cache_disables_grass_for_missing_corrupt_old_or_bad_cells() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("grass_cache.rkyv");
+        let mut config = EngineConfig {
+            assets_dir: directory.path().to_path_buf(),
+            grass: true,
+            ..Default::default()
+        };
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        std::fs::write(&path, b"broken").unwrap();
+        config.grass = true;
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        let mut cache = shared::grass::GrassCache {
+            version: 5,
+            types: vec![],
+            cells: vec![],
+        };
+        std::fs::write(
+            &path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        config.grass = true;
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        cache.version = shared::grass::GRASS_CACHE_VERSION;
+        std::fs::write(
+            &path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        config.grass = true;
+        assert!(load_optional_grass_cache(&mut config, true, None).is_some());
+        assert!(config.grass);
+        cache.cells.push(shared::grass::GrassCell {
+            cell_id: 7,
+            worldspace_id: 3,
+            grid_x: 1,
+            grid_y: -2,
+            input_hash: [0; 32],
+            obstruction_failures: vec![],
+            expanded_sampling: 0,
+            heights: vec![],
+            normals: vec![],
+            vertex_colors: vec![],
+            water_height: None,
+            quadrants: vec![],
+        });
+        std::fs::write(
+            &path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        assert!(screenshot_grass_ready(&config, true, None, None));
     }
 
     /// The origin cell's centre is (2048, y, -2048), the start position's convention, and +grid_y
@@ -4343,6 +4756,15 @@ mod tests {
         let step = capture_step_below_the_time_warmup();
         let mut app = acceptance_capture_app(directory.path(), step);
 
+        fs::write(directory.path().join("acceptance.png"), b"previous run").unwrap();
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .auto_fly_speed = 10.0;
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::default()))
+            .id();
+
         // The frame gate opens here and the time gate does not: the capture is held back still.
         for _ in 0..capture_warmup_frames() {
             step_capture(&mut app, step);
@@ -4368,9 +4790,25 @@ mod tests {
             1,
             "later updates do not queue a second capture"
         );
-        // The PNG is written by the render world's observer, which needs a GPU: this test pins the
-        // queue decision the schedule makes, not the write.
-        assert!(!directory.path().join("acceptance.png").exists());
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            Vec3::ZERO
+        );
+        let world = app.world_mut();
+        let request = world
+            .query_filtered::<Entity, With<Screenshot>>()
+            .single(world)
+            .unwrap();
+        world.trigger(ScreenshotCaptured {
+            entity: request,
+            image: Image::default(),
+        });
+        step_capture(&mut app, step);
+        assert_ne!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            Vec3::ZERO
+        );
+        assert!(image::open(directory.path().join("acceptance.png")).is_ok());
     }
 
     /// The console's real close transition: no capture while it is open or on the closing frame,
@@ -4433,6 +4871,48 @@ mod tests {
             1,
             "later updates do not queue a second capture"
         );
+    }
+
+    #[test]
+    /// Verify grass screenshot waits for generation uploads and actual draw readiness.
+    fn grass_screenshot_waits_for_generation_uploads_and_actual_draw_readiness() {
+        let mut config = EngineConfig {
+            grass: false,
+            ..Default::default()
+        };
+        assert!(screenshot_grass_ready(&config, true, None, None));
+        config.grass = true;
+        assert!(screenshot_grass_ready(&config, false, None, None));
+        assert!(!screenshot_grass_ready(&config, true, None, None));
+        let mut grass = crate::grass::GrassMetrics::default();
+        let mut render = crate::grass_render::GrassRenderMetrics::default();
+        assert!(!screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
+        grass.ready = true;
+        assert!(!screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
+        render.ready = true;
+        assert!(screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
+        render.failures = 1;
+        assert!(!screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
     }
     /// The sun's shadows reach the grid the streamer draws, whichever way the camera faces, and the
     /// shader's view of them is usable: far bounds that increase (the shader takes the first bound a
@@ -5244,6 +5724,39 @@ mod tests {
         }
     }
 
+    /// A manifest that lists intended omissions (records with no usable value, #811) is complete
+    /// and loads. The engine reads only `complete`; the added field changes nothing for it.
+    #[test]
+    fn accepts_a_manifest_that_lists_intended_omissions() {
+        let directory = tempfile::tempdir().unwrap();
+        write_runtime_asset_database(&directory.path().join("skyrim_world.db"));
+        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            format!(
+                r#"{{"schema_version":{},"complete":true,"record_data_complete":true,
+                "intended_omissions":[{{"source":"Skyrim.esm","record_type":"LAND",
+                "class":"land_missing_heights","count":154,
+                "first_example":"LAND 000B2797: no VHGT height field"}}]}}"#,
+                converter_schema_version()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ),
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+    }
+
     /// Current, complete assets load, and an integration report newer than the engine is rejected.
     #[test]
     fn accepts_current_complete_runtime_assets() {
@@ -5481,6 +5994,7 @@ mod tests {
             ..default()
         };
         let shot = crate::shots::Shot {
+            grass: true,
             name: "elevated".to_owned(),
             worldspace_id: Some(7),
             interior_cell_id: None,
@@ -5575,6 +6089,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ProfilingState>()
+            .init_resource::<AcceptanceCapture>()
             .insert_resource(EngineConfig {
                 headless: true,
                 ..default()

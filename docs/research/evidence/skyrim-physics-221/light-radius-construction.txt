@@ -1,0 +1,19 @@
+Executable SHA256: 846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f
+Publication derivative. Copied instruction listings and executable byte strings were removed.
+The original artifact SHA256 and derivative SHA256 are recorded in publication.json.
+Scope: light-construction radius selection and stores only. The reference helper and downstream photometry remain unresolved.
+
+Recorded structural observations (RVAs and numeric facts, not an instruction listing):
+- The bounded radius-selection region starts at RVA 0x27468e.
+- The selected scalar is stored in the three construction fields at offsets 0x128, 0x12c, and 0x130.
+- The optional helper target is RVA 0x2ffd70. Its semantics remain unresolved.
+- Type descriptor RVA 0x20dc1b8 identifies TESObjectLIGH.
+- Complete-object locator RVA 0x1b741d0 and vtable RVA 0x18140f0 identify this path.
+- Vtable slot 0x4a targets RVA 0x274090.
+- The constructor call at RVA 0x274263 targets RVA 0x274390.
+- PE function bounds for the vtable entry are [0x274090, 0x2742c9), with unwind RVA 0x1cd4120.
+
+Operators can inspect these bounded regions locally in their own pinned executable:
+llvm-objdump -d --start-address=0x14027468e --stop-address=0x1402746fd /path/to/SkyrimSE.exe
+llvm-objdump -d --start-address=0x140274250 --stop-address=0x140274268 /path/to/SkyrimSE.exe
+Do not publish the resulting instruction listings or executable bytes.

@@ -1,0 +1,174 @@
+{
+  "date": "2026-11-15",
+  "scope": "Mudcrab full-render control and visibility-volume correctness; no original-game or FPS comparison",
+  "toolchain": "Rust 1.98.1, Linux/NixOS, cargo build --profile test",
+  "adapter": {
+    "name": "NVIDIA GeForce GTX 1660",
+    "backend": "Vulkan",
+    "driver": "595.112.07"
+  },
+  "poses": "crates/engine/tests/fixtures/room-volume-shots.json",
+  "size": [
+    1400,
+    1050
+  ],
+  "repetitions_per_mode": 3,
+  "sequence_capture_count": 36,
+  "fresh_fallback_capture_count": 6,
+  "control": "Same executable and shared geometry; private database copy with the four optional room tables removed",
+  "threshold_per_channel": 8,
+  "persistent_pixel_definition": "Pixel exceeds the threshold in every one of the nine off/on image pairings",
+  "poses_results": [
+    {
+      "pose": "BleakFallsBarrow01-room0-c",
+      "mesh_lists": {
+        "off": {
+          "drawn": 2754,
+          "listed": 2754
+        },
+        "on": {
+          "drawn": 557,
+          "listed": 2754
+        }
+      },
+      "sequence_persistent_differing_pixels": 0
+    },
+    {
+      "pose": "BleakFallsBarrow01-room1-c",
+      "mesh_lists": {
+        "off": {
+          "drawn": 2542,
+          "listed": 2542
+        },
+        "on": {
+          "drawn": 2542,
+          "listed": 2542
+        }
+      },
+      "sequence_persistent_differing_pixels": 6
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mesh_lists": {
+        "off": {
+          "drawn": 132,
+          "listed": 132
+        },
+        "on": {
+          "drawn": 132,
+          "listed": 132
+        }
+      },
+      "sequence_persistent_differing_pixels": 0
+    },
+    {
+      "pose": "NightcallerTemple01-room0-c",
+      "mesh_lists": {
+        "off": {
+          "drawn": 1664,
+          "listed": 1664
+        },
+        "on": {
+          "drawn": 743,
+          "listed": 1664
+        }
+      },
+      "sequence_persistent_differing_pixels": 0
+    },
+    {
+      "pose": "AbandonedPrison01-room0-portal",
+      "mesh_lists": {
+        "off": {
+          "drawn": 1412,
+          "listed": 1412
+        },
+        "on": {
+          "drawn": 244,
+          "listed": 1412
+        }
+      },
+      "sequence_persistent_differing_pixels": 0
+    },
+    {
+      "pose": "riverwood-return",
+      "mesh_lists": {
+        "off": {
+          "drawn": 1044,
+          "listed": 1044
+        },
+        "on": {
+          "drawn": 1044,
+          "listed": 1044
+        }
+      },
+      "sequence_persistent_differing_pixels": 0
+    }
+  ],
+  "fresh_fallback": {
+    "pose": "BleakFallsBarrow01-room1-c",
+    "scope": "fresh-process fallback control",
+    "runs": [
+      {
+        "name": "off-1",
+        "room_culling": {
+          "drawn": 2542,
+          "listed": 2542
+        }
+      },
+      {
+        "name": "on-1",
+        "room_culling": {
+          "drawn": 2542,
+          "listed": 2542
+        }
+      },
+      {
+        "name": "off-2",
+        "room_culling": {
+          "drawn": 2542,
+          "listed": 2542
+        }
+      },
+      {
+        "name": "on-2",
+        "room_culling": {
+          "drawn": 2542,
+          "listed": 2542
+        }
+      },
+      {
+        "name": "off-3",
+        "room_culling": {
+          "drawn": 2542,
+          "listed": 2542
+        }
+      },
+      {
+        "name": "on-3",
+        "room_culling": {
+          "drawn": 2542,
+          "listed": 2542
+        }
+      }
+    ],
+    "persistent_differing_pixels": 0,
+    "threshold_per_channel": 8
+  },
+  "tests": {
+    "engine_library_passed": 1421,
+    "engine_library_ignored": 7,
+    "room_culling_passed": 56
+  },
+  "regression_before": "a_reached_room_tests_each_mesh_against_the_portal_aperture failed: another mesh of the same reference is outside the aperture",
+  "native_binary_sha256": "2db8a1545044f800effc7834c5de1735378771459c18be275d1969f8568774f9",
+  "local_runtime_note": "Private executable copies use a matching glibc interpreter. Source and machine code are unchanged. The final culler edit adds only the ECS-system Clippy allowance.",
+  "source_sha256": {
+    "crates/engine/src/room_culling.rs": "9055e1495e5255b7aa0e72c445f4662f8532d353142bd84cbc5256716e705564",
+    "crates/engine/src/room_culling/volume.rs": "c730c6b19fc168324eac07ec3e6cab6ed6ce3f044fa58511c12f804081001df3"
+  },
+  "checks": {
+    "format": "cargo fmt --all -- --check",
+    "clippy": "cargo clippy -p engine --all-targets --all-features -- -D warnings",
+    "result": "passed"
+  }
+}

@@ -6,9 +6,12 @@ use crate::{
     world::components::CELL_SIZE,
     world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
 };
-use bevy::prelude::{IVec2, Msaa, Resource};
+use bevy::{
+    math::DVec2,
+    prelude::{IVec2, Msaa, Resource},
+};
 use shared::lod::LodTier;
-use std::{fmt, path::PathBuf};
+use std::{fmt, path::PathBuf, sync::Arc};
 
 /// Most IO threads `--io-threads` accepts; `0` still asks for the automatic size. Each thread
 /// reserves 128 MiB of address space (`app::IO_TASK_STACK_BYTES`), so an unbounded count could
@@ -25,22 +28,19 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 /// children when the block's box distance is under `fSplitDistanceMult` x level x 2,048 x sqrt(2)
 /// ([`Self::terrain_split_distance`]). Objects (`.bto`) use `fBlockLevel0Distance` and
 /// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
-/// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn.
+/// `fBlockMaximumDistance`.
 ///
 /// What each key does today: `fSplitDistanceMult` and `fBlockMaximumDistance` drive terrain (the
 /// split rule, and the outer reach of tier 16 as an engineering guard, see
 /// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` are parsed and kept
-/// for the object LOD rule but do not affect terrain, so changing them changes nothing on screen
-/// until the object LOD importer lands.
+/// for the object LOD rule.
 ///
 /// `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
-    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4. Unused until object LOD
-    /// lands (terrain does not read it).
+    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4.
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8. Unused until object LOD
-    /// lands (terrain does not read it).
+    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8.
     pub block_level1_distance: f32,
     /// `fBlockMaximumDistance`: object LOD drops beyond it (RF-LOD-004). Terrain has no such cut
     /// in retail. Mudcrab keeps it, times `fSplitDistanceMult`, as the outer reach of tier 16
@@ -153,38 +153,42 @@ impl TerrainLodDistances {
     /// the outer gate, which is why the gate must be checked for each visited block.
     ///
     /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
-    /// The same engineering guard applies: the camera position is the centre of its cell. Retail
-    /// flag 0x8000 (blocks touching the large-reference square always split, RF-LOD-006) is not
-    /// implemented.
+    /// `camera` is the continuous position in Creation world XY units. Retail flag 0x8000
+    /// (blocks touching the large-reference square always split, RF-LOD-006) is not implemented.
     pub fn object_tier(
         &self,
-        camera: IVec2,
-        cell: IVec2,
+        camera: DVec2,
+        cell: DVec2,
         origin: IVec2,
         nama: f32,
     ) -> Option<LodTier> {
-        let scale = f64::from(nama.max(0.0)).sqrt();
-        let split = |distance: f32| f64::from(distance) * scale;
-        let maximum = f64::from(self.block_maximum_distance);
-        let distance = |level| f64::from(Self::terrain_block_distance(camera, cell, origin, level));
-        if distance(16) >= maximum {
-            return None;
+        let scale = f64::from(nama.max(0.0));
+        let split_squared = |distance: f32| f64::from(distance).powi(2) * scale;
+        let maximum_squared = f64::from(self.block_maximum_distance).powi(2);
+        let grid_origin = origin.as_dvec2();
+        let cell_size = f64::from(CELL_SIZE);
+        let distance_squared = |level| {
+            let level = f64::from(level);
+            let min = (grid_origin + ((cell - grid_origin) / level).floor() * level) * cell_size;
+            let max = min + DVec2::splat(level * cell_size);
+            (min - camera)
+                .max(camera - max)
+                .max(DVec2::ZERO)
+                .length_squared()
+        };
+        for (level, tier, split) in [
+            (16, LodTier::Tier16, self.block_level1_distance),
+            (8, LodTier::Tier8, self.block_level0_distance),
+        ] {
+            let distance = distance_squared(level);
+            if distance >= maximum_squared {
+                return None;
+            }
+            if distance >= split_squared(split) {
+                return Some(tier);
+            }
         }
-        if distance(16) >= split(self.block_level1_distance) {
-            return Some(LodTier::Tier16);
-        }
-        // The level-16 block splits: its level-8 child is visited next.
-        if distance(8) >= maximum {
-            return None;
-        }
-        if distance(8) >= split(self.block_level0_distance) {
-            return Some(LodTier::Tier8);
-        }
-        // The level-8 block splits: the level-4 block is a leaf and still passes the gate.
-        if distance(4) >= maximum {
-            return None;
-        }
-        Some(LodTier::Tier4)
+        (distance_squared(4) < maximum_squared).then_some(LodTier::Tier4)
     }
 
     /// The Chebyshev cell radius around the camera's cell within which `tier` chunks can be
@@ -219,6 +223,11 @@ impl TerrainLodDistances {
     }
 }
 
+mod grass_ini;
+
+#[cfg(test)]
+mod skyrim_ini_grass_tests;
+
 /// Where the water surface reads the depth of the bed behind it (`--water-depth`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WaterDepthSource {
@@ -231,7 +240,11 @@ pub enum WaterDepthSource {
 
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
-    /// Explicit launch options. Saved interactive settings defer to these and to `--ini`.
+    /// Optional local appearance settings; CLI overrides MUDCRAB_GRASS_TUNING.
+    pub grass_tuning: Option<PathBuf>,
+    /// Print effective grass settings as JSON and exit before creating the app.
+    pub grass_tuning_info: bool,
+    /// Launch setting ownership, including accepted INI values and automatic grass coverage.
     pub settings_overrides: Vec<String>,
     pub assets_dir: PathBuf,
     /// Explicit local report destination. `None` uses the per-user application-data directory.
@@ -240,6 +253,8 @@ pub struct EngineConfig {
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
+    /// Terrain radii before optional grass coverage, restored if its startup cache is unavailable.
+    pub grass_terrain_radii: Option<(i32, i32)>,
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
     /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
@@ -291,6 +306,35 @@ pub struct EngineConfig {
     /// MiB of newly loaded render assets (meshes, textures) the renderer may
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
+    /// Requested grass defaults on; startup requires a valid pack cache before rendering.
+    /// Automated baselines should explicitly pin their grass state.
+    pub grass: bool,
+    /// Retain the requested preference when an explicit terrain limit disables this session.
+    pub grass_disabled_by_terrain: bool,
+    /// Radius in exterior cells, clamped below the terrain stream radius.
+    pub grass_radius: i32,
+    /// Species batches admitted to the renderer each frame. Zero is unlimited.
+    pub grass_uploads_per_frame: usize,
+    pub grass_density_multiplier: f32,
+    /// Creation units between candidate slots (Skyrim's iMinGrassSize analogue).
+    pub grass_min_spacing: f32,
+    /// Creation units at which prefix density thinning starts and reaches zero.
+    pub grass_fade_start: f32,
+    pub grass_fade_end: f32,
+    /// Generated CPU instance pool budget, including resident and recently used cells.
+    pub grass_cache_mib: usize,
+    /// Maximum resolved species admitted per texture in authored GNAM order.
+    pub grass_max_types_per_texture: usize,
+    /// Minimum painted texture contribution, in 0..=1.
+    pub grass_texture_threshold: f32,
+    pub grass_enable_fade: bool,
+    /// Imported INI values and provenance, before explicit numeric CLI overrides.
+    pub grass_settings_report: Option<Arc<shared::grass_settings::Report>>,
+    /// Runtime support and streaming clamp diagnostics for imported grass settings.
+    pub grass_settings_diagnostics: Vec<String>,
+    /// Deferred argument/import error; public to preserve library struct update syntax.
+    #[doc(hidden)]
+    pub grass_settings_error: Option<String>,
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
@@ -318,6 +362,9 @@ pub struct EngineConfig {
     pub always_active: bool,
     /// Disable Bevy's GPU timing and pipeline-statistics query collection.
     pub no_render_diagnostics: bool,
+    /// Draw no object LOD, although the pack has it (`--no-object-lod`): nothing is read, hashed
+    /// or drawn for it, so a run with and a run without it use the same pack.
+    pub no_object_lod: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
@@ -394,6 +441,8 @@ pub struct EngineConfig {
     pub shots_out: Option<PathBuf>,
     /// Maximum settling time per shot, in seconds.
     pub shots_settle_timeout: f32,
+    /// Capture the ordinary main-camera mesh list as the control for room-culling comparisons.
+    pub shots_no_room_culling: bool,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -406,19 +455,22 @@ pub struct EngineConfig {
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
     /// every run that does not ask for lights renders exactly as it did before.
     pub lights: bool,
+    /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
+    /// small vetted set to the references that carry them. Off by default.
+    pub papyrus_scripts: bool,
     pub physics_fixture: bool,
 }
 
-/// `bDrawLandShadows:Display`: whether land casts sun shadows. Retail's default is 0
-/// (`RF-SHADER-011`: record `0x14207b838`, value `0x14207b840`, read at `0x1402b3625` and stored as
-/// land shader flag 9; flag 8, receiving, is always 1). Neither the install's `Skyrim.ini` nor
-/// `SkyrimPrefs.ini` is known to change it; `--ini` can set it to 1.
+/// Retail's default for `[Display] bDrawLandShadows` is off. See Mudcrab #949.
 pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
 
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
+        let grass = shared::grass_settings::GrassSettings::default();
         Self {
+            grass_tuning: None,
+            grass_tuning_info: false,
             settings_overrides: Vec::new(),
             assets_dir: PathBuf::from("modern_assets"),
             bug_report_dir: None,
@@ -427,6 +479,7 @@ impl Default for EngineConfig {
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
+            grass_terrain_radii: None,
             sun_shadow_distance_limit: None,
             land_shadows: RETAIL_DRAW_LAND_SHADOWS,
             sun_position: None,
@@ -460,6 +513,21 @@ impl Default for EngineConfig {
             // in one 13 ms upload burst, and at 60 fps the budget still admits
             // far more new assets than the streaming radius can produce.
             max_upload_mib_per_frame: 16,
+            grass: true,
+            grass_disabled_by_terrain: false,
+            grass_radius: grass.cell_radius,
+            grass_uploads_per_frame: 2,
+            grass_density_multiplier: 1.0,
+            grass_min_spacing: grass.min_grass_size as f32,
+            grass_fade_start: grass.start_fade_distance as f32,
+            grass_fade_end: (grass.start_fade_distance + grass.fade_range) as f32,
+            grass_cache_mib: 64,
+            grass_max_types_per_texture: grass.max_grass_types_per_texture as usize,
+            grass_texture_threshold: grass.texture_pct_threshold as f32,
+            grass_enable_fade: grass.enable_grass_fade,
+            grass_settings_report: None,
+            grass_settings_diagnostics: Vec::new(),
+            grass_settings_error: None,
             headless: false,
             hidden_window: false,
             background_window: false,
@@ -476,6 +544,7 @@ impl Default for EngineConfig {
             stdin_console: false,
             always_active: false,
             no_render_diagnostics: false,
+            no_object_lod: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
@@ -518,6 +587,7 @@ impl Default for EngineConfig {
             matched_route: None,
             shots_out: None,
             shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
+            shots_no_room_culling: false,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -526,6 +596,7 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            papyrus_scripts: false,
             physics_fixture: false,
         }
     }
@@ -553,11 +624,13 @@ Assets and start position:
   --always-active                     keep simulating when the primary window loses focus
   --stdin-console                     accept developer console commands on stdin
   --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
+  --no-object-lod                     draw no object LOD although the pack has it (terrain LOD is unchanged)
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
   --background-window                   open the window behind other windows without taking focus
   --lights                              place a point light for each streamed LIGH reference
+  --papyrus-scripts                     run the first slice of converted Papyrus scripts
 
 Streaming:
   --ini <file>                        layer Skyrim INI settings; CLI options override files
@@ -578,6 +651,19 @@ Streaming:
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
   --route <file>                        follow a route file's waypoints at its speed (a JSON file; see scripts/routes)
+
+Grass (enabled by default with a valid cache):
+  --grass                              force authored grass on for this session
+  --no-grass                           force grass off for this session (last switch wins)
+  --grass-tuning <path>                hot-reload appearance TOML (or MUDCRAB_GRASS_TUNING)
+  --grass-tuning-info <path>           print appearance provenance JSON; no window or GPU
+  --grass-radius <cells>               generated cell radius (default: 2)
+  --grass-uploads-per-frame <count>     species upload budget; 0 is unlimited (default: 2)
+  --grass-density <scale>              density multiplier (default: 1)
+  --grass-min-spacing <units>          candidate spacing (default: 20)
+  --grass-fade-start <units>           fade start distance (default: 7000)
+  --grass-fade-end <units>             fade end distance (default: 8000)
+  --grass-cache-mib <MiB>              generated CPU cache; 0 is unlimited (default: 64)
 
 Benchmark and profiling:
   --benchmark-only                      run the synthetic benchmark; opens no world database
@@ -621,6 +707,7 @@ Benchmark and profiling:
   --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-no-room-culling              capture with room filtering disabled (requires --shots)
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --water-time <seconds>                pin the water's wave phase so captures match
@@ -799,6 +886,12 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    /// Test the configured GNAM limit after admission (default 2 admits three).
+    /// Selection order follows spud (MIT, chasmlol/spud).
+    pub(crate) fn effective_grass_species_cap(&self) -> usize {
+        self.grass_max_types_per_texture.saturating_add(1)
+    }
+
     pub fn streaming_controls_enabled(&self) -> bool {
         self.adaptive_streaming || self.max_streaming_backlog != 0 || self.streaming_memory_mib != 0
     }
@@ -879,6 +972,61 @@ impl EngineConfig {
         }
     }
 
+    /// Reject malformed grass options, including programmatic configuration.
+    pub fn validate_grass(&self) -> Result<(), String> {
+        if let Some(error) = &self.grass_settings_error {
+            return Err(error.clone());
+        }
+        let world_grass = self.grass && self.loads_world();
+        if world_grass && (self.grass_radius == i32::MAX || self.stream_radius > MAX_STREAM_RADIUS)
+        {
+            return Err("grass radius exceeds the terrain streaming coordinate range".into());
+        }
+        if self.grass_min_spacing.is_finite() && self.grass_min_spacing < 8.0 {
+            return Err(format!(
+                "grass spacing/iMinGrassSize {} is below MudCrab's generator safety minimum 8; this Skyrim setting cannot be applied exactly",
+                self.grass_min_spacing
+            ));
+        }
+        if self.grass_radius < 0
+            || (world_grass && (self.grass_radius == 0 || self.stream_radius < 2))
+            || self.grass_uploads_per_frame == usize::MAX
+            || !self.grass_density_multiplier.is_finite()
+            || !(0.0..=16.0).contains(&self.grass_density_multiplier)
+            || !self.grass_min_spacing.is_finite()
+            || self.grass_min_spacing < 8.0
+            || !self.grass_fade_start.is_finite()
+            || !self.grass_fade_end.is_finite()
+            || self.grass_fade_start < 0.0
+            || self.grass_fade_end < self.grass_fade_start
+            || (self.grass_enable_fade && self.grass_fade_end == self.grass_fade_start)
+            || self.grass_cache_mib == usize::MAX
+            || !self.grass_texture_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.grass_texture_threshold)
+        {
+            return Err("invalid grass configuration: enabled grass requires radius >= 1 and terrain radius >= 2; density 0..16, spacing >= 8, texture threshold 0..1, finite fade end >= start >= 0 (strictly greater when fading is enabled), and valid upload/cache budgets are required".into());
+        }
+        Ok(())
+    }
+
+    /// Grass stays inside terrain's committed streaming window.
+    pub fn effective_grass_radius(&self) -> i32 {
+        self.grass_radius
+            .min(self.stream_radius.saturating_sub(1).max(0))
+    }
+
+    /// Keep fade support inside the generated ring, scaling the ramp proportionally.
+    /// A cell leaving that ring is at least `radius * cell_size` from the camera.
+    pub fn effective_grass_fade(&self) -> (f32, f32) {
+        if !self.grass_enable_fade {
+            return (self.grass_fade_start, self.grass_fade_end);
+        }
+        let end = self
+            .grass_fade_end
+            .min(self.effective_grass_radius() as f32 * shared::grass::GRASS_CELL_SIZE);
+        (self.grass_fade_start * (end / self.grass_fade_end), end)
+    }
+
     /// The per-frame render-asset upload budget in bytes, or `None` when
     /// uploads are unlimited (`--max-upload-mib-per-frame 0`).
     pub fn max_upload_bytes_per_frame(&self) -> Option<usize> {
@@ -916,7 +1064,20 @@ impl EngineConfig {
     }
 
     pub fn from_env() -> Result<ConfigAction, ConfigError> {
-        Self::from_args(std::env::args().skip(1))
+        let mut action = Self::from_args(std::env::args().skip(1))?;
+        if let ConfigAction::Run(config) = &mut action
+            && config.grass_tuning.is_none()
+        {
+            config.grass_tuning = std::env::var_os("MUDCRAB_GRASS_TUNING")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from);
+        }
+        Ok(action)
+    }
+
+    /// Whether startup loads converted world data, including the streaming fixture's world.
+    pub(crate) fn loads_world(&self) -> bool {
+        self.streaming_fixture || (!self.benchmark_only && self.non_streaming_fixture().is_none())
     }
 
     /// Whether this is a benchmark run: `--benchmark-frames` or `--benchmark-duration` was given.
@@ -1000,12 +1161,16 @@ impl EngineConfig {
                 }
             }
         }
+        // Defer generator values until CLI grass switches resolve the imported draw state.
+        // Inactive grass must not inherit unsupported INI generator values.
+        config.grass = false;
         ini.apply(&mut config);
         config.settings_overrides.extend(
             args.iter()
                 .filter(|argument| argument.starts_with("--"))
                 .cloned(),
         );
+        let mut grass_options = grass_ini::Options::default();
         let mut args = args.into_iter().peekable();
         while let Some(argument) = args.next() {
             match argument.as_str() {
@@ -1065,6 +1230,7 @@ impl EngineConfig {
                     config.start_grid.1 = take_value("--grid-y", "a cell coordinate", args.next())?;
                 }
                 "--stream-radius" => {
+                    grass_options.explicit_stream_radius = true;
                     let raw = take_raw("--stream-radius", STREAM_RADIUS_EXPECTED, args.next())?;
                     let value = raw
                         .parse::<i32>()
@@ -1082,6 +1248,35 @@ impl EngineConfig {
                 }
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
+                "--grass" => grass_options.requested = Some(true),
+                "--no-grass" => grass_options.requested = Some(false),
+                "--grass-tuning" => {
+                    config.grass_tuning = Some(PathBuf::from(take_raw(
+                        "--grass-tuning",
+                        "a grass appearance TOML path",
+                        args.next(),
+                    )?));
+                }
+                "--grass-tuning-info" => {
+                    config.grass_tuning = Some(PathBuf::from(take_raw(
+                        "--grass-tuning-info",
+                        "a grass appearance TOML path",
+                        args.next(),
+                    )?));
+                    config.grass_tuning_info = true;
+                }
+                "--grass-radius"
+                | "--grass-uploads-per-frame"
+                | "--grass-density"
+                | "--grass-min-spacing"
+                | "--grass-fade-start"
+                | "--grass-fade-end"
+                | "--grass-cache-mib" => {
+                    // Missing values must not consume another option. Validation also runs
+                    // for configurations constructed directly by library callers.
+                    let value = args.next_if(|value| !value.starts_with("--"));
+                    grass_options.add_numeric(argument, value);
+                }
                 "--background-window" => config.background_window = true,
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
@@ -1517,6 +1712,8 @@ impl EngineConfig {
                 "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--no-object-lod" => config.no_object_lod = true,
+                "--shots-no-room-culling" => config.shots_no_room_culling = true,
                 "--shots-settle-timeout" => {
                     const EXPECTED: &str = "a positive number of seconds up to 600";
                     let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
@@ -1573,6 +1770,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--papyrus-scripts" => config.papyrus_scripts = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
@@ -1632,7 +1830,14 @@ impl EngineConfig {
                 requires: "--profile-output",
             });
         }
+        if config.shots_no_room_culling && config.shots.is_none() {
+            return Err(ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots",
+            });
+        }
         config.check_visual_profile()?;
+        grass_options.apply(&mut config);
         config.drop_jump_the_run_would_overwrite();
         Ok(ConfigAction::Run(Box::new(config)))
     }
@@ -2005,6 +2210,21 @@ mod tests {
         ("footprint_guard.py", "--log"),
         ("test_footprint_guard.py", "--limit-gib"),
         ("test_footprint_guard.py", "--log"),
+        // pr_size.py is the advisory GitHub pull request size labeler. It reads
+        // an API file list and never launches the engine, so both options belong
+        // to its own CLI. Any other script passing them still fails the audit.
+        ("pr_size.py", "--files"),
+        ("pr_size.py", "--github-output"),
+        // assign_milestones.py is the GitHub issue and pull request milestone
+        // helper. It never launches the engine: it reads and writes the tracker
+        // through `gh api`, so its own CLI and the gh flags belong to it alone.
+        ("assign_milestones.py", "--repository"),
+        ("assign_milestones.py", "--default-branch"),
+        ("assign_milestones.py", "--dry-run"),
+        ("assign_milestones.py", "--item"),
+        ("assign_milestones.py", "--paginate"),
+        ("assign_milestones.py", "--slurp"),
+        ("assign_milestones.py", "--method"),
         // workspace.py owns its storage CLI and forwards Cargo and Git options. It
         // never launches the engine, so its flags are not engine options.
         ("workspace.py", "--apply"),
@@ -2029,6 +2249,39 @@ mod tests {
         ("workspace.py", "--no-run"),
         ("workspace.py", "--open"),
         ("workspace.py", "--timings"),
+        // The retail-claim checker owns its diff range, repository path and the
+        // stand-in audit modes. It never launches the engine.
+        ("check_retail_claims.py", "--base"),
+        ("check_retail_claims.py", "--head"),
+        ("check_retail_claims.py", "--repo"),
+        ("check_retail_claims.py", "--audit"),
+        ("check_retail_claims.py", "--baseline"),
+        ("check_retail_claims.py", "--write-baseline"),
+        ("check_retail_claims.py", "--check-issues"),
+        // sync_branch.py merges origin/main and drives git and the inventory tool. It never
+        // launches the engine, so these options belong to its own CLI and its Git commands.
+        ("sync_branch.py", "--base"),
+        ("sync_branch.py", "--base-root"),
+        ("sync_branch.py", "--detach"),
+        ("sync_branch.py", "--diff-filter"),
+        ("sync_branch.py", "--dry-run"),
+        ("sync_branch.py", "--extraction"),
+        ("sync_branch.py", "--force"),
+        ("sync_branch.py", "--head"),
+        ("sync_branch.py", "--ignore-unmatch"),
+        ("sync_branch.py", "--inventory-command"),
+        ("sync_branch.py", "--is-ancestor"),
+        ("sync_branch.py", "--name-only"),
+        ("sync_branch.py", "--no-edit"),
+        ("sync_branch.py", "--no-fetch"),
+        ("sync_branch.py", "--no-ff"),
+        ("sync_branch.py", "--no-messages"),
+        ("sync_branch.py", "--repo"),
+        ("sync_branch.py", "--review-sources"),
+        ("sync_branch.py", "--show-toplevel"),
+        ("sync_branch.py", "--theirs"),
+        ("sync_branch.py", "--verify"),
+        ("sync_branch.py", "--write-tree"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -2189,14 +2442,44 @@ mod tests {
         }
     }
 
-    /// The option literals the parser's `match` arms name, in source order.
+    #[test]
+    /// Appearance files are opt-in and both CLI modes require a path without consuming flags.
+    fn grass_tuning_cli_selection_and_missing_paths() {
+        let defaults = run_config(&[]);
+        assert!(defaults.grass_tuning.is_none());
+        assert!(!defaults.grass_tuning_info);
+        let selected = run_config(&["--grass-tuning", "settings.toml"]);
+        assert_eq!(selected.grass_tuning, Some(PathBuf::from("settings.toml")));
+        assert!(!selected.grass_tuning_info);
+        let info = run_config(&["--grass-tuning-info", "receipt.toml"]);
+        assert_eq!(info.grass_tuning, Some(PathBuf::from("receipt.toml")));
+        assert!(info.grass_tuning_info);
+        for option in ["--grass-tuning", "--grass-tuning-info"] {
+            for args in [vec![option], vec![option, "--grass"]] {
+                assert!(matches!(
+                    parse_error(&args),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+        }
+    }
+
+    /// The option literals in single and grouped argument match arms, in source order.
     fn parser_options() -> Vec<&'static str> {
         CONFIG_SOURCE
             .lines()
+            .skip_while(|line| *line != "            match argument.as_str() {")
+            .skip(1)
+            .take_while(|line| *line != "            }")
             .filter_map(|line| {
-                let (option, rest) = leading_quoted(line)?;
+                let line = line.trim_start();
+                let (option, rest) = leading_quoted(line.strip_prefix('|').unwrap_or(line))?;
                 // The bare `--` arm is a no-op marker, not an option to document.
-                (rest.trim_start().starts_with("=>") && option != "--").then_some(option)
+                ((matches!(option, "-h" | "-V") || option.starts_with("--"))
+                    && !option.contains(char::is_whitespace)
+                    && (rest.trim().is_empty() || rest.trim_start().starts_with("=>"))
+                    && option != "--")
+                    .then_some(option)
             })
             .collect()
     }
@@ -2224,6 +2507,173 @@ mod tests {
         ] {
             assert!(EngineConfig::from_args([key.to_string(), value.to_string()]).is_err());
         }
+    }
+
+    #[test]
+    /// Verify grass defaults on and numeric options are finite without consuming next flags.
+    fn grass_options_default_on_finite_and_do_not_consume_next_flags() {
+        assert!(EngineConfig::default().grass);
+        let config = EngineConfig::run_from_args(
+            [
+                "--grass",
+                "--grass-density",
+                "1.75",
+                "--grass-min-spacing",
+                "48",
+                "--grass-radius",
+                "4",
+                "--grass-uploads-per-frame",
+                "0",
+            ]
+            .map(str::to_owned),
+        );
+        assert!(config.grass);
+        assert_eq!(config.grass_density_multiplier, 1.75);
+        assert_eq!(config.grass_min_spacing, 48.0);
+        assert_eq!(config.grass_uploads_per_frame, 0);
+        assert_eq!(config.effective_grass_radius(), 4);
+        assert_eq!(config.stream_radius, 5);
+        assert!(config.validate_grass().is_ok());
+        let invalid =
+            EngineConfig::run_from_args(["--grass-density", "--headless"].map(str::to_owned));
+        assert!(invalid.headless);
+        assert!(invalid.validate_grass().is_err());
+        for value in ["NaN", "inf", "oops"] {
+            let invalid =
+                EngineConfig::run_from_args(["--grass-density", value].map(str::to_owned));
+            assert!(invalid.validate_grass().is_err());
+        }
+        assert!(
+            EngineConfig {
+                grass_min_spacing: f32::INFINITY,
+                ..EngineConfig::default()
+            }
+            .validate_grass()
+            .is_err()
+        );
+    }
+
+    /// No-world modes retain their requested terrain radii when grass cannot render.
+    #[test]
+    fn g3_inactive_grass_preserves_no_world_streaming_settings() {
+        for mode in [
+            "--benchmark-only",
+            "--material-fixture",
+            "--terrain-water-fixture",
+            "--transform-bounds-fixture",
+            "--renderer-fixture",
+            "--physics-fixture",
+        ] {
+            for grass_first in [false, true] {
+                let mut args = vec![mode, "--grass-radius", "7"];
+                args.insert(if grass_first { 0 } else { args.len() }, "--grass");
+                let config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
+                assert_eq!(
+                    (config.stream_radius, config.unload_radius),
+                    (2, 3),
+                    "{mode}, grass first: {grass_first}"
+                );
+                let explicit = EngineConfig::run_from_args(
+                    [
+                        mode,
+                        "--grass",
+                        "--grass-radius",
+                        "7",
+                        "--stream-radius",
+                        "1",
+                    ]
+                    .map(str::to_owned),
+                );
+                assert_eq!((explicit.stream_radius, explicit.unload_radius), (1, 2));
+                assert!(explicit.validate_grass().is_ok(), "{mode}");
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("radius.ini");
+        std::fs::write(&path, "[General]\nuGridsToLoad=9\n").unwrap();
+        let imported = EngineConfig::run_from_args([
+            "--benchmark-only".to_owned(),
+            "--grass".to_owned(),
+            "--grass-radius".to_owned(),
+            "7".to_owned(),
+            "--ini".to_owned(),
+            path.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!((imported.stream_radius, imported.unload_radius), (4, 5));
+    }
+
+    /// Converted-world and streaming-fixture grass still expand the terrain ring.
+    #[test]
+    fn g3_active_world_grass_still_expands_streaming_settings() {
+        for mode in [None, Some("--streaming-fixture")] {
+            let mut args = vec!["--grass", "--grass-radius", "7"];
+            args.extend(mode);
+            let config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
+            assert!(config.grass);
+            assert!(config.validate_grass().is_ok());
+            assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+            assert_eq!(config.effective_grass_radius(), 7);
+        }
+    }
+
+    #[test]
+    /// Verify grass fade reaches zero before a cell can leave its generated ring.
+    fn grass_fade_reaches_zero_before_a_cell_can_leave_its_generated_ring() {
+        for radius in 1..5 {
+            let config = EngineConfig {
+                grass: true,
+                grass_radius: radius,
+                stream_radius: radius + 1,
+                grass_fade_start: 4000.0,
+                grass_fade_end: 16000.0,
+                ..EngineConfig::default()
+            };
+            assert!(config.validate_grass().is_ok());
+            let (start, end) = config.effective_grass_fade();
+            // After crossing into cell0, cell at -(radius+1) is retired. Its closest
+            // edge is -radius*4096, reached as camera approaches the shared boundary.
+            let retirement_distance = radius as f32 * shared::grass::GRASS_CELL_SIZE;
+            assert!(end <= retirement_distance);
+            assert!(start < end);
+            assert!(((end - retirement_distance) / (end - start)).clamp(0.0, 1.0) == 0.0);
+        }
+        assert!(
+            EngineConfig {
+                grass: true,
+                grass_radius: 0,
+                ..EngineConfig::default()
+            }
+            .validate_grass()
+            .is_err()
+        );
+        assert!(
+            EngineConfig {
+                grass: true,
+                stream_radius: 1,
+                ..EngineConfig::default()
+            }
+            .validate_grass()
+            .is_err()
+        );
+        let (start, end) = EngineConfig::default().effective_grass_fade();
+        assert!((start - 3584.0).abs() < 0.001);
+        assert_eq!(end, 4096.0);
+    }
+
+    #[test]
+    /// Verify grass fade clamp keeps large finite distances finite.
+    fn grass_fade_clamp_keeps_large_finite_distances_finite() {
+        let config = EngineConfig {
+            grass: true,
+            grass_fade_start: f32::MAX / 2.0,
+            grass_fade_end: f32::MAX,
+            ..EngineConfig::default()
+        };
+        assert!(config.validate_grass().is_ok());
+        let (start, end) = config.effective_grass_fade();
+        assert!(start.is_finite());
+        assert!(end.is_finite());
+        assert!((start - end / 2.0).abs() < 0.01);
     }
 
     #[test]
@@ -2599,6 +3049,14 @@ mod tests {
                     .always_active
             );
         }
+    }
+
+    #[test]
+    fn no_object_lod_is_an_opt_out_flag() {
+        assert!(!EngineConfig::default().no_object_lod);
+        assert!(!run_config(&["--headless"]).no_object_lod);
+        assert!(run_config(&["--no-object-lod", "--headless"]).no_object_lod);
+        assert!(HELP_TEXT.contains("--no-object-lod"));
     }
 
     #[test]
@@ -3352,6 +3810,21 @@ mod tests {
     }
 
     #[test]
+    fn shots_control_requires_a_capture() {
+        assert!(!run_config(&["--shots", "poses.json"]).shots_no_room_culling);
+        assert!(
+            run_config(&["--shots-no-room-culling", "--shots", "poses.json"]).shots_no_room_culling
+        );
+        assert!(matches!(
+            parse_error(&["--shots-no-room-culling"]),
+            ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots"
+            }
+        ));
+    }
+
+    #[test]
     fn shots_settle_timeout_is_finite_positive_and_bounded() {
         assert_eq!(run_config(&[]).shots_settle_timeout, 30.0);
         assert_eq!(
@@ -3558,6 +4031,14 @@ mod tests {
         ]);
         assert!(missing.headless, "a missing file is reported and skipped");
         assert_eq!(missing.terrain_lod, TerrainLodDistances::default());
+    }
+
+    /// Converted Papyrus scripts are opt-in: the flag is off unless it is given.
+    #[test]
+    fn papyrus_scripts_are_off_until_the_flag_is_given() {
+        assert!(!EngineConfig::default().papyrus_scripts);
+        assert!(!run_config(&["--lights"]).papyrus_scripts);
+        assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
     }
 
     /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
@@ -3959,6 +4440,7 @@ mod tests {
             "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
+            "--papyrus-scripts",
             "--physics-fixture",
         ] {
             assert!(options.contains(&option), "the scan missed {option}");
@@ -4019,7 +4501,7 @@ mod tests {
     }
 
     /// Utility `.ps1`, `.sh` and `.py` files under `root`, subdirectories included,
-    /// in a stable order. Hidden directories and script tests are excluded.
+    /// in a stable order. Hidden directories and `tests/` directories are excluded.
     /// Converter-only profiling tools stay in the scan; their flags are checked
     /// only on lines that invoke the engine (see `checked_script_engine_flags`).
     fn script_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -4058,33 +4540,116 @@ mod tests {
                 .any(|part| part.as_os_str().to_str() == Some("perf"))
     }
 
+    fn before_python_comment(line: &str) -> &str {
+        let mut quote = None;
+        let mut chars = line.char_indices();
+        while let Some((index, ch)) = chars.next() {
+            match (quote, ch) {
+                (None, '#') => return &line[..index],
+                (None, '\'' | '"') => quote = Some(ch),
+                (Some(_), '\\') => {
+                    chars.next();
+                }
+                (Some(open), close) if open == close => quote = None,
+                _ => {}
+            }
+        }
+        line
+    }
+
+    /// Locate the command or parser declaration that owns this particular option literal.
+    /// Argument lists in the native capture scripts continue on the next line after a comma.
+    fn native_tool_owns_option(script: &str, flag: &str, path: &std::path::Path) -> bool {
+        let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
+        let mut lines = script[..offset].rsplit('\n');
+        let current = lines.next().unwrap_or_default();
+        if before_python_comment(current).len() != current.len() {
+            return true;
+        }
+        let mut start = current;
+        for previous in lines {
+            let previous = before_python_comment(previous).trim_end();
+            if previous.is_empty() {
+                continue;
+            }
+            if !previous.ends_with([',', '[', '(']) {
+                break;
+            }
+            start = previous;
+        }
+        if path.ends_with("test_check_skyrim_jump_runtime.py") {
+            return matches!(
+                flag,
+                "--prepare-only" | "--require-heldout-pass" | "--test-binary"
+            ) && start.contains("patch.object(sys, 'argv', ['replay',");
+        }
+        [
+            ".add_argument(",
+            "scripts/record_skyrim_motion.py",
+            "tools/skyrim-recorder/build.py",
+            "['pkg-config',",
+            "['systemd-run',",
+            "['gamescope',",
+            "['journalctl',",
+            "['systemctl',",
+            "[str(args.test_binary.resolve()),",
+            "['cargo', 'test',",
+            "['capture',",
+            "['record',",
+            "['report',",
+            "patch('sys.argv', argv + [",
+            "patch('sys.argv', ['audit',",
+        ]
+        .iter()
+        .any(|owner| start.contains(owner) || current.contains(owner))
+            || (current.contains("command += [")
+                && matches!(flag, "--setenv" | "--working-directory"))
+            || (current.contains("argv += [")
+                && matches!(flag, "--condition" | "--split" | "--adopt-baseline"))
+            || current.ends_with(".index('")
+            || current.ends_with(".startswith('")
+            || current.ends_with(".removeprefix('")
+    }
+
+    /// Check engine flags while allowing known offline tools to own separate CLI arguments.
     fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
         let options = parser_options();
         let mut checked = 0;
-        // lod-performance tools parse converter options and lod-experiment
-        // tools parse their own offline options. Only their lines that name the
-        // engine are engine invocations; the rest is not checked.
-        let converter_tool = path.components().any(|part| {
+        // These converter/analysis tools own offline options. Only their lines
+        // naming the engine are engine invocations; the rest is not checked.
+        let offline_tool = path.components().any(|part| {
             matches!(
                 part.as_os_str().to_str(),
-                Some("lod-performance" | "lod-experiment")
+                Some("lod-performance" | "lod-experiment" | "grass-parity")
             )
         });
         // The perf harness has a command line of its own (`--window`, `--pairs`)
         // beside the engine arguments it builds. Only complete option literals
         // outside its parser declarations are engine arguments.
         let harness_tool = is_perf_harness(path);
+        // This capture comparison removes enable switches before assembling engine arguments.
+        // Scope its exact literal-only filter to this tool; emitted options remain audited.
+        let capture_tool = path
+            .file_name()
+            .is_some_and(|name| name == "capture_tonemap_tuning.py");
         let engine_lines: String;
         let scanned = if harness_tool {
             engine_lines = emitted_python_options(script);
             engine_lines.as_str()
-        } else if converter_tool {
+        } else if offline_tool {
             engine_lines = script
                 .lines()
                 .filter(|line| {
                     line.split(|c: char| !c.is_alphanumeric())
                         .any(|word| word == "engine")
                 })
+                .collect::<Vec<_>>()
+                .join("\n");
+            engine_lines.as_str()
+        } else if capture_tool {
+            engine_lines = script
+                .lines()
+                .filter(|line| line.trim() != r#"if argument not in ("--grass", "--no-grass")]"#)
                 .collect::<Vec<_>>()
                 .join("\n");
             engine_lines.as_str()
@@ -4152,17 +4717,111 @@ mod tests {
                     "--video-format",
                 ]
                 .contains(&flag);
+            let portal_comparison_declaration = path
+                .ends_with("scripts/research/prepare_portal_comparison.py")
+                && matches!(flag, "--native" | "--model")
+                && {
+                    let offset = flag.as_ptr() as usize - scanned.as_ptr() as usize;
+                    scanned[..offset]
+                        .strip_suffix(['\'', '"'])
+                        .is_some_and(|prefix| prefix.trim_end().ends_with(".add_argument("))
+                };
             let release_option = path.file_name().is_some_and(|name| {
                 SCRIPT_SCOPED_FLAGS
                     .iter()
                     .any(|&(script, scoped)| name == script && flag == scoped)
             });
+            let publication_option = if path.ends_with("publish_skyrim_evidence.py")
+                || path.ends_with("test_publish_skyrim_evidence.py")
+            {
+                let offset = flag.as_ptr() as usize - scanned.as_ptr() as usize;
+                let command = scanned[..offset]
+                    .rsplit(['\n', ';'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start();
+                match flag {
+                    "--start-address" | "--stop-address" => command.starts_with("llvm-objdump "),
+                    "--sanitize" | "--root" => {
+                        command.ends_with(".add_argument('")
+                            || (flag == "--sanitize" && command == "Reproduce with ")
+                            || command.contains("['audit',")
+                            || command.contains("patch('sys.argv', argv + [")
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            let native_jump_option =
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        matches!(
+                            name,
+                            "record_skyrim_motion.py"
+                                | "test_record_skyrim_motion.py"
+                                | "capture_skyrim_jump.py"
+                                | "test_capture_skyrim_jump.py"
+                                | "test_capture_skyrim_attempts.py"
+                                | "capture_skyrim_jump_inputs.py"
+                                | "evaluate_skyrim_jump.py"
+                                | "test_evaluate_skyrim_jump.py"
+                                | "test_skyrim_reference_replay.py"
+                                | "analyze_skyrim_jump_inputs.py"
+                                | "test_analyze_skyrim_jump_inputs.py"
+                                | "check_skyrim_jump_runtime.py"
+                                | "test_check_skyrim_jump_runtime.py"
+                                | "verify_skyrim_jump_inputs.py"
+                                | "report_skyrim_jump.py"
+                        ) && matches!(
+                            flag,
+                            "--session"
+                                | "--game"
+                                | "--save"
+                                | "--proton"
+                                | "--profile"
+                                | "--exe"
+                                | "--fixture"
+                                | "--frame-cap"
+                                | "--ocr-prefix"
+                                | "--keep-alive"
+                                | "--plan"
+                                | "--corpus"
+                                | "--private-output"
+                                | "--split"
+                                | "--frozen"
+                                | "--adopt-baseline"
+                                | "--condition"
+                                | "--results"
+                                | "--prepare-only"
+                                | "--require-heldout-pass"
+                                | "--test-binary"
+                                | "--lib"
+                                | "--ignored"
+                                | "--exact"
+                                | "--nocapture"
+                                | "--cflags"
+                                | "--libs"
+                                | "--backend"
+                                | "--collect"
+                                | "--no-pager"
+                                | "--setenv"
+                                | "--signal"
+                                | "--unit"
+                                | "--description"
+                                | "--working-directory"
+                        ) && native_tool_owns_option(scanned, flag, path)
+                    });
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
+                || portal_comparison_declaration
                 || material_oracle_option
                 || harness_option
-                || release_option
                 || inspector_option
+                || release_option
+                || publication_option
+                || native_jump_option
             {
                 continue;
             }
@@ -4251,6 +4910,33 @@ mod tests {
         emitted.join(" ")
     }
 
+    /// Capture normalization compares disabled flags locally while emitted options stay checked.
+    #[test]
+    fn the_capture_audit_distinguishes_removed_switches_from_emitted_options() {
+        let capture = std::path::Path::new("capture_tonemap_tuning.py");
+        let filter = r#"arguments = [argument for argument in arguments
+            if argument not in ("--grass", "--no-grass")]
+            arguments.append("--grass")"#;
+        assert_eq!(checked_script_engine_flags(filter, capture), 1);
+        for flag in ["--no-grass", "--unknown-engine-option"] {
+            let emitted = format!("{filter}\ncommand = [engine,\n    \"{flag}\"]");
+            if parser_options().contains(&flag) {
+                assert_eq!(checked_script_engine_flags(&emitted, capture), 2);
+            } else {
+                assert!(
+                    std::panic::catch_unwind(|| checked_script_engine_flags(&emitted, capture))
+                        .is_err()
+                );
+            }
+        }
+        let other = std::path::Path::new("another_capture.py");
+        if !parser_options().contains(&"--no-grass") {
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(filter, other)).is_err()
+            );
+        }
+    }
+
     #[test]
     fn the_perf_harness_audit_reads_emitted_engine_options_only() {
         let harness = std::path::Path::new("perf/perf.py");
@@ -4285,6 +4971,19 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn portal_comparison_parser_options_are_rejected_in_engine_commands() {
+        let path = std::path::Path::new("scripts/research/prepare_portal_comparison.py");
+        for flag in ["--native", "--model"] {
+            let declaration = format!("parser.add_argument(\"{flag}\", type=Path)");
+            assert_eq!(checked_script_engine_flags(&declaration, path), 0);
+            let command = format!("{declaration}\ncmd = [\"engine\", \"{flag}\", path]");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&command, path)).is_err()
+            );
+        }
     }
 
     #[test]
@@ -4392,6 +5091,80 @@ mod tests {
         }
     }
 
+    /// Offline checker arguments are local to that tool; actual engine invocations stay audited.
+    #[test]
+    fn the_script_audit_scopes_grass_checker_arguments() {
+        let path = std::path::Path::new("grass-parity/run.py");
+        assert_eq!(
+            checked_script_engine_flags("--ours source --spud reference", path),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags("--ours source\nengine --headless --assets pack", path),
+            2
+        );
+        assert!(
+            std::panic::catch_unwind(|| checked_script_engine_flags("engine --ours source", path))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn publication_options_are_checked_per_occurrence() {
+        let path = std::path::Path::new("publish_skyrim_evidence.py");
+        let example = "llvm-objdump -d --start-address=2 --stop-address=4 binary";
+        let parser = "parser.add_argument('--root')";
+        assert_eq!(checked_script_engine_flags(example, path), 0);
+        assert_eq!(checked_script_engine_flags(parser, path), 0);
+        for flag in ["--root", "--sanitize", "--start-address", "--stop-address"] {
+            let script = format!("{example}\n{parser}; engine {flag}");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&script, path)).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn native_jump_tool_options_do_not_become_engine_options() {
+        let native = std::path::Path::new("record_skyrim_motion.py");
+        let replay_test = std::path::Path::new("test_check_skyrim_jump_runtime.py");
+        assert_eq!(
+            checked_script_engine_flags(
+                "cmd = ['systemd-run',  # recorder scope\n    '--collect']",
+                native
+            ),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags(
+                "run.add_argument(\n    # recorder CLI\n    '--session')",
+                native
+            ),
+            0
+        );
+        for (text, path) in [
+            ("engine --unknown-engine-option", native),
+            ("cmd = ['engine',\n    '--prepare-only']", replay_test),
+            ("engine --require-heldout-pass", replay_test),
+            ("engine --test-binary stale", replay_test),
+            (
+                "run.add_argument('--session')\nengine --session fixture",
+                native,
+            ),
+            ("cmd = ['engine',\n    '--session', 'fixture']", native),
+            (
+                "cmd = ['engine',  # ['systemd-run',\n    '--collect']",
+                native,
+            ),
+            (
+                "engine --session fixture",
+                std::path::Path::new("launch.sh"),
+            ),
+        ] {
+            assert!(std::panic::catch_unwind(|| checked_script_engine_flags(text, path)).is_err());
+        }
+    }
+
     /// Standalone inspector flags must not become general engine CLI options.
     #[test]
     fn inspector_options_are_scoped_to_the_standalone_example_launcher() {
@@ -4438,7 +5211,7 @@ mod tests {
     }
 
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
-    /// included, is read from disk, so a script added later cannot pass an
+    /// included, is read from disk, so a new engine invocation cannot pass an
     /// option the parser refuses without failing this test. The scan is skipped
     /// when the repository's `scripts/` is not next to this crate.
     #[test]
@@ -4466,7 +5239,11 @@ mod tests {
                 // identically named CLI argument visible to the parser check.
                 let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
                 let prefix = &script[..offset];
-                !(prefix.trim_end().ends_with("var(")
+                let suffix = &script[offset + flag.len()..];
+                let declaration =
+                    prefix.trim_end().ends_with(['{', ';']) && suffix.trim_start().starts_with(':');
+                !(declaration
+                    || prefix.trim_end().ends_with("var(")
                     || prefix.ends_with(".setProperty('")
                     || prefix.ends_with(".setProperty(\""))
             })
@@ -4481,13 +5258,16 @@ mod tests {
 
     #[test]
     fn checked_script_audit_ignores_css_but_rejects_the_same_unknown_cli_option() {
-        let path = std::path::Path::new("capture_tonemap_tuning.py");
-        let script = "color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
+        let path = std::path::Path::new("report_skyrim_jump.py");
+        let script = ":root{ --foreground: white; --border: black } color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
         assert_eq!(checked_script_engine_flags(script, path), 2);
 
         assert!(
             std::panic::catch_unwind(|| {
-                checked_script_engine_flags("color:var(--foreground); engine --foreground", path)
+                checked_script_engine_flags(
+                    ":root{ --foreground: white } engine --foreground",
+                    path,
+                )
             })
             .is_err()
         );
@@ -4754,8 +5534,14 @@ mod tests {
     #[test]
     fn object_tier_follows_the_retail_object_distances() {
         let high = TerrainLodDistances::default();
-        let tier =
-            |x: i32, nama: f32| high.object_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO, nama);
+        let tier = |x: i32, nama: f32| {
+            high.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(x, 0).as_dvec2(),
+                IVec2::ZERO,
+                nama,
+            )
+        };
         // Block [0, 8) holds the camera: level 4.
         assert_eq!(tier(7, 1.0), Some(LodTier::Tier4));
         // Block [8, 16) is 30,720 away, under 35,000: still level 4.
@@ -4776,6 +5562,33 @@ mod tests {
         assert_eq!(tier(70, 0.25), None);
     }
 
+    #[test]
+    fn object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
+        let high = TerrainLodDistances::default();
+        for (cell, threshold, near, at) in [
+            (16, 35_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
+            (32, 70_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
+            (64, 250_000.0, Some(LodTier::Tier16), None),
+        ] {
+            let x = f64::from(cell) * f64::from(CELL_SIZE) - threshold;
+            let tier = |x| {
+                high.object_tier(
+                    DVec2::new(x, 0.0),
+                    IVec2::new(cell, 0).as_dvec2(),
+                    IVec2::ZERO,
+                    1.0,
+                )
+            };
+            assert_eq!(
+                (x / f64::from(CELL_SIZE)).floor(),
+                ((x + 1.0) / f64::from(CELL_SIZE)).floor()
+            );
+            assert_eq!(tier(x + 1.0), near);
+            assert_eq!(tier(x), at);
+            assert_eq!(tier(x - 1.0), at);
+        }
+    }
+
     /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
     /// `nama` never scales it.
     #[test]
@@ -4785,12 +5598,22 @@ mod tests {
         // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
         // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
         // is dropped; before the per-block gate it drew as tier 8.
-        let far = high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 16.0);
+        let far = high.object_tier(
+            DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+            IVec2::new(63, 47).as_dvec2(),
+            IVec2::ZERO,
+            16.0,
+        );
         assert_eq!(far, None);
         // With NAMA 1.0 the level-16 block (233,453 away, inside 250,000) does not split, so it
         // draws as tier 16: only the larger NAMA reaches the level-8 child.
         assert_eq!(
-            high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 1.0),
+            high.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(63, 47).as_dvec2(),
+                IVec2::ZERO,
+                1.0
+            ),
             Some(LodTier::Tier16)
         );
 
@@ -4801,7 +5624,12 @@ mod tests {
         // 264,192 away (outside).
         let origin = IVec2::new(-3, 0);
         let tier = |x: i32, distances: &TerrainLodDistances| {
-            distances.object_tier(IVec2::ZERO, IVec2::new(x, 0), origin, 100.0)
+            distances.object_tier(
+                DVec2::splat(f64::from(CELL_SIZE) / 2.0),
+                IVec2::new(x, 0).as_dvec2(),
+                origin,
+                100.0,
+            )
         };
         assert_eq!(tier(62, &high), Some(LodTier::Tier4));
         assert_eq!(tier(66, &high), None);
@@ -4834,5 +5662,22 @@ mod tests {
         // block [16, 32) (15.5 cells = 63,488) is inside it: cell 31 is tier 8, cell 32 is tier 16.
         assert_eq!(tier(31), Some(LodTier::Tier8));
         assert_eq!(tier(32), Some(LodTier::Tier16));
+    }
+}
+
+#[cfg(test)]
+mod grass_admission_tests {
+    use super::EngineConfig;
+
+    /// A post-add limit admits N+1 entries and cannot overflow at the API boundary.
+    #[test]
+    fn grass_type_limit_is_checked_after_admission() {
+        for (configured, admitted) in [(2, 3), (0, 1), (1, 2), (3, 4), (usize::MAX, usize::MAX)] {
+            let config = EngineConfig {
+                grass_max_types_per_texture: configured,
+                ..Default::default()
+            };
+            assert_eq!(config.effective_grass_species_cap(), admitted);
+        }
     }
 }

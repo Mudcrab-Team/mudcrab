@@ -203,6 +203,40 @@ async fn v115_resumed_no_lod_discards_staged_lod_outputs() {
     assert!(!output.join("lod").exists());
 }
 
+/// The default terrain LOD source is the retail files. A world that has none gets no terrain LOD
+/// and a counted warning; the self-built stage never runs in its place.
+#[tokio::test]
+async fn the_default_source_imports_retail_files_and_never_generates_a_stand_in() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    generate_data(&data);
+    let output = directory.path().join("modern");
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.terrain_lod_source = converter::config::TerrainLodSource::default();
+    assert_eq!(
+        config.terrain_lod_source,
+        converter::config::TerrainLodSource::Retail
+    );
+    let report = convert_config(config).await;
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.lod_chunks, 0, "no chunk without retail files");
+    assert!(
+        report
+            .lod_warnings
+            .iter()
+            .any(|warning| warning.contains("no retail terrain LOD files")
+                && warning.contains("nothing is generated in its place")),
+        "{:?}",
+        report.lod_warnings
+    );
+    let connection = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let rows: u64 = connection
+        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert!(!output.join("lod").exists() || fs::read_dir(output.join("lod")).unwrap().count() == 0);
+}
+
 #[tokio::test]
 async fn packed_sidecars_compile_lod_and_loose_settings_override_them() {
     for loose_override in [false, true] {
@@ -430,12 +464,35 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
         ]
         .concat()
     }
-    let mut plugin = record(b"TES4", 0, &[]);
-    plugin.extend(record(b"GRAS", 0x801, &sub(b"EDID", b"CombinedGrass\0")));
+    // TNAM refers to the generated master; new GRAS/LTEX identities use self index one.
+    // This is a complete-export control with full GRAS DATA, not a malformed-GRAS recovery fixture.
+    let mut plugin = record(
+        b"TES4",
+        0,
+        &[sub(b"MAST", b"Skyrim.esm\0"), sub(b"DATA", &[0; 8])].concat(),
+    );
+    let mut rule = vec![0; 32];
+    rule[0] = 40;
+    rule[2] = 90;
+    rule[24..28].copy_from_slice(&1.0f32.to_le_bytes());
+    plugin.extend(record(
+        b"GRAS",
+        0x0100_0801,
+        &[
+            sub(b"EDID", b"CombinedGrass\0"),
+            sub(b"MODL", b"grass/optional.nif\0"),
+            sub(b"DATA", &rule),
+        ]
+        .concat(),
+    ));
     plugin.extend(record(
         b"LTEX",
-        0x802,
-        &sub(b"GNAM", &0x801u32.to_le_bytes()),
+        0x0100_0802,
+        &[
+            sub(b"TNAM", &2u32.to_le_bytes()),
+            sub(b"GNAM", &0x0100_0801u32.to_le_bytes()),
+        ]
+        .concat(),
     ));
     fs::write(data.join("Grass.esp"), plugin).unwrap();
     let output = directory.path().join("combined");

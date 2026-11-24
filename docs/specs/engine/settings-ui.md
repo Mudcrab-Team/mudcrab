@@ -10,12 +10,13 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 
 ## Graphics
 
+- Grass and grass radius, saved with other preferences and applied on next start. Grass defaults on for packs with a valid cache. The group heading marks both controls as next-start settings; runtime plugin/cache installation is unchanged. Launch flags and explicitly imported INI values remain session-only overrides. See [runtime grass](grass.md#skyrim-ini-settings) for precedence, cache fallback and automatic `grass.toml` discovery.
 - Point lights, enabled-light budget, point-light shadows and shadow-map resolution. Enabling lights also creates them in already loaded cells; disabling them hides those lights. Authored invalid, negative, and initially off lights retain their existing exclusion rules.
 - Sun lighting, illuminance and RGB color; ambient brightness and RGB color. These are exterior settings. An interior in sky mode 1 or 2 uses the cell's own key light and ambient colour instead, so the sun toggle, illuminance, colour and shadows do not change it (ambient brightness still applies). Leaving the interior restores the current settings.
 - Sun shadows, shadow-map resolution, cascade count and distance multiplier. The underlying shadow range follows the full-detail unload grid.
 - Sky dome, sky-brightness multiplier, exterior distance fog and fog-density multiplier. Indoors the sky dome is hidden. An interior in sky mode 1 or 2 uses the cell's own fog, which the fog switch turns off and the fog-density multiplier does not scale.
-- Water reflections and reflection multiplier; waves, flow normals, wave scale, speed and strength. The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
-- CPU frustum culling, room culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Room culling defaults to On, applies to interiors, and changes immediately without rebuilding assets. Enabling occlusion enables its depth-prepass and indirect-drawing dependencies; disabling either dependency disables occlusion.
+- Water reflections and reflection multiplier; waves, wave scale, speed and strength. (A saved "flow normals" field is still read from old settings files but has no control: the flow program now runs from the water record's FNAM flag.) The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
+- CPU frustum culling, room culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Room culling defaults to On, applies to interiors, and changes immediately without rebuilding assets. GPU indirect drawing and occlusion changes apply after Save and a restart. Enabling occlusion enables its depth-prepass and indirect-drawing preferences; disabling either dependency disables the occlusion preference. A session with active occlusion retains its depth prepass until restart; other depth-prepass changes apply immediately.
 - MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution.
 - Color grading: Off, Saturation, Full (legacy), Approved sRGB, Snapshot linear and Record sRGB, with live saturation, brightness, contrast, pivot, tint amount and tint RGB. Defaults preserve the approved Sleeping Giant sRGB appearance and Cool Gray sky/fog. Stage-dependent rows dim while inactive. Reflections stay ungraded. Console commands synchronize the menu. See the integration contract below for domains, persistence, launch precedence and capture isolation.
 - Status HUD and diagnostic asset fallbacks for subsequent loads. Existing failed instances keep their current fallback state. Collision outlines remain a session-only toggle available in the Graphics tab and the console.
@@ -26,11 +27,11 @@ Room culling can be disabled independently when diagnosing interior visibility. 
 
 The UI exposes the full-detail and unload radii; the four supported LOD distance settings (two terrain: the split multiplier and the outer reach; two object LOD distances that do not affect terrain until object LOD lands); cell commit count/time budgets; cell unload, model spawn, and render-asset upload budgets; and IO-thread count. LOD distance changes refresh queries at the current camera position. The unload radius must cover the full-detail radius.
 
-IO threads and the visual profile ([visual-profiles.md](visual-profiles.md)) are fixed at startup. Changing either requires Save and a restart; other settings apply during the session, with diagnostic fallbacks taking effect on subsequent loads. Numerical UI limits bound interactive edits. A zero budget is unlimited only where the label says so.
+Grass, grass radius, IO threads, GPU indirect drawing, GPU occlusion culling and the visual profile ([visual-profiles.md](visual-profiles.md)) are fixed at startup. Changing these requires Save and a restart. New world and reflection cameras use the session's initial drawing choices as well. Other settings apply during the session, with diagnostic fallbacks taking effect on subsequent loads and the depth-prepass dependency described above. Numerical UI limits bound interactive edits. A zero budget is unlimited only where the label says so.
 
 ## Saved preferences and automation
 
-Save writes a validated JSON file through a temporary file and rename. Reset defaults applies defaults to the session; Save persists that reset. Read or write failures appear in the menu. Invalid saved files are ignored without changing launch configuration.
+Save writes a validated JSON file through a temporary file and rename. Reset defaults applies live settings to the session and selects startup defaults for the next start; Save persists that reset. Read or write failures appear in the menu. Invalid saved files are ignored without changing launch configuration.
 
 A field that an explicit launch option sets is not written from the running value. Save keeps the value the file held before that run, or the menu default when no valid file existed. The running settings keep the launch value, and the file stays valid for a later run without the option. An explicit option still wins on the next launch that passes it. Other fields save as shown in the menu.
 
@@ -46,7 +47,34 @@ Startup-only inputs such as asset paths, worldspace/start cell, backend selectio
 
 ## Controls
 
-The Controls tab lists menu/cursor keys, console entry and completion, mouse look, movement, NOCLIP/WALK switching, flying/jumping, slow walking/fast flight, sprint, collision outlines, debug tankards, and console help. The HUD reports movement, sprint, speed, collision status, and blocked-walk reasons without repeating their bindings.
+The Controls tab starts with a **Mouse sensitivity (x)** slider. Drag its track, use the
+minus/plus buttons, or focus the track and press Left/Right. The multiplier ranges from
+**0.8x to 4.0x**, in **0.05x** steps, and applies immediately to both mouse-look axes in
+WALK and NOCLIP. It scales `fMouseHeadingSensitivity` from the named retail default
+`MOUSE_HEADING_SENSITIVITY` (0.0125), leaving the axis and movement-type factors intact.
+**1.0x** preserves main's exact default formulas from #709: yaw uses heading sensitivity,
+`MOUSE_HEADING_X_SCALE` (0.02), and the movement type's rotate speed (pi for default MT,
+pi/2 for sprinting MT). WALK sprint yaw is therefore half of walk/run yaw at every
+multiplier; NOCLIP uses default MT even when the sprint latch is set. Pitch uses heading
+sensitivity, `MOUSE_HEADING_Y_SCALE` (0.85), and `LOOKING_SPEED` (0.1), independent of sprint.
+At 1.0x the default rates are approximately 0.000785 rad/count yaw, half that for sprint,
+and 0.0010625 rad/count pitch. The pitch clamp stays exactly +/-pi/2 at every multiplier.
+Counts remain independent of frame time; sensitivity adds no smoothing or acceleration.
+Save persists `mouse_sensitivity` in the existing version-1 JSON file; older files that
+omit it use 1.0x. Reset defaults restores 1.0x for the session and Save persists it.
+
+The retail-derived bounds normalize the documented `fMouseHeadingSensitivityMin=0.01`
+and `fMouseHeadingSensitivityMax=0.05` by the nominal default
+`fMouseHeadingSensitivity=0.0125`. Sources:
+[STEP SkyrimSE Controls](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/Controls#fMouseHeadingSensitivity)
+and the author's [SE default-setting investigation](https://stepmodifications.org/forum/topic/11523-skyrim-special-edition-default-values-for-all-valid-ini-settings/).
+This normalization is MudCrab's choice of multiplier range. The sources establish
+nominal INI values rather than every retail version's UI interpolation or tuned INI overrides.
+
+Below the slider, Controls lists menu/cursor keys, console entry and completion, mouse look,
+movement, NOCLIP/WALK switching, flying/jumping, slow walking/fast flight, sprint, collision
+outlines, debug tankards, and console help. The HUD reports movement, sprint, speed, collision
+status, and blocked-walk reasons without repeating their bindings.
 
 ## Native preview
 

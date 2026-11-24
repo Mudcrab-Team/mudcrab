@@ -29,6 +29,17 @@ fn record(tag: &[u8; 4], id: u32, flags: u32, fields: &[u8]) -> Vec<u8> {
     .concat()
 }
 
+/// Frame a GRUP so the markers have a parent cell: a placed record without one gets no row.
+fn group(label: u32, kind: i32, content: &[u8]) -> Vec<u8> {
+    let mut bytes = b"GRUP".to_vec();
+    bytes.extend_from_slice(&u32::try_from(content.len() + 24).unwrap().to_le_bytes());
+    bytes.extend_from_slice(&label.to_le_bytes());
+    bytes.extend_from_slice(&kind.to_le_bytes());
+    bytes.extend_from_slice(&[0; 8]);
+    bytes.extend_from_slice(content);
+    bytes
+}
+
 /// Author one localized map marker; FULL ordinal four belongs to the marker.
 fn marker(id: u32, key: u32) -> Vec<u8> {
     let transform = [123.25f32, -456.5, 7.75, 0.125, -0.25, 0.5]
@@ -74,8 +85,9 @@ fn unresolved_marker_text_preserves_identical_reference_and_record_archives() {
         0,
         &subrecord(b"EDID", b"ReferenceLocalizationBase\0"),
     ));
-    plugin.extend(marker(0x0100_3F11, 17));
-    plugin.extend(marker(0x0100_3F12, 100));
+    // The generated world's exterior cell (0x10) is the parent of both markers.
+    let markers = [marker(0x0100_3F11, 17), marker(0x0100_3F12, 100)].concat();
+    plugin.extend(group(1, 1, &group(0x10, 8, &markers)));
     fs::write(data.join("ReferenceLocalization.esp"), plugin).unwrap();
     let strings = data.join("Strings");
     fs::create_dir(&strings).unwrap();

@@ -1,0 +1,3979 @@
+{
+  "apex_tick": 27,
+  "dt_seconds": 0.01666666753590107,
+  "effective_jump_height_creation": 76.0,
+  "first_delta_y": 5.126792907714844,
+  "jump_height_source": "synthetic unit actor; fJumpHeightMin=76; runtime reference scale=1 policy",
+  "landing_delta_y": 0.011821746826171875,
+  "landing_tick": 51,
+  "rest_position": [
+    -0.0000716462527634576,
+    52.38825225830078,
+    499.9998779296875
+  ],
+  "sampled_apex_rise": 71.47846221923828,
+  "samples": [
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        5.126791000366211,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        5.126791000366211,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 0.0,
+      "position": [
+        -0.0000716462527634576,
+        57.515045166015625,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 307.6074523925781
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.936065196990967,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.936065196990967,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 5.126792907714844,
+      "position": [
+        -0.0000716462527634576,
+        62.45111083984375,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 296.1639099121094
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.745339393615723,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.745339393615723,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 10.062858581542969,
+      "position": [
+        -0.0000716462527634576,
+        67.19644927978516,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 284.7203369140625
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.55461311340332,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.55461311340332,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 14.808197021484375,
+      "position": [
+        -0.0000716462527634576,
+        71.75106048583984,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 273.2767639160156
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.363886833190918,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.363886833190918,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 19.362808227539062,
+      "position": [
+        -0.0000716462527634576,
+        76.11494445800781,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 261.83319091796875
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        4.173160552978516,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        4.173160552978516,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 23.72669219970703,
+      "position": [
+        -0.0000716462527634576,
+        80.28810119628906,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 250.38963317871094
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.9824345111846924,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.9824345111846924,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 27.89984893798828,
+      "position": [
+        -0.0000716462527634576,
+        84.27053833007812,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 238.94606018066406
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.79170823097229,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.79170823097229,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 31.882286071777344,
+      "position": [
+        -0.0000716462527634576,
+        88.06224822998047,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 227.5024871826172
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.600982189178467,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.600982189178467,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 35.67399597167969,
+      "position": [
+        -0.0000716462527634576,
+        91.6632308959961,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 216.0589141845703
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.4102556705474854,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.4102556705474854,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 39.27497863769531,
+      "position": [
+        -0.0000716462527634576,
+        95.073486328125,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 204.61532592773438
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.219529390335083,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.219529390335083,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 42.68523406982422,
+      "position": [
+        -0.0000716462527634576,
+        98.29301452636719,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 193.1717529296875
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        3.0288031101226807,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        3.0288031101226807,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 45.904762268066406,
+      "position": [
+        -0.0000716462527634576,
+        101.32181549072266,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 181.72817993164062
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.8380768299102783,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.8380768299102783,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 48.933563232421875,
+      "position": [
+        -0.0000716462527634576,
+        104.1598892211914,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 170.28460693359375
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.647350788116455,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.647350788116455,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 51.771636962890625,
+      "position": [
+        -0.0000716462527634576,
+        106.80724334716797,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 158.84103393554688
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.4566245079040527,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.4566245079040527,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 54.41899108886719,
+      "position": [
+        -0.0000716462527634576,
+        109.26387023925781,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 147.3974609375
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.2658982276916504,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.2658982276916504,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 56.87561798095703,
+      "position": [
+        -0.0000716462527634576,
+        111.52976989746094,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 135.95388793945312
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        2.075171947479248,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        2.075171947479248,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 59.141517639160156,
+      "position": [
+        -0.0000716462527634576,
+        113.60494232177734,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 124.51031494140625
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.8844457864761353,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.8844457864761353,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 61.21669006347656,
+      "position": [
+        -0.0000716462527634576,
+        115.48938751220703,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 113.06674194335938
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.6937193870544434,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.6937193870544434,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 63.10113525390625,
+      "position": [
+        -0.0000716462527634576,
+        117.18310546875,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 101.62316131591797
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.5029932260513306,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.5029932260513306,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 64.79485321044922,
+      "position": [
+        -0.0000716462527634576,
+        118.68609619140625,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 90.1795883178711
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.3122669458389282,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.3122669458389282,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 66.29784393310547,
+      "position": [
+        -0.0000716462527634576,
+        119.99835968017578,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 78.73601531982422
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        1.121540904045105,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        1.121540904045105,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 67.610107421875,
+      "position": [
+        -0.0000716462527634576,
+        121.11990356445312,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 67.29244995117188
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.9308146834373474,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.9308146834373474,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 68.73165130615234,
+      "position": [
+        -0.0000716462527634576,
+        122.05072021484375,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 55.848876953125
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.7400885224342346,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.7400885224342346,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 69.66246795654297,
+      "position": [
+        -0.0000716462527634576,
+        122.79080963134766,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 44.40530776977539
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.5493623614311218,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.5493623614311218,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 70.40255737304688,
+      "position": [
+        -0.0000716462527634576,
+        123.34017181396484,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 32.96173858642578
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.35863614082336426,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.35863614082336426,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 70.95191955566406,
+      "position": [
+        -0.0000716462527634576,
+        123.69880676269531,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 21.51816749572754
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.16790995001792908,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.16790995001792908,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.31055450439453,
+      "position": [
+        -0.0000716462527634576,
+        123.86671447753906,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 10.074596405029297
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.022816220298409462,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.022816220298409462,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        123.8438949584961,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -1.3689731359481812
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.28029656410217285,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.28029656410217285,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        123.5635986328125,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -16.817792892456055
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.5377768874168396,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.5377768874168396,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        123.02582550048828,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -32.2666130065918
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -0.7952572703361511,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.7952572703361511,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        122.2305679321289,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -47.71543502807617
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.0527377128601074,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.0527377128601074,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        121.1778335571289,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -63.16426086425781
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.310218095779419,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.310218095779419,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        119.86761474609375,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -78.61308288574219
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.5676984786987305,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.5676984786987305,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        118.29991912841797,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -94.06190490722656
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -1.825178861618042,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -1.825178861618042,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        116.47473907470703,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -109.51072692871094
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.0826592445373535,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.0826592445373535,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        114.39208221435547,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -124.95954895019531
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.340139627456665,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.340139627456665,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        112.05194091796875,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -140.4083709716797
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.5976200103759766,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.5976200103759766,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        109.4543228149414,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -155.85719299316406
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -2.855100393295288,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -2.855100393295288,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        106.5992202758789,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -171.30601501464844
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.1125807762145996,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.1125807762145996,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        103.48664093017578,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -186.7548370361328
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.370061159133911,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.370061159133911,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        100.1165771484375,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -202.2036590576172
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.6275415420532227,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.6275415420532227,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        96.4890365600586,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -217.65248107910156
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -3.885021924972534,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -3.885021924972534,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        92.60401153564453,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -233.10130310058594
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.142502307891846,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.142502307891846,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        88.46150970458984,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -248.5501251220703
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.399982929229736,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.399982929229736,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        84.0615234375,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -263.99896240234375
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.657463550567627,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.657463550567627,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        79.40406036376953,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -279.4477844238281
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -4.914943218231201,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -4.914943218231201,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        74.48912048339844,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -294.8965759277344
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -5.172423362731934,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -5.172423362731934,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        69.31669616699219,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -310.34539794921875
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -5.429903984069824,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -5.429903984069824,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        63.88679122924805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -325.7942199707031
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        -5.687384128570557,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -5.687384128570557,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": false,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000716462527634576,
+        58.199405670166016,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -341.2430419921875
+    },
+    {
+      "collision_count": 1,
+      "desired_translation": [
+        0.0,
+        -5.944864749908447,
+        0.0
+      ],
+      "effective_translation": [
+        -1.1483806474643643e-6,
+        -5.799330711364746,
+        -7.655870604139636e-7
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.40007400512695,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": -356.6918640136719
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.001957019791007042,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.39811706542969,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.009272567927837372,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38884353637695,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        -0.0005885253194719553,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    },
+    {
+      "collision_count": 0,
+      "desired_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "effective_translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "fixed_dt_seconds": 0.01666666753590107,
+      "kcc_supported": true,
+      "observed_jump_apex": 71.47846221923828,
+      "position": [
+        -0.0000727946317056194,
+        52.38825607299805,
+        499.9998779296875
+      ],
+      "vertical_velocity_creation": 0.0
+    }
+  ],
+  "schema": 1,
+  "surface": "production PhysicsFixturePlugin flat floor; raw post-Writeback Transform/KCC"
+}

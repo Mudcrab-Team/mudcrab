@@ -34,9 +34,10 @@ event scheduler or VMAD instance binding is provided by these helpers.
 
 ## State dispatch contract
 
-`Runtime:call_method(instance, name, args)` tries the current state's qualified
-function, then the empty-state function, then repeats that search in registered
-parent scripts. It preserves the original receiver when invoking inherited code.
+`Runtime:call_method(instance, name, args)` searches the instance's class and its
+registered ancestors for the current state's qualified function. If that search
+finds no function, it searches the same classes in the same order for an empty-state
+function. It preserves the original receiver when invoking inherited code.
 The existing external `target:dispatch` adapter is the final fallback. Missing
 ordinary methods raise an invocation error identifying the script and method.
 Parent cycles are diagnosed instead of looping indefinitely.
@@ -50,15 +51,15 @@ calls without storing mutable runtime ownership on the registered class. Propert
 accessors use empty-state and parent lookup. Parent construction, inherited native
 ownership and automatic inheritance of a parent's auto state are not implemented here.
 
-The precedence of a child's empty-state method over a parent's named-state
-method follows this implementation's contract; CK inheritance precedence was not independently
-verified. These limits must not be described as complete Papyrus parity.
+In the Skyrim inheritance probe, the parent's active-state method wins over the
+child's empty-state method. The grandparent's active-state method also wins over
+the parent's empty-state method. See the [retail traces](../../research/papyrus-parity-20261117.md).
 
 `GetState()` returns the instance's current state name. `GotoState(name)`:
 
 1. Accepts a string destination, including an undeclared name or the empty string.
-2. Invokes the old state's `OnEndState()` if present, using normal state/empty/
-   parent fallback while the old state is still visible.
+2. Invokes the old state's `OnEndState()` if present, using the method lookup
+   described above while the old state is still visible.
 3. Sets the instance state to the destination exactly as supplied.
 4. Invokes the new state's `OnBeginState()` if present, using the same fallback
    while the new state is visible.
@@ -103,21 +104,31 @@ recovery after memory exhaustion or budget exhaustion.
 Only OnBeginState was retrievable during the preceding state-dispatch research;
 fresh retrieval, including the identifier references, was blocked during follow-up.
 The other links identify the intended rules; their ordering, inheritance and
-end-event details remain unverified against retrieved primary text. The sequence
-above is the explicit runtime contract covered by synthetic regressions, not a
-claim of original-game differential validation.
+end-event details remain unverified against retrieved primary text. The retail
+probes independently covered active-state inheritance and nested transitions
+from both lifecycle callbacks. Synthetic regressions cover the wider contract.
 
 ## Converted output compatibility
 
 Script emission ABI 2 added state metadata, explicit initial state and lexical
-Parent calls. The current ABI adds case-insensitive generated identifier/field
-access and permissive auto-state initialization (see the shared
-`PAPYRUS_SCRIPT_ABI_VERSION` constant). New configurations select the current ABI.
+Parent calls. ABI 3 added case-insensitive generated identifier/field access and
+permissive auto-state initialization. ABI 4 packages the corrected inherited
+state lookup. With `--reuse-assets`, an ABI 3 pack rebuilds its scripts from
+matching PEX sources and stages the current embedded helper. New configurations
+select the current ABI.
 Full conversion raises saved older ABI values to the current minimum before cache
 selection, so unchanged PEX inputs regenerate old scripts. Existing per-kind
 proofs preserve unrelated eligible mesh and texture outputs. Mesh/texture schema
 versions are unchanged. Converted packs need reconversion; rebuilding only the
 engine cannot update identifier helpers in old emitted modules.
+
+ABI 5 changes no emitted script. It marks the shared `papyrus_runtime.luau` that gained
+inherited-native lookup, fault-and-continue, a scheduler and execution budgets (#703). ABI 4 was
+used for two different runtime contents (the inherited state lookup above and an earlier form of
+this change), so ABI 4 packs from either side rebuild their scripts on the merged converter. A pack
+at ABI 3 or 4 still loads in the engine, which never reads a pack's ABI or its runtime copy; with
+`--papyrus-scripts` it runs the pack's scripts on the engine's built-in runtime. `--reuse-assets`
+on such a pack rebuilds the scripts only (no mesh or texture work) and rewrites the runtime copy.
 
 ## Future work
 

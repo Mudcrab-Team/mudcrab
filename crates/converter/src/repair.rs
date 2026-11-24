@@ -1,15 +1,19 @@
 //! Targeted repair of a published pack, including asset-aware database finalization.
 use crate::{
-    archive::{ArchiveExtractor, archive_reader_version, safe_relative_path},
-    asset_path::{AssetKind, canonical_asset_path, is_authoring_resource, resolve_asset_uri},
+    archive::{ArchiveExtractor, ArchiveSelection, archive_reader_version, safe_relative_path},
+    asset_path::{
+        AssetKind, canonical_asset_path, canonical_literal_asset_path, is_authoring_resource,
+        is_authoring_source_name, resolve_asset_uri,
+    },
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestionCacheEntry,
-        configuration_hash, hash_file, link_or_copy,
+        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestedFile,
+        IngestionCacheEntry, configuration_hash, hash_file, link_or_copy,
     },
     check::{CheckMode, CheckProblem, check_output},
     config::{PipelineConfig, TextureEncoder},
+    esm::grass_cache::{validate_grass_cache, write_grass_cache},
     integration::finalize_world_database_with_sources,
-    mesh::MeshConverter,
+    mesh::{MeshConverter, NifSnapshot},
     pipeline::{
         collect_texture_semantics, installed_archive_owners, mo2_archive_is_active,
         mo2_installed_archive_owners, non_mo2_archive_is_active, plugin_paths,
@@ -24,10 +28,11 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
 };
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::OnceCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -43,10 +48,13 @@ pub struct RepairReport {
     /// Record data was verified complete by its last authoritative conversion.
     /// False also covers historical manifests without that proof.
     pub record_data_complete: bool,
-    pub failures: BTreeMap<String, String>,
-    /// Optional capability declarations dropped because their payload is no longer valid.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// Grass data-loss warnings and optional capability declarations dropped during repair.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Advisory grass omissions that do not affect the completeness proof.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
+    pub failures: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -211,8 +219,9 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         excluded: 0,
         published: false,
         record_data_complete: manifest.record_data_complete == Some(true),
-        failures: BTreeMap::new(),
         warnings: Vec::new(),
+        notices: Vec::new(),
+        failures: BTreeMap::new(),
     };
 
     let mut selection_notices = Vec::new();
@@ -414,7 +423,17 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             );
         }
         unique_archive_asset_keys(entry, &archive)?;
-        for file in &entry.files {
+        if let Err(error) = validate_legacy_archive_paths(entry, &archive) {
+            fs::remove_dir_all(&directory)
+                .wrap_err("cannot discard repair staging for a stale archive path")?;
+            return Err(error).wrap_err_with(|| {
+                format!(
+                    "cannot verify cached paths for {}; run a normal conversion before repair",
+                    archive.display()
+                )
+            });
+        }
+        for file in runtime_archive_files(entry) {
             let Some((asset_kind, ext, _)) = kind(&file.path) else {
                 continue;
             };
@@ -440,10 +459,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     }
     // Loose files override archives, just as in the main conversion pipeline.
     for (relative, path) in &resolved {
-        if let Some((asset_kind, ext, _)) = kind(relative) {
-            let Ok(key) = canonical_asset_path(relative, asset_kind, ext) else {
-                continue;
-            };
+        if let Some(key) = runtime_loose_asset_key(relative) {
             ensure!(
                 !sources
                     .get(&key)
@@ -474,14 +490,14 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         });
         let unsupported_archive_member = active_archive_keys.iter().any(|archive_key| {
             manifest.archives.get(archive_key).is_some_and(|entry| {
-                entry.files.iter().any(|file| {
+                runtime_archive_files(entry).any(|file| {
                     key_matches_prefixes(&file.path, &prefixes) && kind(&file.path).is_none()
                 })
             })
         });
         let unavailable_archive_member = manifest.archives.iter().any(|(archive_key, entry)| {
             !active_archive_keys.contains(archive_key)
-                && entry.files.iter().any(|file| {
+                && runtime_archive_files(entry).any(|file| {
                     key_matches_prefixes(&file.path, &prefixes)
                         && !archive_file_has_current_winner(&file.path, &sources)
                 })
@@ -775,6 +791,34 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         );
         changed.insert("skyrim_world.db".into());
         changed.insert("integration-report.json".into());
+        let grass_path = staged.join("grass_cache.rkyv");
+        let terrain_path = staged.join("cell_cache_preserved.rkyv");
+        let grass = write_grass_cache(
+            &Connection::open(staged.join("skyrim_world.db"))?,
+            &staged,
+            &terrain_path,
+            Some(&config.output_dir.join("grass_cache.rkyv")),
+            &grass_path,
+        )
+        .wrap_err_with(|| {
+            if terrain_path.try_exists().is_ok_and(|exists| !exists) {
+                "failed to rebuild staged grass cache; missing cell_cache_preserved.rkyv requires normal conversion, or metadata rebuild from complete verified assets"
+            } else {
+                "failed to rebuild staged grass cache"
+            }
+        })?;
+        crate::cache::record_grass_artifact(&mut manifest, &staged)?;
+        validate_grass_cache(&grass_path)?;
+        report.notices.extend(grass.notices());
+        let grass_warnings = grass.warnings();
+        let grass_data_lost = !grass_warnings.is_empty();
+        report.warnings.extend(grass_warnings);
+        if grass_data_lost {
+            // Grass loss can clear the proof, but a healthy bake cannot certify prior record loss.
+            manifest.record_data_complete = Some(false);
+            report.record_data_complete = false;
+        }
+        changed.insert("grass_cache.rkyv".into());
         for entry in manifest
             .entries
             .values_mut()
@@ -855,7 +899,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
                 }
             }
         }
-        // Asset repair leaves record data and its exact known/unknown proof untouched.
+        // Asset repair cannot establish a missing proof or clear prior record or grass loss.
         manifest.complete = report.record_data_complete;
         manifest.save(&staged.join("conversion-manifest.json"))?;
         changed.insert("conversion-manifest.json".into());
@@ -877,12 +921,40 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     Ok(report)
 }
 
+fn runtime_archive_files(entry: &IngestionCacheEntry) -> impl Iterator<Item = &IngestedFile> {
+    entry
+        .files
+        .iter()
+        .filter(|file| !is_authoring_source_name(&file.path))
+}
+
+/// Older all-files inventories could flatten an authoring path to a runtime name.
+fn validate_legacy_archive_paths(entry: &IngestionCacheEntry, archive: &Path) -> Result<()> {
+    if entry.selection != ArchiveSelection::All || entry.recipe == ArchiveSelection::All.recipe() {
+        return Ok(());
+    }
+    let runtime_paths: HashSet<_> = ArchiveExtractor::list_runtime_paths(archive)?
+        .into_iter()
+        .collect();
+    for file in runtime_archive_files(entry) {
+        if let Some((asset_kind, ext, _)) = kind(&file.path) {
+            let stored = canonical_literal_asset_path(&file.path, asset_kind, ext)?;
+            ensure!(
+                runtime_paths.contains(Path::new(&stored)),
+                "no runtime archive member for cached path {}",
+                file.path
+            );
+        }
+    }
+    Ok(())
+}
+
 fn unique_archive_asset_keys(
     entry: &IngestionCacheEntry,
     archive: &Path,
 ) -> Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
-    for file in &entry.files {
+    for file in runtime_archive_files(entry) {
         if let Some((asset_kind, ext, _)) = kind(&file.path)
             && let Ok(key) = canonical_asset_path(&file.path, asset_kind, ext)
         {
@@ -1051,11 +1123,16 @@ fn recoverable_failure_asset_key(key: &str, data_root: &Path) -> Option<String> 
 fn resolved_loose_asset_keys(resolved: &BTreeMap<String, PathBuf>) -> BTreeSet<String> {
     resolved
         .keys()
-        .filter_map(|relative| {
-            let (asset_kind, ext, _) = kind(relative)?;
-            canonical_asset_path(relative, asset_kind, ext).ok()
-        })
+        .filter_map(|relative| runtime_loose_asset_key(relative))
         .collect()
+}
+
+fn runtime_loose_asset_key(relative: &str) -> Option<String> {
+    if is_authoring_source_name(relative) {
+        return None;
+    }
+    let (asset_kind, ext, _) = kind(relative)?;
+    canonical_asset_path(relative, asset_kind, ext).ok()
 }
 
 fn canonical_failure_asset_key(key: &str, data_root: &Path) -> Result<Option<String>> {
@@ -1099,42 +1176,39 @@ fn attempt(
         let source = sources
             .get(key)
             .ok_or_else(|| color_eyre::eyre::eyre!("winning source is missing: {key}"))?;
-        let mut source_hash = verified_source_hash(source, key, verified)?;
         let (asset_kind, ext, target_ext) =
             kind(key).ok_or_else(|| color_eyre::eyre::eyre!("unsupported repair target: {key}"))?;
+        let skeletons = (ext == "nif").then(|| {
+            skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources))
+        });
+        let nif = skeletons
+            .map(|index| index.input_snapshot(Path::new(key), &source.path))
+            .transpose()?;
+        let mut source_hash = verified_source_hash(source, key, verified, nif.as_deref())?;
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
-        if ext == "nif" {
-            let skeletons =
-                skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
-            let skeleton_key =
-                crate::mesh::resolve_skeleton_with_index(Path::new(key), mesh_sources, skeletons);
+        if let (Some(nif), Some(skeletons)) = (&nif, skeletons) {
+            let resolution =
+                crate::mesh::resolve_skeleton_from_snapshot(Path::new(key), nif, skeletons);
             let mut unresolved_skin = None;
-            let skeleton = match skeleton_key {
-                crate::mesh::SkeletonResolution::Skeleton(path) => {
-                    // The resolver returns the normalized key, while archive
-                    // keys keep their original case.
-                    let (dependency_key, dependency_source) = sources
-                        .get_key_value(path.to_string_lossy().as_ref())
-                        .or_else(|| {
-                            sources.iter().find(|(candidate, _)| {
-                                crate::mesh::normalize_path_key(Path::new(candidate.as_str()))
-                                    == crate::mesh::normalize_path_key(&path)
-                            })
-                        })
-                        .ok_or_else(|| {
+            let skeleton = match resolution {
+                crate::mesh::SkeletonResolution::Skeleton(entry) => {
+                    let dependency_key = entry.path.to_string_lossy();
+                    let dependency_source =
+                        sources.get(dependency_key.as_ref()).ok_or_else(|| {
                             color_eyre::eyre::eyre!(
-                                "resolved skeleton {} has no winning source",
-                                path.display()
+                                "resolved skeleton {dependency_key} has no winning source"
                             )
                         })?;
                     source_hash.push(':');
+                    let dependency = entry.snapshot()?;
                     source_hash.push_str(&verified_source_hash(
                         dependency_source,
-                        dependency_key,
+                        &dependency_key,
                         verified,
+                        Some(&dependency),
                     )?);
-                    Some(dependency_source.path.as_path())
+                    Some(dependency)
                 }
                 crate::mesh::SkeletonResolution::SelfContained => None,
                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
@@ -1146,18 +1220,18 @@ fn attempt(
                     None
                 }
             };
-            MeshConverter::convert_nif_to_glb_with_skin_resolution(
-                &source.path,
+            MeshConverter::convert_nif_snapshot(
+                nif,
                 &target,
-                skeleton,
+                skeleton.as_deref(),
                 unresolved_skin.as_deref(),
             )?;
             MeshConverter::glb_texture_dependencies(&target)?;
-            if MeshConverter::is_geometry_template(&source.path)? {
+            if nif.is_geometry_template()? {
                 manifest.excluded_inputs.insert(key.into(), "Geometryless overlay template; standalone mesh is empty, runtime overlays are not implemented".into());
                 report.excluded += 1;
             } else {
-                MeshConverter::glb_bounds(&target)?;
+                MeshConverter::drawable_bounds(&target)?;
             }
         } else if ext == "pex" {
             ScriptConverter::convert_pex_to_luau(&source.path, &target)?;
@@ -1245,6 +1319,7 @@ fn verified_source_hash(
     source: &Source,
     key: &str,
     verified: &mut BTreeSet<PathBuf>,
+    snapshot: Option<&NifSnapshot>,
 ) -> Result<String> {
     if let Some((archive, expected)) = &source.archive
         && !verified.contains(archive)
@@ -1256,7 +1331,10 @@ fn verified_source_hash(
         );
         verified.insert(archive.clone());
     }
-    let hash = hash_file(&source.path)?;
+    let hash = match snapshot {
+        Some(nif) => nif.hash().to_owned(),
+        None => hash_file(&source.path)?,
+    };
     if let Some(expected) = &source.expected_hash {
         ensure!(hash == *expected, "ingestion blob hash mismatch for {key}");
     }
@@ -1577,6 +1655,7 @@ mod tests {
         assert!(checked_destination(&output, "../outside").is_err());
     }
 
+    /// A failed grass replacement restores every artifact in the repair transaction.
     #[test]
     fn failed_publication_preserves_error_and_restores_pack() {
         let root = tempfile::tempdir().unwrap();
@@ -1584,24 +1663,34 @@ mod tests {
         let staged = root.path().join("staged");
         fs::create_dir(&output).unwrap();
         fs::create_dir(&staged).unwrap();
-        for relative in ["a.luau", "conversion-manifest.json"] {
-            fs::write(output.join(relative), "original").unwrap();
-            fs::write(staged.join(relative), "repaired").unwrap();
+        let artifacts = [
+            "grass_cache.rkyv",
+            "meshes/obstruction.glb",
+            "skyrim_world.db",
+            "conversion-manifest.json",
+        ];
+        for relative in artifacts {
+            fs::create_dir_all(output.join(relative).parent().unwrap()).unwrap();
+            fs::create_dir_all(staged.join(relative).parent().unwrap()).unwrap();
+            fs::write(output.join(relative), format!("original {relative}")).unwrap();
+            fs::write(staged.join(relative), format!("repaired {relative}")).unwrap();
         }
         FAIL_PUBLICATION.with(|flag| flag.set(true));
         let error = publish(
             &output,
             &staged,
             &root.path().join("backup"),
-            &BTreeSet::from(["a.luau".into()]),
+            &artifacts.into_iter().map(str::to_owned).collect(),
         )
         .unwrap_err();
         FAIL_PUBLICATION.with(|flag| flag.set(false));
         assert!(format!("{error:#}").contains("injected publication failure"));
-        assert_eq!(
-            fs::read_to_string(output.join("a.luau")).unwrap(),
-            "original"
-        );
+        for relative in artifacts {
+            assert_eq!(
+                fs::read_to_string(output.join(relative)).unwrap(),
+                format!("original {relative}")
+            );
+        }
         assert!(!sibling_path(&output, "repair-journal.json").exists());
     }
 
@@ -1669,8 +1758,7 @@ mod tests {
         let archive = root.path().join("source.bsa");
         fs::write(&archive, "archive provenance fixture").unwrap();
         let key = "meshes/actors/character/armor/body.nif";
-        // Archive keys keep their authored case; the resolver answers with a
-        // normalized key, so the lookup must not depend on matching spelling.
+        // Candidate lookup is case-insensitive, but provenance uses this exact archive key.
         let skeleton_key = "meshes/actors/character/Character Assets/skeleton.nif";
         let skeleton = Source {
             path: blob.clone(),
@@ -1715,8 +1803,9 @@ mod tests {
                 excluded: 0,
                 published: false,
                 record_data_complete: false,
-                failures: BTreeMap::new(),
                 warnings: Vec::new(),
+                notices: Vec::new(),
+                failures: BTreeMap::new(),
             };
             attempt(
                 &config,
@@ -1773,8 +1862,9 @@ mod tests {
             excluded: 0,
             published: false,
             record_data_complete: false,
-            failures: BTreeMap::new(),
             warnings: Vec::new(),
+            notices: Vec::new(),
+            failures: BTreeMap::new(),
         };
 
         attempt(
@@ -1812,20 +1902,29 @@ mod tests {
             archive: Some((archive.clone(), hash_file(&archive).unwrap())),
             expected_hash: Some(hash_file(&blob).unwrap()),
         };
+        let captured = NifSnapshot::read(&blob).unwrap();
         fs::write(&blob, "modified skeleton").unwrap();
-        assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
-                .unwrap_err()
-                .to_string()
-                .contains("blob hash mismatch")
-        );
+        let modified = NifSnapshot::read(&blob).unwrap();
+        let verify =
+            |snapshot| verified_source_hash(&source, "skeleton", &mut BTreeSet::new(), snapshot);
+        assert_eq!(verify(Some(&captured)).unwrap(), captured.hash());
+        for snapshot in [None, Some(&modified)] {
+            assert!(
+                verify(snapshot)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("blob hash mismatch")
+            );
+        }
         fs::write(&archive, "modified archive").unwrap();
-        assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
-                .unwrap_err()
-                .to_string()
-                .contains("archive changed")
-        );
+        for snapshot in [None, Some(&captured)] {
+            assert!(
+                verify(snapshot)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("archive changed")
+            );
+        }
     }
 
     #[test]

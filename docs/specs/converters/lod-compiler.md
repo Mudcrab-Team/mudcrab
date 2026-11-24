@@ -30,6 +30,40 @@ describes Phase 2 work; the optional cluster experiment in
 [hybrid object LOD](../engine/hybrid-object-lod.md) is a proposed extension,
 not an implemented output or a new default.
 
+## Retail terrain import (the default source)
+
+Terrain LOD chunks come from the game's own files by default
+(`PipelineConfig::terrain_lod_source = retail`, CLI `--terrain-lod retail`). The importer reads
+the `.btr` meshes, the colour map and the normal map of each block of levels 4, 8 and 16
+(`lod::retail_terrain`, `lod::retail_terrain_source`). Each block becomes the chunk of the same
+tier and anchor. The `land` mesh is cut along the quadrant boundaries so the runtime keeps its
+per-quadrant handoff. A cut interpolates the retail positions and UVs along retail edges. A
+quadrant that no retail triangle reaches gets no node. Source:
+<https://github.com/Mudcrab-Team/skyrim_decomp/pull/822> (static, reviewed; unverified live).
+
+- The `.btr` vertex holds position and UV0 only. The importer computes no normal from geometry.
+  The chunk carries a constant reference frame (`NORMAL` up, `TANGENT` east) so the engine applies
+  the normal map as a model-space normal. `N = 2 * ((R, B, G) - 0.5)` becomes east = red,
+  north = blue, up = green in the stored map.
+- Both maps are stored as their first mip only: the finding gives MaxLOD 0 for both samplers.
+- Missing, unreadable or ambiguous files are counted by class (`missing_mesh`,
+  `missing_colour_map`, `missing_normal_map`, `unreadable_mesh`, `compile_failed`,
+  `invalid_chunk`, `ambiguous`) and reported as LOD warnings. Level 32 blocks are counted as
+  `no_runtime_tier`. A world with no retail files gets no terrain LOD and a warning. Nothing is
+  generated in its place.
+- Water planes in the `.btr` files are not imported.
+- `lod-manifest.json` records `terrain_lod_source`, `retail_terrain_import_version` and
+  `retail_terrain_inputs` (a hash over each chunk's three input files and the importer revision).
+  Retail chunks are recompiled on every conversion; there is no reuse proof for them yet.
+- `converter derive-terrain-lod <clone> --registry <packs.json> --clone-of <pack> --data <Data>`
+  replaces the terrain chunks of an APFS clone of a registered pack, without a conversion. It
+  verifies every archive it reads against the pack manifest and writes `terrain-lod-receipt.json`.
+- `--terrain-lod self-built` selects the old height-built compiler. It invents geometry, colour
+  and normals, so it is not the default. Fixtures use it because they ship no retail files.
+- Not done and unverified: the retail lighting, noise and near-terrain overlap rules from the
+  finding, and the nine compiled distance settings. The engine lights these chunks with its
+  ordinary material.
+
 ## Inputs
 
 - `references` (placement, rotation, scale, `radius_override`), `statics`
@@ -138,6 +172,89 @@ GLB vertex and accessor bounds are chunk-local, relative to the chunk root.
 Database bounds and R-tree XY bounds are world-space Creation units: translate
 the chunk-local X/Y extent by `(origin + anchor * tier_side_cells) * 4096`; Z
 is unchanged. Never index chunk-local coordinates as world-space bounds.
+
+### Object LOD chunks
+
+The converter imports `.bto` blocks at levels 16, 8 and 4.
+For each block, `crates/converter/src/lod/objects.rs` writes one object chunk GLB beside the
+terrain chunk of the same key (`lod/<world>/<tier>/objects_<x>_<y>.glb`).
+
+- **Geometry.** The stored shape transform is applied and the block origin is subtracted, so the
+  chunk is chunk-local like terrain chunks (the root node carries the Creation-to-glTF rotation).
+  One `objects` group holds one mesh node per piece. A level-8 or level-16 shape is one
+  `object_batch_<n>` piece. At level 4 a shape has up to 16 segments, one per cell of the 4 x 4
+  block, and becomes one `object_cell_<x>_<y>_<n>` piece per non-empty segment, tagged with its cell
+  so the engine can hide the pieces of cells it has loaded in full detail. Segment `i` covers cell
+  `(block_x + i / 4, block_y + i % 4)` (for a width-4 node `i = 4 * dx + dy`; ordinals restart per
+  shape; empty slots keep their index). **Verified in the retail loader** (static reading, reviewed:
+  skyrim_decomp#816). Only a width-4 node is split per cell: level-8 and level-16 shapes are whole
+  shapes, and a level-4 shape with one segment is tagged as slot 0. The compiler checks the stored
+  index ranges for alignment, bounds, and complete coverage. Our geometry check (mean vertex of a
+  segment within 0.75 cell of its cell) fits 6,706 of 6,708 Tamriel multi-segment slots; the research's own test
+  gave 6,698. A misfit is geometry that reaches beyond its cell (an inference). The derive receipt
+  keeps the count. A width-4 shape with a true `BSDistantObjectLargeRefExtraData` Boolean adds
+  `_large` to its piece names. The engine can then hide those pieces in cells whose large-reference
+  promotion deadline has passed. See [reviewed retail facts, G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
+  A block with no geometry, a shape with
+  several segments outside level 4, a level-4 shape with more than 16 segments, large-reference data
+  at level 16, unreadable input, missing UVs, or a non-finite vertex causes the block to be omitted
+  and counted. Normal and color streams are included when the shape stores them.
+- **Atlas name.** The retail object atlas has one of two names under `textures/terrain/<world>/objects/`:
+  `<world>.objects.dds` or `<world>objectslod.dds`. Evidence: in the installed game data (the base game,
+  Dawnguard, Dragonborn and two Creation Club archives), every one of the 14 worlds with object blocks
+  has exactly one of the two. The texture set inside the `.bto` blocks that name an objects atlas names
+  that same file. The 12 base-game, Dawnguard and Dragonborn worlds use the first name. The Creation
+  Club worlds `ccbgssse067deadlandsworld` and `cckrtsse001qnworld` use the second. The `.lod` settings
+  files hold cell and level numbers only, and no name. The converter accepts both names and refuses a
+  world that has both. A world with blocks and neither file is skipped with the reason class
+  `missing_atlas` in the full conversion, and refused by `derive-object-lod`. The skip is in the
+  report and the log, with the absent paths and the near matches the game data does hold. No stand-in
+  atlas is made, so the world has no object LOD rows. An atlas that exists but is damaged still fails.
+  Every report of an absent retail file lists near matches (same folder, same world name, or the same
+  file name in another case), or says "no near matches in N archives".
+- **Atlas (format 3).** The retail object atlas (see Atlas name)
+  goes through the existing texture stage once per worldspace as sRGB KTX2 and is written to
+  `lod/<world>/objects_atlas.opensky-srgb.ktx2`. Every chunk of the worldspace references it with the image URI
+  `../objects_atlas.opensky-srgb.ktx2` (relative to the chunk file, so it is the same file for every tier). The
+  file has a row in the additive table `lod_object_atlases` (path and SHA-256) and an entry in the
+  `object_atlases` field of `lod-manifest.json`. `OBJECT_COMPILER_VERSION` is 6. A chunk that embeds
+  the atlas (format 2, from an earlier derive) is still valid and still loads.
+- **Normal atlas.** The importer preserves the packed BTO basis and writes the optional normal atlas
+  as linear KTX2 with authored mips at `lod/<world>/objects_normal_atlas.opensky-linear.ktx2`.
+  The normal atlas uses the same lookup as the diffuse atlas, with `_n` before `.dds`.
+  The `object_normal_atlases` field in `lod-manifest.json` records the path and SHA-256. A world with compiled chunks and no normal atlas reports `missing_normal_atlas`.
+  The engine's object LOD material uses the normal atlas and the BTO basis for diffuse lighting
+  (skyrim_decomp#948).
+- **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
+  128/255 with no blending. The grouped draw uses runtime flags unavailable in the BTO reader
+  (finding B3). Mudcrab uses back-face culling for all imported shapes. Winding and vertex colours
+  are kept as stored.
+  STAND-IN(#911): back-face culling for unavailable runtime grouped-draw flags.
+- **Validation.** `validate_object_glb` checks container lengths, buffer view and accessor ranges,
+  vertex formats, finite data, every triangle index, the material and any embedded KTX2.
+  `validate_artifacts` also runs `validate_object_lod_package`.
+- **Producers.** Object LOD is built in three places, all through
+  `crates/converter/src/lod/object_stage.rs`, which reads the files and compiles the chunks:
+  - The LOD stage of a normal conversion and of a metadata rebuild (`--reuse-assets`) runs
+    `build_object_lod` after the terrain stage, for every worldspace that has terrain LOD. It reads the
+    `.bto` blocks and the atlas from the Skyrim `Data` folder (loose files, then archives) and does not
+    use the ingestion selection, so no NIF, texture or script output changes and an existing pack
+    gains object LOD from a rebuild without reconverting anything. A world with no level-16 block is a
+    notice; a skipped block is a line in the LOD warnings (they do not make the run incomplete);
+    a world with blocks but no atlas file under either name is skipped with `missing_atlas` (a LOD
+    warning with the absent paths and near matches), while an atlas that exists but cannot be read
+    or is damaged fails the stage. An MO2 selection builds none (a warning
+    says so), because the blocks are read from the Data folder. The chunks are recomputed on each run
+    (seconds); they are not reused by their input proofs yet.
+  - `converter derive-object-lod <clone> --registry <packs.json> --clone-of <pack> --data <Skyrim Data>
+    [--worldspace <EditorID>] [--force]` adds object LOD to an APFS clone of a registered pack without
+    a conversion: it verifies that every archive it reads is the one the pack was converted from
+    (manifest hash), writes the chunks, the rows, the manifest fields and
+    `object-lod-overlay-receipt.json`, and reports every skipped block with its reason. It refuses a
+    registered pack, a clone that does not match the registry, a pack that already has object chunks
+    (unless `--force`) and a pack without terrain LOD. It also refuses linked databases and output
+    paths. The derive stages and checks files before publishing. A failed publish restores the
+    previous generation and rolls back the database.
 
 ### Proposed object sidecars
 

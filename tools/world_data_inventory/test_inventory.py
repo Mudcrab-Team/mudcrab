@@ -1,5 +1,7 @@
 """Disposable SQLite controls; these do not certify engine or retail semantics."""
+import contextlib
 import copy
+import io
 import json
 import sqlite3
 import subprocess
@@ -29,7 +31,7 @@ def fixture():
 
 
 def manual():
-    return {"reviewed_at_commit": "disposable-fixture", "fields": {}, "stores": {}, "legacy_shapes": [],
+    return {"fields": {}, "stores": {}, "legacy_shapes": [],
             "limitations": ["Synthetic fixture only."],
             "tables": {name: {"classification": "deferred", "owner": "fixture", "reason": "Future feature allowed."}
                        for name in ("lights", "placements", "future_gameplay", "spatial")},
@@ -112,6 +114,385 @@ class Dependencies(unittest.TestCase):
             result = inv.prepare_dependencies(db, "SELECT id FROM spatial WHERE min_x>=?1")
             self.assertEqual(result["status"], "prepared")
             self.assertIn("spatial", {d["table"] for d in result["dependencies"]})
+
+
+READER = 'fn query(db: &Connection) { db.prepare("SELECT radius FROM lights"); }\n'
+
+
+def store_document(name, anchor="fn query", commit="0" * 40):
+    """One committed store file. Its own reviewed commit keeps store pull requests in separate files."""
+    return {"format_version": 1, "store": name, "reviewed_at_commit": commit,
+            "owner": "fixture", "reason": "Fixture external store.",
+            "states": {state: "unknown" for state in inv.STATES},
+            "evidence": [{"path": "crates/engine/src/world.rs", "anchor": anchor}]}
+
+
+def table_document(name, classification="deferred", owner="fixture", reason="Future feature allowed."):
+    """One committed table file. Its own file keeps table pull requests apart."""
+    return {"classification": classification, "format_version": 1, "owner": owner,
+            "reason": reason, "table": name}
+
+
+def make_tree(directory, source=READER):
+    """A disposable checkout: one reader, the fixture dispositions and the converter/shared source roots."""
+    root = Path(directory)
+    here = root / "tools/world_data_inventory"
+    here.mkdir(parents=True)
+    dispositions = manual()
+    dispositions.pop("stores")
+    tables = dispositions.pop("tables")
+    (here / "stores").mkdir()
+    (here / "tables").mkdir()
+    for key, value in tables.items():
+        (here / "tables" / (key + ".json")).write_text(
+            json.dumps(table_document(key, **value), sort_keys=True) + "\n", encoding="utf-8")
+    (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
+    for folder in ("crates/converter/src", "crates/converter/records", "crates/shared/src"):
+        (root / folder).mkdir(parents=True)
+    (root / "crates/shared/src/lib.rs").write_text("pub const VERSION: u32 = 1;\n", encoding="utf-8")
+    reader = root / "crates/engine/src/world.rs"
+    reader.parent.mkdir(parents=True)
+    reader.write_text(source, encoding="utf-8")
+    return root, here, reader
+
+
+def run_tool(root, here, *argv):
+    out = root / "docs/data-inventory"
+    with contextlib.redirect_stdout(io.StringIO()):
+        inv.run([*argv, "--output", str(out)], root=root, here=here)
+    return out
+
+
+def committed_bytes(root):
+    """Bytes of every file that the inventory tool owns and a commit would hold: the tool folder and the
+    docs folder, minus the gitignored generated files. Source files elsewhere are the developer's own edit."""
+    generated = {root / path for path in inv.GENERATED_PATHS}
+    owned = [root / "tools/world_data_inventory", root / "docs/data-inventory"]
+    return {path.relative_to(root).as_posix(): path.read_bytes() for folder in owned if folder.is_dir()
+            for path in sorted(folder.rglob("*")) if path.is_file() and path not in generated}
+
+
+class CommittedSurface(unittest.TestCase):
+    """The gate keeps its purpose, and a source edit with no new table, column or reader changes no committed file."""
+
+    def test_reader_source_edit_without_schema_change_gives_no_committed_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, reader = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            out = run_tool(root, here, "--check")
+            before = committed_bytes(root)
+            first = json.loads((out / "inventory.json").read_text(encoding="utf-8"))["reviewed_source_guard_sha256"]
+            # Unrelated edits: a new function, a comment, moved lines, a changed constant and an edit in a shared file.
+            reader.write_text("// header\n\n\nfn helper() -> u32 { 7 }\n\n" + READER + "fn tail() {}\n", encoding="utf-8")
+            (root / "crates/shared/src/lib.rs").write_text("pub const VERSION: u32 = 2;\n", encoding="utf-8")
+            out = run_tool(root, here, "--check")
+            self.assertEqual(committed_bytes(root), before)
+            # The derived fingerprint did change. It lives only in the generated file.
+            second = json.loads((out / "inventory.json").read_text(encoding="utf-8"))["reviewed_source_guard_sha256"]
+            self.assertNotEqual(first, second)
+
+    def test_new_or_changed_reader_fails_until_it_is_reviewed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, reader = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            reader.write_text(READER + 'fn more(db: &Connection) { db.prepare("SELECT falloff FROM lights"); }\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "new reader without a reviewed disposition"):
+                run_tool(root, here, "--check")
+            run_tool(root, here, "--review-sources")
+            run_tool(root, here, "--check")
+            # Same call expression, different SQL behind the constant: still a changed reader.
+            reader.write_text('const SQL: &str = "SELECT radius FROM lights";\nfn a(db: &Connection) { db.prepare(SQL); }\n', encoding="utf-8")
+            run_tool(root, here, "--review-sources")
+            reader.write_text('const SQL: &str = "SELECT falloff FROM lights";\nfn a(db: &Connection) { db.prepare(SQL); }\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "changed reader"):
+                run_tool(root, here, "--check")
+            # A dynamic reader that interpolates a same-file constant: an edit of the constant is reviewed.
+            reader.write_text('const COLS: &str = "radius";\nfn a(db: &Connection) { db.prepare(&format!("SELECT {COLS} FROM lights")); }\n', encoding="utf-8")
+            run_tool(root, here, "--review-sources")
+            run_tool(root, here, "--check")
+            reader.write_text('const COLS: &str = "radius,falloff";\nfn a(db: &Connection) { db.prepare(&format!("SELECT {COLS} FROM lights")); }\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "changed reader"):
+                run_tool(root, here, "--check")
+            # A removed reader is a change too, so the committed list stays exact.
+            reader.write_text("fn nothing() {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no longer exists"):
+                run_tool(root, here, "--check")
+
+    def test_new_table_or_column_without_a_disposition_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            extraction = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": fixture()}}
+            path = root / "extraction.json"
+            def write(value):
+                guard = inv.source_guard(root, inv.scan_queries(root), manual())
+                value["reviewed_source_guard_sha256"] = inv.digest(inv.canonical(guard))
+                path.write_text(json.dumps(value), encoding="utf-8")
+            write(extraction)
+            run_tool(root, here, "--review-sources", "--extraction", str(path))
+            run_tool(root, here, "--check", "--extraction", str(path))
+            columns = json.loads((here / "reviewed-surface.json").read_text())["columns"]
+            self.assertIn("lights.falloff", columns)
+            # A new column in a table that already has a disposition.
+            with closing(inv.open_schema(extraction["schemas"]["fixture"], ["ALTER TABLE lights ADD COLUMN brightness REAL"])) as db:
+                widened = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": schema_from(db)}}
+            write(widened)
+            with self.assertRaisesRegex(ValueError, "new column without a reviewed disposition: lights.brightness"):
+                run_tool(root, here, "--check", "--extraction", str(path))
+            # A removed column must also be reviewed.
+            write(extraction)
+            run_tool(root, here, "--review-sources", "--extraction", str(path))
+            with closing(inv.open_schema(extraction["schemas"]["fixture"], ["ALTER TABLE lights DROP COLUMN falloff"])) as db:
+                narrowed = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": schema_from(db)}}
+            write(narrowed)
+            with self.assertRaisesRegex(ValueError, "no longer exists: lights.falloff"):
+                run_tool(root, here, "--check", "--extraction", str(path))
+            # A new table fails: unreviewed as a column set, and unclassified as a table.
+            with closing(inv.open_schema(extraction["schemas"]["fixture"], ["CREATE TABLE brand_new(id INTEGER)"])) as db:
+                grown = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": schema_from(db)}}
+            write(grown)
+            with self.assertRaisesRegex(ValueError, "new column without a reviewed disposition: brand_new.id"):
+                run_tool(root, here, "--check", "--extraction", str(path))
+            before = committed_bytes(root)
+            with self.assertRaisesRegex(ValueError, "unclassified emitted table: brand_new"):
+                run_tool(root, here, "--review-sources", "--extraction", str(path))
+            self.assertEqual(committed_bytes(root), before)
+            (here / "tables" / "brand_new.json").write_text(
+                json.dumps(table_document("brand_new", reason="Reviewed."), sort_keys=True) + "\n",
+                encoding="utf-8")
+            write(grown)
+            run_tool(root, here, "--review-sources", "--extraction", str(path))
+            run_tool(root, here, "--check", "--extraction", str(path))
+
+    def test_missing_or_stale_generated_files_are_regenerated_not_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            out = run_tool(root, here, "--check")
+            expected = {name: (out / name).read_bytes() for name in ("inventory.json", "report.md")}
+            self.assertTrue(all(expected.values()))
+            (out / "inventory.json").unlink()
+            (out / "report.md").write_text("stale copy from another checkout", encoding="utf-8")
+            run_tool(root, here, "--check")
+            self.assertEqual({name: (out / name).read_bytes() for name in expected}, expected)
+
+    def test_a_tracked_generated_file_fails_with_the_one_line_recipe(self):
+        if subprocess.run(["git", "--version"], capture_output=True).returncode != 0:
+            self.skipTest("git is not available")
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            out = run_tool(root, here, "--check")
+            git = lambda *args: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                                               cwd=root, capture_output=True, text=True, check=True)
+            git("init", "-q")
+            (root / ".gitignore").write_text("\n".join("/" + path for path in inv.GENERATED_PATHS) + "\n", encoding="utf-8")
+            git("add", "-A")
+            # The ignore rules keep a stale local copy out of `git add -A`.
+            self.assertEqual(git("ls-files", "--", *inv.GENERATED_PATHS).stdout, "")
+            run_tool(root, here, "--check")
+            git("add", "-f", str(out / "inventory.json"))
+            with self.assertRaisesRegex(ValueError, "generated inventory files are committed.*git rm -qf --ignore-unmatch"):
+                run_tool(root, here, "--check")
+            # The recipe removes the file. It is safe to run when a file is absent or was never tracked.
+            subprocess.run(inv.MIGRATION_RECIPE.replace("&& git commit --no-edit", ""), shell=True, cwd=root, check=True,
+                           capture_output=True)
+            run_tool(root, here, "--check")
+
+    def test_repository_ignores_every_generated_file(self):
+        ignored = (inv.ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for path in inv.GENERATED_PATHS:
+            self.assertIn("/" + path, ignored)
+        self.assertEqual(inv.tracked_generated_files(inv.ROOT), [])
+
+
+class StoreFiles(unittest.TestCase):
+    """Each store owns its file and reviewed commit, so two store PRs never share a line."""
+
+    def write_store(self, here, filename, document):
+        (here / "stores").mkdir(exist_ok=True)
+        (here / "stores" / filename).write_text(json.dumps(document), encoding="utf-8")
+
+    def test_two_branches_that_add_different_stores_merge_without_conflict(self):
+        # Both merge orders. A shared `stores` block or a shared reviewed commit would conflict here.
+        for first, second in (("alpha", "beta"), ("beta", "alpha")):
+            with self.subTest(order=(first, second)), tempfile.TemporaryDirectory() as directory:
+                root, here, _ = make_tree(directory)
+                git = lambda *args: subprocess.run(
+                    ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                     "-c", "commit.gpgsign=false", *args],
+                    cwd=root, capture_output=True, text=True, check=True)
+                git("init", "-q")
+                git("symbolic-ref", "HEAD", "refs/heads/main")
+                git("add", "-A")
+                git("commit", "-q", "-m", "base")
+                for name in (first, second):
+                    git("checkout", "-q", "-b", f"store-{name}", "main")
+                    self.write_store(here, f"{name}.json", store_document(name))
+                    git("add", "tools/world_data_inventory/stores")
+                    git("commit", "-q", "-m", f"add {name} store")
+                git("checkout", "-q", "main")
+                for name in (first, second):
+                    merged = subprocess.run(
+                        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                         "-c", "commit.gpgsign=false", "merge", "--no-edit", f"store-{name}"],
+                        cwd=root, capture_output=True, text=True)
+                    self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
+                self.assertEqual(sorted(inv.load_stores(here)), sorted([first, second]))
+                inv.validate_manual(root, inv.load_manual(here))
+
+    def test_each_store_keeps_its_own_reviewed_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, here, _ = make_tree(directory)
+            self.write_store(here, "alpha.json", store_document("alpha", commit="1" * 40))
+            self.write_store(here, "beta.json", store_document("beta", commit="2" * 40))
+            stores = inv.load_stores(here)
+            self.assertEqual(stores["alpha"]["reviewed_at_commit"], "1" * 40)
+            self.assertEqual(stores["beta"]["reviewed_at_commit"], "2" * 40)
+
+    def test_check_fails_closed_on_a_missing_store_anchor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "broken.json",
+                             store_document("broken", anchor="anchor that is not in the file"))
+            with self.assertRaisesRegex(ValueError, r"store broken \(stores/broken\.json\): broken evidence reference"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_missing_store_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores").rmdir()
+            with self.assertRaisesRegex(ValueError, "missing stores/ directory"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_missing_store_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            document = store_document("partial")
+            document.pop("owner")
+            self.write_store(here, "partial.json", document)
+            with self.assertRaisesRegex(ValueError, "invalid store file stores/partial.json: missing owner"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_an_unknown_store_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            document = store_document("extra")
+            document["unexpected"] = 1
+            self.write_store(here, "extra.json", document)
+            with self.assertRaisesRegex(ValueError, "invalid store file stores/extra.json: unknown unexpected"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_non_object_store_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "list.json", [])
+            with self.assertRaisesRegex(ValueError, "store file is not an object: stores/list.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_an_unexpected_file_in_the_store_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "conversion-manifest.JSON").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,
+                                        "unexpected file in store directory: stores/conversion-manifest.JSON"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_store_file_that_is_not_utf8(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "binary.json").write_bytes(b"\xff\xfe")
+            with self.assertRaisesRegex(ValueError, "cannot read store file stores/binary.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_store_path_that_cannot_be_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "unreadable.json").mkdir()
+            with self.assertRaisesRegex(ValueError, "cannot read store file stores/unreadable.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_duplicate_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "one.json", store_document("same"))
+            self.write_store(here, "two.json", store_document("same"))
+            with self.assertRaisesRegex(ValueError, "duplicate store same: stores/one.json and stores/two.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_malformed_store_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "broken.json").write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid JSON in store file stores/broken.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_malformed_store_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "bad-commit.json", store_document("bad-commit", commit="HEAD"))
+            with self.assertRaisesRegex(ValueError, "invalid store reviewed_at_commit: bad-commit"):
+                run_tool(root, here, "--check")
+
+    def test_a_legacy_stores_block_fails_with_the_migration_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            dispositions = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            dispositions["stores"] = {"legacy": store_document("legacy")}
+            (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"must not contain a stores block.*stores/"):
+                run_tool(root, here, "--check")
+
+
+class TableFiles(unittest.TestCase):
+    """One table per file; a bad or old layout fails instead of dropping a classification."""
+
+    def write_table(self, here, filename, document):
+        (here / "tables" / filename).write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
+
+    def test_check_fails_closed_on_malformed_table_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "tables" / "broken.json").write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid JSON in table file tables/broken.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_duplicate_table(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_table(here, "one.json", table_document("same"))
+            self.write_table(here, "two.json", table_document("same"))
+            with self.assertRaisesRegex(ValueError, "duplicate table same: tables/one.json and tables/two.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_an_unexpected_file_in_the_table_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "tables" / "table.JSON").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,
+                                        "unexpected file in table directory: tables/table.JSON"):
+                run_tool(root, here, "--check")
+
+    def test_emitted_payload_uses_only_the_old_table_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            manual = inv.load_manual(here)
+            extraction = {"format_version": 1, "source_commit": "fixture",
+                          "schemas": {"fixture": fixture()}, "variants": []}
+            loaded = inv.build(root, manual, copy.deepcopy(extraction))
+            stripped = copy.deepcopy(manual)
+            stripped["tables"] = {name: {field: value[field] for field in inv.TABLE_DISPOSITIONS}
+                                  for name, value in stripped["tables"].items()}
+            old = inv.build(root, stripped, copy.deepcopy(extraction))
+            self.assertEqual(inv.canonical(loaded), inv.canonical(old))
+
+    def test_a_legacy_tables_block_fails_with_the_migration_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            dispositions = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            dispositions["tables"] = {"legacy": {"classification": "deferred", "owner": "fixture", "reason": "Old."}}
+            (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"must not contain a tables block.*tables/"):
+                run_tool(root, here, "--check")
 
 
 class SourceAndDrift(unittest.TestCase):
@@ -230,7 +611,7 @@ class SourceAndDrift(unittest.TestCase):
             self.assertFalse(any(c["prepare_dependencies"] for c in changed_lights["columns"]))
 
     def test_committed_manual_anchors(self):
-        inv.validate_manual(inv.ROOT, json.loads((inv.HERE / "dispositions.json").read_text(encoding="utf-8")))
+        inv.validate_manual(inv.ROOT, inv.load_manual(inv.HERE))
 
     def test_cli_rejects_stale_extraction_before_replay(self):
         with tempfile.TemporaryDirectory() as directory:

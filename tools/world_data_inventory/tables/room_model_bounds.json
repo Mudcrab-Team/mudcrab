@@ -1,0 +1,7 @@
+{
+  "classification": "deferred",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#298; room culling #188)",
+  "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate.",
+  "table": "room_model_bounds"
+}

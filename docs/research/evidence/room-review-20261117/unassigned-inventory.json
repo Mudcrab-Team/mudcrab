@@ -1,0 +1,71 @@
+{
+  "scope": "Five freshly reconverted complete cells from the 2026-11-17 combined-stack review fixture; inventory only, not a native-runtime comparison.",
+  "database": {
+    "bytes": 2214064128,
+    "sha256": "56a6fd9b6583994139896a4d7fc9e721bdd7e2769dc4abd3c41918d611b181a0",
+    "unchanged_after_read": true
+  },
+  "query": "unassigned-inventory.sql",
+  "tools": {
+    "python": "3.14.10",
+    "sqlite": "3.54.0"
+  },
+  "rows": [
+    {
+      "cell_id": 86643,
+      "interior_name": "GallowsRock01",
+      "references_total": 1407,
+      "no_containing_room": 88,
+      "no_containing_or_overlap_room": 46,
+      "bounded_candidates_before_model_suppression": 1,
+      "bounded_candidates_after_model_suppression": 0
+    },
+    {
+      "cell_id": 91555,
+      "interior_name": "WhiterunDragonsreach",
+      "references_total": 1441,
+      "no_containing_room": 25,
+      "no_containing_or_overlap_room": 18,
+      "bounded_candidates_before_model_suppression": 1,
+      "bounded_candidates_after_model_suppression": 0
+    },
+    {
+      "cell_id": 225758,
+      "interior_name": "BleakFallsBarrow01",
+      "references_total": 2512,
+      "no_containing_room": 63,
+      "no_containing_or_overlap_room": 58,
+      "bounded_candidates_before_model_suppression": 3,
+      "bounded_candidates_after_model_suppression": 0
+    },
+    {
+      "cell_id": 228550,
+      "interior_name": "RiftenMercerFreyHouse",
+      "references_total": 964,
+      "no_containing_room": 53,
+      "no_containing_or_overlap_room": 26,
+      "bounded_candidates_before_model_suppression": 1,
+      "bounded_candidates_after_model_suppression": 0
+    },
+    {
+      "cell_id": 768815,
+      "interior_name": "Katariah01",
+      "references_total": 2614,
+      "no_containing_room": 59,
+      "no_containing_or_overlap_room": 39,
+      "bounded_candidates_before_model_suppression": 5,
+      "bounded_candidates_after_model_suppression": 0
+    }
+  ],
+  "excluded_candidate_models": {
+    "BlackPlane01": 4,
+    "XMarker": 6,
+    "NorthMarker": 1
+  },
+  "limitations": [
+    "The query describes geometric reference_rooms rows, not authored source-sphere ownership from PR 745.",
+    "The 11 preliminary candidates are already suppressed by the base Is Marker flag or markers/ path rule; no renderable bounded candidate remains in this sample.",
+    "Counts do not establish coverage of all Skyrim cells, runtime enable state, moving bodies, actual culled meshes, or original-game behavior.",
+    "Stored bounds validity and nonempty model paths are necessary preliminary filters, not proof a model produces renderable meshes."
+  ]
+}

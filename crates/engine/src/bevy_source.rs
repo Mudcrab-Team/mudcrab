@@ -7,12 +7,25 @@
 
 use std::path::{Path, PathBuf};
 
+/// `text` with every CRLF line ending turned into LF.
+///
+/// A Windows checkout with `core.autocrlf=true` gives source files CRLF endings unless
+/// `.gitattributes` says otherwise. The guards match exact text, and their test fixtures edit it
+/// with LF strings, so every source read here is normalised once, before either use.
+pub(crate) fn normalize_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// A source file as LF text, whatever line endings the checkout gave it.
+pub(crate) fn read_source(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path).map(|text| normalize_line_endings(&text))
+}
+
 /// The `bevy_pbr` version `Cargo.lock` pins.
 pub(crate) fn locked_bevy_pbr_version() -> String {
-    let lock = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock"),
-    )
-    .expect("the workspace has a Cargo.lock");
+    let lock =
+        read_source(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock"))
+            .expect("the workspace has a Cargo.lock");
     let entry = lock
         .split("[[package]]")
         .find(|entry| {
@@ -83,7 +96,7 @@ pub(crate) fn bevy_pbr_crate_dir(version: &str) -> PathBuf {
 /// file (for example a shader renamed to `.wesl`) means the patch matches nothing at runtime.
 pub(crate) fn required_source(dir: &Path, relative: &str) -> String {
     let path = dir.join(relative);
-    std::fs::read_to_string(&path).unwrap_or_else(|error| {
+    read_source(&path).unwrap_or_else(|error| {
         panic!(
             "{} is missing or unreadable ({error}): Bevy moved or renamed it (for example to \
              .wesl), so the shader patch that depends on it would silently do nothing",
@@ -95,7 +108,7 @@ pub(crate) fn required_source(dir: &Path, relative: &str) -> String {
 /// A file of a Bevy source directory, or `None` (with a note) when it is unreadable.
 pub(crate) fn registry_source(dir: &Path, relative: &str) -> Option<String> {
     let path = dir.join(relative);
-    match std::fs::read_to_string(&path) {
+    match read_source(&path) {
         Ok(source) => Some(source),
         Err(error) => {
             eprintln!("{} is unreadable ({error}); skipped", path.display());
@@ -128,6 +141,23 @@ mod tests {
         let candidates = [missing, other, wanted.clone()];
         assert_eq!(find_bevy_pbr_crate("0.19.0", &candidates), Some(wanted));
         assert_eq!(find_bevy_pbr_crate("0.17.0", &candidates), None);
+    }
+
+    #[test]
+    fn crlf_and_lf_sources_read_the_same() {
+        let root = tempfile::tempdir().unwrap();
+        let lf = "fn a() {\n    b();\n}\n";
+        for (name, ending) in [("lf.wgsl", "\n"), ("crlf.wgsl", "\r\n")] {
+            std::fs::write(root.path().join(name), lf.replace('\n', ending)).unwrap();
+            assert_eq!(required_source(root.path(), name), lf, "{name}");
+            assert_eq!(
+                registry_source(root.path(), name).as_deref(),
+                Some(lf),
+                "{name}"
+            );
+        }
+        // A lone CR is not a line ending here and is left alone.
+        assert_eq!(normalize_line_endings("a\rb\r\nc\n"), "a\rb\nc\n");
     }
 
     #[test]

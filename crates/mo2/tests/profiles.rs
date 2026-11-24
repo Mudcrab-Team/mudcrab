@@ -413,14 +413,19 @@ fn resolves_base_relative_and_external_configured_directories() {
         instance.mods_dir,
         fs::canonicalize(root.join("Storage/Mods")).unwrap()
     );
-    let external = root.parent().unwrap().join("External Mods");
+    // A Windows runner's temporary directory can be a short `RUNNER~1` path. Directory listings
+    // show only the long name, so write the setting with the long one, without the `\\?\` prefix.
+    let external = fs::canonicalize(root.parent().unwrap())
+        .unwrap()
+        .join("External Mods");
     fs::create_dir(&external).unwrap();
+    let setting = external.display().to_string();
+    let setting = setting.strip_prefix(r"\\?\").unwrap_or(&setting);
     write(
         &root,
         "ModOrganizer.ini",
         &format!(
-            "[Settings]\ngameName=Skyrim\nmod_directory=\"{}\"\nprofiles_directory=profiles\noverwrite_directory=overwrite\n",
-            external.display()
+            "[Settings]\ngameName=Skyrim\nmod_directory=\"{setting}\"\nprofiles_directory=profiles\noverwrite_directory=overwrite\n"
         ),
     );
     assert_eq!(

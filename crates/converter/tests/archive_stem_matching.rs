@@ -224,6 +224,8 @@ fn texture(width: u32, seed: u64) -> Vec<u8> {
 fn cpu_config(data: &Path, output: &Path) -> PipelineConfig {
     let mut config = PipelineConfig::new(data, output);
     config.no_lod = true;
+    // The fixture has no retail terrain LOD files; these tests check the self-built LOD stage.
+    config.terrain_lod_source = converter::config::TerrainLodSource::SelfBuilt;
     config.cpu_jobs = 1;
     config.io_jobs = 1;
     config.texture_encoder = TextureEncoder::Cpu;
@@ -599,4 +601,147 @@ async fn metadata_rebuild_rejects_dash_and_underscore_longer_owner_settings() {
             original_database
         );
     }
+}
+
+/// Ignored loose/profile and archived inputs remain visible without changing valid publication.
+#[tokio::test]
+async fn ignored_input_extensions_publish_counts_and_one_notice_across_resume() {
+    for selection in [
+        Selection::Automatic,
+        Selection::Player,
+        Selection::Mo2Mod,
+        Selection::Mo2Overwrite,
+    ] {
+        let fixture = Fixture::new(selection);
+        for (name, bytes) in [
+            ("sound/loose.WAV", &b"unsupported wave"[..]),
+            ("interface/loose.swf", &b"unsupported movie"[..]),
+            ("meshes/loose.tri", &b"unsupported morph"[..]),
+        ] {
+            let path = fixture.owner_path(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let healthy = texture(4, 23);
+        fixture.archive(
+            "Good.bsa",
+            &[
+                Entry::new("textures/shared.dds", &healthy),
+                Entry::new("interface/archived.SWF", b"unsupported movie"),
+                Entry::new("meshes/archived.tri", b"unsupported morph"),
+                Entry::new(
+                    "interface/controls/pc/gamepad.txt",
+                    b"Archive Pad\t0x1000\r\n",
+                ),
+            ],
+        );
+        // Control files have their own publisher, so neither copy is an ignored input.
+        let loose_control = "interface/controls/pc/keyboard_english.txt";
+        let loose_bytes = b"Loose Name\t0x33\t23\r\n";
+        let loose_path = fixture.owner_path(loose_control);
+        fs::create_dir_all(loose_path.parent().unwrap()).unwrap();
+        fs::write(&loose_path, loose_bytes).unwrap();
+        for pass in 0..2 {
+            let report = publish(fixture.config()).await;
+            assert!(fixture.output.join("textures/shared.ktx2").is_file());
+            assert_eq!(database_provenance(&fixture.output).len(), 2);
+            assert_eq!(
+                fs::read(fixture.output.join(loose_control)).unwrap(),
+                loose_bytes,
+                "{selection:?} pass {pass}"
+            );
+            assert_eq!(
+                fs::read(fixture.output.join("interface/controls/pc/gamepad.txt")).unwrap(),
+                b"Archive Pad\t0x1000\r\n",
+                "{selection:?} pass {pass}"
+            );
+            let manifest = fixture.manifest();
+            assert_eq!(
+                manifest["ignored_inputs_by_extension"],
+                serde_json::json!({"swf":2,"tri":2,"wav":1}),
+                "{selection:?} pass {pass}"
+            );
+            let notices: Vec<_> = report
+                .notices
+                .iter()
+                .filter(|notice| notice.starts_with("ignored "))
+                .collect();
+            assert_eq!(notices.len(), 1, "{report:?}");
+            assert!(
+                notices[0].contains("ignored 5 inputs in 3 extension groups"),
+                "{}",
+                notices[0]
+            );
+            assert!(report.warnings.is_empty(), "{report:?}");
+            if pass == 1 {
+                assert!(
+                    report.cache_hits > 0,
+                    "the second pass must exercise archive reuse"
+                );
+            }
+        }
+    }
+}
+
+/// A recoverable archive payload failure keeps the directory inventory it already scanned.
+#[tokio::test]
+async fn failed_archive_payload_keeps_its_completed_ignored_input_counts() {
+    let fixture = Fixture::new(Selection::Automatic);
+    let mut archive = bsa::v105(
+        &[
+            Entry::new("textures/corrupt.dds", &vec![0u8; 1234]),
+            Entry::new("interface/lost.SWF", b"unsupported movie"),
+        ],
+        bsa::Compression::Zlib,
+    )
+    .unwrap();
+    // Corrupt only the decoded size a compressed entry advertises; the directory
+    // table, names and payload bounds stay readable.
+    let size_prefix = 1234u32.to_le_bytes();
+    let prefix = size_prefix.as_slice();
+    let offsets: Vec<_> = archive
+        .windows(prefix.len())
+        .enumerate()
+        .filter(|(_, window)| *window == prefix)
+        .map(|(offset, _)| offset)
+        .collect();
+    assert_eq!(
+        offsets.len(),
+        1,
+        "the synthetic payload size must be unique"
+    );
+    archive[offsets[0]..offsets[0] + prefix.len()].copy_from_slice(&u32::MAX.to_le_bytes());
+    fs::write(fixture.owner_path("Good.bsa"), archive).unwrap();
+    let mut config = fixture.config();
+    config.fail_fast = false;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
+    drain.await.unwrap();
+    assert_eq!(report.skipped, 1, "{report:?}");
+    let manifest = fixture.manifest();
+    assert!(
+        manifest["failures"]
+            .as_object()
+            .is_some_and(|failures| failures
+                .keys()
+                .any(|key| key.to_ascii_lowercase().ends_with("good.bsa"))),
+        "{manifest}"
+    );
+    assert_eq!(
+        manifest["ignored_inputs_by_extension"],
+        serde_json::json!({"swf": 1}),
+        "{manifest}"
+    );
+    let notices: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.starts_with("ignored "))
+        .collect();
+    assert_eq!(notices.len(), 1, "{report:?}");
+    assert!(
+        notices[0].contains("ignored 1 inputs in 1 extension groups"),
+        "{}",
+        notices[0]
+    );
 }

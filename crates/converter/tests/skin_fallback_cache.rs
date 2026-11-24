@@ -72,6 +72,63 @@ fn partial_skeleton() -> Vec<u8> {
     bytes
 }
 
+fn covering_skeleton(name: &str, bone_x: f32) -> Vec<u8> {
+    let mut bytes = legacy_skinned_shapes(&[skin(name)]).unwrap();
+    let root = blocks(&bytes)[0].1;
+    bytes[root..root + 4].copy_from_slice(&0u32.to_le_bytes());
+    let bone = blocks(&bytes)
+        .into_iter()
+        .find(|(kind, _)| kind == "NiNode")
+        .unwrap()
+        .1;
+    bytes[bone + 16..bone + 20].copy_from_slice(&bone_x.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn case_colliding_rigs_export_the_entry_that_covers_the_mesh() {
+    let root = tempfile::tempdir().unwrap();
+    let body = root.path().join(BODY_KEY);
+    let upper_key = Path::new("meshes/actors/other/Skeleton_custom.nif");
+    let lower_key = upper_key.with_file_name("skeleton_custom.nif");
+    let upper = root.path().join(upper_key);
+    let lower = root.path().join(&lower_key);
+    fs::create_dir_all(body.parent().unwrap()).unwrap();
+    fs::create_dir_all(upper.parent().unwrap()).unwrap();
+    fs::write(&body, body_fixture()).unwrap();
+    fs::write(&upper, covering_skeleton("CoveringRig", 17.0)).unwrap();
+    if lower.exists() {
+        // The physical actor-tree case requires a case-sensitive filesystem.
+        return;
+    }
+    fs::write(&lower, partial_skeleton()).unwrap();
+
+    let control = root.path().join("control.glb");
+    MeshConverter::convert_nif_to_glb_with_skeleton(&body, &control, Some(&upper)).unwrap();
+    let expected = fs::read(control).unwrap();
+    let actual = root.path().join("actual.glb");
+    assert_eq!(
+        find_skeleton(&body),
+        SkeletonResolution::Skeleton(upper.clone())
+    );
+    MeshConverter::convert_nif_to_glb(&body, &actual).unwrap();
+    assert_eq!(fs::read(&actual).unwrap(), expected);
+
+    let sources = BTreeMap::from([
+        (PathBuf::from(BODY_KEY), body.clone()),
+        (upper_key.to_owned(), upper),
+        (lower_key, lower),
+    ]);
+    assert_eq!(
+        converter::mesh::resolve_skeleton(Path::new(BODY_KEY), &sources),
+        SkeletonResolution::Skeleton(upper_key.to_owned())
+    );
+    let index = converter::mesh::SkeletonIndex::from_sources(&sources);
+    MeshConverter::convert_nif_to_glb_from_index(Path::new(BODY_KEY), &body, &actual, &index)
+        .unwrap();
+    assert_eq!(fs::read(actual).unwrap(), expected);
+}
+
 /// Generate all dependencies, including the two texture names used by the skin writer.
 fn prepare_data(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
@@ -349,6 +406,14 @@ fn asset_closure_tool_refusal_rejects_old_success_and_preserves_neighbor() {
     let root = tempfile::tempdir().unwrap();
     let (sources, assets) = tool_inputs(root.path());
     let neighbor = fs::read(assets.join("meshes/generated.glb")).unwrap();
+    // Seed a readable destination produced from different geometry.
+    let stale = sources.join("old.nif");
+    fs::write(&stale, partial_skeleton()).unwrap();
+    MeshConverter::convert_nif_to_glb(stale, assets.join("meshes/generated.glb")).unwrap();
+    assert_ne!(
+        fs::read(assets.join("meshes/generated.glb")).unwrap(),
+        neighbor
+    );
     let database = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     database.execute_batch("CREATE TABLE statics(id INTEGER PRIMARY KEY, model_path TEXT); CREATE TABLE \"references\"(base_form_id INTEGER); INSERT INTO statics VALUES(1,'generated.nif'),(2,'actors/test/body.nif'); INSERT INTO \"references\" VALUES(1),(2);").unwrap();
     drop(database);
@@ -366,7 +431,8 @@ fn asset_closure_tool_refusal_rejects_old_success_and_preserves_neighbor() {
     let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(report["passed"], false);
     assert_eq!(report["failures"], 1);
-    assert_eq!(report["reused"], 1);
+    assert_eq!(report["reused"], 0);
+    assert_eq!(report["converted"], 1);
     let failed = report["results"]
         .as_array()
         .unwrap()
@@ -403,13 +469,14 @@ fn asset_closure_tool_reports_every_alias_of_one_output() {
     assert!(!run.status.success());
     let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(report["requested"], 4);
-    assert_eq!(report["reused"], 2);
+    assert_eq!(report["reused"], 0);
+    assert_eq!(report["converted"], 2);
     assert_eq!(report["failures"], 2);
     let results = report["results"].as_array().unwrap();
     assert_eq!(results.len(), 4, "every stored path needs one result");
     for row in results {
         let expected = if row["output_path"] == "meshes/generated.glb" {
-            "reused"
+            "converted"
         } else {
             "failed"
         };
@@ -726,11 +793,7 @@ async fn warm_cache_tracks_self_contained_unresolved_and_back() {
     assert_eq!(publish(&config).await.converted, 0);
 
     // A complete selected rig keeps the established content dependency proof.
-    let mut covering = legacy_skinned_shapes(&[skin("CoveringRig")]).unwrap();
-    let root_block = blocks(&covering)[0].1;
-    // A skeleton needs a named root; the mesh writer deliberately uses NULL_REF there.
-    covering[root_block..root_block + 4].copy_from_slice(&0u32.to_le_bytes());
-    fs::write(&skeleton, covering).unwrap();
+    fs::write(&skeleton, covering_skeleton("CoveringRig", 17.0)).unwrap();
     assert_eq!(
         find_skeleton(&body),
         SkeletonResolution::Skeleton(skeleton.clone())
@@ -742,6 +805,56 @@ async fn warm_cache_tracks_self_contained_unresolved_and_back() {
         format!("{source_hash}:{}", hash_file(&skeleton).unwrap())
     );
     assert_eq!(publish(&config).await.converted, 0);
+}
+
+#[tokio::test]
+async fn warm_and_cold_batches_agree_after_sibling_and_rig_replacements() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    prepare_data(&data);
+    let body = data.join(BODY_KEY);
+    fs::write(&body, body_fixture()).unwrap();
+    let sibling = body.with_file_name("sibling.nif");
+    let write_sibling = |joint: &[u8; 5]| {
+        let mut bytes = body_fixture();
+        let at = bytes.windows(5).position(|name| name == b"Bone1").unwrap();
+        bytes[at..at + 5].copy_from_slice(joint);
+        fs::write(&sibling, bytes).unwrap();
+    };
+    write_sibling(b"WingX");
+    let x = data.join("meshes/actors/x/skeleton.nif");
+    let y = data.join("meshes/actors/y/skeleton.nif");
+    for (path, name, bone_x) in [(&x, "WingX", 11.0), (&y, "WingY", 22.0)] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, covering_skeleton(name, bone_x)).unwrap();
+    }
+    let output = root.path().join("warm");
+    let config = config(&data, &output);
+    let body_hash = hash_file(&body).unwrap();
+    let mut previous_glb = Vec::new();
+    for (step, selected) in [("initial", &x), ("sibling", &y), ("rig", &y)] {
+        match step {
+            "sibling" => write_sibling(b"WingY"),
+            "rig" => fs::write(&y, covering_skeleton("WingY", 33.0)).unwrap(),
+            _ => {}
+        }
+        let run = publish(&config).await;
+        assert!(run.complete && run.converted > 0, "{step}: {run:?}");
+        let proof = format!("{body_hash}:{}", hash_file(selected).unwrap());
+        assert_eq!(manifest(&output).entries[BODY_KEY].source_hash, proof);
+        let glb = fs::read(output.join(BODY_OUTPUT)).unwrap();
+        assert_ne!(glb, previous_glb);
+        let mut cold = config.clone();
+        cold.output_dir = root.path().join(format!("cold-{step}"));
+        assert!(publish(&cold).await.complete);
+        assert_eq!(fs::read(cold.output_dir.join(BODY_OUTPUT)).unwrap(), glb);
+        assert_eq!(
+            manifest(&cold.output_dir).entries[BODY_KEY].source_hash,
+            proof
+        );
+        assert_eq!(publish(&config).await.converted, 0);
+        previous_glb = glb;
+    }
 }
 
 /// Repair must reject both main proofs and the unpublished fallback proof before staging.
@@ -875,6 +988,15 @@ async fn assert_repair_rejects_stale_contract(contracts: &[&str]) {
 /// Current-contract repair uses the same unresolved proof and retains both rigid shapes.
 #[tokio::test]
 async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_proof() {
+    assert_repair_agrees_with_batch(false).await;
+}
+
+#[tokio::test]
+async fn repair_and_batch_use_the_same_external_rig() {
+    assert_repair_agrees_with_batch(true).await;
+}
+
+async fn assert_repair_agrees_with_batch(has_covering_skeleton: bool) {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("Data");
     prepare_data(&data);
@@ -883,7 +1005,12 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
     fs::write(data.join("meshes/healthy.nif"), body_fixture()).unwrap();
     let skeleton = data.join("meshes/actors/other/skeleton.nif");
     fs::create_dir_all(skeleton.parent().unwrap()).unwrap();
-    fs::write(&skeleton, partial_skeleton()).unwrap();
+    let skeleton_bytes = if has_covering_skeleton {
+        covering_skeleton("CoveringRig", 17.0)
+    } else {
+        partial_skeleton()
+    };
+    fs::write(&skeleton, skeleton_bytes).unwrap();
     let body = data.join(BODY_KEY);
     fs::write(&body, b"broken NIF awaiting repair").unwrap();
     let output = root.path().join("modern");
@@ -895,18 +1022,37 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
     let neighbor = fs::read(output.join("meshes/generated.glb")).unwrap();
     fs::write(&body, body_fixture()).unwrap();
     let resolution = find_skeleton(&body);
-    assert!(
-        matches!(resolution, SkeletonResolution::Unresolved { best_coverage } if (best_coverage - 0.5).abs() < 1e-6),
-        "{resolution:?}"
-    );
+    let suffix = if has_covering_skeleton {
+        assert_eq!(resolution, SkeletonResolution::Skeleton(skeleton.clone()));
+        hash_file(&skeleton).unwrap()
+    } else {
+        assert!(
+            matches!(resolution, SkeletonResolution::Unresolved { best_coverage } if (best_coverage - 0.5).abs() < 1e-6),
+            "{resolution:?}"
+        );
+        "skin-resolution:unresolved".to_owned()
+    };
+    let check_body = |path: &Path| {
+        assert_body(path, has_covering_skeleton);
+        if has_covering_skeleton {
+            let doc = read_glb(path).json;
+            let joints = doc["skins"][0]["joints"].as_array().unwrap();
+            let bone = joints
+                .iter()
+                .map(|j| &doc["nodes"][j.as_u64().unwrap() as usize])
+                .find(|node| node["name"] == "Bone0")
+                .unwrap();
+            assert_eq!(bone["translation"], serde_json::json!([17.0, 0.0, 0.0]));
+        }
+    };
     let before = pack_bytes(&output);
     let preview = repair_failed(&config, false).unwrap();
     assert!(!preview.published);
     assert_eq!(preview.converted, 1);
     assert!(preview.failures.is_empty(), "{:?}", preview.failures);
-    assert_body(&preview.directory.join("assets").join(BODY_OUTPUT), false);
+    check_body(&preview.directory.join("assets").join(BODY_OUTPUT));
     let preview_manifest = manifest(&preview.directory.join("assets"));
-    let expected_hash = format!("{}:skin-resolution:unresolved", hash_file(&body).unwrap());
+    let expected_hash = format!("{}:{suffix}", hash_file(&body).unwrap());
     assert_eq!(
         preview_manifest.entries[BODY_KEY].source_hash,
         expected_hash
@@ -919,7 +1065,7 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
     assert!(applied.published);
     assert_eq!(applied.converted, 1);
     assert!(applied.failures.is_empty(), "{:?}", applied.failures);
-    assert_body(&output.join(BODY_OUTPUT), false);
+    check_body(&output.join(BODY_OUTPUT));
     let repaired = manifest(&output);
     assert!(repaired.complete);
     assert!(repaired.failures.is_empty());
@@ -951,6 +1097,12 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
         manifest(&output).entries[BODY_KEY].source_hash,
         expected_hash
     );
+    let mut fresh = config.clone();
+    fresh.output_dir = root.path().join("fresh");
+    assert!(publish(&fresh).await.complete);
+    let fresh_body = fresh.output_dir.join(BODY_OUTPUT);
+    check_body(&fresh_body);
+    assert_eq!(fs::read(fresh_body).unwrap(), repaired_bytes);
 }
 
 /// Preserve block boundaries while making the first shape's shader reference out of range.

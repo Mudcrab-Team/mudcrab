@@ -33,36 +33,43 @@ jobs:
 
       - id: filter
         name: Filter changed files
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          if [ -z "${GITHUB_BASE_REF:-}" ]; then
-            echo "Not in a PR context (i.e., push event)"
-            COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          changed_paths="$RUNNER_TEMP/changed-paths.z"
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            if ! { git fetch origin "$GITHUB_BASE_REF" --depth=350 &&
+               base="$(git merge-base FETCH_HEAD "$GITHUB_SHA")" &&
+               git diff --no-renames --name-only -z "$base" "$GITHUB_SHA" > "$changed_paths"; }; then
+              git ls-files -z > "$changed_paths"
+            fi
+          elif [[ "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]] &&
+               { git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null || git fetch --depth=1 origin "$PUSH_BEFORE"; }; then
+            git diff --no-renames --name-only -z "$PUSH_BEFORE" "$GITHUB_SHA" > "$changed_paths"
           else
-            echo "In a PR context comparing to pull_request.base.ref"
-            git fetch origin "$GITHUB_BASE_REF" --depth=350
-            COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
-          fi
-
-          if [ "$COMPARE_REV" = "$GITHUB_SHA" ]; then
-            CHANGED_FILES="$(git diff --name-only HEAD~1 "$GITHUB_SHA" 2>/dev/null || git ls-files)"
-          else
-            CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
+            # New branches, manual dispatch, or unavailable history require all current checks.
+            git ls-files -z > "$changed_paths"
           fi
 
           check_pattern() {
             local output_name="$1"
             local pattern="$2"
 
-            if echo "$CHANGED_FILES" | grep -qE "$pattern"; then
+            if LC_ALL=C grep -zqE "$pattern" "$changed_paths"; then
               echo "${output_name}=true" >> "$GITHUB_OUTPUT"
             else
               echo "${output_name}=false" >> "$GITHUB_OUTPUT"
             fi
           }
 
-          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.(rs|wgsl)|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*|tools/skyrim-recorder/.*|docs/research/evidence/skyrim-physics-221/.*|scripts/[^/]*skyrim[^/]*\.py)$'
+          # Anything under vendor/ is compiled into the engine, whatever its extension. GITHUB_OUTPUT
+          # keeps the last value written for a name, so this only ever turns check_rust on.
+          if LC_ALL=C grep -zqE '^vendor/' "$changed_paths"; then
+            echo "check_rust=true" >> "$GITHUB_OUTPUT"
+          fi
+          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^scripts/stand_in_baseline\.json$|^\.github/workflows/(run_tests|pr_size|milestone)\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -70,6 +77,7 @@ jobs:
           check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_schema_validation" '^(tools/schema_validation/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_unwrap_ratchet" '^(crates/.*\.rs|tools/unwrap_ratchet/.*|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_silent_failure_ratchet" '^(crates/.*\.rs|tools/silent_failure_ratchet/.*|tools/unwrap_ratchet/unwrap_ratchet\.py|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -80,6 +88,7 @@ jobs:
       check_enable_observations: ${{ steps.filter.outputs.check_enable_observations }}
       check_schema_validation: ${{ steps.filter.outputs.check_schema_validation }}
       check_unwrap_ratchet: ${{ steps.filter.outputs.check_unwrap_ratchet }}
+      check_silent_failure_ratchet: ${{ steps.filter.outputs.check_silent_failure_ratchet }}
 
   format:
     needs: [orchestrate]
@@ -99,7 +108,10 @@ jobs:
           components: rustfmt
 
       - name: Format check
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          # The fuzz targets are a separate workspace, so --all does not reach them.
+          cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 
   scripts:
     needs: [orchestrate]
@@ -111,6 +123,36 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
+          fetch-depth: 350
+
+      - name: Check retail claims cite a source
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASE_REF:-}" ]; then
+            git fetch --no-tags --depth=350 origin "$BASE_REF"
+            base="$(git merge-base FETCH_HEAD HEAD)"
+          elif [[ "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]] &&
+               git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$(git merge-base "$PUSH_BEFORE" HEAD)"
+          elif [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+            echo "::error::No base commit is available for the retail claim check on this push." >&2
+            exit 1
+          else
+            # A manual dispatch has no before-commit. Check the branch against main.
+            git fetch --no-tags --depth=350 origin main
+            base="$(git merge-base FETCH_HEAD HEAD)"
+          fi
+          python3 -B scripts/check_retail_claims.py --base "$base"
+
+      - name: Test retail claim source gate
+        run: python3 -B -m unittest discover -s scripts/tests -p test_check_retail_claims.py -v
+
+      - name: Stand-in count does not rise above the baseline
+        run: python3 -B scripts/check_retail_claims.py --audit --baseline scripts/stand_in_baseline.json
 
       - name: Test model inspector launcher
         run: python3 -B -m unittest discover -s scripts/tests -p test_inspect_model.py -v
@@ -127,8 +169,26 @@ jobs:
       - name: Test shared storage tool
         run: python3 -I -B -m unittest discover -s scripts/tests -p 'test_workspace*.py' -v
 
+      - name: Test pull request size labeler
+        run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
+
+      - name: Test branch sync conflict rules
+        run: python3 -B -m unittest discover -s scripts/tests -p test_sync_branch.py -v
+
+      - name: Test milestone assignment
+        run: python3 -B -m unittest discover -s scripts/tests -p test_assign_milestones.py -v
+
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Test CPU grass parity helpers
+        run: python3 -B -m unittest discover -s scripts/grass-parity -p 'test_*.py' -v
+
+      - name: Verify native jump input evidence and retained failed attempts
+        run: python3 -B scripts/verify_skyrim_jump_inputs.py > "$RUNNER_TEMP/skyrim-jump-inputs.json"
+
+      - name: Audit published Skyrim evidence and nested archives
+        run: python3 -B scripts/publish_skyrim_evidence.py
 
       - name: Test actor idle CPU qualification tools
         run: |
@@ -156,14 +216,32 @@ jobs:
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
 
+      - name: Test Papyrus parity tools
+        run: python3 -B -m unittest discover -s tools/papyrus-parity -p 'test_*.py' -v
+
       - name: Test world-data evidence inventory and source drift
         if: needs.orchestrate.outputs.check_world_data == 'true'
         run: |
           python3 -B -m unittest discover -s tools/world_data_inventory -p 'test_*.py' -v
+          # Compares the committed reviewed surface (readers) with the tree. Regenerates the
+          # hash-bearing inventory.json and report.md, which are gitignored and never committed.
           python3 -B tools/world_data_inventory/inventory.py --check
+
+      - name: Upload the regenerated source-only inventory report
+        if: always() && needs.orchestrate.outputs.check_world_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-data-inventory-source
+          path: |
+            docs/data-inventory/inventory.json
+            docs/data-inventory/report.md
+          if-no-files-found: warn
 
       - name: Test cluster bounds audit lockfile parsing
         run: python3 -B -m unittest discover -s tools -p 'test_diagnose_cluster_bounds.py' -v
+
+      - name: Test the lossy-cast gate
+        run: python3 -B -m unittest discover -s tools/cast_ratchet -p 'test_*.py' -v
 
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
@@ -324,6 +402,47 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/unwrap-ratchet-base" "$base"
           python3 -B tools/unwrap_ratchet/unwrap_ratchet.py --base-root "$RUNNER_TEMP/unwrap-ratchet-base"
 
+  silent_failure_ratchet:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_silent_failure_ratchet == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The base commit is needed: the check compares with it, not with a committed number.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test the ratchet script
+        run: python3 -B -m unittest discover -s tools/silent_failure_ratchet -p 'test_*.py' -v
+
+      - name: Silent failure count does not rise above the base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          # A pull request runs on the merge commit, whose first parent is the base it merges into,
+          # so the comparison covers exactly the sites the pull request adds. A push compares with
+          # the previous tip of the branch. Other runs have no base and only run the script's tests.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$(git rev-parse HEAD^1)"
+          else
+            base="$PUSH_BEFORE"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "::notice::No base commit to compare with; the count comparison is skipped."
+            exit 0
+          fi
+          git worktree add --detach "$RUNNER_TEMP/silent-failure-base" "$base"
+          python3 -B tools/silent_failure_ratchet/silent_failure_ratchet.py --base-root "$RUNNER_TEMP/silent-failure-base"
+
   clippy:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
@@ -334,6 +453,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
+          # The gate needs its baseline commit: the merge commit's first parent for a pull
+          # request, the previous tip for a push, origin/main for a manual run. Full history
+          # provides all three.
+          fetch-depth: 0
 
       - name: Install Linux build dependencies
         run: |
@@ -357,15 +480,67 @@ jobs:
       - name: Setup kache compiler cache
         uses: kunobi-ninja/kache-action@v1
 
-      - name: Clippy check
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Clippy check and added-line cast gate
+        # One pass, so the job keeps the cost of the plain `cargo clippy` run. The pass cannot
+        # use `-D warnings`: the four gate lints are allow-by-default, but the later `-W` makes
+        # one a warning and `-D warnings` turns every warning into an error. A probe on `v as u8`
+        # with `-- -D warnings -W clippy::cast_possible_truncation` exits 101, and its note
+        # says the cast lint is implied by `-D warnings`. `--force-warn` also overrides
+        # `#[allow(..., reason = ...)]` exceptions. So the gate fails on every warning outside
+        # the four lints, and Clippy's exit code still gates hard errors. The workflow and the
+        # script must agree on the flag list, and the gate fails when they do not.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          lint_flags=(
+            -W clippy::cast_possible_truncation
+            -W clippy::cast_sign_loss
+            -W clippy::cast_possible_wrap
+            -W clippy::float_cmp
+          )
+          scripted_flags="$(python3 tools/cast_ratchet/cast_ratchet.py --lint-flags)"
+          if [[ "$scripted_flags" != "${lint_flags[*]}" ]]; then
+            echo "::error::tools/cast_ratchet/cast_ratchet.py --lint-flags and this step disagree"
+            echo "step:   ${lint_flags[*]}"
+            echo "script: $scripted_flags"
+            exit 2
+          fi
+          # A pull request runs on the merge commit, whose first parent is the branch it merges
+          # into, so the diff covers exactly the lines the pull request adds. That holds for
+          # `develop` and `release/**` too. A push compares with the previous tip of its branch.
+          # A manual run, or an event without a base, compares with origin/main.
+          clippy_status=0
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if ! base="$(git rev-parse HEAD^1)"; then
+              echo "::error::cannot read the first parent of the pull request merge commit"
+              exit 2
+            fi
+          else
+            base="$PUSH_BEFORE"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            base="origin/main"
+          fi
+          cargo clippy --workspace --all-targets --all-features --message-format=json \
+            -- "${lint_flags[@]}" > "$RUNNER_TEMP/clippy-casts.json" || clippy_status=$?
+          gate_status=0
+          python3 tools/cast_ratchet/cast_ratchet.py \
+            --clippy-json "$RUNNER_TEMP/clippy-casts.json" --base "$base" || gate_status=$?
+          # Run the gate even when Clippy failed, so its output and the rendered errors
+          # appear. A hard error keeps Clippy's status; the gate checks every warning.
+          if (( clippy_status != 0 )); then
+            exit "$clippy_status"
+          fi
+          exit "$gate_status"
 
-  test:
+  test_build:
     needs: [orchestrate]
     # A change that only touches the world-data inventory still needs the extraction-backed check.
     if: needs.orchestrate.outputs.check_rust == 'true' || needs.orchestrate.outputs.check_world_data == 'true'
     runs-on: ubuntu-latest
-    # Cold test builds can take 26 minutes; leave time for the full suite.
+    # Cold test builds can take 26 minutes; the partition jobs reuse this build.
     timeout-minutes: 45
     steps:
       - name: Checkout repository
@@ -402,22 +577,172 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Run unit & integration tests
-        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
+      # Build every test binary once. The `test` jobs below run these binaries and do not
+      # compile, so their wall time is test time instead of build time.
+      - name: Build the nextest archive
+        run: >-
+          cargo nextest archive
+          --workspace --lib --bins --tests --examples
+          --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+
+      - name: Upload the nextest archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: ${{ runner.temp }}/nextest-archive.tar.zst
+          # A missing archive would make every partition run no tests.
+          if-no-files-found: error
+          # The archive is already zstd-compressed.
+          compression-level: 0
+          retention-days: 1
+
+      # Run the extraction test here, not in a partition, so exactly one job owns the
+      # world-data artifact. The partition jobs exclude it by name.
+      - name: Extract the world-data inventory
+        run: >-
+          cargo nextest run
+          --workspace --lib --bins --tests --examples
+          --no-fail-fast --no-tests=warn
+          -E 'test(world::database::inventory_tests::world_data_inventory_extraction)'
         env:
           NEXTEST_NO_TESTS: warn
           WORLD_DATA_INVENTORY_OUTPUT: ${{ runner.temp }}/world-data-inventory
 
+      # Also upload after a failure: extraction.json is the input for
+      # `inventory.py --review-sources --extraction` when a new table or column needs review.
       - name: Upload emitted schema, query and inventory evidence
-        if: needs.orchestrate.outputs.check_world_data == 'true'
+        if: always() && needs.orchestrate.outputs.check_world_data == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: world-data-inventory
           path: ${{ runner.temp }}/world-data-inventory/
+          # `error` is the tripwire for a skipped extraction test: nextest runs with --no-tests=warn,
+          # so a renamed or filtered test would otherwise drop the column check without a red result.
           if-no-files-found: error
 
-      - name: Test GPU texture encoder on software Vulkan
-        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots)'
+  jump_replay:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_rust == 'true' || needs.orchestrate.outputs.check_world_data == 'true'
+    runs-on: ubuntu-latest
+    # Runs beside the test build instead of after it.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            mesa-vulkan-drivers \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Set up mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Setup kache compiler cache
+        uses: kunobi-ninja/kache-action@v1
+        with:
+          # Share the test cache. The replay builds the engine with `-p engine`, which
+          # already ran under this prefix inside the former combined test job.
+          cache-key-prefix: kache-test
+          # Restore only: test_build owns this key and saves the full workspace store.
+          # The key has no job identity, so a save here could win the race with an
+          # engine-only store and make later builds recompile.
+          save-cache: false
+
+      - name: Replay production jump physics against held-out native observations
+        run: python3 -B scripts/check_skyrim_jump_runtime.py --output "$RUNNER_TEMP/skyrim-jump-replay" --require-heldout-pass
+
+  test:
+    needs: [orchestrate, test_build]
+    # Run only after the build job succeeded. A skipped build means this change needs no Rust tests.
+    if: needs.test_build.result == 'success'
+    runs-on: ubuntu-latest
+    # One test share, not a build.
+    timeout-minutes: 20
+    strategy:
+      # Let every partition finish so a failure shows the whole set.
+      fail-fast: false
+      matrix:
+        # Every leg must run. Do not add a leg-level `if`; tests_pass rejects a
+        # skipped test job when the build job succeeded.
+        partition: [1, 2, 3]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            mesa-vulkan-drivers \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download the nextest archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nextest-archive
+          path: ${{ runner.temp }}
+
+      # Some tests read vendored dependency sources from the Cargo registry. The
+      # archive avoids the build, so fetch the locked sources before the test run.
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+
+      # `slice` splits the filtered tests round-robin across partitions. Nextest
+      # deprecates `count`, which splits whole test binaries and is uneven.
+      #
+      # Extract into the workspace `target/`, not a temporary directory: tests use
+      # `env!("CARGO_BIN_EXE_...")`, which holds the build job's absolute path.
+      - name: Run unit & integration tests (partition ${{ matrix.partition }}/3)
+        run: >-
+          cargo nextest run
+          --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+          --extract-to "$GITHUB_WORKSPACE"
+          --workspace-remap "$GITHUB_WORKSPACE"
+          --partition slice:${{ matrix.partition }}/3
+          --no-fail-fast --no-tests=warn
+          -E 'not test(world::database::inventory_tests::world_data_inventory_extraction)'
+        env:
+          NEXTEST_NO_TESTS: warn
+
+      # The ignored GPU tests run from the same archive, so they do not rebuild the engine.
+      - name: Test textures and grass scene pipeline on software Vulkan
+        if: matrix.partition == 1
+        run: >-
+          cargo nextest run
+          --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+          --extract-to "$GITHUB_WORKSPACE"
+          --extract-overwrite
+          --workspace-remap "$GITHUB_WORKSPACE"
+          --run-ignored only
+          -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots) | test(production_scene_pipeline_shader_uses_real_mesh_bindings)'
         env:
           WGPU_BACKEND: vulkan
 
@@ -450,12 +775,18 @@ jobs:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Includes a cold optimized engine build in addition to fixture generation.
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           clean: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -469,6 +800,13 @@ jobs:
           # out of the generator budgets without relaxing their thresholds.
           TMPDIR: /dev/shm
 
+      - name: Run release grass budgets
+        run: cargo test --locked --release -p engine --test grass_performance -- --ignored --nocapture --test-threads=1
+
+      - name: Run release coloured grass budgets
+        if: success() || failure()
+        run: cargo test --locked --release -p engine --lib grass::generation::tests::performance_coloured_terrain_generation -- --ignored --exact --nocapture --test-threads=1
+
   tests_pass:
     needs:
       - orchestrate
@@ -479,7 +817,10 @@ jobs:
       - enable_observations
       - schema_validation
       - unwrap_ratchet
+      - silent_failure_ratchet
       - clippy
+      - test_build
+      - jump_replay
       - test
       - security
       - performance
@@ -507,10 +848,26 @@ jobs:
           check_result "enable_observations" "$RESULT_ENABLE_OBSERVATIONS"
           check_result "schema_validation" "$RESULT_SCHEMA_VALIDATION"
           check_result "unwrap_ratchet" "$RESULT_UNWRAP_RATCHET"
+          check_result "silent_failure_ratchet" "$RESULT_SILENT_FAILURE_RATCHET"
           check_result "clippy" "$RESULT_CLIPPY"
+          check_result "test_build" "$RESULT_TEST_BUILD"
+          check_result "jump_replay" "$RESULT_JUMP_REPLAY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
           check_result "performance" "$RESULT_PERFORMANCE"
+
+          # A skipped test job is allowed only when the build job was skipped too.
+          # Every partition must run and pass after a successful build.
+          if [[ "$RESULT_TEST_BUILD" == "success" && "$RESULT_TEST" != "success" ]]; then
+            echo "::error::test_build succeeded but the test partitions did not all pass"
+            EXIT_CODE=1
+          fi
+          # jump_replay runs under the same condition as test_build, so it must not skip
+          # when the build ran. This keeps the held-out jump gate from passing as "skipped".
+          if [[ "$RESULT_TEST_BUILD" == "success" && "$RESULT_JUMP_REPLAY" != "success" ]]; then
+            echo "::error::test_build succeeded but jump_replay did not pass"
+            EXIT_CODE=1
+          fi
 
           exit $EXIT_CODE
         env:
@@ -522,7 +879,10 @@ jobs:
           RESULT_ENABLE_OBSERVATIONS: ${{ needs.enable_observations.result }}
           RESULT_SCHEMA_VALIDATION: ${{ needs.schema_validation.result }}
           RESULT_UNWRAP_RATCHET: ${{ needs.unwrap_ratchet.result }}
+          RESULT_SILENT_FAILURE_RATCHET: ${{ needs.silent_failure_ratchet.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
+          RESULT_TEST_BUILD: ${{ needs.test_build.result }}
+          RESULT_JUMP_REPLAY: ${{ needs.jump_replay.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_PERFORMANCE: ${{ needs.performance.result }}
