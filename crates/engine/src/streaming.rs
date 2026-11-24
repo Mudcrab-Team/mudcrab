@@ -2111,10 +2111,14 @@ fn spawn_cell(
             if let Some(evaluation) = &evaluated_light {
                 entity.insert(evaluation.clone());
             }
+            let shadow_flagged = evaluated_light
+                .as_ref()
+                .is_some_and(crate::lights::LightEvaluation::shadow_flagged);
             if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
+                    shadow_flagged,
                 };
                 if !lights {
                     entity.insert(crate::lights::DeferredPointLight { light, marker });
@@ -12426,7 +12430,7 @@ mod tests {
         assert_eq!(light.range, 1106.8, "signed XRDS adds to the record radius");
         assert_eq!(light.color, Color::srgb_u8(255, 200, 120));
         assert!(
-            (light.intensity - crate::lights::intensity_for_radius(1106.8)).abs() < 1.0e3,
+            (light.intensity - crate::lights::retail_intensity(1.0)).abs() < 1.0e3,
             "{}",
             light.intensity
         );

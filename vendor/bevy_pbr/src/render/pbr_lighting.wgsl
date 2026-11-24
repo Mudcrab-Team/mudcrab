@@ -1,7 +1,7 @@
 #define_import_path bevy_pbr::lighting
 
 #import bevy_pbr::{
-    mesh_view_types::POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE,
+    mesh_view_types::{POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE, POINT_LIGHT_FLAGS_RETAIL_FALLOFF_BIT},
     mesh_view_bindings as view_bindings,
     atmosphere::functions::{calculate_visible_sun_ratio, clamp_to_surface},
     atmosphere::bruneton_functions::transmittance_lut_r_mu_to_uv,
@@ -137,6 +137,13 @@ fn getRangeFalloff(distanceSquare: f32, inverseRangeSquared: f32) -> f32 {
     let factor = distanceSquare * inverseRangeSquared;
     let smoothFactor = saturate(1.0 - factor * factor);
     return smoothFactor * smoothFactor;
+}
+
+// mudcrab: Skyrim's point-light attenuation, `1 - saturate(d / r)^2`. It reaches 0 exactly at the
+// range `r` and has no `1 / d^2` term (registry rows RF-LIGHT-GPU-004 and RF-LIGHT-GPU-008:
+// the Lighting pixel shader's `att = 1 - x^2`, `x = saturate(d / r)`).
+fn getRetailDistanceAttenuation(distanceSquare: f32, inverseRangeSquared: f32) -> f32 {
+    return saturate(1.0 - distanceSquare * inverseRangeSquared);
 }
 
 // Normal distribution function (specular D)
@@ -649,7 +656,13 @@ fn point_light(
     let L = normalize(light_to_frag);
     let distance_square = dot(light_to_frag, light_to_frag);
     let distance = sqrt(distance_square);
-    let rangeAttenuation = getDistanceAttenuation(distance_square, (*light).color_inverse_square_range.w);
+    // mudcrab: a light with the retail flag uses Skyrim's falloff instead of Bevy's.
+    var rangeAttenuation: f32;
+    if ((*light).flags & POINT_LIGHT_FLAGS_RETAIL_FALLOFF_BIT) != 0u {
+        rangeAttenuation = getRetailDistanceAttenuation(distance_square, (*light).color_inverse_square_range.w);
+    } else {
+        rangeAttenuation = getDistanceAttenuation(distance_square, (*light).color_inverse_square_range.w);
+    }
 
     // Base layer
 

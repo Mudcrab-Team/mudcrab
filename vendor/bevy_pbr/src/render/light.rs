@@ -74,6 +74,15 @@ use decal::clustered::RenderClusteredDecals;
 use tracing::info_span;
 use tracing::{error, warn};
 
+/// mudcrab: retail point-light falloff. Put this on a [`PointLight`] to shade it with Skyrim's
+/// attenuation `1 - saturate(d / range)^2` instead of Bevy's `window(d) / d^2`.
+///
+/// The light's `color * intensity / (4 * PI)` is then its radiance scale at the light's centre
+/// (there is no `1 / d^2`), so the caller sets `intensity` for that meaning. Only point lights read
+/// the marker; spot lights keep Bevy's falloff. Mudcrab's own addition, not a Bevy change.
+#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RetailPointFalloff;
+
 #[derive(Component)]
 #[require(PointAndSpotLightViewEntities)]
 pub struct ExtractedPointLight {
@@ -93,6 +102,9 @@ pub struct ExtractedPointLight {
     pub soft_shadows_enabled: bool,
     /// whether this point light contributes diffuse light to lightmapped meshes
     pub affects_lightmapped_mesh_diffuse: bool,
+    /// mudcrab: shade with the retail falloff `1 - saturate(d / range)^2` (see
+    /// [`RetailPointFalloff`]).
+    pub retail_falloff: bool,
 }
 
 #[derive(Component, Debug)]
@@ -139,6 +151,8 @@ bitflags::bitflags! {
         const AFFECTS_LIGHTMAPPED_MESH_DIFFUSE  = 1 << 3;
         const CONTACT_SHADOWS_ENABLED           = 1 << 4;
         const SPOT_LIGHT                        = 1 << 5;
+        // mudcrab: retail point-light falloff, see `RetailPointFalloff`.
+        const RETAIL_FALLOFF                    = 1 << 6;
         const NONE                              = 0;
         const UNINITIALIZED                     = 0xFFFF;
     }
@@ -331,9 +345,12 @@ pub fn extract_lights(
                 &ViewVisibility,
                 &CubemapFrusta,
                 Option<&VolumetricLight>,
+                // mudcrab: retail point-light falloff marker.
+                Has<RetailPointFalloff>,
             ),
             Or<(
                 Changed<PointLight>,
+                Changed<RetailPointFalloff>,
                 Changed<CubemapVisibleEntities>,
                 Changed<GlobalTransform>,
                 Changed<ViewVisibility>,
@@ -451,6 +468,7 @@ pub fn extract_lights(
         view_visibility,
         frusta,
         volumetric_light,
+        retail_falloff,
     ) in point_lights.iter()
     {
         if !view_visibility.get() {
@@ -542,6 +560,7 @@ pub fn extract_lights(
             spot_light_angles: None,
             volumetric: volumetric_light.is_some(),
             affects_lightmapped_mesh_diffuse: point_light.affects_lightmapped_mesh_diffuse,
+            retail_falloff,
             #[cfg(feature = "experimental_pbr_pcss")]
             soft_shadows_enabled: point_light.soft_shadows_enabled,
             #[cfg(not(feature = "experimental_pbr_pcss"))]
@@ -655,6 +674,7 @@ pub fn extract_lights(
             spot_light_angles: Some((spot_light.inner_angle, spot_light.outer_angle)),
             volumetric: volumetric_light.is_some(),
             affects_lightmapped_mesh_diffuse: spot_light.affects_lightmapped_mesh_diffuse,
+            retail_falloff: false,
             #[cfg(feature = "experimental_pbr_pcss")]
             soft_shadows_enabled: spot_light.soft_shadows_enabled,
             #[cfg(not(feature = "experimental_pbr_pcss"))]
@@ -1246,6 +1266,11 @@ pub fn prepare_lights(
 
         if light.affects_lightmapped_mesh_diffuse {
             flags |= PointLightFlags::AFFECTS_LIGHTMAPPED_MESH_DIFFUSE;
+        }
+
+        // mudcrab: a spot light never takes the retail falloff.
+        if light.retail_falloff && light.spot_light_angles.is_none() {
+            flags |= PointLightFlags::RETAIL_FALLOFF;
         }
 
         let (light_custom_data, spot_light_tan_angle) = match light.spot_light_angles {

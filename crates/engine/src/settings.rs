@@ -135,7 +135,8 @@ impl Default for RenderingSettings {
             version: 1,
             grass: config.grass,
             grass_radius: config.grass_radius,
-            point_lights: false,
+            // Retail lights every placed LIGH reference and has no INI key to turn them off (#955).
+            point_lights: config.lights,
             point_light_budget: crate::lights::ENABLED_LIGHT_BUDGET,
             point_light_shadows: false,
             point_shadow_size: 1,
@@ -666,7 +667,7 @@ impl RenderingSettings {
             match flag.as_str() {
                 "--grass" | "--no-grass" | "ini:grass" => self.grass = source.grass,
                 "--grass-radius" | "ini:grass-radius" => self.grass_radius = source.grass_radius,
-                "--lights" => self.point_lights = source.point_lights,
+                "--lights" | "--no-lights" => self.point_lights = source.point_lights,
                 "--stream-radius" => {
                     self.stream_radius = source.stream_radius;
                     self.unload_radius = source.unload_radius;
@@ -2905,11 +2906,15 @@ mod tests {
             .find(|spec| spec.label == "Point lights")
             .unwrap();
         let mut settings = RenderingSettings::default();
+        // Point lights default to on (#955), so the budget is relevant at the default and not
+        // once the lights are turned off.
+        assert!(lights.relevant(&settings));
         assert!(!lights.is_modified(&settings));
-        assert!(!budget.relevant(&settings));
-        lights.adjust(&mut settings, 1);
-        assert!(lights.is_modified(&settings));
         assert!(budget.relevant(&settings));
+        lights.adjust(&mut settings, 1);
+        assert!(!settings.point_lights);
+        assert!(lights.is_modified(&settings));
+        assert!(!budget.relevant(&settings));
         assert!(!budget.is_modified(&settings));
     }
 
