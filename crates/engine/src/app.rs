@@ -582,7 +582,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // the main world, and it changes nothing else about the frame.
         .add_plugins(crate::swap_bridge::SwapBridgePlugin)
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
-        // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
+        // and the lights setting (on unless `--no-lights`) is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
         .add_plugins(crate::actor_animation::ActorAnimationPlugin)
         .add_plugins(crate::actor_drive::ActorDrivePlugin)

@@ -1,8 +1,6 @@
 #import bevy_pbr::{
-    clustered_forward,
     forward_io::{VertexOutput, FragmentOutput},
     mesh_functions,
-    lighting::getDistanceAttenuation,
     mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
@@ -97,26 +95,13 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     let creation_normal = vec3(normal.x, -normal.z, normal.y);
     var light = ambient.mean.rgb + creation_normal.x * ambient.x.rgb
         + creation_normal.y * ambient.y.rgb + creation_normal.z * ambient.z.rgb;
-    let view = view_bindings::view.view_from_world;
-    let view_z = (view * in.world_position).z;
     for (var i = 0u; i < view_bindings::lights.n_directional_lights; i += 1u) {
         let sun = view_bindings::lights.directional_lights[i];
         light += clamp(dot(normal, sun.direction_to_light), 0.0, 1.0) * sun.color.rgb / 3.14159265;
     }
-    let cluster = clustered_forward::view_fragment_cluster_index(in.position.xy, view_z, input.is_orthographic);
-    let ranges = clustered_forward::unpack_clusterable_object_index_ranges(cluster);
-    let first = ranges.first_point_light_index_offset;
-    let end = min(ranges.first_spot_light_index_offset, first + 7u);
-    for (var i = first; i < end; i += 1u) {
-        let point = view_bindings::clustered_lights.data[clustered_forward::get_clusterable_object_id(i)];
-        let delta = point.position_radius.xyz - in.world_position.xyz;
-        // STAND-IN(#983): G05 in skyrim_decomp#948 uses a radius-based falloff.
-        // Our lights carry Bevy intensities, so use the falloff in pbr_lighting.wgsl.
-        let distance_squared = dot(delta, delta);
-        let angle = clamp(dot(normal, delta) / max(sqrt(distance_squared), 0.0001), 0.0, 1.0);
-        let attenuation = getDistanceAttenuation(distance_squared, point.color_inverse_square_range.w);
-        light += point.color_inverse_square_range.rgb * angle * attenuation / 3.14159265;
-    }
+    // Retail's stock object LOD (BTO, techniques 13 and 15) receives no point lights: skyrim_decomp
+    // PR 1003 and NEEDS 14 found no path that fills its light list. This shader has no point-light
+    // loop, so placed `LIGH` lights (#955) light the full-detail mesh only. Registry `RF-LIGHT-GPU-004`.
     var out: FragmentOutput;
     let exposed = diffuse.rgb * light * view_bindings::view.exposure;
     out.color = main_pass_post_lighting_processing(input, vec4(exposed, diffuse.a));

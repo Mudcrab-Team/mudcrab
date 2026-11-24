@@ -453,10 +453,9 @@ pub struct EngineConfig {
     pub transform_bounds_fixture: bool,
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
-    /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
-    /// every run that does not ask for lights renders exactly as it did before. Retail lights every
-    /// placed reference, but the light intensity is not calibrated yet, so "on" blows interiors
-    /// out (#955, #364).
+    /// Whether a streamed `LIGH` reference places a point light. On by default: retail lights every
+    /// placed `LIGH` reference and no INI key turns them off (#955, `RF-LIGHT-GPU-007`).
+    /// `--no-lights` turns them off, for example for profiling; `--lights` is the explicit default.
     pub lights: bool,
     /// The horizontal field of view of every camera that is not the first-person camera, in
     /// degrees: `[Display] fDefaultWorldFOV` (#904, #949). Retail default
@@ -654,7 +653,7 @@ impl Default for EngineConfig {
             transform_bounds_fixture: false,
             renderer_fixture: false,
             streaming_fixture: false,
-            lights: false,
+            lights: true,
             world_fov_degrees: RETAIL_DEFAULT_WORLD_FOV_DEGREES,
             first_person_fov_degrees: RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES,
             near_distance: RETAIL_NEAR_DISTANCE,
@@ -691,7 +690,8 @@ Assets and start position:
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
   --background-window                   open the window behind other windows without taking focus
-  --lights                              place a point light for each streamed LIGH reference
+  --lights                              place a point light for each streamed LIGH reference (the default)
+  --no-lights                           place no point lights, for example for profiling
   --papyrus-scripts                     run the first slice of converted Papyrus scripts
 
 Streaming:
@@ -1847,6 +1847,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--no-lights" => config.lights = false,
                 "--papyrus-scripts" => config.papyrus_scripts = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
@@ -4119,16 +4120,21 @@ mod tests {
         assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
     }
 
-    /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
-    /// acceptance or benchmark baseline taken from one - is unchanged.
+    /// Retail lights every placed `LIGH` reference and has no INI key to turn them off, so the
+    /// default is on (#955). `--no-lights` is the profiling switch, `--lights` the explicit default,
+    /// and the last of the two wins.
     #[test]
-    fn lights_are_off_until_the_flag_is_given() {
-        assert!(!EngineConfig::default().lights);
+    fn lights_are_on_until_no_lights_is_given() {
+        assert!(EngineConfig::default().lights);
         assert!(
-            !run_config(&["--headless"]).lights,
-            "another flag does not turn lights on"
+            run_config(&["--headless"]).lights,
+            "another flag does not turn lights off"
         );
         assert!(run_config(&["--lights"]).lights);
+        assert!(!run_config(&["--no-lights"]).lights);
+        assert!(!run_config(&["--lights", "--no-lights"]).lights);
+        assert!(run_config(&["--no-lights", "--lights"]).lights);
+        assert!(HELP_TEXT.contains("--no-lights"));
     }
 
     #[test]
@@ -4518,6 +4524,7 @@ mod tests {
             "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
+            "--no-lights",
             "--papyrus-scripts",
             "--physics-fixture",
         ] {

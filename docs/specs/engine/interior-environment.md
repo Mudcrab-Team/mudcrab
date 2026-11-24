@@ -71,7 +71,8 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
 9. **Order**: `crate::sky`'s `apply_fog` runs after `EnvironmentSet`, so a door or room crossing
    changes the fog in the same frame as the light.
 
-Point lights are unchanged (`--lights` path). Light fade 0/0 means no fade (RF-LIGHT-CPU-003,
+Point lights are on by default (`--no-lights` turns them off) and use retail's falloff and unit
+([point-lights.md](point-lights.md)). Light fade 0/0 means no fade (RF-LIGHT-CPU-003,
 RF-LIGHT-CPU-007); the fade factor is reported for #488.
 
 ## Reported only
