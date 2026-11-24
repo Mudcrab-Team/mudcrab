@@ -3,8 +3,8 @@
 use super::lod_objects::{LodObjectRoot, ObjectSceneReady};
 use crate::{
     config::EngineConfig,
-    lights::AMBIENT_ILLUMINANCE,
-    sun::GameClock,
+    sky::SkyPalette,
+    sun::{GameClock, world_sun_direction},
     weather_sky::{DEFAULT_WEATHER_FORM_ID, slot_weights},
     world::{
         database::{LodObjectAtlas, verify_lod_object_atlas},
@@ -38,16 +38,27 @@ pub(crate) const RED_AXIS: MeshVertexAttribute =
     MeshVertexAttribute::new("ObjectAtlasRed", 41_501, VertexFormat::Float32x3);
 pub(crate) const GREEN_AXIS: MeshVertexAttribute =
     MeshVertexAttribute::new("ObjectAtlasGreen", 41_502, VertexFormat::Float32x3);
+// https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003 G03 and G05.
+// Ultra.ini and Skyrim_Default.ini supply neither setting. SunlightScale is
+// authored in IMGS.HNAM. The clamp is the compiled fLightingOutputColourClampPostLit default.
+const DEFAULT_SUNLIGHT_SCALE: f32 = 1.8;
+const POST_LIT_CLAMP: f32 = 1.0;
 const SHADER: &str = "embedded://engine/streaming/lod_object.wgsl";
 
 type ObjectMaterial = ExtendedMaterial<StandardMaterial, ObjectAtlas>;
 
 #[derive(Clone, Copy, Default, PartialEq, ShaderType)]
-struct Ambient {
+struct ObjectLighting {
     mean: Vec4,
     x: Vec4,
     y: Vec4,
     z: Vec4,
+    sun_direction: Vec4,
+    sun_rgb: Vec4,
+    fog_ramp: Vec4,
+    fog_near: Vec4,
+    fog_far: Vec4,
+    output_controls: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -56,7 +67,7 @@ struct ObjectAtlas {
     #[sampler(101)]
     normal: Handle<Image>,
     #[uniform(102)]
-    ambient: Ambient,
+    lighting: ObjectLighting,
 }
 
 impl MaterialExtension for ObjectAtlas {
@@ -115,7 +126,7 @@ pub(super) fn build(app: &mut App) {
             (
                 queue_object_atlases,
                 apply_object_atlases.run_if(any_with_component::<PendingObjectAtlas>),
-                update_object_ambient,
+                update_object_lighting,
             )
                 .chain(),
         );
@@ -269,7 +280,7 @@ fn apply_object_atlases(
                     },
                     extension: ObjectAtlas {
                         normal: image.clone(),
-                        ambient: Ambient::default(),
+                        lighting: ObjectLighting::default(),
                     },
                 })
             });
@@ -282,9 +293,12 @@ fn apply_object_atlases(
     }
 }
 
-fn update_object_ambient(
+fn update_object_lighting(
     clock: Option<Res<GameClock>>,
     catalog: Option<Res<EnvironmentCatalog>>,
+    config: Res<EngineConfig>,
+    palette: Option<Res<SkyPalette>>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
     mut materials: ResMut<Assets<ObjectMaterial>>,
     atlases: Res<Atlases>,
 ) {
@@ -301,28 +315,84 @@ fn update_object_ambient(
         else {
             continue;
         };
-        let mut ambient = Ambient::default();
-        // STAND-IN(#940): use the engine's default exterior weather and light scale.
-        for (time, weight) in TimeOfDay::ALL
+        let mut lighting = ObjectLighting::default();
+        let mut sunlight_scale = 0.0;
+        // STAND-IN(#946): use the engine's single exterior weather and base image space.
+        // Weather transitions, flashes, image-space overrides and modifiers are unmodeled.
+        // Use the constructor default when the pack lacks a resolved IMSP slot.
+        for (index, (time, weight)) in TimeOfDay::ALL
             .into_iter()
             .zip(slot_weights(clock.hour, timing))
+            .enumerate()
         {
+            if weight == 0.0 {
+                continue;
+            }
+            // https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003 G02 and G03.
             if let Some(dalc) = weather.directional_ambient.get(&time) {
                 let cube = AmbientCube::from_dalc(dalc);
-                let weighted =
-                    |rgb| Vec3::from_array(rgb).extend(0.0) * (weight * AMBIENT_ILLUMINANCE);
-                ambient.mean += weighted(cube.mean);
-                ambient.x += weighted(cube.half_difference_x);
-                ambient.y += weighted(cube.half_difference_y);
-                ambient.z += weighted(cube.half_difference_z);
+                let weighted = |rgb| (Vec3::from_array(rgb) * weight).extend(0.0);
+                lighting.mean += weighted(cube.mean);
+                lighting.x += weighted(cube.half_difference_x);
+                lighting.y += weighted(cube.half_difference_y);
+                lighting.z += weighted(cube.half_difference_z);
+            }
+            if let Some(sunlight) = weather.color("sunlight", time) {
+                lighting.sun_rgb +=
+                    (Vec3::from_array(sunlight.map(f32::from)) * (weight / 255.0)).extend(0.0);
+            }
+            sunlight_scale += weight
+                * weather.image_spaces[index]
+                    .and_then(|id| catalog.image_space(id))
+                    .and_then(|image_space| image_space.sunlight_scale)
+                    .unwrap_or(DEFAULT_SUNLIGHT_SCALE);
+        }
+        // STAND-IN(#946): use the initialized sun fade of 1 and DALC intercept operand of 0.
+        // The effective fade and any runtime writes to the intercept operand are unverified.
+        lighting.sun_rgb *= sunlight_scale;
+        let direction = world_sun_direction(&config, clock.hour, Some(&catalog), *world);
+        lighting.sun_direction = if config.sun_position.is_some() {
+            crate::app::sun_rotation(&config, direction) * Vec3::Z
+        } else {
+            direction.unwrap_or(Vec3::ZERO)
+        }
+        .extend(0.0);
+
+        // STAND-IN(#946): use the engine's active sky palette and density preference.
+        // The retail scene fog property and exact projection are unverified at runtime.
+        if let Some(palette) = palette.as_deref()
+            && let Some(ramp) = palette.fog_ramp
+        {
+            let scale = (palette.fog_density_scale
+                * settings.as_deref().map_or(1.0, |s| s.fog_density_scale))
+            .max(1.0e-3);
+            let (near, far) = (ramp.near / scale, ramp.far / scale);
+            let width = far - near;
+            if width.is_finite() && width > 0.0 && ramp.power > 0.0 {
+                lighting.fog_ramp = Vec4::new(near / width, 1.0 / width, ramp.power, ramp.max);
+                let rgb = |color: Color| {
+                    let color = color.to_srgba();
+                    Vec4::new(color.red, color.green, color.blue, 0.0)
+                };
+                lighting.fog_near = rgb(palette.fog_near);
+                lighting.fog_far = rgb(palette.fog_far);
             }
         }
+        // STAND-IN(#946): use the initialized frame flags S=1, T=0.
+        // The active frame-flag inputs at the distant pose are unverified.
+        lighting.output_controls = Vec4::new(
+            crate::output_scale::framebuffer_output_scale(true),
+            POST_LIT_CLAMP,
+            1.0,
+            0.0,
+        );
+
         if materials
             .get(handle)
-            .is_some_and(|material| material.extension.ambient != ambient)
+            .is_some_and(|material| material.extension.lighting != lighting)
             && let Some(mut material) = materials.get_mut(handle)
         {
-            material.extension.ambient = ambient;
+            material.extension.lighting = lighting;
         }
     }
 }
