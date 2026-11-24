@@ -164,7 +164,7 @@ fn load_normal(
         } else {
             "missing_normal_atlas"
         };
-        // STAND-IN(#940): the retail missing-file result is unverified. Keep the existing material.
+        // STAND-IN(#983): the retail missing-file result is unverified. Keep the existing material.
         warn!(world = %world_editor_id(pack, world), "object LOD: {message}");
         return Ok(None);
     };
@@ -302,7 +302,7 @@ fn update_object_ambient(
             continue;
         };
         let mut ambient = Ambient::default();
-        // STAND-IN(#940): use the engine's default exterior weather and light scale.
+        // STAND-IN(#983): use the engine's default exterior weather and light scale.
         for (time, weight) in TimeOfDay::ALL
             .into_iter()
             .zip(slot_weights(clock.hour, timing))

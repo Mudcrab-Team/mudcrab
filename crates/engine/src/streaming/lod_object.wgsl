@@ -88,7 +88,7 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     let input = pbr_input_from_standard_material(mesh, is_front);
     let diffuse = alpha_discard(input.material, input.material.base_color);
 
-    // STAND-IN(#940): base atlas lighting uses the engine's light lists and colour pipeline.
+    // STAND-IN(#983): base atlas lighting uses the engine's light lists and colour pipeline.
     // Projected detail and auxiliary outputs require retail inputs unavailable here.
     let tangent_normal = decode_object_atlas(textureSample(normal_atlas, atlas_sampler, in.uv).rgb);
     let normal = normalize(mat3x3(in.red, in.green, in.blue) * tangent_normal);
