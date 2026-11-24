@@ -1,14 +1,15 @@
 //! Tests that the near landscape's normal-map sign and tangent frame agree (#963).
 //!
-//! `shaders/terrain_normal.wgsl` holds the sign and the frame. These tests mirror its arithmetic in
-//! Rust, read the sign from the shader source, and compare the lit result with a CPU Lambert
-//! reference built from the mesh's own coordinates. They cover the shader's arithmetic and the
-//! frame it builds on machines without a GPU. The `terrain_normal_probe` example runs the same
-//! production WGSL on a device and compares it with the same reference.
+//! `shaders/terrain_normal.wgsl` holds the sign and the frame. These tests evaluate the production
+//! WGSL functions with naga's constant evaluator (no GPU), and compare the lit result with a CPU
+//! Lambert reference built from the production mesh's own coordinates. The frame the tests use is
+//! the one the shader source builds, so an edit to the shader changes the result. The
+//! `terrain_normal_probe` example runs the same module on a device against the same reference.
 //!
-//! The one premise is the texture convention: a DirectX-convention map stores, in green, the tilt
-//! of the surface along increasing texture V (down the image). Skyrim's `_n` maps use it, and the
-//! object path relies on it (`flip_normal_map_y` in `nif_material.rs`).
+//! The retail rule these tests encode (skyrim-research NEEDS 21, reviewed, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1082): the near
+//! landscape normal is n = (2R - 1, 2G - 1, 2B - 1), with tangent-space Y along +V, so a texel with
+//! G above 0.5 tilts the lit normal toward +V. A DirectX-convention map stores green that way. The
+//! tests build their texels by that rule and check the shader's frame and sign against the mesh.
 
 use crate::{
     streaming::build_terrain_quadrant_mesh,
@@ -33,11 +34,54 @@ fn shader_green_sign() -> f64 {
         .expect("NORMAL_GREEN_SIGN is a number")
 }
 
-/// `terrain_tangent_normal` of the shader, with an explicit sign so a test can run the other one.
+/// Evaluate a production function of `terrain_normal.wgsl` with naga's constant evaluator. The
+/// function's `let` lines become constants, so the arithmetic is the shader's own. A line that calls
+/// another user function is skipped: the caller supplies that value in `inputs` (`tilt`).
+/// `sign` replaces the declared sign so a test can run the other one.
+fn evaluate(function: &str, sign: f64, inputs: &str, component: &str) -> f64 {
+    use wgpu::naga::{Expression, Literal, front::wgsl};
+    let (_, rest) = NORMAL_SHADER
+        .split_once(&format!("fn {function}("))
+        .expect("production function");
+    let (_, body) = rest.split_once('{').expect("function body");
+    let (body, _) = body.split_once("\n}").expect("function end");
+    let (equations, result) = body.rsplit_once("return ").expect("function result");
+    let equations: String = equations
+        .lines()
+        .filter(|line| !line.contains("terrain_tilt("))
+        .map(|line| line.replace("let ", "const "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let result = result.trim().trim_end_matches(';');
+    let source = format!(
+        "const NORMAL_GREEN_SIGN: f32 = {sign:?};\n{inputs}\n{equations}\nconst result = ({result}){component};"
+    );
+    let module = wgsl::parse_str(&source)
+        .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+    let (_, result) = module
+        .constants
+        .iter()
+        .find(|(_, item)| item.name.as_deref() == Some("result"))
+        .expect("result constant");
+    match module.global_expressions[result.init] {
+        Expression::Literal(Literal::F32(value)) => f64::from(value),
+        ref other => panic!("expected a folded f32, got {other:?}"),
+    }
+}
+
+/// `terrain_tangent_normal` of the shader for a stored (red, green) pair.
 fn tangent_normal(sample_xy: [f64; 2], sign: f64) -> [f64; 3] {
-    let x = sample_xy[0] * 2.0 - 1.0;
-    let y = sign * (sample_xy[1] * 2.0 - 1.0);
-    [x, y, (1.0 - (x * x + y * y)).max(0.0).sqrt()]
+    let input = format!(
+        "const sample_xy = vec2<f32>({:?}, {:?});",
+        sample_xy[0] as f32, sample_xy[1] as f32
+    );
+    let tilt = ["x", "y"].map(|axis| evaluate("terrain_tilt", sign, &input, &format!(".{axis}")));
+    let input = format!(
+        "const tilt = vec2<f32>({:?}, {:?});",
+        tilt[0] as f32, tilt[1] as f32
+    );
+    ["x", "y", "z"]
+        .map(|axis| evaluate("terrain_tangent_normal", sign, &input, &format!(".{axis}")))
 }
 
 fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -59,14 +103,14 @@ fn normalize(a: [f64; 3]) -> [f64; 3] {
 
 /// `terrain_tbn` of the shader: the columns (t, b, n).
 fn tbn(n: [f64; 3]) -> [[f64; 3]; 3] {
-    let u_axis = [1.0, 0.0, 0.0];
-    let along = dot(n, u_axis);
-    let t = normalize([
-        u_axis[0] - n[0] * along,
-        u_axis[1] - n[1] * along,
-        u_axis[2] - n[2] * along + 1.0e-6,
-    ]);
-    [t, cross(n, t), n]
+    let input = format!(
+        "const n = vec3<f32>({:?}, {:?}, {:?});",
+        n[0] as f32, n[1] as f32, n[2] as f32
+    );
+    std::array::from_fn(|column| {
+        ["x", "y", "z"]
+            .map(|axis| evaluate("terrain_tbn", 1.0, &input, &format!("[{column}].{axis}")))
+    })
 }
 
 fn to_world(frame: [[f64; 3]; 3], tangent: [f64; 3]) -> [f64; 3] {
@@ -144,28 +188,6 @@ fn one_source_declares_the_sign_and_the_frame() {
         assert!(
             shader.contains("terrain_tangent_normal(sample.xy)"),
             "{name} decodes normal samples through the shared function"
-        );
-    }
-}
-
-/// The Rust mirror above is only a test of the shader if the shader still has these statements.
-#[test]
-fn the_mirrored_frame_is_the_shader_frame() {
-    let source: String = NORMAL_SHADER
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    for statement in [
-        "let u_axis = vec3<f32>(1.0, 0.0, 0.0);",
-        "let t = normalize(u_axis - n * dot(n, u_axis) + vec3<f32>(0.0, 0.0, 1.0e-6));",
-        "return mat3x3<f32>(t, cross(n, t), n);",
-        "let xy = sample_xy * 2.0 - 1.0;",
-        "return vec2<f32>(xy.x, NORMAL_GREEN_SIGN * xy.y);",
-        "return vec3<f32>(tilt, sqrt(max(0.0, 1.0 - dot(tilt, tilt))));",
-    ] {
-        assert!(
-            source.contains(statement),
-            "terrain_normal.wgsl lost `{statement}`"
         );
     }
 }
@@ -312,12 +334,13 @@ const SUN_NORTH: [f64; 3] = [0.0, 0.0, -1.0]; // Creation +Y is runtime -Z.
 const SUN_EAST: [f64; 3] = [1.0, 0.0, 0.0];
 
 fn worst_difference(dome: &Dome, sign: f64, light: [f64; 3]) -> f64 {
+    let frame = tbn([0.0, 1.0, 0.0]);
     dome.texels
         .iter()
         .map(|(_, stored, truth)| {
             // 8-bit storage, as the DDS holds it.
             let stored = stored.map(|value: f64| (value * 255.0).round() / 255.0);
-            let shaded = to_world(tbn([0.0, 1.0, 0.0]), tangent_normal(stored, sign));
+            let shaded = to_world(frame, tangent_normal(stored, sign));
             (lambert(shaded, light) - lambert(*truth, light)).abs()
         })
         .fold(0.0, f64::max)
@@ -342,6 +365,7 @@ fn the_north_half_of_the_dome_is_brighter_under_a_north_sun() {
     let dome = dome();
     let sign = shader_green_sign();
     let light = sun(SUN_NORTH);
+    let frame = tbn([0.0, 1.0, 0.0]);
     let mean = |north: bool| {
         let lit: Vec<f64> = dome
             .texels
@@ -352,12 +376,7 @@ fn the_north_half_of_the_dome_is_brighter_under_a_north_sun() {
                     && ((uv[1] > 0.5) == north)
                     && truth[1] < 0.999
             })
-            .map(|(_, stored, _)| {
-                lambert(
-                    to_world(tbn([0.0, 1.0, 0.0]), tangent_normal(*stored, sign)),
-                    light,
-                )
-            })
+            .map(|(_, stored, _)| lambert(to_world(frame, tangent_normal(*stored, sign)), light))
             .collect();
         lit.iter().sum::<f64>() / lit.len() as f64
     };

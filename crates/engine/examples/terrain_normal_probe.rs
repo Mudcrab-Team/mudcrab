@@ -558,7 +558,7 @@ async fn run(output: &Path) -> Result<Value> {
         "production_module_sha256": format!("{:x}", Sha256::digest(PRODUCTION_MODULE.as_bytes())),
         "tile": { "texels": SIZE, "view": "top-down, north up, U right, V up the screen", "texture_format": "Rgba8Unorm (linear)", "convention": "DirectX: green follows +V (down the image)" },
         "tolerance": { "lambert": TOLERANCE, "control_fail_floor": FAIL_FLOOR },
-        "limits": "synthetic dome and flat tile; not a Skyrim capture, not retail parity, and the DirectX premise is the texture convention the object path already relies on",
+        "limits": "synthetic dome and flat tile; not a Skyrim capture, not retail parity, and the retail rule it encodes is skyrim-research NEEDS 21 (reviewed, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1082)",
         "cases": cases,
     }))
 }
