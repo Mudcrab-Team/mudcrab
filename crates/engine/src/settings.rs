@@ -158,8 +158,8 @@ impl Default for RenderingSettings {
             // Ultra's 4096 and the compiled two cascades (`config.rs`, #949).
             shadow_size: shadow_size_index(config.sun_shadow_map_size),
             shadow_cascades: config.sun_shadow_cascades,
-            // Mudcrab-only: a multiplier on the whole sun shadow range. Retail has no such
-            // setting, and 1.0 leaves retail's `fShadowDistance` unchanged.
+            // Mudcrab-only: a multiplier on the whole sun shadow range, with no retail key.
+            // Mudcrab uses 1.0 so that `fShadowDistance` is unchanged.
             shadow_distance_scale: 1.0,
             sky: true,
             sky_brightness_scale: 1.0,

@@ -266,8 +266,9 @@ pub struct EngineConfig {
     /// [`RETAIL_SUN_SHADOW_CASCADES`].
     pub sun_shadow_cascades: usize,
     /// `[Display] fFirstSliceDistance`, in Creation units. The default is
-    /// [`RETAIL_FIRST_SLICE_DISTANCE`]. Retail uses it as an input to the cascade split, not as the
-    /// first cascade's end (`app::retail_cascade_bounds`).
+    /// [`RETAIL_FIRST_SLICE_DISTANCE`]. It is an input to the cascade split, not the first cascade's
+    /// end: see `app::retail_cascade_bounds` and
+    /// <https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#2-split-calculation-and-far-fade>.
     pub sun_first_slice_distance: f32,
     /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
     /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way. In retail the

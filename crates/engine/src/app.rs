@@ -2609,16 +2609,17 @@ pub(crate) fn sun_shadow_cascades_for(
     }
 }
 
-/// The far bound of each sun shadow cascade, from retail's split (skyrim_decomp PR 806, verified
-/// by static reading of 1.7.104, high confidence).
+/// The far bound of each sun shadow cascade, from retail's split (verified by static reading of
+/// 1.7.104, high confidence; see
+/// <https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#2-split-calculation-and-far-fade>).
 ///
 /// `count` is `N` (`iNumSplits`), `first_slice` is `fFirstSliceDistance`, `distance` is `D`
 /// (`fShadowDistance`), `range` is `F` (the farthest distance shadowed) and `near` is `n`. The
 /// split fraction is `t0 = min(D / N, max(first_slice, 500)) / D`, and for `N >= 2`
 /// `t_i = t0 + (1 - t0) * i / (N - 1)`. The far bound is
 /// `E_i = 0.5 * (n * (F / n)^t_i + n + (F - n) * t_i)`, an even mix of a geometric and a linear
-/// split. The last bound is `F`. Retail adds `fSplitOverlap` to each bound; here the overlap is
-/// Bevy's `overlap_proportion` instead (row 8, open).
+/// split. The last bound is `F`. Retail adds `fSplitOverlap` to each bound; Mudcrab uses Bevy's
+/// `overlap_proportion` instead, since the units-to-fraction derivation is open (row 8).
 ///
 /// `fFirstSliceDistance` is therefore not the first cascade's end: with `D = 10000`, a first slice
 /// of 2000 and `n = 15`, the first bound is about 1030 units. One cascade reaches `range` (retail

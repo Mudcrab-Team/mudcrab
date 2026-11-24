@@ -44,8 +44,8 @@ use serde_json::{Value, json};
 use shared::grass_settings::{GrassSettings, Source};
 use std::{collections::HashMap, path::Path};
 
-/// The shortest sun shadow range the engine accepts (700 Creation units, 10 metres). A Mudcrab
-/// floor, not a retail limit: it keeps every cascade bound above the cascade near distance.
+/// The shortest sun shadow range the engine accepts (700 Creation units, 10 metres). It is a
+/// Mudcrab-only floor, to keep every cascade bound above the cascade near distance.
 const MIN_SUN_SHADOW_DISTANCE: f32 = 700.0;
 /// Raw merged value and provenance from the shared INI reader.
 #[derive(Debug)]
