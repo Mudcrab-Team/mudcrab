@@ -63,26 +63,23 @@ fn parse_flag(raw: &str) -> Option<bool> {
 
 /// An odd whole number of grids that the streamer accepts.
 fn parse_grids(raw: &str) -> Option<i32> {
-    // silent-ok: The INI merge reports invalid values before inserting them.
     raw.parse::<i32>()
-        .ok()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
         .filter(|grids| *grids >= 1 && grids % 2 == 1 && (grids - 1) / 2 <= MAX_STREAM_RADIUS)
 }
 
 /// A shadow distance the cascade builder accepts.
 fn parse_shadow_distance(raw: &str) -> Option<f32> {
-    // silent-ok: The INI merge reports invalid values before inserting them.
     raw.parse::<f32>()
-        .ok()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         .filter(|value| value.is_finite() && *value >= MIN_SUN_SHADOW_DISTANCE)
 }
 
 /// A finite number above zero.
 fn parse_positive(raw: &str) -> Option<f32> {
-    // silent-ok: The INI merge reports invalid values before inserting them.
     raw.parse::<f32>()
-        .ok()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         .filter(|value| value.is_finite() && *value > 0.0)
 }
 
