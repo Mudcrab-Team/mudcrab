@@ -178,7 +178,69 @@ attenuation: shadow-mode falloff remains counted unsupported rather than invente
 exponent. Ordinary falloff changes are correctly inert and no longer counted as unsupported.
 XLIG fade is consumed; nonzero/invalid FOV, end-distance cap and shadow-depth bias remain counted
 unsupported. Malformed XLIG is counted separately. No global ambient policy, interior environment
-resolver, raw-colour Skyrim profile, shadow, flicker, pulse or camera/exposure change is included.
+resolver, raw-colour Skyrim profile, shadow or camera/exposure change is included.
+
+### Distance dimmer, flicker and pulse (#955)
+
+Source: the NEEDS 20 static findings, [skyrim_decomp PR 1073](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1073)
+(build 1.7.104.0). They are static: no run confirmed them. The code is `crates/engine/src/light_dynamics.rs`.
+Each frame it sets the light's intensity to `retail_intensity(base fade x modulation x dimmer)`.
+
+**Distance dimmer.** For each light whose reference does not carry the "Never Fades" flag `0x10000`
+(`RF-LIGHT-CPU-007`): with the camera distance `d` and the light radius `R`, `q = d^2 - R^2`. The dimmer is 1
+below `begin^2` and 1 when `end^2` is 0, 0 above `end^2`, and `1 - (q - begin^2) / (end^2 - begin^2)` between.
+The colour is `diffuse x fade x dimmer`. `begin` and `end` come from, in order:
+
+1. the current room's lighting template, when the camera is in a room marker box with one and the template
+   carries both values;
+2. the interior cell's pair (the cell's own, or its lighting template's through inherit bit `0x400`);
+3. for the exterior (and a cell the interior rule does not light), `begin = fLightLODStartFade` and
+   `end = begin + fLightLODRange`.
+
+A stored begin of exactly 0 is replaced by `fLightLODStartFade`, and a stored end of exactly 0 by
+`fLightLODRange + fLightLODStartFade`. A stored 0/0 pair therefore reads as 3500/4000. A stored nonzero begin with
+a zero end can get an end below the begin. A cell with no lighting data has no pair, and every light keeps
+dimmer 1. The replacement is stated for the cell initialiser only: Mudcrab also applies it to a room template's
+pair, which is unverified. The frustum test of the retail call site is not applied (Bevy culls the light).
+
+Defaults (`[Display] fLightLODStartFade`, `fLightLODRange`; `[General] fFlickeringLightDistance`; INI overrides apply):
+
+| Key | Default | Source |
+|---|---|---|
+| `fLightLODStartFade` | 3500 | `Skyrim_Default.ini` |
+| `fLightLODRange` | 500 | compiled default (the player's `Skyrim.ini` holds 4096, a tuned value) |
+| `fFlickeringLightDistance` | 1024 | compiled default (the player's `Skyrim.ini` holds 2048) |
+
+`fLightLODMaxStartFade` has no setting in the executable and no effect.
+
+**Flicker and pulse.** `DATA` flag `0x8` is Flicker. `0x80` and `0x100` are Pulse and Pulse Slow, with one formula.
+`0x40` (Flicker Slow) alone gets no modulation. Only the fade changes (and the pulse's translation): not the colour or
+the radius. The base is FNAM plus the reference's XLIG fade (the effective fade above). With `I = intensity
+amplitude / 2`:
+
+- Pulse: `P += dt x period`, wrapped once at 2 pi; `fade = base x (1 - I + I cos P)`; the light's local translation
+  is `movement x (cos P, sin P, sin P cos P)` in Creation axes.
+- Flicker: three phases advance by `dt x period x U(lo, hi)` with a new random `U` per frame, `(1.1, 13.1)`,
+  `(1.2, 13.2)`, `(1.3, 19.3)`, each wrapped once at 2 pi. The noise is
+  `n = ((sin(1.3 B + 0.65) + 1) / 12) x (sin(1.1 A + 1.87) + 1) + 0.2 sin(3 C + 0.9)`, clamped to [-1, 1] (its range is
+  [-0.2, 0.5333]). The sines come from a 512-entry table, so each argument is truncated to steps of 2 pi / 512.
+  `fade = base x (1 - I + I n)`.
+- Only lights within `fFlickeringLightDistance` of the camera (the player's stand-in) advance. The others keep their
+  last fade.
+- A modulated fade below 0.05 turns the light off until it rises again. A fade below 0 (amplitude above 1) is 0 here,
+  because this backend cannot subtract light.
+- Unverified: the unit of retail's frame delta `dt` (Mudcrab uses seconds), and whether other code modulates Flicker Slow.
+  The random numbers come from a per-light generator seeded with the reference's form id, so a run repeats.
+- STAND-IN(#1000): the findings give the flicker movement as `0.5 x movement x s1 x s2` but not its axes, so a
+  flickering light does not move. The pulse movement is applied.
+
+**The 7-light cut.** STAND-IN(#999): retail gives one geometry at most 7 point lights after the sun and up to 4 shadow
+lights, cut in the order of the geometry's own light list. A small queued node (bound radius below 150) sorts its
+candidates by `(distance to the node's bound centre - bound radius) / light radius`, largest first, so the nearest
+candidates drop out first. Bevy's clustered lights loop over a cluster's lights, not a mesh's, and the cluster order is
+not attach order, so a per-fragment cap would cut arbitrarily and flicker. Mudcrab keeps the 64 nearest enabled lights
+(section 6). A room where more than 7 non-shadow lights reach one mesh can be brighter than retail. The attach path per
+placed mesh and the runtime list order are open in the findings.
 
 ## 5. Evidence and remaining gates
 
@@ -225,10 +287,9 @@ version-matched authority.
 
 Remaining qualification: a fixed-camera comparison with a retail capture of the same cell. Tests prove
 the authored field sensitivity, the intensity equation, the shader flag chain (as source pins) and the CPU
-light consumer. They do not prove rendered brightness or Skyrim parity. Three retail inputs are untraced and
-tracked in the research lane as NEEDS 20: the per-geometry choice of the 7 lights, flicker and pulse, and the
-distance dimmer (BSLight `+0x14`, `RF-LIGHT-CPU-003`). Mudcrab applies none of them, so a room with more than
-7 overlapping lights can be brighter than retail, and a distant light is not dimmed by the XCLL light fade.
+light consumer. They do not prove rendered brightness or Skyrim parity. The dimmer, flicker and pulse follow
+the static NEEDS 20 findings (see section 4); the 7-light cut is a stand-in (#999) and the flicker movement is
+open (#1000).
 
 ## 6. The budget: 64 enabled lights by default
 
@@ -286,8 +347,8 @@ Runs that must not move, such as an acceptance or benchmark baseline taken befor
 
 ## 8. Scope limits
 
-XLIG end-distance cap, shadow-mode cone angles and DATA falloff, cone/near clip, flicker/pulse, the distance
-dimmer, the per-geometry 7-light choice, the retail output stage and the retail Lighting path (#706) remain open
+XLIG end-distance cap, shadow-mode cone angles and DATA falloff, cone/near clip, flicker movement (#1000), the
+per-geometry 7-light choice (#999), the retail output stage and the retail Lighting path (#706) remain open
 under #133/#264/#364. Light colours stay sRGB-decoded, as the sun and ambient colours are: the raw-colour
 Lighting path of the `skyrim` profile (#362, #706) owns that change. Interior environment selection is
 separately owned.

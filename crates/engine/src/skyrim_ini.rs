@@ -18,6 +18,9 @@
 //! | `[Display]` | `fDefaultWorldFOV` | horizontal field of view of every camera but the first-person one, in degrees (retail 80; accepted 30 to 140, a Mudcrab-only bound); converted to Bevy's vertical angle at the window's aspect ratio |
 //! | `[Display]` | `fDefault1stPersonFOV` | horizontal field of view of the first-person (walking) camera, in degrees (retail 80) |
 //! | `[Display]` | `fNearDistance` | camera near plane and room-lookup distance, in Creation units (retail 15 is observed; the key name is from the community default dump, unverified; accepted above 0 up to 1000, a Mudcrab-only bound) |
+//! | `[Display]` | `fLightLODStartFade` | distance at which a placed light's distance fade begins, in Creation units (retail 3500 from `Skyrim_Default.ini`; 0 or more) |
+//! | `[Display]` | `fLightLODRange` | length added to the start fade for the end distance (retail compiled default 500; 0 or more) |
+//! | `[General]` | `fFlickeringLightDistance` | distance from the player within which flickering and pulsing lights update (retail compiled default 1024; above 0) |
 //! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
@@ -108,6 +111,10 @@ fn expected_range(section: &str, key: &str) -> Option<String> {
             "a distance above 0 and at most {}",
             crate::config::MAX_NEAR_DISTANCE
         )),
+        ("display", "flightlodstartfade") | ("display", "flightlodrange") => {
+            Some("a distance of 0 or more".into())
+        }
+        ("general", "fflickeringlightdistance") => Some("a distance above 0".into()),
         _ => None,
     }
 }
@@ -117,6 +124,13 @@ fn parse_positive(raw: &str) -> Option<f32> {
     raw.parse::<f32>()
         .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+/// A finite number of at least zero.
+fn parse_non_negative(raw: &str) -> Option<f32> {
+    raw.parse::<f32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
 /// Whether a value of a key `apply` validates is usable: `Some(true)` or `Some(false)`, or `None`
@@ -133,6 +147,10 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
             Some(parse_fov(raw).is_some())
         }
         ("display", "fneardistance") => Some(parse_near_distance(raw).is_some()),
+        ("display", "flightlodstartfade") | ("display", "flightlodrange") => {
+            Some(parse_non_negative(raw).is_some())
+        }
+        ("general", "fflickeringlightdistance") => Some(parse_positive(raw).is_some()),
         ("terrainmanager", "fblocklevel0distance")
         | ("terrainmanager", "fblocklevel1distance")
         | ("terrainmanager", "fblockmaximumdistance")
@@ -282,6 +300,30 @@ impl SkyrimIni {
                 ),
             }
         }
+        for (section, key, setting) in [
+            (
+                "Display",
+                "fLightLODStartFade",
+                &mut config.light_lod_start_fade,
+            ),
+            ("Display", "fLightLODRange", &mut config.light_lod_range),
+        ] {
+            let Some(raw) = self.get(section, key) else {
+                continue;
+            };
+            match parse_non_negative(raw) {
+                Some(value) => *setting = value,
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected 0 or more"),
+            }
+        }
+        if let Some(raw) = self.get("General", "fFlickeringLightDistance") {
+            match parse_positive(raw) {
+                Some(value) => config.flickering_light_distance = value,
+                None => eprintln!(
+                    "warning: ignoring fFlickeringLightDistance={raw:?}; expected a positive number"
+                ),
+            }
+        }
         if let Some(raw) = self.get("Display", "bDrawLandShadows") {
             match parse_flag(raw) {
                 Some(value) => config.land_shadows = value,
@@ -411,6 +453,36 @@ mod tests {
 
     /// #904, #949: the camera keys default to 80, 80 and 15 and an INI overrides each one. The
     /// sources are cited at the constants in `config.rs`.
+    /// The point-light distance fade and flicker keys (#955): the defaults of
+    /// [point-lights.md](../../../docs/specs/engine/point-lights.md), INI overrides, and a rejected
+    /// value keeps the default.
+    #[test]
+    fn light_distance_keys_default_to_retail_and_take_the_ini() {
+        let config = EngineConfig::default();
+        assert_eq!(config.light_lod_start_fade, 3500.0);
+        assert_eq!(config.light_lod_range, 500.0);
+        assert_eq!(config.flickering_light_distance, 1024.0);
+
+        let config = apply(
+            "[Display]\nfLightLODStartFade=1200\nfLightLODRange=0\n[General]\nfFlickeringLightDistance=2048\n",
+        );
+        assert_eq!(config.light_lod_start_fade, 1200.0);
+        assert_eq!(config.light_lod_range, 0.0);
+        assert_eq!(config.flickering_light_distance, 2048.0);
+
+        let config = apply(
+            "[Display]\nfLightLODStartFade=-1\nfLightLODRange=abc\n[General]\nfFlickeringLightDistance=0\n",
+        );
+        assert_eq!(config.light_lod_start_fade, 3500.0);
+        assert_eq!(config.light_lod_range, 500.0);
+        assert_eq!(config.flickering_light_distance, 1024.0);
+        // The key `fLightLODMaxStartFade` has no setting in the executable and is ignored.
+        assert_eq!(
+            apply("[Display]\nfLightLODMaxStartFade=100\n").light_lod_start_fade,
+            3500.0
+        );
+    }
+
     #[test]
     fn camera_keys_default_to_retail_and_an_ini_overrides_them() {
         let config = apply("");
