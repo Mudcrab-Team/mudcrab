@@ -38,10 +38,11 @@ pub(crate) const RED_AXIS: MeshVertexAttribute =
 pub(crate) const GREEN_AXIS: MeshVertexAttribute =
     MeshVertexAttribute::new("ObjectAtlasGreen", 41_502, VertexFormat::Float32x3);
 // skyrim_decomp#1003 G03. SunlightScale is authored in IMGS.HNAM. Neither Ultra.ini nor
-// Skyrim_Default.ini sets it. The constructor default is "about 1.8" in G03. The exact float is
-// unverified, so this value is a STAND-IN(#946) for that default. It applies only when the
-// pack's image space for a day part has no sunlight scale. The engine's near path uses its own
-// `SUNLIGHT_SCALE` (2.8) for the directional light. That constant does not feed this material.
+// Skyrim_Default.ini sets it. It applies only when the pack's image space for a day part has no
+// sunlight scale. The engine's near path uses its own `SUNLIGHT_SCALE` (2.8) for the directional
+// light. That constant does not feed this material.
+// STAND-IN(#946): the IMGS constructor default. G03 gives "about 1.8". The exact float is
+// unverified.
 const DEFAULT_SUNLIGHT_SCALE: f32 = 1.8;
 const SHADER: &str = "embedded://engine/streaming/lod_object.wgsl";
 
