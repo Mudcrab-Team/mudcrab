@@ -36,6 +36,7 @@ use bevy::{
     ecs::system::SystemParam,
     gltf::{GltfExtras, GltfMaterialName, GltfSceneExtras},
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler},
+    light::NotShadowCaster,
     math::Affine3A,
     mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
@@ -175,6 +176,10 @@ impl Plugin for StreamingPlugin {
                 )
                     .chain()
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            )
+            .add_systems(
+                Update,
+                apply_land_shadow_policy.after(lod::update_terrain_lod_visibility),
             )
             .add_systems(
                 Update,
@@ -3981,6 +3986,61 @@ fn weld_merged_cell(
     validate_and_register_terrain_edges(key, &mut grid, continuity, metrics)?;
     crate::terrain_merge::mesh::write_grid(cell, &grid.heights, &grid.normals);
     Ok(())
+}
+
+/// A coverage node whose coverage or children changed: the only place a LOD source mesh can be
+/// found, since the mesh child carries no coverage of its own.
+type ChangedCoverageNode = (
+    With<TerrainCoverage>,
+    Or<(Added<TerrainCoverage>, Changed<Children>)>,
+);
+
+/// A terrain mesh that has not been given [`NotShadowCaster`] yet.
+type UncastingTerrain = (
+    With<Mesh3d>,
+    Or<(
+        With<TerrainPatch>,
+        With<TerrainCoverage>,
+        With<lod::terrain_batching::LandMesh>,
+    )>,
+    Without<NotShadowCaster>,
+);
+
+/// Apply the default land-shadow policy from Mudcrab #949 to terrain meshes.
+/// A mesh that already has `NotShadowCaster` keeps it, including with land shadows enabled.
+/// This marker applies to directional, point, and spot lights. Receiving is unchanged.
+///
+///
+/// Terrain is found through [`TerrainPatch`], [`TerrainCoverage`] and
+/// [`lod::terrain_batching::LandMesh`] on the mesh itself, and through the mesh children of a
+/// [`TerrainCoverage`] node: a LOD chunk's quadrant node carries the coverage and its single
+/// primitive child carries the mesh, and that child draws until the chunk is batched.
+///
+/// Cost: the `terrain` query has archetype filters only, so once a mesh has the marker it matches
+/// no archetype and costs nothing. `covered_nodes` visits only entities that carry a
+/// [`TerrainCoverage`] and whose coverage or `Children` changed. Both arrival orders are handled
+/// there: the node gaining coverage after its child exists (`Added<TerrainCoverage>`), and a child
+/// spawning under a covered node (`Changed<Children>`). No other mesh in the world is looked at.
+fn apply_land_shadow_policy(
+    config: Option<Res<crate::config::EngineConfig>>,
+    terrain: Query<Entity, UncastingTerrain>,
+    covered_nodes: Query<&Children, ChangedCoverageNode>,
+    uncasting_meshes: Query<(), (With<Mesh3d>, Without<NotShadowCaster>)>,
+    mut commands: Commands,
+) {
+    if config.is_some_and(|config| config.land_shadows) {
+        return;
+    }
+    for entity in &terrain {
+        commands.entity(entity).insert(NotShadowCaster);
+    }
+    for children in &covered_nodes {
+        for child in children.iter() {
+            if uncasting_meshes.contains(child) {
+                commands.entity(child).insert(NotShadowCaster);
+            }
+        }
+    }
 }
 
 /// Makes a spawned merged terrain mesh visible and its collider live. Its arrays were validated
@@ -12458,6 +12518,162 @@ mod tests {
             Some(&FormId(0x100)),
             "and the reference is still spawned"
         );
+    }
+}
+
+#[cfg(test)]
+mod land_shadow_tests {
+    use super::*;
+    use bevy::light::NotShadowReceiver;
+
+    fn coverage() -> TerrainCoverage {
+        TerrainCoverage {
+            grid: IVec2::ZERO,
+            quadrant: 0,
+            tier: None,
+        }
+    }
+
+    /// Every terrain path, plus a mesh that is not terrain, and a receiver that must stay one.
+    struct Entities {
+        merged_or_patch: Entity,
+        lod_source: Entity,
+        lod_batch: Entity,
+        building: Entity,
+        receiver_free: Entity,
+    }
+
+    fn app(config: crate::config::EngineConfig) -> (App, Entities) {
+        let mut app = App::new();
+        app.insert_resource(config)
+            .add_systems(Update, apply_land_shadow_policy);
+        let world = app.world_mut();
+        let ids = Entities {
+            merged_or_patch: world.spawn((Mesh3d(Handle::default()), TerrainPatch)).id(),
+            lod_source: world.spawn((Mesh3d(Handle::default()), coverage())).id(),
+            lod_batch: world
+                .spawn((Mesh3d(Handle::default()), lod::terrain_batching::LandMesh))
+                .id(),
+            building: world.spawn(Mesh3d(Handle::default())).id(),
+            receiver_free: world
+                .spawn((Mesh3d(Handle::default()), TerrainPatch, NotShadowReceiver))
+                .id(),
+        };
+        app.update();
+        (app, ids)
+    }
+
+    fn casts(app: &App, entity: Entity) -> bool {
+        !app.world().entity(entity).contains::<NotShadowCaster>()
+    }
+
+    /// Retail: land casts no sun shadow by default (`bDrawLandShadows` = 0), on
+    /// every terrain path; other meshes keep casting.
+    #[test]
+    fn terrain_does_not_cast_sun_shadows_by_default() {
+        let config = crate::config::EngineConfig::default();
+        assert_eq!(config.land_shadows, crate::config::RETAIL_DRAW_LAND_SHADOWS);
+        assert!(!config.land_shadows, "retail bDrawLandShadows = 0");
+        let (app, world) = app(config);
+        for entity in [
+            world.merged_or_patch,
+            world.lod_source,
+            world.lod_batch,
+            world.receiver_free,
+        ] {
+            assert!(!casts(&app, entity), "{entity:?}");
+        }
+        assert!(
+            casts(&app, world.building),
+            "buildings and trees still cast"
+        );
+    }
+
+    /// `[Display] bDrawLandShadows=1` (`land_shadows`) leaves terrain casting.
+    #[test]
+    fn the_ini_setting_turns_land_shadow_casting_on() {
+        let config = crate::config::EngineConfig {
+            land_shadows: true,
+            ..default()
+        };
+        let (app, world) = app(config);
+        for entity in [
+            world.merged_or_patch,
+            world.lod_source,
+            world.lod_batch,
+            world.building,
+        ] {
+            assert!(casts(&app, entity), "{entity:?}");
+        }
+    }
+
+    /// Receiving is unchanged: the policy adds no `NotShadowReceiver` and keeps an existing one.
+    #[test]
+    fn receiving_is_unchanged() {
+        let (app, world) = app(crate::config::EngineConfig::default());
+        for entity in [world.merged_or_patch, world.lod_source, world.lod_batch] {
+            assert!(
+                !app.world().entity(entity).contains::<NotShadowReceiver>(),
+                "{entity:?} still receives"
+            );
+        }
+        assert!(
+            app.world()
+                .entity(world.receiver_free)
+                .contains::<NotShadowReceiver>(),
+            "a marker that was there stays"
+        );
+    }
+
+    /// A LOD chunk's quadrant node carries the coverage and its primitive child carries the mesh,
+    /// and that child draws until the chunk is batched. It must not cast, whichever of the two
+    /// appears first.
+    #[test]
+    fn the_mesh_child_of_a_lod_quadrant_node_does_not_cast() {
+        let (mut app, _) = app(crate::config::EngineConfig::default());
+        // The mesh first, the coverage later.
+        let node = app.world_mut().spawn_empty().id();
+        let child = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), ChildOf(node)))
+            .id();
+        app.update();
+        assert!(
+            casts(&app, child),
+            "no terrain node yet, so it is not terrain"
+        );
+        app.world_mut().entity_mut(node).insert(coverage());
+        app.update();
+        assert!(!casts(&app, child), "coverage arrived after the mesh");
+        // The coverage first, the mesh later.
+        let node = app.world_mut().spawn(coverage()).id();
+        app.update();
+        let child = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), ChildOf(node)))
+            .id();
+        app.update();
+        assert!(!casts(&app, child), "mesh arrived under a covered node");
+        // A building under an ordinary node still casts.
+        let building_node = app.world_mut().spawn_empty().id();
+        let building = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), ChildOf(building_node)))
+            .id();
+        app.update();
+        assert!(casts(&app, building));
+    }
+
+    /// Terrain that arrives later is handled in the frame it appears.
+    #[test]
+    fn later_terrain_is_handled_too() {
+        let (mut app, _) = app(crate::config::EngineConfig::default());
+        let late = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), coverage()))
+            .id();
+        app.update();
+        assert!(!casts(&app, late));
     }
 }
 
