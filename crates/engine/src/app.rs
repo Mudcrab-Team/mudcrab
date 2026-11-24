@@ -110,11 +110,7 @@ fn prepare_start_camera(
         config.worldspace_id = worldspace;
     }
     if let Some((settings, settings_file)) = preferences {
-        settings_file.apply_start_shot(
-            settings,
-            crate::shots::vertical_fov_degrees(file.shots[0].hfov, file.aspect()),
-            (file.width, file.height),
-        );
+        settings_file.apply_start_shot(settings, file.shots[0].hfov, (file.width, file.height));
     }
     Ok(Some(InitialWorldCameraPose {
         shot: file.shots[0].clone(),
@@ -2502,13 +2498,6 @@ fn setup_synthetic_benchmark(
 /// is this many times larger here.
 const CREATION_UNITS_PER_METRE: f32 = 70.0;
 
-/// The retail camera near distance, `[Display] fNearDistance=15`, which the retail cascade split
-/// uses as its near endpoint. No shipped INI sets it: the value is from the community dump of
-/// compiled defaults and is unverified for 1.7.104 (#949 audit row 20, where Mudcrab's own near
-/// plane differs and the camera group owns it). It moves the first cascade's end by about 3% at
-/// the default range.
-const RETAIL_CASCADE_NEAR: f32 = 15.0;
-
 /// The widest cascade count Bevy supports for one light (`MAX_CASCADES_PER_LIGHT`,
 /// `bevy_pbr-0.19.0` `src/render/light.rs:228`).
 const MAX_SUN_SHADOW_CASCADES: usize = 4;
@@ -2594,13 +2583,16 @@ pub(crate) fn sun_shadow_cascades_for(
     // `D` of the retail split: the exterior shadow distance, or the grid where code sets none.
     let nominal = config.sun_shadow_distance_limit.unwrap_or(grid_distance);
     let range = grid_distance.min(nominal);
+    let scaled_range = range * distance_scale;
     CascadeShadowConfig {
         bounds: retail_cascade_bounds(
             cascades.clamp(1, MAX_SUN_SHADOW_CASCADES),
             config.sun_first_slice_distance,
             nominal * distance_scale,
-            range * distance_scale,
-            RETAIL_CASCADE_NEAR,
+            scaled_range,
+            // A Mudcrab-only cap, to keep the bounds increasing: the split needs the near
+            // distance below the range, and `fNearDistance` accepts up to 1000.
+            config.near_distance.min(scaled_range * 0.5),
         ),
         // The overlap stays at Bevy's default. Retail's `fSplitOverlap=100` is in units; its
         // fraction for this layout is not derived yet (#949 audit row 8).
@@ -2614,7 +2606,8 @@ pub(crate) fn sun_shadow_cascades_for(
 /// <https://github.com/Mudcrab-Team/skyrim_decomp/pull/806>).
 ///
 /// `count` is `N` (`iNumSplits`), `first_slice` is `fFirstSliceDistance`, `distance` is `D`
-/// (`fShadowDistance`), `range` is `F` (the farthest distance shadowed) and `near` is `n`. The
+/// (`fShadowDistance`), `range` is `F` (the farthest distance shadowed) and `near` is `n`, the
+/// camera near distance (`EngineConfig::near_distance`, `[Display] fNearDistance`). The
 /// split fraction is `t0 = min(D / N, max(first_slice, 500)) / D`, and for `N >= 2`
 /// `t_i = t0 + (1 - t0) * i / (N - 1)`. The far bound is
 /// `E_i = 0.5 * (n * (F / n)^t_i + n + (F - n) * t_i)`, an even mix of a geometric and a linear
@@ -2715,7 +2708,13 @@ fn setup_world(
     } else {
         Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
     };
-    let mut perspective = PerspectiveProjection { far, ..default() };
+    // The near plane is retail's `fNearDistance` (#949). The vertical angle is set once the
+    // window's aspect ratio is known, by `settings::apply_render_settings` (#904).
+    let mut perspective = PerspectiveProjection {
+        far,
+        near: config.near_distance,
+        ..default()
+    };
     if let Some(pose) = start_camera {
         camera_transform.translation = crate::shots::shot_camera_translation(
             pose.shot.position,
@@ -2732,7 +2731,7 @@ fn setup_world(
         Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
-        crate::room_culling::RoomCullingNear::SKYRIM,
+        crate::room_culling::RoomCullingNear::new(config.near_distance),
         IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
@@ -5008,6 +5007,41 @@ mod tests {
         assert!(cascades.minimum_distance < cascades.bounds[0]);
     }
 
+    /// The split's near distance is the camera's (`fNearDistance`), so an INI value moves the first
+    /// bound and not the last, and a large one cannot make the bounds decrease.
+    #[test]
+    fn an_ini_near_distance_moves_the_first_cascade_bound() {
+        let with_near = |near: &str, distance: &str| {
+            let mut ini = crate::skyrim_ini::SkyrimIni::default();
+            ini.merge_str(&format!(
+                "[Display]\nfNearDistance={near}\nfShadowDistance={distance}\n"
+            ));
+            let mut config = EngineConfig::default();
+            ini.apply(&mut config);
+            sun_shadow_cascades(&config).bounds
+        };
+        let default = sun_shadow_cascades(&EngineConfig::default()).bounds;
+        let moved = with_near("200", "10000");
+        assert_eq!(with_near("15", "10000"), default, "15 is the default");
+        assert!(moved[0] > default[0], "{moved:?} against {default:?}");
+        assert_eq!(moved[1], default[1], "the range does not move");
+        // E_0 = 0.5 * (200 * (10000 / 200)^0.2 + 200 + 9800 * 0.2), by hand.
+        let expected = 0.5 * (200.0 * (10_000.0_f32 / 200.0).powf(0.2) + 200.0 + 9_800.0 * 0.2);
+        assert!(
+            (moved[0] - expected).abs() < 0.01,
+            "{} against {expected}",
+            moved[0]
+        );
+        // The largest accepted near distance on the shortest accepted range still gives increasing
+        // bounds, because the split caps the near distance at half the range.
+        let extreme = with_near("1000", "700");
+        assert!(
+            extreme.windows(2).all(|pair| pair[0] < pair[1]),
+            "{extreme:?}"
+        );
+        assert!(extreme[0] > 7.0, "{extreme:?}");
+    }
+
     /// The first slice distance feeds the retail split as its first fraction, floored at 500 and
     /// capped at an even share of the distance, and the last bound is always the range.
     #[test]
@@ -5375,6 +5409,42 @@ mod tests {
         assert!(app.world().get_resource::<ShotsRun>().is_none());
     }
 
+    /// #949: the world camera's near plane is retail's `fNearDistance` (15 units) with no INI, and
+    /// an INI value replaces it.
+    #[test]
+    fn world_camera_near_plane_is_retail_and_follows_the_ini() {
+        for (config, near) in [
+            (EngineConfig::default(), 15.0),
+            (
+                EngineConfig {
+                    near_distance: 4.0,
+                    ..default()
+                },
+                4.0,
+            ),
+        ] {
+            let mut app = App::new();
+            app.insert_resource(config)
+                .add_systems(Startup, setup_world);
+            app.update();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<&Projection, With<StreamingCamera>>();
+            let Projection::Perspective(projection) = cameras.single(app.world()).unwrap() else {
+                panic!("perspective camera")
+            };
+            assert_eq!(projection.near, near);
+            let mut lookups = app
+                .world_mut()
+                .query_filtered::<&crate::room_culling::RoomCullingNear, With<StreamingCamera>>();
+            assert_eq!(
+                lookups.single(app.world()).unwrap().distance(),
+                near,
+                "the room lookup follows the render near plane"
+            );
+        }
+    }
+
     fn interactive_framing_app(settings_path: &Path, shot_path: Option<PathBuf>) -> App {
         let args = shot_path.map_or_else(Vec::new, |path| {
             vec!["--start-shot".to_owned(), path.to_str().unwrap().to_owned()]
@@ -5413,7 +5483,9 @@ mod tests {
         let Projection::Perspective(projection) = query.single(app.world()).unwrap() else {
             panic!("perspective camera")
         };
-        assert!((projection.fov - fov.to_radians()).abs() < 1e-6);
+        // `fov` is the horizontal angle, as the settings hold it (#904).
+        let vertical = crate::settings::vertical_fov_radians(fov, projection.aspect_ratio);
+        assert!((projection.fov - vertical).abs() < 1e-6);
         let mut query = app
             .world_mut()
             .query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
@@ -5446,7 +5518,7 @@ mod tests {
         // Include a preset equal to the reset default: reset must still clear custom dimensions.
         for window_size in [1, 3] {
             let saved = RenderingSettings {
-                fov_degrees: 99.0,
+                horizontal_fov_degrees: 99.0,
                 window_size,
                 window_mode: 1,
                 ..default()
@@ -5454,7 +5526,7 @@ mod tests {
             let bytes = serde_json::to_vec(&saved).unwrap();
             std::fs::write(&settings_path, &bytes).unwrap();
             let mut app = interactive_framing_app(&settings_path, Some(shot_path.clone()));
-            let fov = crate::shots::vertical_fov_degrees(18.0, 1379.0 / 911.0);
+            let fov = 18.0;
             app.update();
             assert_interactive_framing(&mut app, fov, (1379, 911));
             app.world_mut().resource_mut::<RenderingSettings>().hud = false;
@@ -5466,7 +5538,10 @@ mod tests {
             app.world_mut().resource_mut::<SettingsFile>().save(&active);
             let persisted: RenderingSettings =
                 serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
-            assert_eq!(persisted.fov_degrees, saved.fov_degrees);
+            assert_eq!(
+                persisted.horizontal_fov_degrees,
+                saved.horizontal_fov_degrees
+            );
             assert_eq!(persisted.window_size, saved.window_size);
             assert_eq!(persisted.window_mode, saved.window_mode);
             assert_eq!(persisted.window_size_override, None);
@@ -5476,7 +5551,7 @@ mod tests {
             let defaults = RenderingSettings::default();
             assert_interactive_framing(
                 &mut app,
-                defaults.fov_degrees,
+                defaults.horizontal_fov_degrees,
                 WINDOW_SIZES[defaults.window_size],
             );
         }
@@ -5494,7 +5569,7 @@ mod tests {
         {
             let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
             settings.window_size = 2;
-            settings.fov_degrees = 75.0;
+            settings.horizontal_fov_degrees = 75.0;
         }
         app.update();
         assert_interactive_framing(&mut app, 75.0, WINDOW_SIZES[2]);
@@ -5510,7 +5585,7 @@ mod tests {
         for saved in [
             None,
             Some(RenderingSettings {
-                fov_degrees: 90.0,
+                horizontal_fov_degrees: 90.0,
                 window_size: 3,
                 ..default()
             }),
@@ -5524,14 +5599,14 @@ mod tests {
             app.update();
             assert_interactive_framing(
                 &mut app,
-                expected.fov_degrees,
+                expected.horizontal_fov_degrees,
                 WINDOW_SIZES[expected.window_size],
             );
             reset_interactive_settings(&mut app);
             let defaults = RenderingSettings::default();
             assert_interactive_framing(
                 &mut app,
-                defaults.fov_degrees,
+                defaults.horizontal_fov_degrees,
                 WINDOW_SIZES[defaults.window_size],
             );
         }

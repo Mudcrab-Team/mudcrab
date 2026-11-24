@@ -18,6 +18,9 @@
 //! | `[Display]` | `iShadowMapResolution` | sun shadow map edge: 512, 1024, 2048 or 4096; the default is Ultra's 4096 |
 //! | `[Display]` | `iNumSplits` | sun shadow cascade count, 1 to 4; the default is retail's compiled 2 |
 //! | `[Display]` | `fFirstSliceDistance` | first slice input of the retail cascade split, in Creation units; the default is the template's 2000 |
+//! | `[Display]` | `fDefaultWorldFOV` | horizontal field of view of every camera but the first-person one, in degrees (retail 80; accepted 30 to 140, a Mudcrab-only bound); converted to Bevy's vertical angle at the window's aspect ratio |
+//! | `[Display]` | `fDefault1stPersonFOV` | horizontal field of view of the first-person (walking) camera, in degrees (retail 80) |
+//! | `[Display]` | `fNearDistance` | camera near plane and room-lookup distance, in Creation units (retail 15 is observed; the key name is from the community default dump, unverified; accepted above 0 up to 1000, a Mudcrab-only bound) |
 //! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
@@ -93,6 +96,39 @@ fn parse_cascade_count(raw: &str) -> Option<usize> {
         .filter(|count| (1..=4).contains(count))
 }
 
+/// A horizontal field of view the engine accepts, in degrees.
+fn parse_fov(raw: &str) -> Option<f32> {
+    let (low, high) = crate::config::FOV_RANGE_DEGREES;
+    raw.parse::<f32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|value| value.is_finite() && (low..=high).contains(value))
+}
+
+/// A near-plane distance the engine accepts: above zero and at most
+/// [`crate::config::MAX_NEAR_DISTANCE`] (a Mudcrab-only sanity bound, to keep the frustum valid).
+fn parse_near_distance(raw: &str) -> Option<f32> {
+    raw.parse::<f32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|value| {
+            value.is_finite() && *value > 0.0 && *value <= crate::config::MAX_NEAR_DISTANCE
+        })
+}
+
+/// What a key accepts, for the warning about a value it rejects.
+fn expected_range(section: &str, key: &str) -> Option<String> {
+    match (section, key) {
+        ("display", "fdefaultworldfov") | ("display", "fdefault1stpersonfov") => {
+            let (low, high) = crate::config::FOV_RANGE_DEGREES;
+            Some(format!("degrees from {low} to {high}"))
+        }
+        ("display", "fneardistance") => Some(format!(
+            "a distance above 0 and at most {}",
+            crate::config::MAX_NEAR_DISTANCE
+        )),
+        _ => None,
+    }
+}
+
 /// A finite number above zero.
 fn parse_positive(raw: &str) -> Option<f32> {
     raw.parse::<f32>()
@@ -113,6 +149,10 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
         ("display", "ishadowmapresolution") => Some(parse_shadow_map_size(raw).is_some()),
         ("display", "inumsplits") => Some(parse_cascade_count(raw).is_some()),
         ("display", "ffirstslicedistance") => Some(parse_positive(raw).is_some()),
+        ("display", "fdefaultworldfov") | ("display", "fdefault1stpersonfov") => {
+            Some(parse_fov(raw).is_some())
+        }
+        ("display", "fneardistance") => Some(parse_near_distance(raw).is_some()),
         ("terrainmanager", "fblocklevel0distance")
         | ("terrainmanager", "fblocklevel1distance")
         | ("terrainmanager", "fblockmaximumdistance")
@@ -178,10 +218,12 @@ impl SkyrimIni {
                 } else {
                     "leaving the setting unchanged"
                 };
+                let expected = expected_range(&slot.0, &slot.1)
+                    .map_or_else(String::new, |range| format!(" (expected {range})"));
                 eprintln!(
-                    "warning: {source}:{}: ignoring {}={value:?}; {outcome}",
+                    "warning: {source}:{}: ignoring {}={value:?}{expected}; {outcome}",
                     index + 1,
-                    slot.1
+                    key.trim()
                 );
                 continue;
             }
@@ -264,6 +306,32 @@ impl SkyrimIni {
                 ),
             }
         }
+        for (key, setting) in [
+            ("fDefaultWorldFOV", &mut config.world_fov_degrees),
+            ("fDefault1stPersonFOV", &mut config.first_person_fov_degrees),
+        ] {
+            let Some(raw) = self.get("Display", key) else {
+                continue;
+            };
+            match parse_fov(raw) {
+                Some(value) => *setting = value,
+                None => {
+                    let (low, high) = crate::config::FOV_RANGE_DEGREES;
+                    eprintln!(
+                        "warning: ignoring {key}={raw:?}; expected degrees from {low} to {high}"
+                    )
+                }
+            }
+        }
+        if let Some(raw) = self.get("Display", "fNearDistance") {
+            match parse_near_distance(raw) {
+                Some(value) => config.near_distance = value,
+                None => eprintln!(
+                    "warning: ignoring fNearDistance={raw:?}; expected a distance above 0 and at most {}",
+                    crate::config::MAX_NEAR_DISTANCE
+                ),
+            }
+        }
         if let Some(raw) = self.get("Display", "bDrawLandShadows") {
             match parse_flag(raw) {
                 Some(value) => config.land_shadows = value,
@@ -302,6 +370,23 @@ impl SkyrimIni {
             }
         }
         self.apply_grass(config);
+    }
+
+    /// Marks the menu's field-of-view setting as launch-owned when this INI sets the key of the
+    /// camera the run starts with. Call it once the command line has been read, because which
+    /// camera that is (first-person or world) depends on the flags.
+    pub fn claim_active_fov(&self, config: &mut EngineConfig) {
+        let key = if config.interactive_world_physics() {
+            "fDefault1stPersonFOV"
+        } else {
+            "fDefaultWorldFOV"
+        };
+        if self
+            .get("Display", key)
+            .is_some_and(|raw| parse_fov(raw).is_some())
+        {
+            config.settings_overrides.push("ini:fov".into());
+        }
     }
 
     /// Apply supported grass scalars from the same merged values used for terrain.
@@ -372,6 +457,77 @@ mod tests {
         let mut config = EngineConfig::default();
         ini.apply(&mut config);
         config
+    }
+
+    /// #904, #949: the camera keys default to 80, 80 and 15 and an INI overrides each one. The
+    /// sources are cited at the constants in `config.rs`.
+    #[test]
+    fn camera_keys_default_to_retail_and_an_ini_overrides_them() {
+        let config = apply("");
+        assert_eq!(config.world_fov_degrees, 80.0);
+        assert_eq!(config.first_person_fov_degrees, 80.0);
+        assert_eq!(config.near_distance, 15.0);
+
+        let config =
+            apply("[Display]\nfDefaultWorldFOV=90\nfDefault1stPersonFOV=65.5\nfNearDistance=7.5\n");
+        assert_eq!(config.world_fov_degrees, 90.0);
+        assert_eq!(config.first_person_fov_degrees, 65.5);
+        assert_eq!(config.near_distance, 7.5);
+
+        // Unusable values leave the retail default; a later usable file value still applies.
+        let config =
+            apply("[Display]\nfDefaultWorldFOV=500\nfDefault1stPersonFOV=abc\nfNearDistance=-1\n");
+        assert_eq!(config.world_fov_degrees, 80.0);
+        assert_eq!(config.first_person_fov_degrees, 80.0);
+        assert_eq!(config.near_distance, 15.0);
+        // A near plane past the sanity bound is rejected, and the bound itself is accepted.
+        assert_eq!(
+            apply("[Display]\nfNearDistance=1000.5\n").near_distance,
+            15.0
+        );
+        assert_eq!(
+            apply("[Display]\nfNearDistance=1000\n").near_distance,
+            1000.0
+        );
+        assert!(expected_range("display", "fneardistance").is_some_and(|r| r.contains("1000")));
+        assert!(
+            expected_range("display", "fdefaultworldfov").is_some_and(|r| r.contains("30 to 140"))
+        );
+        let mut ini = SkyrimIni::default();
+        ini.merge_str("[Display]\nfDefaultWorldFOV=90\n");
+        ini.merge_str("[Display]\nfDefaultWorldFOV=0\n");
+        let mut config = EngineConfig::default();
+        ini.apply(&mut config);
+        assert_eq!(
+            config.world_fov_degrees, 90.0,
+            "the earlier usable value stands"
+        );
+    }
+
+    /// The menu value is launch-owned only for the key of the camera the run starts with.
+    #[test]
+    fn only_the_active_cameras_field_of_view_key_owns_the_menu() {
+        let mut ini = SkyrimIni::default();
+        ini.merge_str("[Display]\nfDefaultWorldFOV=90\n");
+        let mut walking = EngineConfig::default();
+        ini.claim_active_fov(&mut walking);
+        assert!(
+            !walking
+                .settings_overrides
+                .iter()
+                .any(|flag| flag == "ini:fov")
+        );
+        let mut automated = EngineConfig {
+            headless: true,
+            ..EngineConfig::default()
+        };
+        ini.claim_active_fov(&mut automated);
+        assert!(
+            automated
+                .settings_overrides
+                .iter()
+                .any(|flag| flag == "ini:fov")
+        );
     }
 
     /// Explicit values layer by key; bad values cannot poison authored settings.
