@@ -1656,6 +1656,45 @@ mod tests {
         assert_eq!(app.world().resource::<InteriorFog>().0, None);
     }
 
+    /// The exterior lighting driver (#653) leaves the interior key light and ambient alone, and
+    /// takes the sun and ambient back for the clock's hour in the exit frame.
+    #[test]
+    fn the_exterior_lighting_driver_yields_indoors_and_resumes_on_exit() {
+        use crate::visual_profile::VisualProfile;
+        let mut app = app(rule_catalog());
+        let sun = spawn_world_sun(&mut app);
+        app.insert_resource(crate::sky::lit_test_source(VisualProfile::Skyrim))
+            .insert_resource(crate::sun::GameClock {
+                hour: 12.0,
+                timescale: 0.0,
+            })
+            .add_systems(
+                PostUpdate,
+                crate::sky::drive_exterior_lighting.after(EnvironmentSet),
+            );
+        app.update();
+        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(200, 190, 180));
+        let day_ambient = app.world().resource::<GlobalAmbientLight>().color;
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        let key = sun_light(&app, sun).color;
+        let ambient = app.world().resource::<GlobalAmbientLight>().color;
+        assert_eq!(key, Color::srgb_u8(65, 70, 80), "the cell key light");
+        // The hour moves indoors: the driver does not touch the room's light.
+        app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 0.0;
+        app.update();
+        assert_eq!(sun_light(&app, sun).color, key);
+        assert_eq!(app.world().resource::<GlobalAmbientLight>().color, ambient);
+        // Leaving restores a driven exterior in the same frame, for the new hour.
+        enter(&mut app, None);
+        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(10, 20, 40));
+        assert_ne!(
+            app.world().resource::<GlobalAmbientLight>().color,
+            day_ambient
+        );
+        assert!(app.world().get::<ExteriorSunState>(sun).is_none());
+    }
+
     #[test]
     fn a_lighting_setting_changed_indoors_is_in_effect_after_the_exit() {
         let mut app = app(rule_catalog());

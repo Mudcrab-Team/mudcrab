@@ -383,6 +383,13 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                             weather.fog_omissions.join(", ")
                         );
                     }
+                    if !weather.lighting_omissions.is_empty() {
+                        eprintln!(
+                            "warning: weather {}: the record has no {}; the exterior sun and ambient keep their fixed colours",
+                            weather.label(),
+                            weather.lighting_omissions.join(", ")
+                        );
+                    }
                     let note = format!("weather {}: sky and fog from the record", weather.label());
                     grade_source.weather = Some(weather);
                     note

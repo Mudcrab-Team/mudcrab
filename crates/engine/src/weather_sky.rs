@@ -35,10 +35,17 @@
 //!   gate byte starts closed in the image and its runtime writer is unverified, so Mudcrab applies
 //!   no override.
 //!
+//! - **Sun and ambient colour (verified, #653).** Retail has no sun/moon switch and no night
+//!   fade (`skyrim_decomp#1003` G02). The sun's colour is the `NAM0` Sunlight colour and the
+//!   ambient is the `DALC` cube, each mixed by the same [`slot_weights`]. Night darkness is the
+//!   record's night slot and nothing else. [`WeatherSky::lighting_at`] returns them. A weather
+//!   that lacks one of the eight values gives no lighting, and [`WeatherSky::lighting_omissions`]
+//!   names what is missing. Nothing is filled in.
+//!
 //! This module supplies the values. `sky.rs` draws them and says which drawing steps are
 //! unverified.
 
-use crate::sky::{FogRamp, SkyPalette};
+use crate::sky::{FogRamp, SkyPalette, WeatherLighting};
 use crate::sun::SunTiming;
 use crate::world::environment::{EnvironmentCatalog, TimeOfDay, Weather};
 use bevy::prelude::Color;
@@ -141,6 +148,13 @@ struct SlotColours {
     fog_far: [u8; 3],
 }
 
+/// The sun colour and the six `DALC` faces of one time-of-day slot, 8-bit sRGB.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SlotLighting {
+    sunlight: [u8; 3],
+    ambient_cube: [[u8; 3]; 6],
+}
+
 /// One `FNAM` fog distance set (day or night).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FogSet {
@@ -161,6 +175,11 @@ pub struct WeatherSky {
     timing: SunTiming,
     /// The `FNAM` fields the record did not publish. Empty when `fog` is `Some`.
     pub fog_omissions: Vec<&'static str>,
+    /// The sun colour and `DALC` cube of the four slots. `None` when the record lacks any of them.
+    lighting: Option<[SlotLighting; 4]>,
+    /// The `NAM0` Sunlight colours and `DALC` blocks the record did not publish, such as
+    /// `sunlight (Night)`. Empty when `lighting` is `Some`.
+    pub lighting_omissions: Vec<String>,
 }
 
 impl WeatherSky {
@@ -226,6 +245,25 @@ impl WeatherSky {
             (true, Some(day), Some(night)) => Some([day, night]),
             _ => None,
         };
+        let mut lighting_omissions = Vec::new();
+        let mut lighting = Vec::with_capacity(4);
+        for time in TimeOfDay::ALL {
+            let sunlight = weather.color("sunlight", time);
+            let dalc = weather.directional_ambient.get(&time);
+            if sunlight.is_none() {
+                lighting_omissions.push(format!("sunlight ({time:?})"));
+            }
+            if dalc.is_none() {
+                lighting_omissions.push(format!("DALC ({time:?})"));
+            }
+            if let (Some(sunlight), Some(dalc)) = (sunlight, dalc) {
+                lighting.push(SlotLighting {
+                    sunlight,
+                    ambient_cube: dalc.colors,
+                });
+            }
+        }
+        let lighting = <[SlotLighting; 4]>::try_from(lighting).ok();
         Ok(Self {
             form_id,
             editor_id: weather.editor_id.clone(),
@@ -233,6 +271,8 @@ impl WeatherSky {
             fog,
             timing,
             fog_omissions,
+            lighting,
+            lighting_omissions,
         })
     }
 
@@ -270,6 +310,33 @@ impl WeatherSky {
     /// Whether the record published a complete set of fog distances.
     pub fn has_fog(&self) -> bool {
         self.fog.is_some()
+    }
+
+    /// The sun colour and ambient cube at a game hour: the record's four slots mixed by
+    /// [`slot_weights`], as 8-bit sRGB like the sky colours. At noon this is the record's day
+    /// slot, at midnight its night slot. `None` when the record lacks any sun colour or `DALC`
+    /// block ([`Self::lighting_omissions`]): the caller keeps its own light and says so.
+    ///
+    /// The mix carries the whole night look. There is no night factor here: a dark night slot
+    /// makes a dark sun and ambient when the caller multiplies by the scene's light scale.
+    pub fn lighting_at(&self, hour: f64) -> Option<WeatherLighting> {
+        let slots = self.lighting.as_ref()?;
+        let weights = slot_weights(hour, self.timing);
+        let mix = |pick: &dyn Fn(&SlotLighting) -> [u8; 3]| {
+            let channel = |index: usize| {
+                let sum: f32 = slots
+                    .iter()
+                    .zip(weights)
+                    .map(|(slot, weight)| weight * f32::from(pick(slot)[index]))
+                    .sum();
+                sum / 255.0
+            };
+            Color::srgb(channel(0), channel(1), channel(2))
+        };
+        Some(WeatherLighting {
+            sunlight: mix(&|slot| slot.sunlight),
+            ambient_cube: [0, 1, 2, 3, 4, 5].map(|face| mix(&|slot| slot.ambient_cube[face])),
+        })
     }
 
     /// The weather's palette at a game hour: the five colours mixed by [`slot_weights`], and the
@@ -316,7 +383,7 @@ impl WeatherSky {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::environment::WeatherFog;
+    use crate::world::environment::{DirectionalAmbient, WeatherFog};
     use bevy::color::Srgba;
 
     /// The Skyrim.esm climate TNAM (CLMT 0x15F, 0x812): sunrise 5:30 to 10:00, sunset 16:00 to
@@ -498,5 +565,123 @@ mod tests {
         let empty = EnvironmentCatalog::default();
         let error = WeatherSky::default_for_world(&empty, 0x3c).unwrap_err();
         assert!(error.contains("no weather"), "{error}");
+    }
+
+    /// Sun colour of each slot in the lighting fixture, in `TimeOfDay::ALL` order. Night is much
+    /// darker than day, as in a real record.
+    const SUNLIGHT: [[u8; 3]; 4] = [[100, 80, 60], [200, 190, 180], [180, 120, 90], [10, 20, 40]];
+
+    /// The DALC face `face` of slot `slot` (`TimeOfDay::ALL` order): distinct per face and slot.
+    fn dalc_face(slot: usize, face: usize) -> [u8; 3] {
+        let base = [60_u8, 120, 90, 20][slot] + 3 * face as u8;
+        [base, base + 1, base + 2]
+    }
+
+    /// `weather()` with a sunlight colour and a DALC block in every slot.
+    fn weather_with_lighting() -> Weather {
+        let mut weather = weather();
+        for (slot, time) in TimeOfDay::ALL.into_iter().enumerate() {
+            weather
+                .colors
+                .insert(("sunlight".to_owned(), time), SUNLIGHT[slot]);
+            weather.directional_ambient.insert(
+                time,
+                DirectionalAmbient {
+                    colors: [0, 1, 2, 3, 4, 5].map(|face| dalc_face(slot, face)),
+                    ..Default::default()
+                },
+            );
+        }
+        weather
+    }
+
+    fn lit_sky() -> WeatherSky {
+        WeatherSky::from_weather(0x81A, &weather_with_lighting(), TIMING).unwrap()
+    }
+
+    /// The expected lighting of one slot, built the way the record states it.
+    fn slot_lighting(slot: usize) -> WeatherLighting {
+        let [r, g, b] = SUNLIGHT[slot];
+        WeatherLighting {
+            sunlight: Color::srgb_u8(r, g, b),
+            ambient_cube: [0, 1, 2, 3, 4, 5].map(|face| {
+                let [r, g, b] = dalc_face(slot, face);
+                Color::srgb_u8(r, g, b)
+            }),
+        }
+    }
+
+    #[test]
+    fn noon_midnight_and_the_sunset_midpoint_are_the_record_slots() {
+        // Noon is the day slot, midnight the night slot, and the sunset midpoint (16:00 to 21:00
+        // peaks at 18.5) the sunset slot. The weight of one slot is 1, so nothing else mixes in.
+        assert_eq!(lit_sky().lighting_at(12.0), Some(slot_lighting(1)));
+        assert_eq!(lit_sky().lighting_at(0.0), Some(slot_lighting(3)));
+        assert_eq!(lit_sky().lighting_at(18.5), Some(slot_lighting(2)));
+        assert_eq!(lit_sky().lighting_at(7.5), Some(slot_lighting(0)));
+    }
+
+    #[test]
+    fn midnight_is_darker_than_noon_with_no_night_factor() {
+        let noon = lit_sky().lighting_at(12.0).unwrap();
+        let night = lit_sky().lighting_at(23.0).unwrap();
+        assert!(night.sunlight.to_linear().green < noon.sunlight.to_linear().green * 0.1);
+        assert!(night.mean_ambient().to_linear().green < noon.mean_ambient().to_linear().green);
+        // The colours are the record's alone: the sun colour at 23:00 is the night slot, byte for
+        // byte, with no scalar applied.
+        assert_eq!(night.sunlight, Color::srgb_u8(10, 20, 40));
+    }
+
+    #[test]
+    fn colours_mix_by_the_day_part_weights() {
+        // 19:45 is half way from the sunset midpoint (18.5) to the end (21.0), so the weights are
+        // sunset 0.5, night 0.5 (see `the_four_weights_follow_the_climate_times`).
+        let weights = slot_weights(19.75, TIMING);
+        let mixed = lit_sky().lighting_at(19.75).unwrap();
+        let expected_sun: Vec<f32> = (0..3)
+            .map(|c| {
+                (weights[2] * f32::from(SUNLIGHT[2][c]) + weights[3] * f32::from(SUNLIGHT[3][c]))
+                    / 255.0
+            })
+            .collect();
+        let sun = mixed.sunlight.to_srgba();
+        for (got, want) in [sun.red, sun.green, sun.blue].into_iter().zip(expected_sun) {
+            assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+        }
+        // Every DALC face mixes the same way.
+        for face in 0..6 {
+            let got = mixed.ambient_cube[face].to_srgba();
+            for (c, got) in [got.red, got.green, got.blue].into_iter().enumerate() {
+                let want = (weights[2] * f32::from(dalc_face(2, face)[c])
+                    + weights[3] * f32::from(dalc_face(3, face)[c]))
+                    / 255.0;
+                assert!((got - want).abs() < 1e-6, "face {face}: {got} vs {want}");
+            }
+        }
+        // The mix lies between the two slots, so dusk is darker than the sunset slot.
+        assert!(mixed.sunlight.to_linear().green < slot_lighting(2).sunlight.to_linear().green);
+    }
+
+    #[test]
+    fn a_missing_sun_colour_or_dalc_gives_no_lighting_and_is_listed() {
+        let mut record = weather_with_lighting();
+        record
+            .colors
+            .remove(&("sunlight".to_owned(), TimeOfDay::Night));
+        record.directional_ambient.remove(&TimeOfDay::Day);
+        let sky = WeatherSky::from_weather(0x81A, &record, TIMING).unwrap();
+        assert_eq!(sky.lighting_omissions, ["DALC (Day)", "sunlight (Night)"]);
+        // No default fills the gap, at any hour.
+        for hour in [0.0, 12.0, 18.5] {
+            assert_eq!(sky.lighting_at(hour), None);
+        }
+        // The sky and fog still come from the record.
+        assert_eq!(sky.palette_at(12.0).upper, Color::srgb_u8(50, 51, 52));
+        // A record with neither field in any slot lists all eight.
+        let bare = WeatherSky::from_weather(0x81A, &weather(), TIMING).unwrap();
+        assert_eq!(bare.lighting_omissions.len(), 8);
+        assert_eq!(bare.lighting_at(12.0), None);
+        // A complete record lists nothing.
+        assert!(lit_sky().lighting_omissions.is_empty());
     }
 }
