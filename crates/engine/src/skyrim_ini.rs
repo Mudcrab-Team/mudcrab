@@ -14,7 +14,10 @@
 //! | `[General]` | `bAlwaysActive` | `0` (default) pauses on focus loss; `1` keeps simulation active |
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
-//! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
+//! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units; the default is Ultra's 10000 |
+//! | `[Display]` | `iShadowMapResolution` | sun shadow map edge: 512, 1024, 2048 or 4096; the default is Ultra's 4096 |
+//! | `[Display]` | `iNumSplits` | sun shadow cascade count, 1 to 4; the default is retail's compiled 2 |
+//! | `[Display]` | `fFirstSliceDistance` | first slice input of the retail cascade split, in Creation units; the default is the template's 2000 |
 //! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
@@ -41,8 +44,8 @@ use serde_json::{Value, json};
 use shared::grass_settings::{GrassSettings, Source};
 use std::{collections::HashMap, path::Path};
 
-/// The first cascade reaches 10 metres (700 Creation units); a smaller maximum would make the
-/// cascade builder's bounds invalid.
+/// The shortest sun shadow range the engine accepts (700 Creation units, 10 metres). A Mudcrab
+/// floor, not a retail limit: it keeps every cascade bound above the cascade near distance.
 const MIN_SUN_SHADOW_DISTANCE: f32 = 700.0;
 /// Raw merged value and provenance from the shared INI reader.
 #[derive(Debug)]
@@ -76,6 +79,20 @@ fn parse_shadow_distance(raw: &str) -> Option<f32> {
         .filter(|value| value.is_finite() && *value >= MIN_SUN_SHADOW_DISTANCE)
 }
 
+/// A sun shadow map edge the settings menu offers.
+fn parse_shadow_map_size(raw: &str) -> Option<usize> {
+    raw.parse::<usize>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|size| crate::settings::SHADOW_SIZES.contains(size))
+}
+
+/// A sun shadow cascade count Bevy supports for one light.
+fn parse_cascade_count(raw: &str) -> Option<usize> {
+    raw.parse::<usize>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|count| (1..=4).contains(count))
+}
+
 /// A finite number above zero.
 fn parse_positive(raw: &str) -> Option<f32> {
     raw.parse::<f32>()
@@ -93,6 +110,9 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
         }
         ("general", "ugridstoload") => Some(parse_grids(raw).is_some()),
         ("display", "fshadowdistance") => Some(parse_shadow_distance(raw).is_some()),
+        ("display", "ishadowmapresolution") => Some(parse_shadow_map_size(raw).is_some()),
+        ("display", "inumsplits") => Some(parse_cascade_count(raw).is_some()),
+        ("display", "ffirstslicedistance") => Some(parse_positive(raw).is_some()),
         ("terrainmanager", "fblocklevel0distance")
         | ("terrainmanager", "fblocklevel1distance")
         | ("terrainmanager", "fblockmaximumdistance")
@@ -211,6 +231,36 @@ impl SkyrimIni {
                 Some(value) => config.sun_shadow_distance_limit = Some(value),
                 None => eprintln!(
                     "warning: ignoring fShadowDistance={raw:?}; expected at least {MIN_SUN_SHADOW_DISTANCE} Creation units"
+                ),
+            }
+        }
+        if let Some(raw) = self.get("Display", "iShadowMapResolution") {
+            match parse_shadow_map_size(raw) {
+                Some(value) => {
+                    config.sun_shadow_map_size = value;
+                    config
+                        .settings_overrides
+                        .push("ini:iShadowMapResolution".into());
+                }
+                None => eprintln!(
+                    "warning: ignoring iShadowMapResolution={raw:?}; expected 512, 1024, 2048 or 4096"
+                ),
+            }
+        }
+        if let Some(raw) = self.get("Display", "iNumSplits") {
+            match parse_cascade_count(raw) {
+                Some(value) => {
+                    config.sun_shadow_cascades = value;
+                    config.settings_overrides.push("ini:iNumSplits".into());
+                }
+                None => eprintln!("warning: ignoring iNumSplits={raw:?}; expected 1 to 4"),
+            }
+        }
+        if let Some(raw) = self.get("Display", "fFirstSliceDistance") {
+            match parse_positive(raw) {
+                Some(value) => config.sun_first_slice_distance = value,
+                None => eprintln!(
+                    "warning: ignoring fFirstSliceDistance={raw:?}; expected a positive number"
                 ),
             }
         }
@@ -517,10 +567,90 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unusable_shadow_distances_leave_the_limit_unset() {
+    fn malformed_or_unusable_shadow_distances_leave_the_default() {
         for value in ["0", "699", "NaN", "inf", "far"] {
             let config = apply(&format!("[Display]\nfShadowDistance={value}\n"));
-            assert_eq!(config.sun_shadow_distance_limit, None, "{value}");
+            assert_eq!(
+                config.sun_shadow_distance_limit,
+                EngineConfig::default().sun_shadow_distance_limit,
+                "{value}"
+            );
+        }
+    }
+
+    /// With no INI the sun shadow settings are Mudcrab's defaults, each equal to the value its
+    /// source gives (#949, #857): `Ultra.ini` for the map size and the distance, `Skyrim_Default.ini`
+    /// for the first slice, and the compiled default for the count.
+    #[test]
+    fn sun_shadow_defaults_are_the_cited_retail_values_without_an_ini() {
+        let config = apply("");
+        assert_eq!(
+            config.sun_shadow_map_size, 4096,
+            "Ultra.ini iShadowMapResolution"
+        );
+        assert_eq!(
+            config.sun_shadow_distance_limit,
+            Some(10_000.0),
+            "Ultra.ini fShadowDistance"
+        );
+        assert_eq!(config.sun_shadow_cascades, 2, "compiled iNumSplits");
+        assert_eq!(
+            config.sun_first_slice_distance, 2_000.0,
+            "Skyrim_Default.ini fFirstSliceDistance (the compiled 1250 loses)"
+        );
+        assert!(
+            !config
+                .settings_overrides
+                .iter()
+                .any(|flag| flag.starts_with("ini:i")),
+            "a default is not a launch override"
+        );
+    }
+
+    /// An INI value replaces each default, and a malformed value keeps the earlier one.
+    #[test]
+    fn ini_values_override_the_sun_shadow_defaults() {
+        let config = apply(
+            "[Display]\niShadowMapResolution=1024\niNumSplits=3\nfFirstSliceDistance=1250\n\
+             fShadowDistance=8000\n",
+        );
+        assert_eq!(config.sun_shadow_map_size, 1024);
+        assert_eq!(config.sun_shadow_cascades, 3);
+        assert_eq!(config.sun_first_slice_distance, 1_250.0);
+        assert_eq!(config.sun_shadow_distance_limit, Some(8_000.0));
+        assert!(
+            config
+                .settings_overrides
+                .contains(&"ini:iShadowMapResolution".to_owned())
+        );
+        assert!(
+            config
+                .settings_overrides
+                .contains(&"ini:iNumSplits".to_owned())
+        );
+
+        for (key, bad) in [
+            ("iShadowMapResolution", "3000"),
+            ("iShadowMapResolution", "0"),
+            ("iNumSplits", "0"),
+            ("iNumSplits", "5"),
+            ("fFirstSliceDistance", "0"),
+            ("fFirstSliceDistance", "NaN"),
+        ] {
+            let config = apply(&format!("[Display]\n{key}={bad}\n"));
+            let defaults = EngineConfig::default();
+            assert_eq!(
+                config.sun_shadow_map_size, defaults.sun_shadow_map_size,
+                "{key}={bad}"
+            );
+            assert_eq!(
+                config.sun_shadow_cascades, defaults.sun_shadow_cascades,
+                "{key}={bad}"
+            );
+            assert_eq!(
+                config.sun_first_slice_distance, defaults.sun_first_slice_distance,
+                "{key}={bad}"
+            );
         }
     }
 }
