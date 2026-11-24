@@ -257,6 +257,11 @@ pub struct EngineConfig {
     pub grass_terrain_radii: Option<(i32, i32)>,
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
+    /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
+    /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way. In retail the
+    /// setting affects near land only; until a later change limits it, it also affects LOD land here.
+    /// See <https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod>.
+    pub land_shadows: bool,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
     /// Initial game hour; deterministic captures freeze at this hour. The default is the retail
@@ -457,6 +462,9 @@ pub struct EngineConfig {
     pub physics_fixture: bool,
 }
 
+/// Retail's default for `[Display] bDrawLandShadows` is off. See Mudcrab #949.
+pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
+
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
@@ -474,6 +482,7 @@ impl Default for EngineConfig {
             unload_radius: 3,
             grass_terrain_radii: None,
             sun_shadow_distance_limit: None,
+            land_shadows: RETAIL_DRAW_LAND_SHADOWS,
             sun_position: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,
