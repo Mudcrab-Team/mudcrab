@@ -15,7 +15,7 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
-//! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 is retail's (Mudcrab #949). In retail it affects near land only; here it also affects LOD land until a later change limits it |
+//! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
@@ -63,6 +63,7 @@ fn parse_flag(raw: &str) -> Option<bool> {
 
 /// An odd whole number of grids that the streamer accepts.
 fn parse_grids(raw: &str) -> Option<i32> {
+    // silent-ok: The INI merge reports invalid values before inserting them.
     raw.parse::<i32>()
         .ok()
         // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
@@ -71,6 +72,7 @@ fn parse_grids(raw: &str) -> Option<i32> {
 
 /// A shadow distance the cascade builder accepts.
 fn parse_shadow_distance(raw: &str) -> Option<f32> {
+    // silent-ok: The INI merge reports invalid values before inserting them.
     raw.parse::<f32>()
         .ok()
         .filter(|value| value.is_finite() && *value >= MIN_SUN_SHADOW_DISTANCE)
@@ -78,6 +80,7 @@ fn parse_shadow_distance(raw: &str) -> Option<f32> {
 
 /// A finite number above zero.
 fn parse_positive(raw: &str) -> Option<f32> {
+    // silent-ok: The INI merge reports invalid values before inserting them.
     raw.parse::<f32>()
         .ok()
         .filter(|value| value.is_finite() && *value > 0.0)
