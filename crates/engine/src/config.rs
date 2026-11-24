@@ -260,6 +260,7 @@ pub struct EngineConfig {
     /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
     /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way. In retail the
     /// setting affects near land only; until a later change limits it, it also affects LOD land here.
+    /// See <https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod>.
     pub land_shadows: bool,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
