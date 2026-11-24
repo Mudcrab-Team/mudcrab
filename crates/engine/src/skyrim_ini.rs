@@ -381,7 +381,8 @@ mod tests {
         config
     }
 
-    /// #904, #949: the camera keys have retail defaults and an INI overrides each one.
+    /// #904, #949: the camera keys have retail defaults (80, 80 and 15, from the sources in
+    /// `config.rs`) and an INI overrides each one.
     #[test]
     fn camera_keys_default_to_retail_and_an_ini_overrides_them() {
         let config = apply("");

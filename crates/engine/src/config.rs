@@ -460,14 +460,17 @@ pub struct EngineConfig {
     pub lights: bool,
     /// The horizontal field of view of every camera that is not the first-person camera, in
     /// degrees: `[Display] fDefaultWorldFOV` (#904, #949). Retail default
-    /// [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`].
+    /// [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]; source:
+    /// [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md).
     pub world_fov_degrees: f32,
     /// The horizontal field of view of the first-person (walking) camera, in degrees:
     /// `[Display] fDefault1stPersonFOV` (#904, #949). Retail default
-    /// [`RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES`].
+    /// [`RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES`]; source:
+    /// [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md).
     pub first_person_fov_degrees: f32,
     /// The distance of the camera's near plane, in Creation units: `[Display] fNearDistance`
-    /// (#949). Retail default [`RETAIL_NEAR_DISTANCE`].
+    /// (#949). Retail default [`RETAIL_NEAR_DISTANCE`]; source:
+    /// [skyrim-culling-rea-parity.md](../../../docs/research/skyrim-culling-rea-parity.md).
     pub near_distance: f32,
     /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
     /// small vetted set to the references that carry them. Off by default.
@@ -487,8 +490,9 @@ pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
 pub const RETAIL_DEFAULT_WORLD_FOV_DEGREES: f32 = 80.0;
 
 /// Retail's default for `[Display] fDefault1stPersonFOV`: 80 degrees, **horizontal** (#904, #949).
-/// Same source and tier as [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]. Retail uses it only while the
-/// camera is in the first-person state (`0x1408fb1e0`).
+/// Same source and tier as [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]
+/// ([q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md)). Retail uses it
+/// only while the camera is in the first-person state (`0x1408fb1e0`).
 pub const RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES: f32 = 80.0;
 
 /// Retail's default for `[Display] fNearDistance`: 15 Creation units (#949).
@@ -930,7 +934,7 @@ impl std::error::Error for ConfigError {}
 impl EngineConfig {
     /// The horizontal field of view this run's camera starts with, in degrees. Retail uses the
     /// first-person value in the first-person state and the world value otherwise
-    /// (`0x1408fb1e0`). The walking camera is the first-person one; every automated camera
+    /// (`0x1408fb1e0`, [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md)). The walking camera is the first-person one; every automated camera
     /// (shots, benchmarks, fixtures, the free fly camera) is a world camera.
     pub fn camera_fov_degrees(&self) -> f32 {
         if self.interactive_world_physics() {
