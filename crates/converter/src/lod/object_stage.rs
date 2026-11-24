@@ -99,13 +99,13 @@ pub struct SkippedWorld {
 
 /// The two game-data paths a world's object atlas can have, in the order they are tried.
 ///
-/// Retail proves both forms. The 12 worlds of the base game, Dawnguard and Dragonborn that ship
+/// The installed game data holds both forms (see `docs/specs/converters/lod-compiler.md`, "Atlas name"). The 12 worlds of the base game, Dawnguard and Dragonborn that ship
 /// object LOD use `<world>.objects.dds`. The Creation Club worlds `ccbgssse067deadlandsworld` and
 /// `cckrtsse001qnworld` use `<world>objectslod.dds`. In every one of these 14 worlds the archives
 /// hold exactly one of the two, and the texture set inside the world's `.bto` blocks names that
 /// same file. The paths are lowercase with forward slashes.
 pub(crate) fn atlas_paths(world_file: &str, normal: bool) -> [String; 2] {
-    // STAND-IN(#940): live resolution of the joined name is unverified.
+    // STAND-IN(#983): live resolution of the joined name is unverified.
     let suffix = if normal { "_n" } else { "" };
     [
         format!("textures/terrain/{world_file}/objects/{world_file}.objects{suffix}.dds"),
