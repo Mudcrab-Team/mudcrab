@@ -6,7 +6,7 @@ scale and the budget), `crates/engine/src/world/database.rs` (the row it is buil
 `crates/engine/src/streaming.rs` (where the light is spawned).
 
 Lights are **on by default**, as in retail (#955): retail lights every placed `LIGH` reference and no INI key turns
-them off (`RF-LIGHT-GPU-007`, [sources](#5-evidence-and-remaining-gates); unverified for lights placed by scripts).
+them off (`RF-LIGHT-GPU-007`, [retail registry](../../research/retail/registry.md); the GPU rows are private, see section 5; unverified for lights placed by scripts).
 `--no-lights` turns them off, for example for profiling.
 
 ---
@@ -293,9 +293,9 @@ Lighting path of the `skyrim` profile (#362, #706) owns that change. Interior en
 separately owned.
 
 - **Shadow modes.** A shadow-flagged light is shadowed as an omnidirectional point light. Retail uses a spot
-  or hemisphere shadow light for flags `0x400` and `0x800` (`RF-LIGHT-GPU-015`, [sources](#5-evidence-and-remaining-gates)).
+  or hemisphere shadow light for flags `0x400` and `0x800` (`RF-LIGHT-GPU-015`, [retail registry](../../research/retail/registry.md); the GPU rows are private, see section 5).
   A light without a shadow map also lights the far side of the wall it is mounted on, as in retail
-  (`RF-LIGHT-GPU-009`).
+  (`RF-LIGHT-GPU-009`, [retail registry](../../research/retail/registry.md)).
 - **Object LOD.** Retail's stock object LOD (BTO, techniques 13 and 15) receives no point lights
-  (skyrim_decomp PR 1003, NEEDS 14; `RF-LIGHT-GPU-004`). `lod_object.wgsl` therefore has no point-light
+  ([skyrim_decomp PR 1003](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1003), NEEDS 14; `RF-LIGHT-GPU-004`). `lod_object.wgsl` therefore has no point-light
   loop, and placed lights light the full-detail mesh only.
