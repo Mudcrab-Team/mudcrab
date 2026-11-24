@@ -108,6 +108,31 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
     }
 }
 
+/// Decodes INI bytes. A line that is valid UTF-8 stays as it is. Any other line is
+/// Windows-1252, the code page of Skyrim's own text files, and gets a warning with the
+/// file name, the line number and the count of bytes decoded that way. Only that line
+/// can change: the rest of the file applies as usual.
+fn decode_ini(bytes: &[u8], source: &str) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    let mut text = String::with_capacity(bytes.len());
+    for (index, line) in bytes.split_inclusive(|&byte| byte == b'\n').enumerate() {
+        match std::str::from_utf8(line) {
+            Ok(valid) => text.push_str(valid),
+            Err(_) => {
+                let high = line.iter().filter(|byte| !byte.is_ascii()).count();
+                eprintln!(
+                    "warning: {source}:{}: line is not UTF-8; decoding {high} non-ASCII byte(s) as Windows-1252",
+                    index + 1
+                );
+                text.push_str(&shared::plugin_selection::decode_windows_1252(line));
+            }
+        }
+    }
+    text
+}
+
 /// Values from one or more INI files, keyed by lower-cased section and key.
 #[derive(Debug, Default)]
 pub struct SkyrimIni {
@@ -118,10 +143,13 @@ pub struct SkyrimIni {
 impl SkyrimIni {
     /// Reads `path` over the values already read, as Skyrim layers its INI files.
     pub fn merge_file(&mut self, path: &Path) -> std::io::Result<()> {
-        let text = std::fs::read_to_string(path)?;
-        self.merge_named_str(&text, &path.display().to_string());
+        let bytes = std::fs::read(path)?;
+        let name = path.display().to_string();
+        let text = decode_ini(&bytes, &name);
+        self.merge_named_str(&text, &name);
+        // The source hash covers the raw file bytes, not the decoded text.
         self.sources
-            .push(Source::from_bytes(path.to_owned(), text.as_bytes()));
+            .push(Source::from_bytes(path.to_owned(), &bytes));
         Ok(())
     }
 
@@ -322,6 +350,35 @@ mod tests {
         let mut config = EngineConfig::default();
         ini.apply(&mut config);
         config
+    }
+
+    /// One Windows-1252 byte in a comment must not drop the rest of the file. The source
+    /// hash covers the raw bytes.
+    #[test]
+    fn non_utf8_comment_keeps_the_other_keys_and_hashes_the_raw_bytes() {
+        let bytes: &[u8] = b"[General]\r\n; Jos\xe9's settings\r\nbAlwaysActive=1\r\n[Display]\r\nsName=Caf\xe9\r\n";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Skyrim.ini");
+        std::fs::write(&path, bytes).unwrap();
+        let mut ini = SkyrimIni::default();
+        ini.merge_file(&path).unwrap();
+        assert_eq!(ini.get("General", "bAlwaysActive"), Some("1"));
+        assert_eq!(ini.get("Display", "sName"), Some("Caf\u{e9}"));
+        assert_eq!(
+            ini.sources[0].sha256,
+            Source::from_bytes(path.clone(), bytes).sha256
+        );
+    }
+
+    /// Valid UTF-8 text decodes unchanged, and only invalid lines use Windows-1252.
+    #[test]
+    fn decode_ini_changes_only_the_invalid_lines() {
+        let utf8 = "[A]\n; caf\u{e9}\nk=v\n";
+        assert_eq!(decode_ini(utf8.as_bytes(), "t"), utf8);
+        assert_eq!(
+            decode_ini(b"[A]\n; caf\xe9\n; \xc3\xa9\nk=\x80\n", "t"),
+            "[A]\n; caf\u{e9}\n; \u{e9}\nk=\u{20ac}\n"
+        );
     }
 
     /// Explicit values layer by key; bad values cannot poison authored settings.
