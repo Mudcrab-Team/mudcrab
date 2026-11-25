@@ -1648,6 +1648,10 @@ mod tests {
     #[test]
     fn button_press_changes_setting_once_and_keyboard_can_activate_a_focused_button() {
         let mut app = menu_app();
+        // Point lights default to on (#955); this test toggles them from off.
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .point_lights = false;
         key(&mut app, KeyCode::Escape, ButtonState::Pressed);
         key(&mut app, KeyCode::Escape, ButtonState::Released);
         let button = app
@@ -1789,6 +1793,10 @@ mod tests {
     #[test]
     fn arrow_keys_adjust_the_focused_setting_and_step_between_tabs() {
         let mut app = menu_app();
+        // Point lights default to on (#955); this test toggles them from off.
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .point_lights = false;
         key(&mut app, KeyCode::Escape, ButtonState::Pressed);
         key(&mut app, KeyCode::Escape, ButtonState::Released);
         let find = |app: &mut App, wanted: fn(&MenuAction) -> bool| {

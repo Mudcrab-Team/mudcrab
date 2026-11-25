@@ -43,6 +43,8 @@ pub struct WorldReport {
     /// Chunks written, by tier.
     pub compiled: BTreeMap<u32, usize>,
     pub triangles: usize,
+    /// Collapsed (zero-area) fan triangles dropped while clipping, over the chunks written.
+    pub collapsed_triangles: usize,
     pub vertices: usize,
     pub bytes: u64,
     /// Self-built chunks removed because a retail chunk replaced them or none exists.
@@ -397,6 +399,7 @@ pub(crate) fn stage_world(
                     new_inputs.insert(relative, ChunkReceipt::new(chunk, input_hash));
                     *report.compiled.entry(id.1).or_default() += 1;
                     report.triangles += stats.triangles;
+                    report.collapsed_triangles += stats.collapsed_triangles;
                     report.vertices += stats.vertices;
                     report.bytes += stats.bytes as u64;
                 }

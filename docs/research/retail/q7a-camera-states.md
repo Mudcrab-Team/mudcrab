@@ -14,6 +14,7 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 ## FOV
 - `PlayerCamera +0x13C` = world FOV, `+0x140` = first-person FOV, both set from `fDefaultWorldFOV:Display` and `fDefault1stPersonFOV:Display` (exe 80 / 80) at construction `0x1408f79f0`.
 - `0x1408fb1e0` returns the first-person FOV when the current state is FirstPerson, else the world FOV. high.
+- The angle is **horizontal**: a retail capture at 16:9 records 80 degrees horizontal and 50.534 degrees vertical for FOV 80 (`research_notes/Skyrim native tone mapping/gpu_state.md`, "native camera export").
 - Other FOV changes found: iron sights / bow zoom (`fIronSightsFOVTimeChange` 0.25 s), dialogue zoom (`fDialogZoomInSeconds` 1.5, `fDialogZoomOutSeconds` 0.5), tween menu (`fTweenCamZoomFOVMod` 10). No sprint FOV change was found in the FOV consumers. Sprint FOV: not found (absence in the consumer list; medium).
 - Look sensitivity scales with zoom: pitch input is multiplied by current FOV / fDefaultWorldFOV when zoomed (`0x1408fb2e0`).
 

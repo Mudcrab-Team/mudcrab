@@ -15,10 +15,9 @@
 //! left out. It never hides body regions, so a failure leaves skin, not a hole.
 
 use crate::actor_animation::{ActorBodyReady, animation_targets};
-use crate::actor_head::{RehostedSkins, rehost_scene_skins};
+use crate::actor_head::{AttachmentLoad, RehostedSkins, attachment_load, rehost_scene_skins};
 use crate::actors::{Actor, ActorOutfit};
 use bevy::{
-    asset::LoadState,
     gltf::GltfAssetLabel,
     mesh::skinning::SkinnedMesh,
     prelude::*,
@@ -237,7 +236,8 @@ fn queue_actor_outfits(
     }
 }
 
-/// Instantiates each part scene once the asset server has it, and reports a failed load once.
+/// Instantiates each part scene once the asset server has it and all of its textures, and reports
+/// a failed load once.
 fn spawn_ready_outfit_scenes(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -245,8 +245,8 @@ fn spawn_ready_outfit_scenes(
 ) {
     for (actor, actor_data, mut requests) in &mut actors {
         requests.0.retain(
-            |request| match asset_server.load_state(request.asset.id()) {
-                LoadState::Loaded => {
+            |request| match attachment_load(&asset_server, &request.asset) {
+                AttachmentLoad::Ready => {
                     commands.spawn((
                         Name::new(format!(
                             "Outfit {:08X} {:08X}",
@@ -262,7 +262,7 @@ fn spawn_ready_outfit_scenes(
                     ));
                     false
                 }
-                LoadState::Failed(error) => {
+                AttachmentLoad::Failed(error) => {
                     let diagnostic = ActorOutfitDiagnostic::MissingAsset {
                         base_form_id: actor_data.base_form_id,
                         path: request.part.scene.clone(),
@@ -275,7 +275,7 @@ fn spawn_ready_outfit_scenes(
                     );
                     false
                 }
-                LoadState::NotLoaded | LoadState::Loading => true,
+                AttachmentLoad::Loading => true,
             },
         );
         if requests.0.is_empty() {

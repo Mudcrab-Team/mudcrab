@@ -70,6 +70,8 @@ pub mod sun;
 pub mod swap_bridge;
 mod terrain_lod_noise;
 pub mod terrain_merge;
+#[cfg(test)]
+mod terrain_normal;
 pub mod terrain_upload;
 #[cfg(test)]
 mod test_support;

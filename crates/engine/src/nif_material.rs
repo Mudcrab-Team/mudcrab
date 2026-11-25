@@ -771,7 +771,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         {
             state.uses_effect_emittance = true;
             // Sample the source colour and alpha without lighting the overlay as a solid wall.
-            // STAND-IN(#934): Use the packed emission as the source multiplier and skip
+            // STAND-IN(#984): Use the packed emission as the source multiplier and skip
             // surface fog until the retail effect's tint and fog evaluation are traced.
             let alpha = material.base_color.to_linear().alpha;
             material.base_color = Color::LinearRgba(LinearRgba {

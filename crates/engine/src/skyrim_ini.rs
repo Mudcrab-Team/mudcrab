@@ -14,12 +14,22 @@
 //! | `[General]` | `bAlwaysActive` | `0` (default) pauses on focus loss; `1` keeps simulation active |
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
-//! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
+//! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units; the default is Ultra's 10000 |
+//! | `[Display]` | `iShadowMapResolution` | sun shadow map edge: 512, 1024, 2048 or 4096; the default is Ultra's 4096 |
+//! | `[Display]` | `iNumSplits` | sun shadow cascade count, 1 to 4; the default is retail's compiled 2 |
+//! | `[Display]` | `fFirstSliceDistance` | first slice input of the retail cascade split, in Creation units; the default is the template's 2000 |
+//! | `[Display]` | `fDefaultWorldFOV` | horizontal field of view of every camera but the first-person one, in degrees (retail 80; accepted 30 to 140, a Mudcrab-only bound); converted to Bevy's vertical angle at the window's aspect ratio |
+//! | `[Display]` | `fDefault1stPersonFOV` | horizontal field of view of the first-person (walking) camera, in degrees (retail 80) |
+//! | `[Display]` | `fNearDistance` | camera near plane and room-lookup distance, in Creation units (retail 15 is observed; the key name is from the community default dump, unverified; accepted above 0 up to 1000, a Mudcrab-only bound) |
 //! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
-//! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
-//! | `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
+//! | `[TerrainManager]` | `fBlockLevel0Distance` | object LOD rule: level 8 hands over to level 4 (default 60,000, `Ultra.ini`); does not affect terrain |
+//! | `[TerrainManager]` | `fBlockLevel1Distance` | object LOD rule: level 16 hands over to level 8 (default 90,000, `Ultra.ini`); does not affect terrain |
+//! | `[TerrainManager]` | `fTreeLoadDistance` | parsed and kept for tree LOD (default 75,000, `Ultra.ini`); changes nothing on screen until tree LOD draws (#736, #901) |
+//! | `[LOD]` | `fLODFadeOutMultObjects`, `fLODFadeOutMultActors`, `fLODFadeOutMultItems` | parsed and kept (defaults 30 / 15 / 10, `Ultra.ini`); changes nothing on screen until LOD fade-out exists (#716) |
+//! | `[Display]` | `fMeshLODLevel1FadeDist`, `fMeshLODLevel2FadeDist` | parsed and kept (defaults 999999, `Ultra.ini`); changes nothing on screen until mesh LOD exists |
+//! | `[General]` | `uLargeRefLODGridSize` | side of the large-reference grid in cells, an odd number (default 11, `Ultra.ini`) |
 //! | `[Grass]` | `iMinGrassSize` | candidate-count spacing |
 //! | `[Grass]` | `iMaxGrassTypesPerTexure` | species cap per texture |
 //! | `[Grass]` | `fTexturePctThreshold` | minimum blended texture weight |
@@ -41,8 +51,8 @@ use serde_json::{Value, json};
 use shared::grass_settings::{GrassSettings, Source};
 use std::{collections::HashMap, path::Path};
 
-/// The first cascade reaches 10 metres (700 Creation units); a smaller maximum would make the
-/// cascade builder's bounds invalid.
+/// The shortest sun shadow range the engine accepts (700 Creation units, 10 metres). It is a
+/// Mudcrab-only floor, to keep every cascade bound above the cascade near distance.
 const MIN_SUN_SHADOW_DISTANCE: f32 = 700.0;
 /// Raw merged value and provenance from the shared INI reader.
 #[derive(Debug)]
@@ -69,11 +79,69 @@ fn parse_grids(raw: &str) -> Option<i32> {
         .filter(|grids| *grids >= 1 && grids % 2 == 1 && (grids - 1) / 2 <= MAX_STREAM_RADIUS)
 }
 
+/// The largest `uLargeRefLODGridSize` accepted. The retail presets use 5 to 11; a larger grid
+/// asks for more large-reference rows than the admission bound is sized for.
+const MAX_LARGE_REF_GRID_SIZE: i32 = 31;
+
+/// An odd whole grid side: the large-reference grid is centred on the camera's cell.
+fn parse_large_ref_grid_size(raw: &str) -> Option<i32> {
+    raw.parse::<i32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|size| *size >= 1 && size % 2 == 1 && *size <= MAX_LARGE_REF_GRID_SIZE)
+}
+
 /// A shadow distance the cascade builder accepts.
 fn parse_shadow_distance(raw: &str) -> Option<f32> {
     raw.parse::<f32>()
         .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         .filter(|value| value.is_finite() && *value >= MIN_SUN_SHADOW_DISTANCE)
+}
+
+/// A sun shadow map edge the settings menu offers.
+fn parse_shadow_map_size(raw: &str) -> Option<usize> {
+    raw.parse::<usize>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|size| crate::settings::SHADOW_SIZES.contains(size))
+}
+
+/// A sun shadow cascade count Bevy supports for one light.
+fn parse_cascade_count(raw: &str) -> Option<usize> {
+    raw.parse::<usize>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|count| (1..=4).contains(count))
+}
+
+/// A horizontal field of view the engine accepts, in degrees.
+fn parse_fov(raw: &str) -> Option<f32> {
+    let (low, high) = crate::config::FOV_RANGE_DEGREES;
+    raw.parse::<f32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|value| value.is_finite() && (low..=high).contains(value))
+}
+
+/// A near-plane distance the engine accepts: above zero and at most
+/// [`crate::config::MAX_NEAR_DISTANCE`] (a Mudcrab-only sanity bound, to keep the frustum valid).
+fn parse_near_distance(raw: &str) -> Option<f32> {
+    raw.parse::<f32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|value| {
+            value.is_finite() && *value > 0.0 && *value <= crate::config::MAX_NEAR_DISTANCE
+        })
+}
+
+/// What a key accepts, for the warning about a value it rejects.
+fn expected_range(section: &str, key: &str) -> Option<String> {
+    match (section, key) {
+        ("display", "fdefaultworldfov") | ("display", "fdefault1stpersonfov") => {
+            let (low, high) = crate::config::FOV_RANGE_DEGREES;
+            Some(format!("degrees from {low} to {high}"))
+        }
+        ("display", "fneardistance") => Some(format!(
+            "a distance above 0 and at most {}",
+            crate::config::MAX_NEAR_DISTANCE
+        )),
+        _ => None,
+    }
 }
 
 /// A finite number above zero.
@@ -93,10 +161,24 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
         }
         ("general", "ugridstoload") => Some(parse_grids(raw).is_some()),
         ("display", "fshadowdistance") => Some(parse_shadow_distance(raw).is_some()),
+        ("display", "ishadowmapresolution") => Some(parse_shadow_map_size(raw).is_some()),
+        ("display", "inumsplits") => Some(parse_cascade_count(raw).is_some()),
+        ("display", "ffirstslicedistance") => Some(parse_positive(raw).is_some()),
+        ("display", "fdefaultworldfov") | ("display", "fdefault1stpersonfov") => {
+            Some(parse_fov(raw).is_some())
+        }
+        ("display", "fneardistance") => Some(parse_near_distance(raw).is_some()),
         ("terrainmanager", "fblocklevel0distance")
         | ("terrainmanager", "fblocklevel1distance")
         | ("terrainmanager", "fblockmaximumdistance")
-        | ("terrainmanager", "fsplitdistancemult") => Some(parse_positive(raw).is_some()),
+        | ("terrainmanager", "fsplitdistancemult")
+        | ("terrainmanager", "ftreeloaddistance")
+        | ("lod", "flodfadeoutmultobjects")
+        | ("lod", "flodfadeoutmultactors")
+        | ("lod", "flodfadeoutmultitems")
+        | ("display", "fmeshlodlevel1fadedist")
+        | ("display", "fmeshlodlevel2fadedist") => Some(parse_positive(raw).is_some()),
+        ("general", "ulargereflodgridsize") => Some(parse_large_ref_grid_size(raw).is_some()),
         ("sky", _) => crate::sun::SUN_KEYS
             .iter()
             .position(|name| name.eq_ignore_ascii_case(key))
@@ -158,10 +240,12 @@ impl SkyrimIni {
                 } else {
                     "leaving the setting unchanged"
                 };
+                let expected = expected_range(&slot.0, &slot.1)
+                    .map_or_else(String::new, |range| format!(" (expected {range})"));
                 eprintln!(
-                    "warning: {source}:{}: ignoring {}={value:?}; {outcome}",
+                    "warning: {source}:{}: ignoring {}={value:?}{expected}; {outcome}",
                     index + 1,
-                    slot.1
+                    key.trim()
                 );
                 continue;
             }
@@ -214,6 +298,62 @@ impl SkyrimIni {
                 ),
             }
         }
+        if let Some(raw) = self.get("Display", "iShadowMapResolution") {
+            match parse_shadow_map_size(raw) {
+                Some(value) => {
+                    config.sun_shadow_map_size = value;
+                    config
+                        .settings_overrides
+                        .push("ini:iShadowMapResolution".into());
+                }
+                None => eprintln!(
+                    "warning: ignoring iShadowMapResolution={raw:?}; expected 512, 1024, 2048 or 4096"
+                ),
+            }
+        }
+        if let Some(raw) = self.get("Display", "iNumSplits") {
+            match parse_cascade_count(raw) {
+                Some(value) => {
+                    config.sun_shadow_cascades = value;
+                    config.settings_overrides.push("ini:iNumSplits".into());
+                }
+                None => eprintln!("warning: ignoring iNumSplits={raw:?}; expected 1 to 4"),
+            }
+        }
+        if let Some(raw) = self.get("Display", "fFirstSliceDistance") {
+            match parse_positive(raw) {
+                Some(value) => config.sun_first_slice_distance = value,
+                None => eprintln!(
+                    "warning: ignoring fFirstSliceDistance={raw:?}; expected a positive number"
+                ),
+            }
+        }
+        for (key, setting) in [
+            ("fDefaultWorldFOV", &mut config.world_fov_degrees),
+            ("fDefault1stPersonFOV", &mut config.first_person_fov_degrees),
+        ] {
+            let Some(raw) = self.get("Display", key) else {
+                continue;
+            };
+            match parse_fov(raw) {
+                Some(value) => *setting = value,
+                None => {
+                    let (low, high) = crate::config::FOV_RANGE_DEGREES;
+                    eprintln!(
+                        "warning: ignoring {key}={raw:?}; expected degrees from {low} to {high}"
+                    )
+                }
+            }
+        }
+        if let Some(raw) = self.get("Display", "fNearDistance") {
+            match parse_near_distance(raw) {
+                Some(value) => config.near_distance = value,
+                None => eprintln!(
+                    "warning: ignoring fNearDistance={raw:?}; expected a distance above 0 and at most {}",
+                    crate::config::MAX_NEAR_DISTANCE
+                ),
+            }
+        }
         if let Some(raw) = self.get("Display", "bDrawLandShadows") {
             match parse_flag(raw) {
                 Some(value) => config.land_shadows = value,
@@ -239,6 +379,7 @@ impl SkyrimIni {
             ("fBlockLevel1Distance", &mut lod.block_level1_distance),
             ("fBlockMaximumDistance", &mut lod.block_maximum_distance),
             ("fSplitDistanceMult", &mut lod.split_distance_mult),
+            ("fTreeLoadDistance", &mut lod.tree_load_distance),
         ] {
             let Some(raw) = self.get("TerrainManager", key) else {
                 continue;
@@ -251,7 +392,72 @@ impl SkyrimIni {
                 None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
             }
         }
+        let fade = &mut config.lod_fade;
+        for (section, key, setting) in [
+            (
+                "LOD",
+                "fLODFadeOutMultObjects",
+                &mut fade.fade_out_mult_objects,
+            ),
+            (
+                "LOD",
+                "fLODFadeOutMultActors",
+                &mut fade.fade_out_mult_actors,
+            ),
+            ("LOD", "fLODFadeOutMultItems", &mut fade.fade_out_mult_items),
+            (
+                "Display",
+                "fMeshLODLevel1FadeDist",
+                &mut fade.mesh_lod_level1_fade_distance,
+            ),
+            (
+                "Display",
+                "fMeshLODLevel2FadeDist",
+                &mut fade.mesh_lod_level2_fade_distance,
+            ),
+        ] {
+            let Some(raw) = self.get(section, key) else {
+                continue;
+            };
+            match parse_positive(raw) {
+                Some(value) => {
+                    *setting = value;
+                    config.settings_overrides.push(format!("ini:{key}"));
+                }
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
+            }
+        }
+        if let Some(raw) = self.get("General", "uLargeRefLODGridSize") {
+            match parse_large_ref_grid_size(raw) {
+                Some(size) => {
+                    config.large_ref_grid_size = size;
+                    config
+                        .settings_overrides
+                        .push("ini:uLargeRefLODGridSize".into());
+                }
+                None => eprintln!(
+                    "warning: ignoring uLargeRefLODGridSize={raw:?}; expected an odd whole number from 1 to {MAX_LARGE_REF_GRID_SIZE}"
+                ),
+            }
+        }
         self.apply_grass(config);
+    }
+
+    /// Marks the menu's field-of-view setting as launch-owned when this INI sets the key of the
+    /// camera the run starts with. Call it once the command line has been read, because which
+    /// camera that is (first-person or world) depends on the flags.
+    pub fn claim_active_fov(&self, config: &mut EngineConfig) {
+        let key = if config.interactive_world_physics() {
+            "fDefault1stPersonFOV"
+        } else {
+            "fDefaultWorldFOV"
+        };
+        if self
+            .get("Display", key)
+            .is_some_and(|raw| parse_fov(raw).is_some())
+        {
+            config.settings_overrides.push("ini:fov".into());
+        }
     }
 
     /// Apply supported grass scalars from the same merged values used for terrain.
@@ -324,6 +530,77 @@ mod tests {
         config
     }
 
+    /// #904, #949: the camera keys default to 80, 80 and 15 and an INI overrides each one. The
+    /// sources are cited at the constants in `config.rs`.
+    #[test]
+    fn camera_keys_default_to_retail_and_an_ini_overrides_them() {
+        let config = apply("");
+        assert_eq!(config.world_fov_degrees, 80.0);
+        assert_eq!(config.first_person_fov_degrees, 80.0);
+        assert_eq!(config.near_distance, 15.0);
+
+        let config =
+            apply("[Display]\nfDefaultWorldFOV=90\nfDefault1stPersonFOV=65.5\nfNearDistance=7.5\n");
+        assert_eq!(config.world_fov_degrees, 90.0);
+        assert_eq!(config.first_person_fov_degrees, 65.5);
+        assert_eq!(config.near_distance, 7.5);
+
+        // Unusable values leave the retail default; a later usable file value still applies.
+        let config =
+            apply("[Display]\nfDefaultWorldFOV=500\nfDefault1stPersonFOV=abc\nfNearDistance=-1\n");
+        assert_eq!(config.world_fov_degrees, 80.0);
+        assert_eq!(config.first_person_fov_degrees, 80.0);
+        assert_eq!(config.near_distance, 15.0);
+        // A near plane past the sanity bound is rejected, and the bound itself is accepted.
+        assert_eq!(
+            apply("[Display]\nfNearDistance=1000.5\n").near_distance,
+            15.0
+        );
+        assert_eq!(
+            apply("[Display]\nfNearDistance=1000\n").near_distance,
+            1000.0
+        );
+        assert!(expected_range("display", "fneardistance").is_some_and(|r| r.contains("1000")));
+        assert!(
+            expected_range("display", "fdefaultworldfov").is_some_and(|r| r.contains("30 to 140"))
+        );
+        let mut ini = SkyrimIni::default();
+        ini.merge_str("[Display]\nfDefaultWorldFOV=90\n");
+        ini.merge_str("[Display]\nfDefaultWorldFOV=0\n");
+        let mut config = EngineConfig::default();
+        ini.apply(&mut config);
+        assert_eq!(
+            config.world_fov_degrees, 90.0,
+            "the earlier usable value stands"
+        );
+    }
+
+    /// The menu value is launch-owned only for the key of the camera the run starts with.
+    #[test]
+    fn only_the_active_cameras_field_of_view_key_owns_the_menu() {
+        let mut ini = SkyrimIni::default();
+        ini.merge_str("[Display]\nfDefaultWorldFOV=90\n");
+        let mut walking = EngineConfig::default();
+        ini.claim_active_fov(&mut walking);
+        assert!(
+            !walking
+                .settings_overrides
+                .iter()
+                .any(|flag| flag == "ini:fov")
+        );
+        let mut automated = EngineConfig {
+            headless: true,
+            ..EngineConfig::default()
+        };
+        ini.claim_active_fov(&mut automated);
+        assert!(
+            automated
+                .settings_overrides
+                .iter()
+                .any(|flag| flag == "ini:fov")
+        );
+    }
+
     /// Explicit values layer by key; bad values cannot poison authored settings.
     #[test]
     fn sun_ini_overrides_validate_and_layer_without_aborting() {
@@ -388,6 +665,47 @@ mod tests {
             LodTier::ALL.map(|tier| lod.reach_cells(tier)),
             [20, 39, 146]
         );
+    }
+
+    /// #949: an INI value replaces each Ultra default, and an unusable value leaves it alone.
+    #[test]
+    fn ini_overrides_each_lod_and_view_distance_default() {
+        let config = apply(
+            "[TerrainManager]\nfBlockLevel0Distance=35000\nfBlockLevel1Distance=70000\n\
+             fTreeLoadDistance=12500\n[LOD]\nfLODFadeOutMultObjects=5\nfLODFadeOutMultActors=6\n\
+             fLODFadeOutMultItems=3\n[Display]\nfMeshLODLevel1FadeDist=4000\n\
+             fMeshLODLevel2FadeDist=1600\n[General]\nuLargeRefLODGridSize=9\n",
+        );
+        assert_eq!(config.terrain_lod.block_level0_distance, 35_000.0);
+        assert_eq!(config.terrain_lod.block_level1_distance, 70_000.0);
+        assert_eq!(config.terrain_lod.tree_load_distance, 12_500.0);
+        assert_eq!(config.lod_fade.fade_out_mult_objects, 5.0);
+        assert_eq!(config.lod_fade.fade_out_mult_actors, 6.0);
+        assert_eq!(config.lod_fade.fade_out_mult_items, 3.0);
+        assert_eq!(config.lod_fade.mesh_lod_level1_fade_distance, 4_000.0);
+        assert_eq!(config.lod_fade.mesh_lod_level2_fade_distance, 1_600.0);
+        assert_eq!(config.large_ref_grid_size, 9);
+        assert_eq!(config.large_ref_grid_radius(), 4);
+
+        let defaults = EngineConfig::default();
+        for text in [
+            "[TerrainManager]\nfTreeLoadDistance=0\n",
+            "[LOD]\nfLODFadeOutMultObjects=-1\n",
+            "[Display]\nfMeshLODLevel1FadeDist=nan\n",
+            "[General]\nuLargeRefLODGridSize=10\n",
+            "[General]\nuLargeRefLODGridSize=0\n",
+            "[General]\nuLargeRefLODGridSize=33\n",
+            // Keys outside their section change nothing.
+            "[Display]\nfLODFadeOutMultObjects=5\n",
+        ] {
+            let config = apply(text);
+            assert_eq!(config.terrain_lod, defaults.terrain_lod, "{text}");
+            assert_eq!(config.lod_fade, defaults.lod_fade, "{text}");
+            assert_eq!(
+                config.large_ref_grid_size, defaults.large_ref_grid_size,
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -517,10 +835,90 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unusable_shadow_distances_leave_the_limit_unset() {
+    fn malformed_or_unusable_shadow_distances_leave_the_default() {
         for value in ["0", "699", "NaN", "inf", "far"] {
             let config = apply(&format!("[Display]\nfShadowDistance={value}\n"));
-            assert_eq!(config.sun_shadow_distance_limit, None, "{value}");
+            assert_eq!(
+                config.sun_shadow_distance_limit,
+                EngineConfig::default().sun_shadow_distance_limit,
+                "{value}"
+            );
+        }
+    }
+
+    /// With no INI the sun shadow settings are Mudcrab's defaults, each equal to the value its
+    /// source gives (#949, #857): `Ultra.ini` for the map size and the distance, `Skyrim_Default.ini`
+    /// for the first slice, and the compiled default for the count.
+    #[test]
+    fn sun_shadow_defaults_are_the_cited_retail_values_without_an_ini() {
+        let config = apply("");
+        assert_eq!(
+            config.sun_shadow_map_size, 4096,
+            "Ultra.ini iShadowMapResolution"
+        );
+        assert_eq!(
+            config.sun_shadow_distance_limit,
+            Some(10_000.0),
+            "Ultra.ini fShadowDistance"
+        );
+        assert_eq!(config.sun_shadow_cascades, 2, "compiled iNumSplits");
+        assert_eq!(
+            config.sun_first_slice_distance, 2_000.0,
+            "Skyrim_Default.ini fFirstSliceDistance (the compiled 1250 loses)"
+        );
+        assert!(
+            !config
+                .settings_overrides
+                .iter()
+                .any(|flag| flag.starts_with("ini:i")),
+            "a default is not a launch override"
+        );
+    }
+
+    /// An INI value replaces each default, and a malformed value keeps the earlier one.
+    #[test]
+    fn ini_values_override_the_sun_shadow_defaults() {
+        let config = apply(
+            "[Display]\niShadowMapResolution=1024\niNumSplits=3\nfFirstSliceDistance=1250\n\
+             fShadowDistance=8000\n",
+        );
+        assert_eq!(config.sun_shadow_map_size, 1024);
+        assert_eq!(config.sun_shadow_cascades, 3);
+        assert_eq!(config.sun_first_slice_distance, 1_250.0);
+        assert_eq!(config.sun_shadow_distance_limit, Some(8_000.0));
+        assert!(
+            config
+                .settings_overrides
+                .contains(&"ini:iShadowMapResolution".to_owned())
+        );
+        assert!(
+            config
+                .settings_overrides
+                .contains(&"ini:iNumSplits".to_owned())
+        );
+
+        for (key, bad) in [
+            ("iShadowMapResolution", "3000"),
+            ("iShadowMapResolution", "0"),
+            ("iNumSplits", "0"),
+            ("iNumSplits", "5"),
+            ("fFirstSliceDistance", "0"),
+            ("fFirstSliceDistance", "NaN"),
+        ] {
+            let config = apply(&format!("[Display]\n{key}={bad}\n"));
+            let defaults = EngineConfig::default();
+            assert_eq!(
+                config.sun_shadow_map_size, defaults.sun_shadow_map_size,
+                "{key}={bad}"
+            );
+            assert_eq!(
+                config.sun_shadow_cascades, defaults.sun_shadow_cascades,
+                "{key}={bad}"
+            );
+            assert_eq!(
+                config.sun_first_slice_distance, defaults.sun_first_slice_distance,
+                "{key}={bad}"
+            );
         }
     }
 }

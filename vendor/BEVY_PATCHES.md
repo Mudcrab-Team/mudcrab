@@ -22,6 +22,7 @@ crate and the `zstd` change in one commit: compare it with the published crate t
 | bevy#26095, stale GPU bin-unpacking jobs and bind groups | `bevy_pbr`, `bevy_render` | #802 | `d0d908d3` |
 | bevy#26588, GPU clustering staging-buffer leak | `bevy_pbr` | #802 | `d0d908d3` |
 | `zstd` requirement widened to `0.14.3` (Mudcrab-only) | `bevy_image` | #433 | `67e75c65` |
+| Retail point-light falloff (Mudcrab-only, #955) | `bevy_pbr` | #955 (this change) | not on `main` yet |
 
 Upstream states below are as of the date in the table.
 
@@ -32,6 +33,7 @@ Upstream states below are as of the date in the table.
 | `bevy_pbr` | Remove a write-only list that leaked one staging buffer handle per view per frame with GPU clustering on | [bevy#26588](https://github.com/bevyengine/bevy/pull/26588), fixes [bevy#26283](https://github.com/bevyengine/bevy/issues/26283) | **Open**, not merged, 2026-11-18 | PR head `88ce16beee7c77fa3d340809bfb34bceffecea70`; the hunk applies unchanged to 0.19.0 | `bevy_pbr/src/cluster/gpu.rs` | A `mudcrab:` marker comment. Mudcrab turns GPU clustering off on Metal (`crates/engine/src/renderer_init.rs`) and keeps Bevy's default (on) on other backends, so this fix matters on Vulkan and DX12 only. Not exercised by the macOS validation run | Drop the patch when a Bevy release contains #26588 or an equivalent. |
 | `bevy_pbr` | Add `FogFalloff::PowerRamp`, a power ramp capped by max between two colours, for the weather record's exterior fog (#891). Not a Bevy change: Bevy has no power-ramp fog | none (Mudcrab-only addition) | n/a | not applicable | `src/fog.rs`, `src/render/fog.rs`, `src/render/fog.wgsl`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_functions.wgsl` | `mudcrab:` marker comments; fog mode 5; the near colour travels in `bi` | Drop it only if Mudcrab draws its exterior fog another way. A Bevy release does not replace it. |
 | `bevy_pbr` | Add `FogFalloff::PowerRampBlended` (fog mode 6): the same ramp and uniform as `PowerRamp`, but `main_pass_post_lighting_processing` skips the shader fog of a draw in the opaque or alpha-mask pass that does not read the view transmission texture. The `skyrim` profile fogs those draws in one full-screen pass (`crates/engine/src/retail_fog.rs`, #891). Water, effects and other blended draws keep their shader fog, and grass skips it in its own shader. Not a Bevy change | none (Mudcrab-only addition) | n/a | not applicable | `src/fog.rs`, `src/render/fog.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_functions.wgsl` | `mudcrab:` marker comments; fog mode 6; `fogged_by_opaque_composite` | Drop it only if Mudcrab fogs its blended draws another way. A Bevy release does not replace it. |
+| `bevy_pbr` | Add `RetailPointFalloff`, a marker that gives a point light Skyrim's attenuation `1 - saturate(d / range)^2` in place of Bevy's `window(d) / d^2`, for the placed `LIGH` lights (#955). Not a Bevy change: Bevy has no such mode | none (Mudcrab-only addition) | n/a | not applicable | `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_lighting.wgsl` | `mudcrab:` marker comments; `PointLightFlags::RETAIL_FALLOFF` (bit 6); `getRetailDistanceAttenuation` | Drop it only if Mudcrab shades its point lights another way. A Bevy release does not replace it |
 | `bevy_image` | Widen the `zstd` requirement to `0.14.3` for four RustSec advisories | none (Mudcrab-only manifest change) | n/a | see [`bevy_image/README.mudcrab.md`](bevy_image/README.mudcrab.md) | `Cargo.toml` | the whole change | Drop it when the Bevy image release Mudcrab uses accepts the fixed Zstd dependencies. |
 
 ## Checking a carried change
@@ -58,7 +60,7 @@ grep -c "Invalid Metal usage" <run.log>
 
 Add `--release` for a faithful comparison. Do not set `MTL_DEBUG_LAYER=1`: it writes about 700 MB
 of warnings per minute. The engine reads Point-light shadows from `settings.json`, not from a flag.
-For the flicker class (bevy#26095), run the same command with `--lights` and a `settings.json`
+For the flicker class (bevy#26095), run the same command (lights are on by default; `--no-lights` turns them off) and a `settings.json`
 that has `"point_lights": true` and `"point_light_shadows": true`, kept in a scratch `HOME`
 so a personal settings file stays untouched. A run with no error lines is evidence, not proof:
 a hidden run without validation did not fault even before the fix.
