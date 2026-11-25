@@ -766,7 +766,7 @@ mod tests {
         let mode = SceneGradeMode::Off;
         let preset = SceneVisualPreset::CoolGray;
         let exposure = Exposure {
-            ev100: crate::retail_hdr::retail_scene_ev100(),
+            ev100: crate::retail_hdr::input_scale_ev100(),
         };
         let receipt = |profile: VisualProfile, camera_tonemapping: Tonemapping| {
             let source = SceneGradeSource::default().with_weather(profile, None);
@@ -791,7 +791,7 @@ mod tests {
         assert_eq!(skyrim.source["retail_hdr_chain"], serde_json::json!(true));
         assert_eq!(
             skyrim.source["actual_camera"]["exposure_ev100"],
-            serde_json::json!(crate::retail_hdr::retail_scene_ev100())
+            serde_json::json!(crate::retail_hdr::input_scale_ev100())
         );
         assert!(
             receipt(VisualProfile::Skyrim, Tonemapping::TonyMcMapface).is_none(),
