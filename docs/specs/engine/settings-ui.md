@@ -115,8 +115,10 @@ rows display the resolved source values, including authored values outside the
 menu's edit range; loading those values does not turn them into overrides.
 Console SceneGrade and ScenePreset select the canonical mode/preset grade and
 synchronize the menu and tuning. Rejected commands leave source and settings
-unchanged. Reset clears the override mask and restores the approved sRGB / Cool
-Gray defaults.
+unchanged. Reset clears the override mask and restores the running profile's
+defaults: the approved sRGB / Cool Gray look under `mudcrab`, and grade Off
+under `skyrim` ([visual-profiles.md](visual-profiles.md#artistic-grade-default-796)).
+The file keeps `color_grade` for `mudcrab` and `skyrim_color_grade` for `skyrim`.
 
 Startup precedence is field-specific. Valid INI values and explicit CLI options
 overlay saved preferences for their corresponding fields. `--color-grade`

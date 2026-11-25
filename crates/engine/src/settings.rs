@@ -131,6 +131,15 @@ pub struct RenderingSettings {
     pub diagnostic_asset_fallbacks: bool,
     /// [`crate::visual_profile::VisualProfile`] index; read only at startup.
     pub visual_profile: usize,
+    /// The grade mode the user chose under the `skyrim` profile, or `None` while they have not
+    /// chosen one. `color_grade` is the `mudcrab` choice and stays the file's value for older
+    /// builds. Under `skyrim` a saved `color_grade` is ignored: the approved grade is a Mudcrab
+    /// artistic override, so `skyrim` starts with the grade off unless this field says otherwise.
+    pub skyrim_color_grade: Option<usize>,
+    /// True while the running profile is `skyrim`. Not saved: it says which grade default and
+    /// which saved slot `color_grade` belongs to in this session.
+    #[serde(skip)]
+    pub running_skyrim: bool,
     /// Session-only window size from an interactive start shot, in logical points like
     /// [`WINDOW_SIZES`]. A window control edit or reset returns to the selected preference size;
     /// this value is never serialized.
@@ -216,8 +225,24 @@ impl Default for RenderingSettings {
             io_threads: config.io_threads,
             diagnostic_asset_fallbacks: config.diagnostic_asset_fallbacks,
             visual_profile: config.visual_profile.index(),
+            skyrim_color_grade: None,
+            running_skyrim: false,
             window_size_override: None,
         }
+    }
+}
+
+impl RenderingSettings {
+    /// What Reset restores for this session. Only the grade depends on the running profile.
+    pub fn profile_defaults(&self) -> Self {
+        let mut defaults = Self::default();
+        if self.running_skyrim {
+            defaults.color_grade = crate::visual_profile::VisualProfile::Skyrim
+                .default_color_grade()
+                .index();
+            defaults.running_skyrim = true;
+        }
+        defaults
     }
 }
 
@@ -450,7 +475,7 @@ impl SettingSpec {
         {
             return false;
         }
-        (self.read)(settings) != (self.read)(&RenderingSettings::default())
+        (self.read)(settings) != (self.read)(&settings.profile_defaults())
     }
 
     pub fn value_label(&self, settings: &RenderingSettings) -> String {
@@ -668,6 +693,34 @@ impl RenderingSettings {
         self.shadow_cascades = config.sun_shadow_cascades;
     }
 
+    /// Picks the grade for the profile this run will use. Saved settings come from any build, and
+    /// the profile they name is applied after this runs, so this settles the profile first.
+    ///
+    /// Under `skyrim` the file's `color_grade` is the `mudcrab` choice and does not apply. The grade
+    /// is `skyrim_color_grade` when the user saved one, and the profile default otherwise. An
+    /// explicit `--color-grade` still wins (the config check refuses it under `skyrim`).
+    fn apply_profile_grade(&mut self, config: &mut EngineConfig) {
+        use crate::visual_profile::VisualProfile;
+        let Some(profile) = VisualProfile::from_index(self.visual_profile) else {
+            return;
+        };
+        if profile != VisualProfile::Skyrim {
+            return;
+        }
+        let explicit = config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "--color-grade");
+        if explicit {
+            return;
+        }
+        let saved = self
+            .skyrim_color_grade
+            .filter(|index| crate::color_pipeline::SceneGradeMode::from_index(*index).is_some());
+        config.color_grade = profile.default_color_grade();
+        self.color_grade = saved.unwrap_or(config.color_grade.index());
+    }
+
     fn retain_explicit_launch_values(&mut self, config: &EngineConfig) {
         let mut launch = RenderingSettings::default();
         launch.take_launch_values(config);
@@ -865,7 +918,7 @@ impl SettingsFile {
         self.note_grade_mode_selection();
         self.metal_drawing_default_available = true;
         self.metal_drawing_auto_unowned = true;
-        *settings = RenderingSettings::default();
+        *settings = settings.profile_defaults();
         if let Some(coverage) = self.grass_coverage.as_mut()
             && self
                 .launch_overrides
@@ -933,6 +986,24 @@ impl SettingsFile {
         if self.preserve_unavailable_record_mode && !self.unavailable_record_mode_replaced {
             persisted.color_grade = self.stored.color_grade;
         }
+        if settings.running_skyrim {
+            // `color_grade` holds the `skyrim` choice this session. The file's `color_grade` is
+            // the `mudcrab` choice and must survive a `skyrim` run. The `skyrim` choice is saved
+            // only once the user moves off the default or has saved one before.
+            let default = crate::visual_profile::VisualProfile::Skyrim
+                .default_color_grade()
+                .index();
+            persisted.skyrim_color_grade = (settings.color_grade != default
+                || self.stored.skyrim_color_grade.is_some())
+            .then_some(settings.color_grade);
+            persisted.color_grade = self.stored.color_grade;
+            if self.preserve_unavailable_record_mode && !self.unavailable_record_mode_replaced {
+                persisted.skyrim_color_grade = self.stored.skyrim_color_grade;
+            }
+        } else {
+            persisted.skyrim_color_grade = self.stored.skyrim_color_grade;
+        }
+        persisted.running_skyrim = false;
         persisted
     }
 }
@@ -1013,6 +1084,18 @@ pub(crate) fn prepare_settings_at(
                                     && raw.get("occlusion_culling").is_none()
                             });
                         settings.retain_explicit_launch_values(config);
+                        settings.apply_profile_grade(config);
+                        if settings.visual_profile
+                            == crate::visual_profile::VisualProfile::Skyrim.index()
+                            && file.stored.skyrim_color_grade.is_none()
+                            && file.stored.color_grade != config.color_grade.index()
+                            && !config
+                                .settings_overrides
+                                .iter()
+                                .any(|flag| flag == "--color-grade")
+                        {
+                            file.status = "The saved grade mode belongs to the mudcrab profile. The skyrim profile starts with the grade off. Choose a grade mode and Save to keep one for skyrim.".into();
+                        }
                         if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&bytes)
                             && raw.get("fov_degrees").is_some()
                             && raw.get("horizontal_fov_degrees").is_none()
@@ -1038,7 +1121,7 @@ pub(crate) fn prepare_settings_at(
                         {
                             settings.color_grade = config.color_grade.index();
                             file.preserve_unavailable_record_mode = true;
-                            file.status = "Saved record-srgb grade is unavailable without an explicit image-space selection; using the approved default.".into();
+                            file.status = "Saved record-srgb grade is unavailable without an explicit image-space selection; using the profile's default grade.".into();
                         }
                     }
                     Err(error) => {
@@ -1083,6 +1166,7 @@ pub(crate) fn prepare_settings_at(
     {
         config.visual_profile = profile;
     }
+    settings.running_skyrim = config.visual_profile == crate::visual_profile::VisualProfile::Skyrim;
     (settings, file)
 }
 
@@ -3435,6 +3519,224 @@ mod tests {
         );
         let (reloaded, _) = prepare_settings_at(&mut EngineConfig::default(), Some(path));
         assert_eq!(reloaded.color_grade, persisted.color_grade);
+    }
+
+    const GRADE_OFF: usize = 0;
+    const GRADE_SATURATION: usize = 1;
+    const GRADE_FULL: usize = 2;
+    const GRADE_APPROVED: usize = 3;
+
+    fn grade_args(profile: Option<&str>) -> Vec<String> {
+        profile
+            .map(|profile| vec!["--visual-profile".to_owned(), profile.to_owned()])
+            .unwrap_or_default()
+    }
+
+    /// Load `path` the way an interactive start does and return the settings, file and config.
+    fn grade_session(
+        path: &Path,
+        profile: Option<&str>,
+    ) -> (RenderingSettings, SettingsFile, EngineConfig) {
+        let mut config = launch(&grade_args(profile));
+        let (settings, file) = prepare_settings_at(&mut config, Some(path.to_owned()));
+        (settings, file, config)
+    }
+
+    fn read_saved(path: &Path) -> RenderingSettings {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn grade_defaults_follow_the_profile_without_saved_settings() {
+        let mudcrab = launch(&[]);
+        assert_eq!(
+            mudcrab.color_grade,
+            crate::color_pipeline::SceneGradeMode::SnapshotSrgb
+        );
+        let skyrim = launch(&grade_args(Some("skyrim")));
+        assert_eq!(
+            skyrim.color_grade,
+            crate::color_pipeline::SceneGradeMode::Off
+        );
+        let mut config = launch(&grade_args(Some("skyrim")));
+        let (settings, _) = prepare_settings_at(&mut config, None);
+        assert_eq!(settings.color_grade, GRADE_OFF);
+        assert_eq!(
+            config.color_grade,
+            crate::color_pipeline::SceneGradeMode::Off
+        );
+        assert!(settings.running_skyrim);
+        let mut config = launch(&[]);
+        let (settings, _) = prepare_settings_at(&mut config, None);
+        assert_eq!(settings.color_grade, GRADE_APPROVED);
+        assert!(!settings.running_skyrim);
+    }
+
+    #[test]
+    fn saved_grade_from_an_older_build_does_not_turn_the_grade_on_under_skyrim() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        // The shape older builds wrote: one grade mode, no skyrim slot.
+        for saved_grade in [GRADE_APPROVED, GRADE_FULL, GRADE_SATURATION] {
+            for (saved_profile, launch_profile) in [(1, None), (0, Some("skyrim"))] {
+                std::fs::write(
+                    &path,
+                    format!(
+                        r#"{{"version":1,"color_grade":{saved_grade},"visual_preset":1,"visual_profile":{saved_profile}}}"#
+                    ),
+                )
+                .unwrap();
+                let (settings, file, config) = grade_session(&path, launch_profile);
+                assert_eq!(settings.color_grade, GRADE_OFF, "saved {saved_grade}");
+                assert_eq!(
+                    config.color_grade,
+                    crate::color_pipeline::SceneGradeMode::Off
+                );
+                assert_eq!(
+                    config.visual_profile,
+                    crate::visual_profile::VisualProfile::Skyrim
+                );
+                assert!(settings.running_skyrim);
+                if saved_profile == 1 {
+                    assert!(
+                        file.status
+                            .contains("skyrim profile starts with the grade off")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saved_grade_still_applies_under_mudcrab() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"color_grade":2,"visual_preset":1,"visual_profile":0}"#,
+        )
+        .unwrap();
+        let (settings, _, config) = grade_session(&path, None);
+        assert_eq!(settings.color_grade, GRADE_FULL);
+        assert_eq!(config.color_grade.index(), GRADE_FULL);
+        assert!(!settings.running_skyrim);
+        // A skyrim choice in the file does not leak into a mudcrab run.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"color_grade":2,"visual_profile":0,"skyrim_color_grade":1}"#,
+        )
+        .unwrap();
+        let (settings, _, _) = grade_session(&path, None);
+        assert_eq!(settings.color_grade, GRADE_FULL);
+    }
+
+    #[test]
+    fn explicit_menu_choice_under_skyrim_is_saved_apart_from_the_mudcrab_choice() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"color_grade":2,"visual_preset":1,"visual_profile":1}"#,
+        )
+        .unwrap();
+        let (mut settings, mut file, _) = grade_session(&path, None);
+        assert_eq!(settings.color_grade, GRADE_OFF);
+        // Saving without a grade edit keeps the file's grade and pins nothing for skyrim.
+        file.save(&settings);
+        let saved = read_saved(&path);
+        assert_eq!(saved.color_grade, GRADE_FULL);
+        assert_eq!(saved.skyrim_color_grade, None);
+        assert!(!saved.running_skyrim);
+        let (settings_again, _, _) = grade_session(&path, None);
+        assert_eq!(settings_again.color_grade, GRADE_OFF);
+
+        // The user picks a grade in the menu and saves.
+        settings.color_grade = GRADE_SATURATION;
+        file.save(&settings);
+        let saved = read_saved(&path);
+        assert_eq!(saved.skyrim_color_grade, Some(GRADE_SATURATION));
+        assert_eq!(saved.color_grade, GRADE_FULL, "the mudcrab choice survives");
+        let (settings_skyrim, _, config) = grade_session(&path, None);
+        assert_eq!(settings_skyrim.color_grade, GRADE_SATURATION);
+        assert_eq!(
+            config.color_grade,
+            crate::color_pipeline::SceneGradeMode::Saturation
+        );
+
+        // Going back to Off after a saved choice keeps the explicit choice recorded as Off.
+        let mut settings = settings_skyrim;
+        settings.color_grade = GRADE_OFF;
+        let (_, mut file, _) = grade_session(&path, None);
+        file.save(&settings);
+        assert_eq!(read_saved(&path).skyrim_color_grade, Some(GRADE_OFF));
+
+        // A mudcrab start reads the mudcrab choice only.
+        let mut mudcrab = read_saved(&path);
+        mudcrab.visual_profile = 0;
+        save_settings(&path, &mudcrab).unwrap();
+        let (settings_mudcrab, _, _) = grade_session(&path, None);
+        assert_eq!(settings_mudcrab.color_grade, GRADE_FULL);
+    }
+
+    #[test]
+    fn saving_from_mudcrab_keeps_the_saved_skyrim_choice() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"color_grade":2,"visual_profile":0,"skyrim_color_grade":1}"#,
+        )
+        .unwrap();
+        let (mut settings, mut file, _) = grade_session(&path, None);
+        settings.color_grade = GRADE_APPROVED;
+        file.save(&settings);
+        let saved = read_saved(&path);
+        assert_eq!(saved.color_grade, GRADE_APPROVED);
+        assert_eq!(saved.skyrim_color_grade, Some(GRADE_SATURATION));
+    }
+
+    #[test]
+    fn reset_under_skyrim_restores_the_off_grade() {
+        let mut config = launch(&grade_args(Some("skyrim")));
+        let (mut settings, mut file) = prepare_settings_at(&mut config, None);
+        let grade = SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Grade mode")
+            .unwrap();
+        assert!(!grade.is_modified(&settings), "Off is the skyrim default");
+        settings.color_grade = GRADE_FULL;
+        assert!(grade.is_modified(&settings));
+        file.restore_defaults(&mut settings);
+        assert_eq!(settings.color_grade, GRADE_OFF);
+        assert!(settings.running_skyrim);
+        assert!(!grade.is_modified(&settings));
+        // The same menu under mudcrab still treats the approved grade as the default.
+        let mut config = launch(&[]);
+        let (mut settings, mut file) = prepare_settings_at(&mut config, None);
+        assert!(!grade.is_modified(&settings));
+        settings.color_grade = GRADE_OFF;
+        assert!(grade.is_modified(&settings));
+        file.restore_defaults(&mut settings);
+        assert_eq!(settings.color_grade, GRADE_APPROVED);
+    }
+
+    #[test]
+    fn skyrim_grade_off_resolves_to_no_post_grade_and_leaves_the_tonemapper_alone() {
+        use crate::color_pipeline::{SceneGradeMode, SceneGradeSource, SceneVisualPreset};
+        let source = SceneGradeSource::default();
+        let tone = crate::tone_mapping::SceneToneMapSource::default();
+        let preset = SceneVisualPreset::CoolGray;
+        let off = tone.resolve(&source, SceneGradeMode::Off, preset).unwrap();
+        let approved = tone
+            .resolve(&source, SceneGradeMode::SnapshotSrgb, preset)
+            .unwrap();
+        assert_eq!(off.post.enabled, 0.0);
+        assert_eq!(approved.post.enabled, 1.0);
+        assert_eq!(off.bevy_saturation, 1.0);
+        // The grade mode does not pick the tonemapper or the retail curve fields.
+        assert_eq!(off.tonemapping, approved.tonemapping);
+        assert_eq!(off.post.tone_operator, approved.post.tone_operator);
+        assert_eq!(off.post.tone_coefficient, approved.post.tone_coefficient);
     }
 
     #[test]

@@ -2067,6 +2067,15 @@ impl EngineConfig {
                 requires: "--shots",
             });
         }
+        // The profile owns the grade default. `--color-grade` is refused under `skyrim`, so the
+        // default only applies when the flag is absent.
+        if !config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "--color-grade")
+        {
+            config.color_grade = config.visual_profile.default_color_grade();
+        }
         config.check_visual_profile()?;
         grass_options.apply(&mut config);
         config.drop_jump_the_run_would_overwrite();
