@@ -444,7 +444,7 @@ impl AssetPipeline {
             "Discovering Skyrim assets",
         )
         .await;
-        let mut manifest_notice = None;
+        let mut manifest_notices = Vec::new();
         let loaded_manifest = if config.invalidate_cache {
             ConversionManifest::default()
         } else {
@@ -455,12 +455,22 @@ impl AssetPipeline {
                         "previous conversion manifest is unusable; rebuilding without previous-pack asset reuse and preserving the previous pack: {error:#}"
                     );
                     send_notice(&progress_tx, ProgressStage::Discovering, None, &message).await;
-                    manifest_notice = Some(message);
+                    manifest_notices.push(message);
                     ConversionManifest::default()
                 }
                 Err(error) => return Err(error.into()),
             }
         };
+        if config.mo2.is_some()
+            && !loaded_manifest.entries.is_empty()
+            && loaded_manifest.asset_configuration_hashes.is_empty()
+            && loaded_manifest.configuration_hash
+                != configuration_hash_for_schema(&config, loaded_manifest.schema_version)?
+        {
+            let message = "previous MO2 pack uses a legacy combined configuration hash that does not match the current path-independent identity; cached assets that cannot be verified will be rebuilt".to_owned();
+            send_notice(&progress_tx, ProgressStage::Discovering, None, &message).await;
+            manifest_notices.push(message);
+        }
         let mut previous_manifest = reusable_manifest(&config, loaded_manifest)?;
         if config.invalidate_cache {
             // Invalidation forgets converted outputs, not the capabilities the published pack
@@ -500,7 +510,7 @@ impl AssetPipeline {
             Ok(report) => report,
             Err(error) => return Err(failure(error, &staging, &cancellation)),
         };
-        report.notices.extend(manifest_notice);
+        report.notices.extend(manifest_notices);
         report
             .phase_elapsed_ms
             .insert("run_setup".into(), setup_elapsed_ms);

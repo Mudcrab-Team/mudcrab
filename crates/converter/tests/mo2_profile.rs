@@ -367,6 +367,11 @@ async fn irrelevant_profile_changes_reuse_assets() {
     assert_eq!(second.converted, 0);
     assert_eq!(second.cache_hits, first.converted);
     fs::create_dir_all(instance.join("profiles/Other")).unwrap();
+    write(
+        &instance,
+        "profiles/Other/modlist.txt",
+        "+High\n-Disabled\n+Low\n",
+    );
     let mut other = config;
     other.mo2.as_mut().unwrap().profile = "Other".into();
     assert_ne!(hash, configuration_hash(&other).unwrap());
@@ -436,6 +441,46 @@ async fn winning_skeleton_changes_invalidate_dependent_mesh() {
         unchanged.entries[body].source_hash,
         manifest.entries[body].source_hash
     );
+}
+
+/// A winning PEX content edit rebuilds its script output without changing MO2 identity.
+#[tokio::test]
+async fn script_content_change_rebuilds_output_without_changing_mo2_identity() {
+    let (_dir, config, instance) = fixture();
+    let relative = "scripts/hash-source.pex";
+    let source = instance.join("overwrite").join(relative);
+    write(
+        &instance,
+        "overwrite/scripts/hash-source.pex",
+        &dummy_content::pex::minimal("FirstSource").unwrap(),
+    );
+
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete, "{first:?}");
+    let manifest_path = config.output_dir.join("conversion-manifest.json");
+    let before = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+    let original_source_hash = before.entries[relative].source_hash.clone();
+    let original_configuration_hash = configuration_hash(&config).unwrap();
+
+    fs::write(
+        &source,
+        dummy_content::pex::minimal("ChangedSource").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        configuration_hash(&config).unwrap(),
+        original_configuration_hash
+    );
+
+    let second = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(second.complete, "{second:?}");
+    assert!(second.converted >= 1, "{second:?}");
+    let after = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+    assert_ne!(
+        after.entries[relative].source_hash, original_source_hash,
+        "the source proof must include the winning PEX bytes"
+    );
+    assert!(config.output_dir.join("scripts/hash-source.luau").is_file());
 }
 
 /// Verifies conversion reads winning MO2 sources directly without copying them into staging.
@@ -1422,6 +1467,16 @@ async fn refuses_source_overlap_and_conflicting_plugin_selection() {
     assert_eq!(roundtrip.mo2.unwrap().profile, "Default");
 }
 
+/// Case-insensitive profile selection hashes the canonical profile name.
+#[test]
+fn profile_name_case_preserves_configuration_hash() {
+    let (_dir, mut config, _) = fixture();
+    let default_hash = configuration_hash(&config).unwrap();
+    config.mo2.as_mut().unwrap().profile = "default".into();
+    assert_eq!(default_hash, configuration_hash(&config).unwrap());
+}
+
+/// Moving an MO2 instance preserves its path-independent configuration identity.
 #[test]
 fn moving_mo2_instance_preserves_configuration_hash() {
     let (_dir, mut config, instance) = fixture();
@@ -1446,4 +1501,30 @@ fn moving_mo2_instance_preserves_configuration_hash() {
         "+Low\n-Disabled\n+High\n",
     );
     assert_ne!(after_move, configuration_hash(&config).unwrap());
+}
+
+/// Legacy MO2 manifests with an obsolete combined hash notify before cached assets are rebuilt.
+#[tokio::test]
+async fn legacy_mo2_manifest_mismatch_notifies_before_rebuilding_cached_assets() {
+    let (_dir, config, _) = fixture();
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete, "{first:?}");
+
+    let manifest_path = config.output_dir.join("conversion-manifest.json");
+    let mut legacy = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+    legacy.asset_configuration_hashes.clear();
+    legacy.configuration_hash = "legacy-path-based-mo2-hash".into();
+    legacy.save(&manifest_path).unwrap();
+
+    let resumed = run(config, Cancellation::new()).await.unwrap();
+    assert!(resumed.complete, "{resumed:?}");
+    assert!(resumed.converted > 0, "{resumed:?}");
+    assert!(
+        resumed.notices.iter().any(|notice| {
+            notice.contains("legacy combined configuration hash")
+                && notice.contains("will be rebuilt")
+        }),
+        "{:?}",
+        resumed.notices
+    );
 }

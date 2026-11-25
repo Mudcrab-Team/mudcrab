@@ -639,8 +639,8 @@ pub fn configuration_hash(config: &crate::config::PipelineConfig) -> Result<Stri
 /// non-MO2 calculation remains byte-identical. New publication uses `configuration_hash`.
 /// Matching this known hash is the conservative fallback when per-kind settings
 /// are absent; an arbitrary historical hash cannot establish those settings.
-/// MO2 instance/profile paths also bind source selection; winning input bytes
-/// remain independently hashed per source.
+/// MO2 profile identity binds the profile and enabled mods without paths;
+/// winning input bytes remain independently hashed per source.
 pub fn configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,
@@ -774,6 +774,7 @@ pub(crate) fn legacy_projection5_reader_identity(language: &str) -> Option<serde
     Some(identity)
 }
 
+// Version 1 was the unversioned path-based key; version 2 uses path-independent profile identity.
 const MO2_CONFIGURATION_KEY_VERSION: u32 = 2;
 
 /// MO2 identity uses the profile name and enabled-mod list, not filesystem paths.

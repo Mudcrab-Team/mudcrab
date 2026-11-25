@@ -204,13 +204,19 @@ impl Instance {
         Ok(mods)
     }
 
+    /// Reads and parses the required enabled-mod list with profile-specific error context.
+    fn enabled_mods(profile: &str, profile_dir: &Path) -> Result<Vec<String>> {
+        let path = child(profile_dir, "modlist.txt")
+            .wrap_err_with(|| format!("MO2 profile {profile}: locating required modlist.txt"))?;
+        let contents = fs::read_to_string(path)
+            .wrap_err_with(|| format!("MO2 profile {profile}: reading modlist.txt"))?;
+        Self::parse_enabled_mods(profile, &contents)
+    }
+
     /// Returns the canonical profile name and enabled mod names in priority order, without paths.
     pub fn profile_identity(&self, profile: &str) -> Result<ProfileIdentity> {
         let (canonical_profile, profile_dir) = self.resolve_profile(profile)?;
-        let enabled_mods = match optional_child(&profile_dir, "modlist.txt")? {
-            Some(path) => Self::parse_enabled_mods(&canonical_profile, &fs::read_to_string(path)?)?,
-            None => Vec::new(),
-        };
+        let enabled_mods = Self::enabled_mods(&canonical_profile, &profile_dir)?;
         Ok(ProfileIdentity {
             profile: canonical_profile,
             enabled_mods,
@@ -261,9 +267,8 @@ impl Instance {
         profile: &str,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Resolved> {
-        let profile_dir = self.profile_dir(profile)?;
-        let modlist = fs::read_to_string(child(&profile_dir, "modlist.txt")?)?;
-        let enabled_mods = Self::parse_enabled_mods(profile, &modlist)?;
+        let (canonical_profile, profile_dir) = self.resolve_profile(profile)?;
+        let enabled_mods = Self::enabled_mods(&canonical_profile, &profile_dir)?;
         let mut mods = Vec::with_capacity(enabled_mods.len());
         for name in enabled_mods {
             let path = child(&self.mods_dir, &name)
