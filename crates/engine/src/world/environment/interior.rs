@@ -583,9 +583,9 @@ impl InteriorRender {
     }
 
     /// The whole cell cube for the `skyrim` profile's ambient term (#1010): the six faces, as
-    /// [`crate::sky::WeatherLighting::directional_ambient`] reads them, so a surface reads the
-    /// ambient of its own normal. Its mean is [`Self::ambient_color`]. A room lighting template
-    /// has already replaced the faces (`with_room_template`).
+    /// [`crate::sky::WeatherLighting::directional_ambient`] reads them (raw bytes divided by 255),
+    /// so a surface reads the ambient of its own normal. A room lighting template has already
+    /// replaced the faces (`with_room_template`).
     pub(crate) fn directional_ambient(&self) -> DirectionalAmbientCube {
         crate::sky::WeatherLighting {
             sunlight: Color::BLACK,
@@ -1688,16 +1688,17 @@ mod tests {
     }
 
     /// Under `skyrim` the cell's whole DALC cube reaches the render resource (#1010). Alvor's
-    /// template faces are the ones the flat-ambient test above uses. The mean is the flat
-    /// ambient colour, so the unlit level does not change, and the slopes are the half
+    /// template faces are the ones the flat-ambient test above uses. The cube is the raw bytes
+    /// divided by 255 (the object LOD material's rows): the mean of the six and the half
     /// differences of the stored pairs. `mudcrab` keeps the flat ambient: the resource stays off.
     /// Leaving the cell switches it off again.
     #[test]
     fn the_skyrim_profile_gives_the_cell_cube_to_the_ambient_term() {
         use crate::visual_profile::VisualProfile;
+        // Raw bytes divided by 255, no sRGB decode (the object LOD material's rows).
         let linear = |faces: [[u8; 3]; 6], face: usize| {
             let [r, g, b] = faces[face];
-            Color::srgb_u8(r, g, b).to_linear().to_vec3()
+            Vec3::new(f32::from(r), f32::from(g), f32::from(b)) / 255.0
         };
         let faces = [
             [49, 48, 50],
@@ -1720,15 +1721,10 @@ mod tests {
                 continue;
             }
             assert!(cube.enabled);
-            let flat = app
-                .world()
-                .resource::<GlobalAmbientLight>()
-                .color
-                .to_linear()
-                .to_vec3();
+            let raw_mean = (0..6).map(|face| linear(faces, face)).sum::<Vec3>() / 6.0;
             assert!(
-                (cube.mean - flat).abs().max_element() < 1.0e-6,
-                "the cube's mean is the flat ambient colour"
+                (cube.mean - raw_mean).abs().max_element() < 1.0e-6,
+                "the cube's mean is the raw bytes divided by 255"
             );
             let expected_x = (linear(faces, 1) - linear(faces, 0)) * 0.5;
             let expected_y = (linear(faces, 3) - linear(faces, 2)) * 0.5;
