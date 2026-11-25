@@ -34,6 +34,7 @@ Upstream states below are as of the date in the table.
 | `bevy_pbr` | Add `FogFalloff::PowerRamp`, a power ramp capped by max between two colours, for the weather record's exterior fog (#891). Not a Bevy change: Bevy has no power-ramp fog | none (Mudcrab-only addition) | n/a | not applicable | `src/fog.rs`, `src/render/fog.rs`, `src/render/fog.wgsl`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_functions.wgsl` | `mudcrab:` marker comments; fog mode 5; the near colour travels in `bi` | Drop it only if Mudcrab draws its exterior fog another way. A Bevy release does not replace it. |
 | `bevy_pbr` | Add `FogFalloff::PowerRampBlended` (fog mode 6): the same ramp and uniform as `PowerRamp`, but `main_pass_post_lighting_processing` skips the shader fog of a draw in the opaque or alpha-mask pass that does not read the view transmission texture. The `skyrim` profile fogs those draws in one full-screen pass (`crates/engine/src/retail_fog.rs`, #891). Water, effects and other blended draws keep their shader fog, and grass skips it in its own shader. Not a Bevy change | none (Mudcrab-only addition) | n/a | not applicable | `src/fog.rs`, `src/render/fog.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_functions.wgsl` | `mudcrab:` marker comments; fog mode 6; `fogged_by_opaque_composite` | Drop it only if Mudcrab fogs its blended draws another way. A Bevy release does not replace it. |
 | `bevy_pbr` | Add `RetailPointFalloff`, a marker that gives a point light Skyrim's attenuation `1 - saturate(d / range)^2` in place of Bevy's `window(d) / d^2`, for the placed `LIGH` lights (#955). Not a Bevy change: Bevy has no such mode | none (Mudcrab-only addition) | n/a | not applicable | `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_lighting.wgsl` | `mudcrab:` marker comments; `PointLightFlags::RETAIL_FALLOFF` (bit 6); `getRetailDistanceAttenuation` | Drop it only if Mudcrab shades its point lights another way. A Bevy release does not replace it |
+| `bevy_pbr` | Add `DirectionalAmbientCube`, retail's directional ambient (#1010). The `skyrim` profile sets it, and the PBR ambient term then reads `mean + slopes . N` in Creation axes (the object LOD shader's map) instead of one flat colour. The diffuse part is `albedo * ambient` with no `EnvBRDFApprox` scale (Bevy's scale is about 0.4524 at roughness 1; retail adds the ambient raw). The specular ambient part is unchanged. Not a Bevy change: Bevy has one ambient colour per view | none (Mudcrab-only addition) | n/a | not applicable | `src/directional_ambient_cube.rs`, `src/lib.rs`, `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_ambient.wgsl` | `mudcrab:` marker comments; new `GpuLights` fields `ambient_slope_x/y/z` and `ambient_directional`. With the resource disabled (the default, and the `mudcrab` profile) every shader output is the original expression | Drop it only if Mudcrab lights the near scene another way. A Bevy release does not replace it. |
 | `bevy_image` | Widen the `zstd` requirement to `0.14.3` for four RustSec advisories | none (Mudcrab-only manifest change) | n/a | see [`bevy_image/README.mudcrab.md`](bevy_image/README.mudcrab.md) | `Cargo.toml` | the whole change | Drop it when the Bevy image release Mudcrab uses accepts the fixed Zstd dependencies. |
 
 ## Checking a carried change
@@ -64,6 +65,12 @@ For the flicker class (bevy#26095), run the same command (lights are on by defau
 that has `"point_lights": true` and `"point_light_shadows": true`, kept in a scratch `HOME`
 so a personal settings file stays untouched. A run with no error lines is evidence, not proof:
 a hidden run without validation did not fault even before the fix.
+
+The directional ambient (#1010) has a one-pixel GPU check, `ambient_pixel_tests.rs`: a white plane in
+an ambient-only scene. It pins the flat ambient at Bevy's 0.4524 diffuse scale (the `mudcrab` path),
+and the cube at the raw retail ambient. It is ignored by default. Run it with
+`MUDCRAB_AMBIENT_PIXEL=1 python3 scripts/workspace.py cargo test --locked -p engine --lib -- --ignored ambient_pixel`.
+It needs a GPU adapter and opens no window.
 
 ## Not carried yet
 

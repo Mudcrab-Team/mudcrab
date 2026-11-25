@@ -281,6 +281,87 @@ fn check_patches(pbr: &Path, render: &Path) {
             "pbr_lighting.wgsl lost `{needed}` (retail point-light falloff)"
         );
     }
+
+    // Mudcrab's directional ambient (#1010), not a Bevy change: the `skyrim` profile lights a
+    // surface with the `DALC` cube by normal (mean + slopes . N) instead of one flat colour.
+    // Every link has to hold: the resource, its extraction, the uniform fields in both
+    // languages and the shader gate. A lost link leaves the flat ambient, which draws and looks
+    // plausible, so nothing but this check fails. The `mudcrab` profile never enables the
+    // resource, so its output must stay the flat colour: the shader returns `ambient_color` when
+    // the flag is 0, and the Rust side writes the original expression when disabled.
+    for (file, needed) in [
+        (
+            "src/directional_ambient_cube.rs",
+            "pub struct DirectionalAmbientCube {",
+        ),
+        (
+            "src/directional_ambient_cube.rs",
+            "let creation = Vec3::new(normal.x, -normal.z, normal.y);",
+        ),
+        ("src/lib.rs", "mod directional_ambient_cube;"),
+        (
+            "src/lib.rs",
+            "pub use directional_ambient_cube::DirectionalAmbientCube;",
+        ),
+        (
+            "src/lib.rs",
+            ".init_resource::<DirectionalAmbientCube>() .add_plugins(ExtractResourcePlugin::<DirectionalAmbientCube>::default())",
+        ),
+        (
+            PBR_LIGHT,
+            "ambient_slope_x: Vec4, ambient_slope_y: Vec4, ambient_slope_z: Vec4,",
+        ),
+        (PBR_LIGHT, "ambient_directional: u32,"),
+        (PBR_LIGHT, "Option<Res<DirectionalAmbientCube>>"),
+        (
+            PBR_LIGHT,
+            ".filter(|cube| cube.enabled && maybe_ambient_override.is_none());",
+        ),
+        (
+            PBR_LIGHT,
+            "None => { Vec4::from_slice(&LinearRgba::from(ambient_light.color).to_f32_array()) * ambient_light.brightness }",
+        ),
+        (
+            PBR_LIGHT,
+            "ambient_directional: u32::from(directional_ambient.is_some()),",
+        ),
+        (
+            "src/render/mesh_view_types.wgsl",
+            "ambient_color: vec4<f32>, ambient_slope_x: vec4<f32>, ambient_slope_y: vec4<f32>, ambient_slope_z: vec4<f32>,",
+        ),
+        (
+            "src/render/mesh_view_types.wgsl",
+            "n_rect_lights: u32, ambient_directional: u32, rect_lights:",
+        ),
+        (
+            "src/render/pbr_ambient.wgsl",
+            "let creation_normal = vec3<f32>(world_normal.x, -world_normal.z, world_normal.y);",
+        ),
+        (
+            "src/render/pbr_ambient.wgsl",
+            "return lights.ambient_color.rgb + creation_normal.x * lights.ambient_slope_x.rgb + creation_normal.y * lights.ambient_slope_y.rgb + creation_normal.z * lights.ambient_slope_z.rgb;",
+        ),
+        // The gate, and the raw diffuse part: no `EnvBRDFApprox` factor on the diffuse colour.
+        (
+            "src/render/pbr_ambient.wgsl",
+            "if (lights.ambient_directional != 0u) { return (diffuse_color + specular_ambient * specular_occlusion) * directional_ambient_for_normal(world_normal) * occlusion; }",
+        ),
+        // The flat path is the original expression, so `mudcrab` is unchanged.
+        (
+            "src/render/pbr_ambient.wgsl",
+            "let diffuse_ambient = EnvBRDFApprox(diffuse_color, F_AB(1.0, NdotV));",
+        ),
+        (
+            "src/render/pbr_ambient.wgsl",
+            "return (diffuse_ambient + specular_ambient * specular_occlusion) * lights.ambient_color.rgb * occlusion;",
+        ),
+    ] {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(&code(needed)),
+            "{file} lost the directional ambient (`{needed}` or its `{MARKER_POWER_RAMP}` marker):              the skyrim profile falls back to one flat ambient colour"
+        );
+    }
 }
 
 #[test]
@@ -374,6 +455,9 @@ fn vendored_copy_with_endings(
         ("bevy_pbr", "src/render/pbr_functions.wgsl"),
         ("bevy_pbr", PBR_LIGHT),
         ("bevy_pbr", "src/render/pbr_lighting.wgsl"),
+        ("bevy_pbr", "src/render/pbr_ambient.wgsl"),
+        ("bevy_pbr", "src/directional_ambient_cube.rs"),
+        ("bevy_pbr", "src/lib.rs"),
         ("bevy_render", RENDER_PREPROCESSING),
     ] {
         let destination = copy.path().join(crate_name).join(relative);
@@ -425,6 +509,77 @@ fn dropping_the_retail_falloff_flag_fails() {
     check_copy(&vendored_copy(PBR_LIGHT, |text| {
         text.replace("flags |= PointLightFlags::RETAIL_FALLOFF;", "")
     }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn dropping_the_directional_ambient_gate_fails() {
+    check_copy(&vendored_copy("src/render/pbr_ambient.wgsl", |text| {
+        text.replace("if (lights.ambient_directional != 0u) {", "if (false) {")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn changing_the_directional_ambient_axis_map_fails() {
+    check_copy(&vendored_copy("src/render/pbr_ambient.wgsl", |text| {
+        text.replace(
+            "-world_normal.z, world_normal.y)",
+            "world_normal.z, world_normal.y)",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn dropping_the_directional_ambient_uniform_write_fails() {
+    check_copy(&vendored_copy(PBR_LIGHT, |text| {
+        text.replace(
+            "ambient_directional: u32::from(directional_ambient.is_some()),",
+            "ambient_directional: 0,",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn a_directional_ambient_that_ignores_the_enabled_flag_fails() {
+    check_copy(&vendored_copy(PBR_LIGHT, |text| {
+        text.replace(
+            "cube.enabled && maybe_ambient_override.is_none()",
+            "maybe_ambient_override.is_none()",
+        )
+    }));
+}
+
+/// The near shader and the object LOD shader read the `DALC` cube with one axis map, and the
+/// CPU twin agrees: a stored face order or axis change on one path must change them all.
+#[test]
+fn the_near_and_object_lod_ambient_share_one_axis_map() {
+    let near = code(&required_source(
+        &vendor("bevy_pbr"),
+        "src/render/pbr_ambient.wgsl",
+    ));
+    let lod = code(&required_source(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/streaming"),
+        "lod_object.wgsl",
+    ));
+    assert!(
+        near.contains("vec3<f32>(world_normal.x, -world_normal.z, world_normal.y)"),
+        "the near ambient lost the Creation axis map"
+    );
+    assert!(
+        lod.contains("let creation_normal = vec3(normal.x, -normal.z, normal.y);"),
+        "the object LOD shader changed its Creation axis map: change the near ambient with it"
+    );
+    for source in [&near, &lod] {
+        assert!(
+            source.contains("creation_normal.x *")
+                && source.contains("creation_normal.y *")
+                && source.contains("creation_normal.z *"),
+            "a shader no longer dots the slopes with the Creation normal"
+        );
+    }
 }
 
 #[test]

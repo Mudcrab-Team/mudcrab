@@ -211,6 +211,12 @@ pub struct GpuRectLight {
 pub struct GpuLights {
     directional_lights: [GpuDirectionalLight; MAX_DIRECTIONAL_LIGHTS],
     ambient_color: Vec4,
+    // mudcrab: retail's directional ambient slopes (`DirectionalAmbientCube`), in Creation axes and
+    // already scaled by the ambient brightness. `ambient_color` then holds the mean. Keep the
+    // field order in step with `Lights` in `mesh_view_types.wgsl`.
+    ambient_slope_x: Vec4,
+    ambient_slope_y: Vec4,
+    ambient_slope_z: Vec4,
     // xyz are x/y/z cluster dimensions and w is the number of clusters
     cluster_dimensions: UVec4,
     // xy are vec2<f32>(cluster_dimensions.xy) / vec2<f32>(view.width, view.height)
@@ -222,6 +228,8 @@ pub struct GpuLights {
     spot_light_shadowmap_offset: i32,
     ambient_light_affects_lightmapped_meshes: u32,
     n_rect_lights: u32,
+    // mudcrab: non-zero when the ambient term is `ambient_color + N . slopes` (`DirectionalAmbientCube`).
+    ambient_directional: u32,
     rect_lights: [GpuRectLight; MAX_RECT_LIGHTS],
 }
 
@@ -1017,7 +1025,7 @@ pub fn prepare_lights(
         ),
         With<Camera3d>,
     >,
-    ambient_light: Res<GlobalAmbientLight>,
+    (ambient_light, directional_ambient): (Res<GlobalAmbientLight>, Option<Res<DirectionalAmbientCube>>),
     point_light_shadow_map: Res<PointLightShadowMap>,
     directional_light_shadow_map: Res<DirectionalLightShadowMap>,
     mut shadow_render_phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
@@ -1660,6 +1668,11 @@ pub fn prepare_lights(
             brightness: ambient_light.brightness,
             affects_lightmapped_meshes: ambient_light.affects_lightmapped_meshes,
         };
+        // mudcrab: the directional ambient replaces the flat colour, unless this camera has its own
+        // `AmbientLight` override.
+        let directional_ambient = directional_ambient
+            .as_deref()
+            .filter(|cube| cube.enabled && maybe_ambient_override.is_none());
         let ambient_light = maybe_ambient_override.unwrap_or(&ambient_light);
 
         let mut gpu_directional_lights = [GpuDirectionalLight::default(); MAX_DIRECTIONAL_LIGHTS];
@@ -1745,8 +1758,23 @@ pub fn prepare_lights(
 
         let mut gpu_lights = GpuLights {
             directional_lights: gpu_directional_lights,
-            ambient_color: Vec4::from_slice(&LinearRgba::from(ambient_light.color).to_f32_array())
-                * ambient_light.brightness,
+            ambient_color: match directional_ambient {
+                // mudcrab: the mean of the six faces, with the brightness the flat colour takes.
+                Some(cube) => cube.mean.extend(1.0) * ambient_light.brightness,
+                None => {
+                    Vec4::from_slice(&LinearRgba::from(ambient_light.color).to_f32_array())
+                        * ambient_light.brightness
+                }
+            },
+            ambient_slope_x: directional_ambient.map_or(Vec4::ZERO, |cube| {
+                cube.slope_x.extend(0.0) * ambient_light.brightness
+            }),
+            ambient_slope_y: directional_ambient.map_or(Vec4::ZERO, |cube| {
+                cube.slope_y.extend(0.0) * ambient_light.brightness
+            }),
+            ambient_slope_z: directional_ambient.map_or(Vec4::ZERO, |cube| {
+                cube.slope_z.extend(0.0) * ambient_light.brightness
+            }),
             cluster_factors: Vec4::new(
                 clusters.dimensions.x as f32 / extracted_view.viewport.z as f32,
                 clusters.dimensions.y as f32 / extracted_view.viewport.w as f32,
@@ -1763,6 +1791,7 @@ pub fn prepare_lights(
             ambient_light_affects_lightmapped_meshes: ambient_light.affects_lightmapped_meshes
                 as u32,
             n_rect_lights: 0,
+            ambient_directional: u32::from(directional_ambient.is_some()),
             rect_lights: [GpuRectLight::default(); MAX_RECT_LIGHTS],
         };
 
