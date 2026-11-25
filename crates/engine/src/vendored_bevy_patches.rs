@@ -570,11 +570,11 @@ fn the_near_and_object_lod_ambient_share_one_axis_map() {
     );
     // Object LOD under `skyrim` (#953): the Creation-axis slopes become runtime axes (X, Z, -Y), so
     // the dot with the runtime normal is `n.x * sx + n.y * sz - n.z * sy`, the near path's
-    // `(n.x, -n.z, n.y) . (sx, sy, sz)`. NEEDS 41 (pre-review) gives the same axes.
+    // `(n.x, -n.z, n.y) . (sx, sy, sz)`. NEEDS 41 (reviewed) gives the same axes.
     assert!(
         lod.contains("vec3(lighting.x.r, lighting.z.r, -lighting.y.r)"),
         "the object LOD rows changed their Creation-to-runtime axis map: change the near ambient \
-         with it (NEEDS 41, pre-review)"
+         with it (NEEDS 41, reviewed)"
     );
     // Object LOD under `mudcrab` keeps the older form of the same map.
     assert!(

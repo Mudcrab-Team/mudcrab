@@ -199,7 +199,9 @@ impl WeatherLighting {
     /// LOD material takes the same raw rows (`lod_object_material.rs`). Face order and axes are
     /// the object LOD path's too: slope X is `(face 1 - face 0) / 2`, Y is `(face 3 - face 2) / 2`
     /// and Z is `(face 5 - face 4) / 2`, applied to `(n.x, -n.z, n.y)` of the engine normal. NEEDS 41
-    /// (DALC face order) is pending: the face order matches the object LOD path.
+    /// (reviewed) gives the same face order and axes. The record's type names (`x_pos` and so on in
+    /// the converter schema, `max` and `min` in the type) are labels: this code uses the file order
+    /// F0 to F5 and the slope formula only.
     ///
     /// The cube's mean is therefore not [`Self::mean_ambient`], which decodes sRGB for the flat
     /// ambient of the `mudcrab` profile. The result is enabled. Use
@@ -2527,7 +2529,7 @@ mod tests {
         );
     }
 
-    /// NEEDS 41 (pre-review): the six `DALC` colours F0 to F5 in file order apply as F0 on -X, F1 on
+    /// NEEDS 41 (reviewed): the six `DALC` colours F0 to F5 in file order apply as F0 on -X, F1 on
     /// +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z, in Creation axes, with `ambient = mean +
     /// N . slope` and `slope = (F+ - F-) / 2` per axis. The engine's axes are Creation's
     /// `(x, y, z) -> (x, z, -y)`: Creation +Y is the engine's -Z and Creation +Z is the engine's
@@ -2564,8 +2566,7 @@ mod tests {
     /// is `AmbientCube::from_dalc(..).ambient_at(creation_normal)` on the record's bytes
     /// (`lod_object_material.rs`, `lod_object.wgsl`). For byte faces, with the engine normal turned
     /// into Creation axes as `(n.x, -n.z, n.y)`, the two agree for every normal, so a face order or
-    /// axis change on one path fails here. NEEDS 41 (DALC face order) is pending: the face order
-    /// matches the object LOD path.
+    /// axis change on one path fails here. NEEDS 41 (reviewed) gives the same face order and axes.
     #[test]
     fn the_near_cube_matches_the_object_lod_rows_by_normal() {
         use crate::world::environment::{DirectionalAmbient, interior::AmbientCube};
