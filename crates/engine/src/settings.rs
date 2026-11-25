@@ -232,14 +232,21 @@ impl Default for RenderingSettings {
     }
 }
 
+/// The settings menu status line before any load notice.
+const SETTINGS_STATUS_HINT: &str =
+    "Changes apply now except startup settings. Choose Save to keep them across runs.";
+
 impl RenderingSettings {
-    /// What Reset restores for this session. Only the grade depends on the running profile.
+    /// What Reset restores for this session. The grade and the visual profile row follow the
+    /// running profile, so Reset then Save under `skyrim` does not switch the next start to
+    /// `mudcrab`.
     pub fn profile_defaults(&self) -> Self {
         let mut defaults = Self::default();
         if self.running_skyrim {
             defaults.color_grade = crate::visual_profile::VisualProfile::Skyrim
                 .default_color_grade()
                 .index();
+            defaults.visual_profile = crate::visual_profile::VisualProfile::Skyrim.index();
             defaults.running_skyrim = true;
         }
         defaults
@@ -1050,8 +1057,7 @@ pub(crate) fn prepare_settings_at(
     let no_preferences_path = path.is_none();
     let mut file = SettingsFile {
         path,
-        status: "Changes apply now except startup settings. Choose Save to keep them across runs."
-            .into(),
+        status: SETTINGS_STATUS_HINT.into(),
         stored: RenderingSettings::default(),
         launch_overrides: config.settings_overrides.clone(),
         grass_coverage: None,
@@ -1107,9 +1113,15 @@ pub(crate) fn prepare_settings_at(
                                 default,
                                 "saved vertical field of view ignored; the horizontal default applies"
                             );
-                            file.status = format!(
+                            let fov = format!(
                                 "The saved vertical field of view was replaced by the horizontal default of {default} degrees."
                             );
+                            // Keep an earlier status line, such as the skyrim grade notice.
+                            file.status = if file.status == SETTINGS_STATUS_HINT {
+                                fov
+                            } else {
+                                format!("{} {fov}", file.status)
+                            };
                         }
                         if settings.color_grade
                             == crate::color_pipeline::SceneGradeMode::RecordSrgb.index()
@@ -3709,6 +3721,11 @@ mod tests {
         file.restore_defaults(&mut settings);
         assert_eq!(settings.color_grade, GRADE_OFF);
         assert!(settings.running_skyrim);
+        // Reset keeps the running profile, so a later Save does not switch to mudcrab.
+        assert_eq!(
+            settings.visual_profile,
+            crate::visual_profile::VisualProfile::Skyrim.index()
+        );
         assert!(!grade.is_modified(&settings));
         // The same menu under mudcrab still treats the approved grade as the default.
         let mut config = launch(&[]);
