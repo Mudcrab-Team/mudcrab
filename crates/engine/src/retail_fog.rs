@@ -824,6 +824,33 @@ mod tests {
         );
     }
 
+    /// Grass (the alpha-mask pass) leaves its fog to the composite and keeps its own `k`, so a grass
+    /// pixel gets `k` squared at `Fc = 0` (skyrim-research NEEDS 24, inferred, medium confidence). If
+    /// grass fogged itself in the blended-only mode it would be fogged twice.
+    #[test]
+    fn grass_skips_its_own_fog_under_the_composite_and_keeps_k() {
+        let grass = include_str!("shaders/grass.wgsl");
+        assert!(
+            grass.contains(
+                "if fog.mode == FOG_MODE_POWER_RAMP_BLENDED {\n        return input_color;\n    }"
+            ),
+            "grass.wgsl must skip apply_fog under the blended-only mode"
+        );
+        // Grass takes k from the same constant, when the camera has fog (the proxy for retail's
+        // non-zero fog distances).
+        assert!(
+            include_str!("grass_render.rs")
+                .contains("crate::output_scale::framebuffer_output_scale(!fogs.is_empty())")
+        );
+        // The retail net factor on a grass pixel with no fog and no SAO: k * k.
+        let grass_scale = crate::output_scale::framebuffer_output_scale(true);
+        close(
+            composite(0.4 * grass_scale, 1.0, 0.0, 0.6, k()),
+            0.4 * k() * k(),
+        );
+        close(k() * k(), 0.694_444);
+    }
+
     /// The blend is `src.rgb + dst.rgb * src.a` and leaves the alpha channel alone.
     #[test]
     fn the_blend_composes_the_formula_and_keeps_alpha() {
