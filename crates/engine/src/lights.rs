@@ -283,6 +283,14 @@ fn record_light_coverage(
     }
 }
 
+// STAND-IN(#999): retail gives one geometry at most 7 point lights (after the sun and up to 4
+// shadow lights), cut in the order of the geometry's own light list, not by distance. Bevy's
+// clustered forward lights loop over the lights of a cluster, not of a mesh, and the cluster
+// order is not attach order, so a per-fragment cap of 7 would cut arbitrarily and flicker as the
+// camera moves. Mudcrab keeps the nearest lights instead, so it uses more lights per geometry
+// than retail. Source: the NEEDS 20 findings,
+// [skyrim_decomp PR 1073](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1073).
+
 /// How many of the spawned lights are enabled at once. Bevy's clustered forward renderer draws
 /// every enabled light in a cluster it reaches, and the game's spaces hold whole halls of `LIGH`
 /// references, so the far ones are switched off rather than paid for.
@@ -400,6 +408,14 @@ fn retail_intensity_f64(fade: f32) -> f64 {
         * f64::from(fade)
 }
 
+impl LightEvaluation {
+    /// The distance dimmer, flicker and pulse state of this light (see [`crate::light_dynamics`]).
+    /// `seed` is the reference's form id.
+    pub fn dynamics(&self, seed: u32) -> crate::light_dynamics::LightDynamics {
+        crate::light_dynamics::LightDynamics::new(self, seed)
+    }
+}
+
 /// A [`PointLight`] that came from a Skyrim `LIGH` reference.
 ///
 /// The budget and the tests tell the game's lights from the engine's own by this marker: a
@@ -482,6 +498,7 @@ pub struct LightsPlugin;
 pub(crate) struct DeferredPointLight {
     pub light: PointLight,
     pub marker: SkyrimLight,
+    pub dynamics: crate::light_dynamics::LightDynamics,
 }
 
 fn activate_deferred_lights(
@@ -502,6 +519,7 @@ fn activate_deferred_lights(
             Name::new(format!("Light {:08X}", deferred.marker.form_id)),
             deferred.light,
             deferred.marker,
+            deferred.dynamics.clone(),
             crate::render::light_render_layers(),
         ));
     }
@@ -515,6 +533,10 @@ impl Plugin for LightsPlugin {
             .add_systems(
                 Update,
                 activate_deferred_lights.after(crate::settings_ui::SettingsUiSet),
+            )
+            .add_systems(
+                Update,
+                crate::light_dynamics::update_light_dynamics.after(activate_deferred_lights),
             )
             .add_systems(
                 PostUpdate,
@@ -801,6 +823,7 @@ mod tests {
                         cell_id: 2,
                         shadow_flagged: true,
                     },
+                    dynamics: evaluate_light(&light_row(512.0, 0), None).dynamics(1),
                 },
             ))
             .id();
@@ -849,6 +872,10 @@ mod tests {
             falloff: None,
             reference_data: None,
             radius_status: None,
+            flicker_period: None,
+            flicker_intensity_amplitude: None,
+            flicker_movement_amplitude: None,
+            reference_never_fades: false,
         }
     }
 

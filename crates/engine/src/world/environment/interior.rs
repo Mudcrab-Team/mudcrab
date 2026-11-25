@@ -206,9 +206,9 @@ impl AmbientCube {
 /// The selected light fade distances and their squares (RF-LIGHT-CPU-001: inheritance bit 0x400
 /// selects begin and end; RF-LIGHT-CPU-003: retail stores `begin^2` and `end^2` at 0x1433d3d34
 /// and 0x1433d3d38). Present only when both distances are present. The raw values stay in
-/// `Lighting::light_fade_begin` and `light_fade_end`. Reported only. Retail applies the fade only
-/// to a light whose BSLight `+0x63` flag is set (RF-LIGHT-CPU-007, see
-/// [`point_light_fade_factor`]).
+/// `Lighting::light_fade_begin` and `light_fade_end`. The distance dimmer uses the pair after
+/// [`resolve_light_fade`] replaces zero values. Retail applies the fade only to a light whose
+/// BSLight `+0x63` flag is set (RF-LIGHT-CPU-007, see [`point_light_fade_factor`]).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct LightFade {
     pub begin: f32,
@@ -228,16 +228,34 @@ impl LightFade {
     }
 }
 
+/// The light fade begin and end that the distance dimmer uses (NEEDS 20, skyrim_decomp PR 1073).
+///
+/// `stored` is the pair a room template or a cell carries, or `None` for the exterior. A stored
+/// begin of exactly 0.0 is replaced by `start_fade` (`fLightLODStartFade`), and a stored end of
+/// exactly 0.0 by `range + start_fade` (`fLightLODRange + fLightLODStartFade`). The exterior, with
+/// no override, uses `start_fade` and `start_fade + range`. A stored nonzero begin with a zero end
+/// therefore gets `range + start_fade`, which can be below the begin. The dimmer is then a step:
+/// 1 below `begin`, 0 at and beyond it (no ramp). What retail does for that pair is unverified;
+/// this follows the traced formula. The same replacement is applied to a room template's pair: the
+/// answer states it only for the cell initialiser, so that part is unverified.
+pub fn resolve_light_fade(stored: Option<(f32, f32)>, start_fade: f32, range: f32) -> LightFade {
+    let (begin, end) = stored.unwrap_or((start_fade, range + start_fade));
+    LightFade::new(
+        if begin == 0.0 { start_fade } else { begin },
+        if end == 0.0 { range + start_fade } else { end },
+    )
+}
+
 /// The retail point-light fade factor (RF-LIGHT-CPU-003, function 0x141575d20) with
 /// `q = |camera - light|^2 - r^2` (r: the light term at the same site): 1 if `q < begin^2`;
 /// `1 - (q - begin^2) / (end^2 - begin^2)` up to `end^2`; 0 (light off) beyond.
 /// Retail applies it only to a light whose per-light fade flag is set. That flag is BSLight
 /// `+0x63` (RF-LIGHT-CPU-007, high). It is set from the creation parameter byte 5, which is NOT
 /// (LIGH reference has REFR flag 0x00010000, "Never Fades"), and defaults to 1.
-/// NOT APPLIED to any light here: this function is reported only. The local-light path belongs
-/// to #488, which receives the resolved begin and end values and this flag rule.
+/// An `end^2` of exactly 0 gives 1 (NEEDS 20). `crate::lights` applies this to every placed light
+/// whose reference does not carry "Never Fades".
 pub fn point_light_fade_factor(q: f32, fade: &LightFade) -> f32 {
-    if q < fade.begin_squared {
+    if q < fade.begin_squared || fade.end_squared == 0.0 {
         1.0
     } else if q < fade.end_squared {
         1.0 - (q - fade.begin_squared) / (fade.end_squared - fade.begin_squared)
@@ -492,6 +510,10 @@ pub(crate) struct InteriorRender {
     /// The six DALC colours in record order, sRGB bytes.
     pub ambient_faces: [[u8; 3]; 6],
     pub fog: Option<CellFog>,
+    /// The stored light fade begin and end as the cell or the current room template carries them,
+    /// before the zero replacement of [`resolve_light_fade`]. `None` when the cell has no lighting
+    /// data: then the distance dimmer is 1 for every light (NEEDS 20, skyrim_decomp PR 1073).
+    pub light_fade: Option<(f32, f32)>,
 }
 
 impl InteriorRender {
@@ -509,6 +531,7 @@ impl InteriorRender {
                 .directional_ambient
                 .map_or([[0; 3]; 6], |dalc| dalc.colors),
             fog: CellFog::from_lighting(lighting),
+            light_fade: lighting.light_fade_begin.zip(lighting.light_fade_end),
         }
     }
 
@@ -525,6 +548,11 @@ impl InteriorRender {
         if let Some(fog) = self.fog.as_mut() {
             fog.near_color = lighting.fog_near_color.unwrap_or([0; 3]);
             fog.far_color = lighting.fog_far_color.unwrap_or([0; 3]);
+        }
+        // The room template's fade pair comes first (NEEDS 20: "current room lighting template,
+        // else interior cell fade pair"). A template without the pair leaves the cell's.
+        if let Some(pair) = lighting.light_fade_begin.zip(lighting.light_fade_end) {
+            self.light_fade = Some(pair);
         }
         self
     }
@@ -2070,6 +2098,40 @@ mod tests {
         assert_eq!(render.key_color, [0; 3]);
         assert_eq!(render.ambient_faces, [[0; 3]; 6]);
         assert_eq!(render.fog, None);
+    }
+
+    /// The light fade pair travels to the render values (NEEDS 20): the cell's stored pair, with no
+    /// pair for a cell without lighting data, and a room template's pair first.
+    #[test]
+    fn the_render_values_carry_the_cell_and_room_light_fade_pair() {
+        let catalog = rule_catalog();
+        let alvor = catalog.resolve_interior(ALVOR);
+        // The shipped Alvor cell stores 0/0: the dimmer later reads it as the INI pair.
+        let render = InteriorRender::new(&alvor.lighting, 1.5);
+        assert_eq!(render.light_fade, Some((0.0, 0.0)));
+        let no_lighting = InteriorRender::new(&Lighting::default(), 1.5);
+        assert_eq!(no_lighting.light_fade, None);
+        let with = |begin, end| crate::world::environment::LightingTemplate {
+            lighting: Lighting {
+                light_fade_begin: begin,
+                light_fade_end: end,
+                ..Lighting::default()
+            },
+            ..crate::world::environment::LightingTemplate::default()
+        };
+        // A template with both values replaces the cell's; one value, or none, leaves it.
+        let room = render.with_room_template(&with(Some(800.0), Some(1600.0)));
+        assert_eq!(room.light_fade, Some((800.0, 1600.0)));
+        assert_eq!(
+            render
+                .with_room_template(&with(Some(800.0), None))
+                .light_fade,
+            Some((0.0, 0.0))
+        );
+        assert_eq!(
+            no_lighting.with_room_template(&with(None, None)).light_fade,
+            None
+        );
     }
 
     #[test]

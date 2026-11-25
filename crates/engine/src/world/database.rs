@@ -120,6 +120,16 @@ pub struct LightRow {
     pub reference_data: Option<ReferenceLightRow>,
     /// Placing reference's XRDS state: 0 absent, 1 valid signed offset, 2 malformed.
     pub radius_status: Option<u8>,
+    /// `DATA` flicker period, raw (`flicker_period`); `None` in an older package.
+    pub flicker_period: Option<f32>,
+    /// `DATA` flicker/pulse intensity amplitude, raw; `None` in an older package.
+    pub flicker_intensity_amplitude: Option<f32>,
+    /// `DATA` flicker/pulse movement amplitude in Creation units, raw; `None` in an older package.
+    pub flicker_movement_amplitude: Option<f32>,
+    /// The placing reference carries the `Never Fades` header flag (`0x10000`). Retail then sets
+    /// the light's distance-fade flag off (`RF-LIGHT-CPU-007`, [retail registry](../../../../docs/research/retail/registry.md)). `false` for an older package
+    /// without reference header flags.
+    pub reference_never_fades: bool,
 }
 
 /// Raw XLIG inputs, not effective multipliers. NULL fields retain malformed/non-finite status.
@@ -1585,6 +1595,9 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 // reserved suffix so combining the optional door/emittance projections with enable state cannot
 // reinterpret either feature.
 const REFERENCE_ENABLE_START: usize = 37;
+/// `REFR` record header flag `0x10000`, "Never Fades": the light keeps full strength at any
+/// distance (`RF-LIGHT-CPU-007`).
+const REFERENCE_NEVER_FADES: u32 = 0x0001_0000;
 /// `ACHR` record header flag: the actor is placed as a corpse.
 const ACTOR_STARTS_DEAD: u32 = 0x200;
 
@@ -1803,6 +1816,12 @@ impl ReferenceQuery {
         let fade_column = optional_light_column("fade")?;
         let falloff_column = optional_light_column("falloff")?;
         let fade_status_column = optional_light_column("fade_status")?;
+        let flicker_columns = format!(
+            "{},{},{}",
+            optional_light_column("flicker_period")?,
+            optional_light_column("flicker_intensity_amplitude")?,
+            optional_light_column("flicker_movement_amplitude")?
+        );
         let light_data_count: usize = connection.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('reference_light_data') WHERE name IN \
              ('reference_id','data_size','fov_offset','fade_offset','end_distance_cap','shadow_depth_bias')",
@@ -1833,7 +1852,7 @@ impl ReferenceQuery {
             columns: format!(
                 "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
                  {door_columns},{emittance_columns},{reference_enable_columns},\
-                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column}"
+                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column},{flicker_columns}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
@@ -2233,6 +2252,12 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             color: [row.get(20)?, row.get(21)?, row.get(22)?],
             flags: row.get(23)?,
             radius_status: row.get(STATIC_FLAGS_INDEX + 9)?,
+            flicker_period: row.get(STATIC_FLAGS_INDEX + 10)?,
+            flicker_intensity_amplitude: row.get(STATIC_FLAGS_INDEX + 11)?,
+            flicker_movement_amplitude: row.get(STATIC_FLAGS_INDEX + 12)?,
+            reference_never_fades: row.get::<_, u32>(REFERENCE_ENABLE_START)?
+                & REFERENCE_NEVER_FADES
+                != 0,
             fade: row.get(STATIC_FLAGS_INDEX + 1)?,
             fade_status: row.get(STATIC_FLAGS_INDEX + 8)?,
             falloff: row.get(STATIC_FLAGS_INDEX + 2)?,
@@ -4523,6 +4548,10 @@ mod tests {
                 falloff: None,
                 reference_data: None,
                 radius_status: None,
+                flicker_period: None,
+                flicker_intensity_amplitude: None,
+                flicker_movement_amplitude: None,
+                reference_never_fades: false,
             })
         );
         assert_eq!(
