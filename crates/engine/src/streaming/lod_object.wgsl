@@ -214,7 +214,8 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
         // Registry `RF-LIGHT-GPU-004`.
         color = diffuse.rgb * light * view_bindings::view.exposure;
     }
-    // Fog: retail has no fog colour in this pixel shader for stock object LOD. The haze is the
+    // Fog: retail has no fog colour in this pixel shader for stock object LOD (unverified against
+    // a retail capture; see docs/specs/engine/visual-profiles.md). The haze is the
     // full-screen depth composite after the opaque stage (`retail_fog.rs`, #1004;
     // skyrim_decomp PR 1061 and 1077; docs/specs/engine/visual-profiles.md). Under the `skyrim`
     // profile that composite fogs this draw, and Bevy's shader fog skips it

@@ -387,7 +387,7 @@ fn update_object_lighting(
 /// There is no silent fallback. The material starts with zero rows and the retail shader has no
 /// other light source, so a world that lacks the clock, the catalog, the default weather or a
 /// climate sun timing draws its object LOD black until the inputs exist. Before the retail terms
-/// the Bevy sun still lit such a mesh. Retail worlds have climate timing, so this affects
+/// the Bevy sun still lit such a mesh. Converted packs have climate timing, so this affects
 /// fixtures, benchmarks and packs without environment tables.
 fn warn_unlit(config: &EngineConfig, unlit: &mut HashSet<u32>, world: u32, reason: &str) {
     if unlit.insert(world) {
