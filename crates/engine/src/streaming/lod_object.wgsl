@@ -158,9 +158,10 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     vertex_rgb = in.color.rgb;
 #endif
     let lit = object_lit(sun, ambient, diffuse.rgb, vertex_rgb);
-    // Fog: retail has no fog colour in this pixel shader. The haze of stock object LOD is the
-    // full-screen depth composite after the opaque stage (`retail_fog.rs`, #1004; skyrim_decomp
-    // NEEDS 17 answer, PR pending). Under the `skyrim` profile that composite fogs this draw, and
+    // Fog: retail has no fog colour in this pixel shader (unverified here; see
+    // docs/specs/engine/visual-profiles.md). The haze of stock object LOD is the full-screen depth
+    // composite after the opaque stage (`retail_fog.rs`, #1004; skyrim_decomp NEEDS 17 answer,
+    // PR pending). Under the `skyrim` profile that composite fogs this draw, and
     // Bevy's shader fog skips it (`FOG_MODE_POWER_RAMP_BLENDED`) because the material is in the
     // opaque or alpha-mask pass and has no transmission. Do not call `apply_fog` or a retail fog
     // tail here: that would fog twice. Under the `mudcrab` profile the composite does not run, and
