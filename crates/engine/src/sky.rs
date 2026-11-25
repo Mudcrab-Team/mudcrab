@@ -701,17 +701,22 @@ fn drive_sky_palette(
 /// Follows the game clock: sets the exterior sun colour and ambient colour from the active weather
 /// at the clock's hour (#653).
 ///
-/// Retail has no sun/moon switch and no night fade (RF-SUN-005, `skyrim_decomp#1003` G02). The night
+/// The static findings found no sun/moon switch and no night fade (RF-SUN-005,
+/// `skyrim_decomp#1003` G02, amended by `skyrim_decomp#1080`; unverified at run time). The night
 /// look comes from the record's `NAM0` Sunlight colour and the `DALC` cube in their night slots,
-/// mixed by the same day-part weights as the sky (`WeatherSky::lighting_at`). Only the colours change here. The sun's
-/// illuminance and the ambient brightness keep the scene's scale (`SUN_ILLUMINANCE`,
-/// `AMBIENT_ILLUMINANCE`), so the record's colour carries the darkness and no night factor exists.
+/// mixed by the same day-part weights as the sky (`WeatherSky::lighting_at`). Only the colours
+/// change here. The sun's illuminance and the ambient brightness keep the scene's scale
+/// (`SUN_ILLUMINANCE`, `AMBIENT_ILLUMINANCE`), so the record's colour carries the darkness and no
+/// night factor exists.
 ///
 /// This runs under the `skyrim` profile only. `mudcrab` keeps its fixed look. A weather that lacks
 /// one of these colours leaves the light as it is (the start-up report names what is missing). A
 /// sun that holds an interior key light (`ExteriorSunState`) is not touched, and the ambient stays
 /// with it: the interior system owns both until the player returns outside. Values are written
 /// only when they differ, so a frozen clock leaves both change ticks quiet.
+///
+/// The settings' sun colour and ambient colour controls have no lasting effect under `skyrim`,
+/// because this system rewrites both when the hour changes (#1006). The start-up note says so.
 pub(crate) fn drive_exterior_lighting(
     clock: Option<Res<crate::sun::GameClock>>,
     source: Option<Res<crate::color_pipeline::SceneGradeSource>>,

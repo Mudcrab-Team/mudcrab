@@ -35,8 +35,9 @@
 //!   gate byte starts closed in the image and its runtime writer is unverified, so Mudcrab applies
 //!   no override.
 //!
-//! - **Sun and ambient colour (verified, #653).** Retail has no sun/moon switch and no night
-//!   fade (`skyrim_decomp#1003` G02). The sun's colour is the `NAM0` Sunlight colour and the
+//! - **Sun and ambient colour (#653).** The static findings found no sun/moon switch and no
+//!   night fade (`skyrim_decomp#1003` G02, amended by `skyrim_decomp#1080`). This is a static
+//!   result with no runtime check, so the absence is unverified. The sun's colour is the `NAM0` Sunlight colour and the
 //!   ambient is the `DALC` cube, each mixed by the same [`slot_weights`]. Night darkness is the
 //!   record's night slot and nothing else. [`WeatherSky::lighting_at`] returns them. A weather
 //!   that lacks one of the eight values gives no lighting, and [`WeatherSky::lighting_omissions`]
@@ -320,6 +321,7 @@ impl WeatherSky {
     /// [`slot_weights`], as 8-bit sRGB like the sky colours. At noon this is the record's day
     /// slot, at midnight its night slot. `None` when the record lacks any sun colour or `DALC`
     /// block ([`Self::lighting_omissions`]): the caller keeps its own light and says so.
+    /// STAND-IN(#1007): one missing value drops the sun and the ambient together.
     ///
     /// The mix carries the whole night look. There is no night factor here: a dark night slot
     /// makes a dark sun and ambient when the caller multiplies by the scene's light scale.
@@ -687,5 +689,24 @@ mod tests {
         assert_eq!(bare.lighting_at(12.0), None);
         // A complete record lists nothing.
         assert!(lit_sky().lighting_omissions.is_empty());
+    }
+
+    #[test]
+    fn the_other_window_halves_mix_two_slots_half_and_half() {
+        // Independent of `slot_weights`: the sunrise colours run 5:00 to 10:00 (peak 7:30) and the
+        // sunset colours 16:00 to 21:00 (peak 18:30) for TIMING with the 0.5 h extension. Half way
+        // into each ramp two slots weigh 0.5 each. Slots: 0 sunrise, 1 day, 2 sunset, 3 night.
+        for (hour, a, b) in [(6.25, 3, 0), (8.75, 0, 1), (17.25, 1, 2)] {
+            let sun = lit_sky().lighting_at(hour).unwrap().sunlight.to_srgba();
+            for (c, got) in [sun.red, sun.green, sun.blue].into_iter().enumerate() {
+                let want = 0.5 * (f32::from(SUNLIGHT[a][c]) + f32::from(SUNLIGHT[b][c])) / 255.0;
+                assert!((got - want).abs() < 1e-5, "{hour}: {got} vs {want}");
+            }
+        }
+        // The window edges are a single slot.
+        assert_eq!(lit_sky().lighting_at(5.0), Some(slot_lighting(3)));
+        assert_eq!(lit_sky().lighting_at(10.0), Some(slot_lighting(1)));
+        assert_eq!(lit_sky().lighting_at(16.0), Some(slot_lighting(1)));
+        assert_eq!(lit_sky().lighting_at(21.0), Some(slot_lighting(3)));
     }
 }
