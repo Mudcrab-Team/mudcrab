@@ -170,13 +170,13 @@ skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24,
   with `k_r` 0.8333333 and `T = BloomThreshold + fGlobalBloomThresholdBoost`. Pass 1 is the
   horizontal blur. The `2k + 1` weights are the engine's stored tables, pinned in a test. The
   tonemap samples the result bilinearly.
-- **Unit mapping.** One retail unit is `AMBIENT_ILLUMINANCE` nits, and the sun is `pi *
-  AMBIENT_ILLUMINANCE * SunlightScale` lux (`lights.rs`). Bevy's exposure is `2^-EV100 / 1.2`. The
-  exposure that makes the linear scene value retail's raw input
-  ([skyrim_decomp#1059](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059)) is
-  `1 / AMBIENT_ILLUMINANCE`, which is EV100 `log2(AMBIENT_ILLUMINANCE / 1.2)`, about 10.15
-  (`retail_hdr::retail_scene_ev100`). The value comes from two constants that already existed. The
-  settings menu's EV100 row steers the `mudcrab` profile.
+- **Input scale.** STAND-IN(#796): the input scale of the chain, which waits for the near-lighting
+  specification (SPEC-1). One retail unit is taken to be `AMBIENT_ILLUMINANCE` = 12,000 / (pi x
+  2.8) nits, about 1,364, the scale the ambient light already uses (`retail_hdr::HDR_INPUT_SCALE_NITS`,
+  [skyrim_decomp#1059](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059)). Bevy's exposure is
+  `2^-EV100 / 1.2`, so the camera runs at EV100 about 10.15 (`retail_hdr::input_scale_ev100`). It is
+  Mudcrab's own scale, not a retail reading. No constant is fitted to a picture. The settings
+  menu's EV100 row steers the `mudcrab` profile.
 - **Image space.** Exterior: the weather's four `IMSP` day-part forms, mixed by the sky's day-part
   weights (current-weather share 1: the weather does not change). A day part with no form uses
   `DefaultImageSpace` (0x167). Interior: the cell's own link (XCIM, or 0x167 when it has none),

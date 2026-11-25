@@ -117,13 +117,13 @@ impl VisualProfile {
         }
     }
 
-    /// The camera exposure. `skyrim` uses the one that keeps Bevy's linear scene value equal to
-    /// retail's raw unit ([`crate::retail_hdr::retail_scene_ev100`]). The settings menu's EV100
-    /// row steers `mudcrab` only. `mudcrab` keeps the selected value.
+    /// The camera exposure. `skyrim` uses the fixed input scale of the retail HDR chain
+    /// ([`crate::retail_hdr::input_scale_ev100`], labelled there). The settings menu's EV100 row
+    /// steers `mudcrab` only. `mudcrab` keeps the selected value.
     pub fn scene_exposure_ev100(self, selected: f32) -> f32 {
         match self {
             Self::Mudcrab => selected,
-            Self::Skyrim => crate::retail_hdr::retail_scene_ev100(),
+            Self::Skyrim => crate::retail_hdr::input_scale_ev100(),
         }
     }
 

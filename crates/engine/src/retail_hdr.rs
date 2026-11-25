@@ -44,21 +44,22 @@
 //! default form when the cell has none, unless a cell flag selects the weather block. An exterior
 //! in a world space with a lighting template follows the interior rule (NEEDS 27).
 //!
-//! ## Unit mapping: Mudcrab's light units to retail's HDR target
+//! ## The input scale: Mudcrab's light units to retail's HDR target
 //!
-//! The retail terms below are from <https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059>.
+//! STAND-IN(#796): the input scale of the chain, the number of Bevy nits that count as one retail
+//! unit in the HDR target ([`HDR_INPUT_SCALE_NITS`]). It waits for the near-lighting
+//! specification (SPEC-1), which states retail's absolute scale from record byte to tonemap input.
 //!
-//! Retail shades in raw units: a surface lit by sun colour `c` at `SunlightScale` `s` is
-//! `albedo * c * s * N.L`, and ambient is `albedo * colour`. Mudcrab shades in Bevy's physical
-//! units and multiplies by the camera exposure. `lights.rs` already fixes the scene scale: one
-//! retail unit is [`crate::lights::AMBIENT_ILLUMINANCE`] nits (the ambient light), and the sun's
-//! illuminance is `pi * AMBIENT_ILLUMINANCE * SunlightScale` lux, so a sun-lit surface is
-//! `albedo * c * SunlightScale` nits per unit of that scale, as in retail. Bevy turns nits into
-//! the target value by `exposure = 2^-EV100 / 1.2`. Retail's target value is the raw unit, so the
-//! exposure that keeps the scene's linear values as retail's input is
-//! `exposure = 1 / AMBIENT_ILLUMINANCE`. That gives [`retail_scene_ev100`]
-//! `= log2(AMBIENT_ILLUMINANCE / 1.2)`. The value follows from two constants that already exist.
-//! No constant is fitted to a picture.
+//! The value and its reason. Retail shades in raw units
+//! (<https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059>): a surface lit by sun colour `c` at
+//! `SunlightScale` `s` is `albedo * c * s * N.L`, and ambient is `albedo * colour`. Mudcrab shades
+//! in Bevy's physical units and multiplies by the camera exposure `2^-EV100 / 1.2`. `lights.rs`
+//! already treats [`crate::lights::AMBIENT_ILLUMINANCE`] nits as one unit of ambient light, and
+//! sets the sun to `pi * AMBIENT_ILLUMINANCE * SUNLIGHT_SCALE` lux. The stand-in takes that same
+//! number as one unit, so the exposure is `1 / AMBIENT_ILLUMINANCE`
+//! ([`input_scale_ev100`], about 10.15) and no new constant enters. The scale it reuses is
+//! Mudcrab's own (12,000 lux / (pi x 2.8)), not a retail reading. No constant is fitted to a
+//! picture.
 //!
 //! ## What Mudcrab does differently from retail
 //!
@@ -121,11 +122,15 @@ pub const ADAPT_STEP_FLOOR: f32 = 1.0 / 256.0;
 /// The luminance weights of the shipped image-space shaders (NEEDS 18).
 pub const LUMINANCE_WEIGHTS: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
-/// The exposure that makes Bevy's linear scene value equal retail's raw unit: one retail unit is
-/// [`crate::lights::AMBIENT_ILLUMINANCE`] nits, and Bevy's exposure is `2^-EV100 / 1.2`. See the
-/// module notes, "Unit mapping", and <https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059>.
-pub fn retail_scene_ev100() -> f32 {
-    (crate::lights::AMBIENT_ILLUMINANCE / 1.2).log2()
+/// STAND-IN(#796): the input scale of the chain, in nits per retail unit, until SPEC-1 states it.
+/// The value is the ambient light's own scale, `AMBIENT_ILLUMINANCE` = 12,000 / (pi x 2.8), about
+/// 1,364 nits. See the module notes, "The input scale".
+pub const HDR_INPUT_SCALE_NITS: f32 = crate::lights::AMBIENT_ILLUMINANCE;
+
+/// The camera exposure that applies [`HDR_INPUT_SCALE_NITS`]: Bevy's exposure is
+/// `2^-EV100 / 1.2`, so `EV100 = log2(scale / 1.2)`, about 10.15.
+pub fn input_scale_ev100() -> f32 {
+    (HDR_INPUT_SCALE_NITS / 1.2).log2()
 }
 
 /// The INI keys of the chain, in `[Display]`. Every default is the compiled retail value.
@@ -1063,14 +1068,16 @@ mod tests {
         assert_eq!(adapt_step(0.7, f32::NAN, 0.9), 0.7);
     }
 
+    /// Pins the labelled input scale (STAND-IN(#796): the scale awaits SPEC-1), so a change to
+    /// it is deliberate.
     #[test]
-    fn the_scene_exposure_makes_one_retail_unit_one_linear_unit() {
-        let ev100 = retail_scene_ev100();
+    fn the_input_scale_exposure_makes_the_scale_one_linear_unit() {
+        let ev100 = input_scale_ev100();
         let exposure = (-ev100).exp2() / 1.2;
         close(
-            exposure * crate::lights::AMBIENT_ILLUMINANCE,
+            exposure * HDR_INPUT_SCALE_NITS,
             1.0,
-            "one retail unit of ambient is one linear unit after exposure",
+            "the input scale is one linear unit after exposure",
         );
         // The sun's illuminance is pi * AMBIENT * SunlightScale lux, so a sun-lit white surface is
         // SunlightScale in the target (NEEDS 18 Question 3,
@@ -1339,7 +1346,7 @@ mod tests {
         assert_eq!(VisualProfile::Mudcrab.scene_exposure_ev100(8.5), 8.5);
         assert_eq!(
             VisualProfile::Skyrim.scene_exposure_ev100(8.5),
-            retail_scene_ev100()
+            input_scale_ev100()
         );
     }
 
