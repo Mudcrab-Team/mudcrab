@@ -12,7 +12,7 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 | Profile | Pipeline |
 |---|---|
 | `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); shading and output still follow the `mudcrab` pipeline until P1c. |
+| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near-object shading and output still follow the `mudcrab` pipeline until P1c. Distant object LOD lighting uses the retail terms (#946), and the opaque scene is fogged by the retail composite (#891). |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.

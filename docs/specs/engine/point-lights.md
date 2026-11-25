@@ -358,8 +358,10 @@ Runs that must not move, such as an acceptance or benchmark baseline taken befor
 
 XLIG end-distance cap, shadow-mode cone angles and DATA falloff, cone/near clip, flicker movement (#1000), the
 per-geometry 7-light choice (#999), the retail output stage and the retail Lighting path (#706) remain open
-under #133/#264/#364. Light colours stay sRGB-decoded, as the sun and ambient colours are: the raw-colour
-Lighting path of the `skyrim` profile (#362, #706) owns that change. Interior environment selection is
+under #133/#264/#364. Light colours stay sRGB-decoded, as the near-object sun and ambient colours are: the raw-colour
+Lighting path of the `skyrim` profile (#362, #706) owns that change. Object LOD under `skyrim`
+already reads the weather sun and directional ambient colours raw (#946); see
+[lod-architecture.md](lod-architecture.md). Interior environment selection is
 separately owned.
 
 - **Shadow modes.** A shadow-flagged light is shadowed as an omnidirectional point light. Retail uses a spot

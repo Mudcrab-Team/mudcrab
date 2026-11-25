@@ -142,6 +142,20 @@ object path (`streaming/lod_objects.rs`) works as follows.
   signed RGB with blue as Z and transforms the result through the vertex basis for diffuse lighting.
   Both slots use clamp addressing and 16× anisotropy (skyrim_decomp#948). Older chunks and chunks
   with a missing atlas, failed load, or missing basis retain the standard material.
+- **Object LOD lighting (#946, skyrim_decomp#1003).** The lighting depends on the visual profile
+  (`visual-profiles.md`). Under `skyrim` the shader uses the retail terms on raw values:
+  `(sun + ambient) × diffuse × vertex colour`. Ambient is the weather directional ambient mean plus
+  the dot of the model-space normal with the three rows. The rows come from the creation-axis
+  slopes, mapped to runtime axes (X, Z, −Y) and rotated into model space with the transpose of the
+  normalised world columns. Sun is the saturated dot of the model-space normal and the rotated
+  to-sun vector, times the weather sunlight colour and the image-space sunlight scale. The mesh
+  has no point lights, no emission and no vertex-colour multiplier for technique 13 (white). The
+  normal is model space: the atlas basis is not rotated into the world. There is no exposure, no
+  engine illuminance and no cast shadow. Haze comes from the retail fog composite, so the
+  material stays in the opaque or alpha-mask pass without transmission. A world without the
+  default weather or climate timing is black and logged once. Under `mudcrab` the material keeps
+  the earlier terms: the engine ambient illuminance, the view exposure and the Bevy sun. The
+  near objects of both profiles use the engine light path (#1010).
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
   every file of every tier, and the shared atlas, is hash-checked, one IO-pool task per file. A bad row, a missing file
   or a wrong hash logs one error and turns object LOD off for the pack. No chunk is skipped on its
