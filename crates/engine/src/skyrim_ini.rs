@@ -147,6 +147,18 @@ fn expected_range(section: &str, key: &str) -> Option<String> {
             Some("a distance of 0 or more".into())
         }
         ("general", "fflickeringlightdistance") => Some("a distance above 0".into()),
+        ("display", "busefilmiccurve") | ("display", "busemultipleluminancereferences") => {
+            Some("0 or 1".into())
+        }
+        ("display", "freinhardwhitescale")
+        | ("display", "ffilmicwhitescale")
+        | ("display", "fglobaleyeadaptspeedscale")
+        | ("display", "fglobaleyeadaptstrengthscale")
+        | ("display", "fgamma") => Some("a positive number".into()),
+        ("display", "fglobalsaturationboost")
+        | ("display", "fglobalbrightnessboost")
+        | ("display", "fglobalcontrastboost")
+        | ("display", "fglobalbloomthresholdboost") => Some("a number".into()),
         _ => None,
     }
 }
@@ -182,6 +194,20 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
             Some(parse_fov(raw).is_some())
         }
         ("display", "fneardistance") => Some(parse_near_distance(raw).is_some()),
+        ("display", "busefilmiccurve") | ("display", "busemultipleluminancereferences") => {
+            Some(parse_flag(raw).is_some())
+        }
+        ("display", "freinhardwhitescale")
+        | ("display", "ffilmicwhitescale")
+        | ("display", "fglobaleyeadaptspeedscale")
+        | ("display", "fglobaleyeadaptstrengthscale")
+        | ("display", "fgamma") => Some(parse_positive(raw).is_some()),
+        ("display", "fglobalsaturationboost")
+        | ("display", "fglobalbrightnessboost")
+        | ("display", "fglobalcontrastboost")
+        | ("display", "fglobalbloomthresholdboost") => {
+            Some(raw.parse::<f32>().is_ok_and(f32::is_finite))
+        }
         ("display", "flightlodstartfade") | ("display", "flightlodrange") => {
             Some(parse_non_negative(raw).is_some())
         }
@@ -313,6 +339,59 @@ impl SkyrimIni {
             .map(|entry| entry.value.as_str())
     }
 
+    /// The `[Display]` keys of retail's HDR chain (`retail_hdr.rs`). A malformed value is reported
+    /// and leaves the compiled default.
+    fn apply_retail_hdr(&self, config: &mut EngineConfig) {
+        if let Some(raw) = self.get("Display", "bUseFilmicCurve") {
+            match parse_flag(raw) {
+                Some(value) => config.retail_hdr.filmic = value,
+                None => eprintln!("warning: ignoring bUseFilmicCurve={raw:?}; expected 0 or 1"),
+            }
+        }
+        if let Some(raw) = self.get("Display", "bUseMultipleLuminanceReferences") {
+            match parse_flag(raw) {
+                Some(value) => config.retail_hdr.multiple_luminance_references = value,
+                None => eprintln!(
+                    "warning: ignoring bUseMultipleLuminanceReferences={raw:?}; expected 0 or 1"
+                ),
+            }
+        }
+        let hdr = &mut config.retail_hdr;
+        for (key, setting) in [
+            ("fReinhardWhiteScale", &mut hdr.reinhard_white_scale),
+            ("fFilmicWhiteScale", &mut hdr.filmic_white_scale),
+            ("fGlobalEyeAdaptSpeedScale", &mut hdr.eye_adapt_speed_scale),
+            (
+                "fGlobalEyeAdaptStrengthScale",
+                &mut hdr.eye_adapt_strength_scale,
+            ),
+            ("fGamma", &mut hdr.gamma),
+        ] {
+            let Some(raw) = self.get("Display", key) else {
+                continue;
+            };
+            match parse_positive(raw) {
+                Some(value) => *setting = value,
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
+            }
+        }
+        for (key, setting) in [
+            ("fGlobalSaturationBoost", &mut hdr.saturation_boost),
+            ("fGlobalBrightnessBoost", &mut hdr.brightness_boost),
+            ("fGlobalContrastBoost", &mut hdr.contrast_boost),
+            ("fGlobalBloomThresholdBoost", &mut hdr.bloom_threshold_boost),
+        ] {
+            let Some(raw) = self.get("Display", key) else {
+                continue;
+            };
+            let parsed = raw.parse::<f32>().ok(); // silent-ok: the warning below reports it.
+            match parsed.filter(|value| value.is_finite()) {
+                Some(value) => *setting = value,
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected a number"),
+            }
+        }
+    }
+
     /// Apply terrain keys and retain the grass report. Grass runtime values apply
     /// only while grass is enabled and its imported draw flag permits it. Malformed
     /// values are reported and leave the corresponding configuration fields unchanged.
@@ -416,6 +495,7 @@ impl SkyrimIni {
                 None => eprintln!("warning: ignoring {key}={raw:?}; expected 0 or more"),
             }
         }
+        self.apply_retail_hdr(config);
         if let Some(raw) = self.get("General", "fFlickeringLightDistance") {
             match parse_positive(raw) {
                 Some(value) => config.flickering_light_distance = value,
@@ -659,6 +739,47 @@ mod tests {
             apply("[Display]\nfLightLODMaxStartFade=100\n").light_lod_start_fade,
             3500.0
         );
+    }
+
+    /// The `[Display]` keys of the retail HDR chain default to the compiled values and take the
+    /// INI. A malformed value keeps the default.
+    #[test]
+    fn retail_hdr_keys_default_to_retail_and_take_the_ini() {
+        let defaults = apply("").retail_hdr;
+        assert!(!defaults.filmic);
+        assert_eq!(defaults.reinhard_white_scale, 1.1);
+        assert_eq!(defaults.filmic_white_scale, 1.4);
+        assert_eq!(defaults.eye_adapt_speed_scale, 2.0);
+        assert_eq!(defaults.eye_adapt_strength_scale, 0.4);
+        assert_eq!(defaults.gamma, 1.0);
+        assert_eq!(defaults.saturation_boost, 0.0);
+        assert_eq!(defaults.bloom_threshold_boost, 0.0);
+        assert!(defaults.multiple_luminance_references);
+
+        let set = apply(
+            "[Display]\nbUseFilmicCurve=1\nfReinhardWhiteScale=1.25\nfFilmicWhiteScale=1.5\n\
+             fGlobalEyeAdaptSpeedScale=3\nfGlobalEyeAdaptStrengthScale=0.5\nfGamma=1.2\n\
+             fGlobalSaturationBoost=0.1\nfGlobalBrightnessBoost=-0.2\nfGlobalContrastBoost=0.3\n\
+             fGlobalBloomThresholdBoost=0.05\nbUseMultipleLuminanceReferences=0\n",
+        )
+        .retail_hdr;
+        assert!(set.filmic);
+        assert_eq!(set.reinhard_white_scale, 1.25);
+        assert_eq!(set.filmic_white_scale, 1.5);
+        assert_eq!(set.eye_adapt_speed_scale, 3.0);
+        assert_eq!(set.eye_adapt_strength_scale, 0.5);
+        assert_eq!(set.gamma, 1.2);
+        assert_eq!(set.saturation_boost, 0.1);
+        assert_eq!(set.brightness_boost, -0.2);
+        assert_eq!(set.contrast_boost, 0.3);
+        assert_eq!(set.bloom_threshold_boost, 0.05);
+        assert!(!set.multiple_luminance_references);
+
+        let bad = apply(
+            "[Display]\nbUseFilmicCurve=2\nfGamma=0\nfReinhardWhiteScale=abc\nfGlobalContrastBoost=inf\n",
+        )
+        .retail_hdr;
+        assert_eq!(bad, defaults);
     }
 
     #[test]

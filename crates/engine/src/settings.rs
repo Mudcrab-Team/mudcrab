@@ -1601,9 +1601,13 @@ pub(crate) fn apply_render_settings(
     for (entity, mut exposure, mut tone_map, mut msaa, mut projection, camera) in
         &mut targets.cameras
     {
-        exposure.ev100 = settings.exposure_ev100;
+        exposure.ev100 = config
+            .visual_profile
+            .scene_exposure_ev100(settings.exposure_ev100);
         if tone.mode == crate::tone_mapping::SceneToneMapMode::Tony {
-            *tone_map = TONE_MAPS[settings.tone_map];
+            *tone_map = config
+                .visual_profile
+                .display_tonemapping(TONE_MAPS[settings.tone_map]);
         }
         *msaa = MSAA_MODES[settings.msaa];
         // A shots or matched-route run frames each pose itself, from that pose's own angle.

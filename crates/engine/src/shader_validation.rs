@@ -223,7 +223,11 @@ fn format_defs(defs: &Definitions) -> String {
     }
 }
 
-fn compose(source: &str, file_path: &str, defs: Definitions) -> Result<wgpu::naga::Module, String> {
+pub(crate) fn compose(
+    source: &str,
+    file_path: &str,
+    defs: Definitions,
+) -> Result<wgpu::naga::Module, String> {
     // Bevy composes with the capabilities the device reports. Use all of them: this test checks
     // WGSL, not which device feature happens to be on.
     let mut composer = Composer::default().with_capabilities(Capabilities::all());

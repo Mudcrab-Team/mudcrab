@@ -12,7 +12,7 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 | Profile | Pipeline |
 |---|---|
 | `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near-object shading and output still follow the `mudcrab` pipeline until P1c. Distant object LOD lighting uses the retail terms (#946), and the opaque scene is fogged by the retail composite (#891). |
+| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near-object shading still follows the `mudcrab` pipeline until P1c. Distant object LOD lighting uses the retail terms (#946), the opaque scene is fogged by the retail composite (#891), and the output is retail's HDR chain: its own tonemap, eye adaptation and image-space grade, with no Bevy tone map (#796, #361). |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.
@@ -50,9 +50,11 @@ override. Its source note says it is not a Skyrim extraction, and retail has no 
 | Default grade mode | `snapshot-srgb` (the approved grade), unchanged | `off` |
 | Grade rows in the menu | shown for any mode except Off | *Grade mode* reads Off. The tuning rows stay hidden until the user picks a mode. |
 
-- The change touches only the grade toggle. The tonemapper (TonyMcMapface until #796 replaces it),
-  exposure and the retail curve fields do not change. Off sets `post.enabled` to 0 and leaves the
-  Bevy tonemapping alone.
+- The change touches only the grade toggle. Off sets `post.enabled` to 0. (When this section was
+  written the tonemapper was still TonyMcMapface with a fixed EV100 of 9.7. The retail HDR chain
+  below replaced both under `skyrim`.) Retail's own saturation, tint, brightness and contrast
+  come from the image space inside the HDR chain. The artistic grade is a separate stage that a
+  user can still select after it.
 - Saved settings keep one `color_grade` value for the `mudcrab` profile and a separate
   `skyrim_color_grade` for `skyrim`. A file from an older build has no `skyrim_color_grade`, so a
   `skyrim` start uses Off whatever `color_grade` holds. The status line says so.
@@ -105,7 +107,8 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
   field has no fog property: no pass.
   - **Stand-ins and omissions.** `A = 1`, STAND-IN(#995): factor one replaces the retail SAO texture, which Mudcrab has no pass for. The SSR term of `L` is
     omitted: Mudcrab's water reflection is a separate pass that draws after this one. The outer
-    `saturate` is omitted: the frame is still HDR and uses the `mudcrab` tone curve until P1c.
+    `saturate` is a separate draw right after this pass (see "Retail HDR chain"), because this
+    pass is a blend and cannot clip.
     The retail depth rescale `d' = 1.01 * d - 0.01` is not copied: retail's `z` is about 1 percent
     below the true view depth near the camera, and Mudcrab uses the true depth (skyrim-research
     NEEDS 17b, unreviewed; open until a capture confirms it).
@@ -122,6 +125,85 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
   distance is ever filled in.
 - A run without a world database (a fixture) has no weather record and keeps the built-in
   `SkyrimClear` day palette in both profiles.
+
+## Retail HDR chain (#796, #361)
+
+Under `skyrim` the output stage is retail's, in `crates/engine/src/retail_hdr.rs`,
+`retail_hdr_chain.rs`, `retail_hdr_render.rs` and the shaders `retail_hdr*.wgsl`. Bevy's tone map is
+off (`Tonemapping::None`) and the camera exposure is fixed. `mudcrab` is unchanged. Facts:
+skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24, 25, 26 and 27
+(reviewed), all static readings of 1.7.104.0. No capture confirms a value. Public sources:
+[skyrim_decomp#1059](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059) and the
+[output transfer trace](../../../research_notes/Skyrim%20native%20tone%20mapping/output_transfer_trace.md).
+
+| Order | Stage | Where |
+|---|---|---|
+| 1 | Lit scene and fog composite (`retail_fog.rs`) | opaque stage |
+| 2 | Saturate of the composite's own output: a Min blend of 1.0, before the blended stages, on views that draw the composite | `retail_hdr_saturate.wgsl` |
+| 3 | Blended draws (water, effects), which can add light above 1 | Bevy |
+| 4 | 4-tap downsample, luminance steps and the adapt draw into the 2 by 2 pair | `retail_hdr_chain.wgsl` |
+| 5 | Bloom: bright pass with vertical blur, horizontal blur, at quarter size | `retail_hdr_chain.wgsl` |
+| 6 | Luminance tonemap, bloom add, saturation, tint, brightness and contrast, saturate, power `1 / fGamma`, fade | `retail_hdr_tonemap.wgsl` |
+
+- **Tonemap.** `Ls = L * A.y / A.x`. Reinhard by default: `Lt = Ls (1 + Ls W2) / (1 + Ls)`, `W2 =
+  1 / (1.1 White)^2`. The filmic curve (white scale 1.4) only when `bUseFilmicCurve` is 1. Then
+  `colour = c * Lt / L + b * saturate(ReceiveBloomThreshold - Lt)`, saturation about the colour's
+  luminance, the tint toward `L1 * tint`, then `contrast * (brightness * colour - A.x) + A.x`
+  (multipliers, neutral 1, pivot the adapted x value), `saturate`, `pow(1 / fGamma)` and the fade.
+  The worked check of NEEDS 18 is a unit test: Reinhard, White 1.0, `A` 0.5 maps (0.5, 0.5, 0.5)
+  to 0.4710744 and (2.0, 1.0, 0.25) to (1.0, 0.9068539, 0.2267135).
+- **Luminance chain.** The first target is `max(ceil(W / 4), 2)` by `max(ceil(H / 4), 2)`, a 4-tap
+  downsample (offsets of one source texel, bilinear). The next step takes the luminance with the
+  same 4 taps. Later steps take 16 taps (-1.5 to 1.5 source texels, nearest) and divide by 4 again
+  until 2 by 2. The average is linear.
+- **Adaptation.** With an adapted pair, the adapt draw replaces the last step: it takes the 16 taps
+  (bilinear) and moves each channel by `sign(d) * min(|d|, max(|d * rate|, 1/256))`. Rates:
+  `y = 1 - max(1 - 0.01 S, 0)^E`, `x = 1 - max(1 - 0.01 S / K, 0)^E`, with `S = 2.0 *
+  EyeAdaptSpeed`, `K = 0.4 * EyeAdaptStrength` and `E = 30 T`. `T` is the smoothed real frame time:
+  `(sum - min(largest, 0.05) - smallest) / 6` over the last 8 frame times, with a raw time above
+  1/6 s counted as 1/6 s. On the first frame, and after the targets are rebuilt, the adapt draw is
+  skipped and the pair is the current luminance, so the ratio is exactly 1. The tonemap samples the
+  pair bilinearly at the screen coordinate. `bUseMultipleLuminanceReferences` 0 gives a 1 by 1
+  pair. Retail's pause timer (0.3) is never selected: there is no pause menu.
+- **Bloom.** `k = clamp(trunc(BloomBlurRadius), 1, 7)`. Pass 0 reads the first downsample at
+  `(W >> 2) x (H >> 2)`: `k_r * BloomScale * sum w * max(c / k_r - T, 0)` per channel, vertical,
+  with `k_r` 0.8333333 and `T = BloomThreshold + fGlobalBloomThresholdBoost`. Pass 1 is the
+  horizontal blur. The `2k + 1` weights are the engine's stored tables, pinned in a test. The
+  tonemap samples the result bilinearly.
+- **Unit mapping.** One retail unit is `AMBIENT_ILLUMINANCE` nits, and the sun is `pi *
+  AMBIENT_ILLUMINANCE * SunlightScale` lux (`lights.rs`). Bevy's exposure is `2^-EV100 / 1.2`. The
+  exposure that makes the linear scene value retail's raw input
+  ([skyrim_decomp#1059](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059)) is
+  `1 / AMBIENT_ILLUMINANCE`, which is EV100 `log2(AMBIENT_ILLUMINANCE / 1.2)`, about 10.15
+  (`retail_hdr::retail_scene_ev100`). The value comes from two constants that already existed. The
+  settings menu's EV100 row steers the `mudcrab` profile.
+- **Image space.** Exterior: the weather's four `IMSP` day-part forms, mixed by the sky's day-part
+  weights (current-weather share 1: the weather does not change). A day part with no form uses
+  `DefaultImageSpace` (0x167). Interior: the cell's own link (XCIM, or 0x167 when it has none),
+  unless the cell flags select the weather block. An exterior in a world space with a lighting
+  template follows the interior rule for the cell under the camera. A record that lacks a field
+  takes the constructor default (`HdrBlock::IMGS_CONSTRUCTOR_DEFAULT`), and the log names every
+  defaulted field, missing record and reason. STAND-IN(#361): the constructor default replaces a
+  value the record lacks.
+- **Output transfer.** Retail writes the value to an `R8G8B8A8_UNORM` backbuffer with no transfer
+  function ([output transfer trace](../../../research_notes/Skyrim%20native%20tone%20mapping/output_transfer_trace.md)).
+  Mudcrab's surface encodes sRGB on write, so the pass stores the linear decode of the display value
+  and the byte that reaches the screen equals retail's. The chain targets are `Rgba16Float`, retail's
+  `Ultra` format.
+- **INI.** `[Display]`: `bUseFilmicCurve`, `bUseMultipleLuminanceReferences`, `fReinhardWhiteScale`,
+  `fFilmicWhiteScale`, `fGlobalEyeAdaptSpeedScale`, `fGlobalEyeAdaptStrengthScale`, `fGamma`, the
+  three global boosts and `fGlobalBloomThresholdBoost`. The defaults are the compiled retail values.
+  `Ultra.ini` sets only `bUse64bitsHDRRenderTarget`.
+- **Not applied.** IMAD modifiers and `SetHDRParam`, room image spaces and their cross-fade, the
+  map-menu boosts, a screen fade, and the `ClearAdaptedLight` requests from the sky, menus and
+  player moves. Interiors have no composite, so they are not saturated. Retail's no-fog composite
+  record 49 has no `k`, while the fog records 51 and 53 apply `k` even at `Fc = 0`.
+- **Not done here.** The sun and ambient colours are decoded from sRGB by Bevy's light colour while
+  textures are raw, so the scene is not raw end to end (see PR 1013, "Open"). The sun's illuminance
+  uses the fixed `SUNLIGHT_SCALE` (2.8) and not the image space's `SunlightScale`.
+- **Tests.** Unit tests cover the arithmetic. `retail_hdr_gpu_matches_the_cpu_reference` runs the
+  shaders on a headless GPU against a CPU reference; it is ignored by default (run it with
+  `--ignored`).
 
 ## Receipts
 

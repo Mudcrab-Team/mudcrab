@@ -104,6 +104,29 @@ impl VisualProfile {
         }
     }
 
+    /// The Bevy display transform a scene camera runs. `skyrim` runs none: retail's own tonemap
+    /// pass (`retail_hdr.rs`) is the only transform, so Bevy's is `None`. `mudcrab` keeps the
+    /// selected one.
+    pub fn display_tonemapping(
+        self,
+        selected: bevy::core_pipeline::tonemapping::Tonemapping,
+    ) -> bevy::core_pipeline::tonemapping::Tonemapping {
+        match self {
+            Self::Mudcrab => selected,
+            Self::Skyrim => bevy::core_pipeline::tonemapping::Tonemapping::None,
+        }
+    }
+
+    /// The camera exposure. `skyrim` uses the one that keeps Bevy's linear scene value equal to
+    /// retail's raw unit ([`crate::retail_hdr::retail_scene_ev100`]). The settings menu's EV100
+    /// row steers `mudcrab` only. `mudcrab` keeps the selected value.
+    pub fn scene_exposure_ev100(self, selected: f32) -> f32 {
+        match self {
+            Self::Mudcrab => selected,
+            Self::Skyrim => crate::retail_hdr::retail_scene_ev100(),
+        }
+    }
+
     /// The first explicit launch option that belongs to another profile, with the reason.
     pub fn foreign_option<'a>(
         self,

@@ -53,8 +53,10 @@ pub const LIGHT_FLAG_NEGATIVE: u32 = 0x0000_0004;
 /// Global environment policy, independent of the local-light compatibility transform.
 pub const AMBIENT_ILLUMINANCE: f32 = SUN_ILLUMINANCE / (core::f32::consts::PI * SUNLIGHT_SCALE);
 
-/// The sun's illuminance in the world path, in lux. With the scene's EV100 of 9.7 this puts a
-/// white surface facing the sun at about 3.8 in linear radiance before tone mapping.
+/// The sun's illuminance in the world path, in lux. With the `mudcrab` profile's EV100 of 9.7 this
+/// puts a white surface facing the sun at about 3.8 in linear radiance before tone mapping. Under
+/// `skyrim` the exposure is `retail_hdr::retail_scene_ev100` (about 10.15), which makes it
+/// `SUNLIGHT_SCALE` (2.8) and one unit of ambient exactly 1.
 pub const SUN_ILLUMINANCE: f32 = 12_000.0;
 
 /// How much brighter than the ambient cube Skyrim's `SunlightScale` makes the sun's colour
