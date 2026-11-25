@@ -152,7 +152,7 @@ Mudcrab reproduces them in two parts:
 2. **Intensity.** `retail_intensity(fade) = 4 pi^2 x AMBIENT_ILLUMINANCE x fade` lumens. Bevy divides lumens
    by `4 pi` and the diffuse BRDF supplies `1 / pi`, so a unit-fade light puts `albedo x colour x
    AMBIENT_ILLUMINANCE` nits on a surface at its centre. The scene already shades one retail unit as
-   `AMBIENT_ILLUMINANCE` nits: the interior ambient light is that brightness times the DALC mean, and the key
+   `AMBIENT_ILLUMINANCE` nits: the interior ambient light is that brightness times the DALC mean (under `skyrim`, times the DALC cube by normal), and the key
    light is `pi x AMBIENT_ILLUMINANCE x SunlightScale` lux. A point light on the same scale keeps retail's scalar
    ratios between point, ambient and sun light. The result does not depend on the radius.
 

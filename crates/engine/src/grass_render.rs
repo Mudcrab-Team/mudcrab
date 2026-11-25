@@ -1114,11 +1114,9 @@ impl GrassLightUnits {
     /// so grass gets the raw ambient. The factor sits in the uniform, not in the shader, so the
     /// `mudcrab` profile stays byte-identical and the pinned shader fixture is unchanged.
     ///
-    /// Retail grass is the reference here, not the near meshes. A Bevy standard material gets
-    /// `EnvBRDFApprox(albedo, F_AB(1, NdotV)) * ambient`, about `0.4524 * albedo * ambient` at
-    /// full roughness, so near meshes get less ambient than retail. That is a defect of the
-    /// near path, tracked in #1010. It is not copied into grass. Until it is fixed, grass is
-    /// brighter in shade than the terrain under it. Whether retail's grass `NiLight.ambient` is
+    /// The near meshes take the same unit: under `skyrim` their ambient term adds
+    /// `albedo * ambient` from the directional cube with no `EnvBRDFApprox` scale (#1010), and grass
+    /// takes the cube's mean ([`grass_ambient_colour`]). Whether retail's grass `NiLight.ambient` is
     /// the same value as the near Lighting ambient is unverified.
     pub(crate) fn ambient(self, colour: [f32; 4], brightness: f32) -> Vec4 {
         let factor = if self.retail {

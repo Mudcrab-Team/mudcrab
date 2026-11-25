@@ -205,6 +205,26 @@ skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24,
   shaders on a headless GPU against a CPU reference; it is ignored by default (run it with
   `--ignored`).
 
+## Near directional ambient (#1010)
+
+Retail's near Lighting shader adds the `DALC` cube per pixel normal to the diffuse sum, as a mean
+plus linear slopes, and nothing scales it (skyrim-research NEEDS 26). The face order is F0 on -X,
+F1 on +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z in Creation axes (NEEDS 41, reviewed).
+
+Under `skyrim` the engine writes the cube (`DirectionalAmbientCube`, a vendored `bevy_pbr`
+resource) from the weather by game hour outside, and from the cell or room template inside. The
+values are the record bytes divided by 255, with no sRGB decode, as for object LOD. The diffuse
+part is `albedo * ambient` with no `EnvBRDFApprox` scale. Bevy's specular ambient part is kept:
+no retail counterpart is known. Grass takes the cube's mean. `mudcrab` keeps its flat ambient.
+
+Known differences:
+
+- The near scene shades one retail unit as `AMBIENT_ILLUMINANCE` nits, which is about 1.37 after
+  the camera exposure. Object LOD writes one retail unit as 1.0. The two paths therefore differ
+  by that factor with equal inputs.
+- The sun, the interior key light and the point lights are still decoded from sRGB, while the
+  ambient is raw.
+
 ## Receipts
 
 Every receipt names the profile it describes:
