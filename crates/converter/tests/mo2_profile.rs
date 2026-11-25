@@ -452,7 +452,7 @@ async fn script_content_change_rebuilds_output_without_changing_mo2_identity() {
     write(
         &instance,
         "overwrite/scripts/hash-source.pex",
-        &dummy_content::pex::minimal("FirstSource").unwrap(),
+        dummy_content::pex::minimal("FirstSource").unwrap(),
     );
 
     let first = run(config.clone(), Cancellation::new()).await.unwrap();
