@@ -2661,7 +2661,7 @@ fn retail_cascade_bounds(
 /// and keeps the identity rotation; no direction is invented. Retail worlds always carry climate
 /// timing, so this is not retail behaviour: it affects only fixtures and benchmarks (a test-only
 /// path).
-fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
+pub(crate) fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
     let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
         return match direction {
             Some(direction) => Quat::from_rotation_arc(Vec3::Z, direction),

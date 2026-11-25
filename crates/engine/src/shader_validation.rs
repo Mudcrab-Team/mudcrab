@@ -691,6 +691,426 @@ fn object_lod_shader_uses_signed_rgb_without_reconstructing_blue() {
     compose(source, "lod_object.wgsl", defs).unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// Replace whole-word occurrences of `from`, so `x` does not change `max` or `x_ray`.
+fn replace_word(text: &str, from: &str, to: &str) -> String {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(from) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + from.len()..].chars().next();
+        out.push_str(&rest[..at]);
+        if before.is_some_and(is_word) || after.is_some_and(is_word) {
+            out.push_str(from);
+        } else {
+            out.push_str(to);
+        }
+        rest = &rest[at + from.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// One call of a single-`return` WGSL function, as const declarations. Each parameter becomes
+/// `const <prefix>_<name> = <argument>;` and the result `const <prefix>_result = <expression>;`.
+/// Naga evaluates const expressions and `const_assert` at parse time, so a fixture built from these
+/// checks the arithmetic of the shipped function body without a GPU.
+fn const_call(source: &str, function: &str, prefix: &str, arguments: &[&str]) -> String {
+    let (_, rest) = source
+        .split_once(&format!("fn {function}("))
+        .unwrap_or_else(|| panic!("{function} is not in the shader"));
+    let (parameters, rest) = rest.split_once(") ->").expect("function signature");
+    let body = rest.split_once('{').expect("function body").1;
+    let expression = body
+        .trim_start()
+        .strip_prefix("return ")
+        .and_then(|body| body.split_once(';'))
+        .unwrap_or_else(|| panic!("{function} must be a single return"))
+        .0;
+    let names: Vec<&str> = parameters
+        .split(',')
+        .filter_map(|parameter| parameter.split(':').next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert_eq!(names.len(), arguments.len(), "{function} parameters");
+    let mut expression = expression.to_owned();
+    let mut declarations = String::new();
+    for (name, argument) in names.iter().zip(arguments) {
+        expression = replace_word(&expression, name, &format!("{prefix}_{name}"));
+        declarations.push_str(&format!("const {prefix}_{name} = {argument};\n"));
+    }
+    declarations.push_str(&format!("const {prefix}_result = {expression};\n"));
+    declarations
+}
+
+fn assert_const_fixture(fixture: &str) {
+    wgpu::naga::front::wgsl::parse_str(fixture)
+        .unwrap_or_else(|error| panic!("{}", error.emit_to_string(fixture)));
+}
+
+/// The uniform struct as a WGSL fixture value. Fields in order: mean, x, y, z, sun direction,
+/// sun RGB, profile.
+fn lighting_fixture(source: &str, fields: [&str; 7]) -> String {
+    let declaration = source
+        .split_once("struct ObjectLighting {")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .expect("ObjectLighting struct")
+        .0;
+    assert_eq!(
+        declaration.matches("vec4<f32>").count(),
+        7,
+        "ObjectLighting fields changed"
+    );
+    format!(
+        "struct ObjectLighting {{{declaration}\n}}\nconst lighting_value = ObjectLighting({});\n",
+        fields.join(", ")
+    )
+}
+
+/// The vertex stage builds the ambient rows with `retail_ambient_rows`: each channel's creation
+/// slopes (`x`, `y`, `z` rows of that channel) become runtime axes (X,Z,-Y) and rotate into model
+/// space with the normalised world columns. The fixture gives every channel and axis a different
+/// value, so a swapped row, a swapped column or a dropped normalisation changes the result.
+#[test]
+fn object_lod_vertex_rows_follow_the_axis_map_and_the_model_rotation() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    let mut fixture = lighting_fixture(
+        source,
+        [
+            "vec4(0.0)",
+            "vec4(0.1, 0.2, 0.3, 0.0)",
+            "vec4(0.4, 0.5, 0.6, 0.0)",
+            "vec4(0.7, 0.8, 0.9, 0.0)",
+            "vec4(0.6, 0.8, 0.0, 0.0)",
+            "vec4(0.0)",
+            "vec4(1.0, 0.0, 0.0, 0.0)",
+        ],
+    );
+    // Identity rotation. Red slopes (x, y, z) = (0.1, 0.4, 0.7) map to runtime (0.1, 0.7, -0.4).
+    fixture.push_str(&const_call(
+        source,
+        "retail_ambient_rows",
+        "id",
+        &[
+            "lighting_value",
+            "vec3(1.0, 0.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.0, 1.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert id_result[0].x == 0.1 && id_result[0].y == 0.7 && id_result[0].z == -0.4;
+         const_assert id_result[1].x == 0.2 && id_result[1].y == 0.8 && id_result[1].z == -0.5;
+         const_assert id_result[2].x == 0.3 && id_result[2].y == 0.9 && id_result[2].z == -0.6;
+",
+    );
+    // A model turned so its x axis points along world -Z and its z axis along world +X, with a
+    // uniform scale of 2 on the columns. Normalisation makes the scale drop out. The red runtime
+    // vector (0.1, 0.7, -0.4) reads as (0.4, 0.7, 0.1) in the model.
+    fixture.push_str(&const_call(
+        source,
+        "retail_ambient_rows",
+        "turn",
+        &[
+            "lighting_value",
+            "vec3(0.0, 0.0, -2.0)",
+            "vec3(0.0, 2.0, 0.0)",
+            "vec3(2.0, 0.0, 0.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert turn_result[0].x == 0.4 && turn_result[0].y == 0.7 && turn_result[0].z == 0.1;
+         const_assert turn_result[1].x == 0.5 && turn_result[1].y == 0.8 && turn_result[1].z == 0.2;
+         const_assert turn_result[2].x == 0.6 && turn_result[2].y == 0.9 && turn_result[2].z == 0.3;
+",
+    );
+    // The to-sun vector uses the same rotation. It is the `sun_direction` field, not a slope row.
+    fixture.push_str(&const_call(
+        source,
+        "retail_sun_direction",
+        "sun_id",
+        &[
+            "lighting_value",
+            "vec3(1.0, 0.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.0, 1.0)",
+        ],
+    ));
+    fixture.push_str(&const_call(
+        source,
+        "retail_sun_direction",
+        "sun_turn",
+        &[
+            "lighting_value",
+            "vec3(0.0, 0.0, -2.0)",
+            "vec3(0.0, 2.0, 0.0)",
+            "vec3(2.0, 0.0, 0.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert sun_id_result.x == 0.6 && sun_id_result.y == 0.8 && sun_id_result.z == 0.0;
+         const_assert sun_turn_result.x == 0.0 && sun_turn_result.y == 0.8 && sun_turn_result.z == 0.6;
+",
+    );
+    assert_const_fixture(&fixture);
+
+    // The vertex stage routes the three columns of the rows and the sun vector to the interpolants,
+    // and passes the world columns unnormalised (the helpers normalise).
+    for line in [
+        "let rows = retail_ambient_rows(\n            lighting, world[0].xyz, world[1].xyz, world[2].xyz,\n        );",
+        "out.ambient_r = rows[0];",
+        "out.ambient_g = rows[1];",
+        "out.ambient_b = rows[2];",
+        "out.sun_direction = retail_sun_direction(\n            lighting, world[0].xyz, world[1].xyz, world[2].xyz,\n        );",
+    ] {
+        assert!(source.contains(line), "vertex wiring changed: {line}");
+    }
+}
+
+/// The ambient dot: the rows dot with the model-space normal and add the mean, with no clamp.
+/// An upward normal at the identity rotation reads `mean + the z slope`.
+#[test]
+fn object_lod_ambient_is_mean_plus_the_rotated_slope_dot() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    let mut fixture = lighting_fixture(
+        source,
+        [
+            "vec4(0.5, 0.0, 0.0, 0.0)",
+            "vec4(0.25, 0.0, 0.0, 0.0)",
+            "vec4(0.5, 0.0, 0.0, 0.0)",
+            "vec4(0.125, 0.0, 0.0, 0.0)",
+            "vec4(0.0)",
+            "vec4(0.0)",
+            "vec4(1.0, 0.0, 0.0, 0.0)",
+        ],
+    );
+    fixture.push_str(&const_call(
+        source,
+        "retail_ambient_rows",
+        "id",
+        &[
+            "lighting_value",
+            "vec3(1.0, 0.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.0, 1.0)",
+        ],
+    ));
+    for (name, normal) in [
+        ("up", "vec3(0.0, 1.0, 0.0)"),
+        ("east", "vec3(1.0, 0.0, 0.0)"),
+        ("south", "vec3(0.0, 0.0, 1.0)"),
+    ] {
+        fixture.push_str(&const_call(
+            source,
+            "object_ambient",
+            name,
+            &[
+                "vec3(0.5, 0.0, 0.0)",
+                "id_result[0]",
+                "id_result[1]",
+                "id_result[2]",
+                normal,
+            ],
+        ));
+    }
+    // Runtime +Y is creation +Z (slope 0.125). Runtime +X is creation +X (0.25). Runtime +Z is
+    // creation -Y, so it reads minus the creation Y slope (0.5).
+    fixture.push_str(
+        "const_assert up_result.x == 0.625 && up_result.y == 0.0 && up_result.z == 0.0;
+         const_assert east_result.x == 0.75;
+         const_assert south_result.x == 0.0;
+",
+    );
+    // The dot is not clamped: a negative slope term can pull the ambient below the mean.
+    fixture.push_str(&const_call(
+        source,
+        "object_ambient",
+        "dark",
+        &[
+            "vec3(0.125)",
+            "vec3(0.0, -0.5, 0.0)",
+            "vec3(0.0)",
+            "vec3(0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+        ],
+    ));
+    fixture.push_str("const_assert dark_result.x == -0.375;\n");
+    assert_const_fixture(&fixture);
+}
+
+/// The sun term is the saturated normal dot times the RGB. The light sum multiplies diffuse and
+/// then vertex RGB. A mesh without vertex colour (technique 13) supplies white.
+#[test]
+fn object_lod_sun_and_lit_follow_the_retail_term_order() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    let mut fixture = String::new();
+    fixture.push_str(&const_call(
+        source,
+        "object_sun",
+        "lit_face",
+        &[
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.5, 0.0)",
+            "vec3(2.0, 1.0, 0.5)",
+        ],
+    ));
+    fixture.push_str(&const_call(
+        source,
+        "object_sun",
+        "back_face",
+        &[
+            "vec3(0.0, -1.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(2.0, 1.0, 0.5)",
+        ],
+    ));
+    fixture.push_str(&const_call(
+        source,
+        "object_sun",
+        "over_unit",
+        &["vec3(0.0, 1.0, 0.0)", "vec3(0.0, 2.0, 0.0)", "vec3(1.0)"],
+    ));
+    // Saturated: the dot never exceeds 1 (over-unit direction) and never goes below 0.
+    fixture.push_str(
+        "const_assert lit_face_result.x == 1.0 && lit_face_result.y == 0.5 && lit_face_result.z == 0.25;
+         const_assert back_face_result.x == 0.0 && back_face_result.z == 0.0;
+         const_assert over_unit_result.x == 1.0;
+",
+    );
+    fixture.push_str(&const_call(
+        source,
+        "object_lit",
+        "tinted",
+        &[
+            "vec3(1.0, 0.5, 0.0)",
+            "vec3(0.25, 0.25, 0.25)",
+            "vec3(0.5, 1.0, 0.5)",
+            "vec3(0.5, 0.5, 1.0)",
+        ],
+    ));
+    // (1.25, 0.75, 0.25) * (0.5, 1, 0.5) * (0.5, 0.5, 1) = (0.3125, 0.375, 0.125)
+    fixture.push_str(
+        "const_assert tinted_result.x == 0.3125 && tinted_result.y == 0.375 && tinted_result.z == 0.125;
+",
+    );
+    fixture.push_str(&const_call(
+        source,
+        "object_lit",
+        "white",
+        &[
+            "vec3(1.0, 0.5, 0.0)",
+            "vec3(0.25, 0.25, 0.25)",
+            "vec3(0.5, 1.0, 0.5)",
+            "vec3(1.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert white_result.x == 0.625 && white_result.y == 0.75 && white_result.z == 0.125;
+",
+    );
+    assert_const_fixture(&fixture);
+
+    // Technique 13 has no vertex colour attribute. Without VERTEX_COLORS the fragment input has no
+    // location 5, and the shader's white default is the multiplier.
+    let mut defs = base_defs();
+    for name in [
+        "VERTEX_UVS_B",
+        "VERTEX_TANGENTS",
+        "STANDARD_MATERIAL_BASE_COLOR_UV_B",
+        "STANDARD_MATERIAL_NORMAL_MAP",
+    ] {
+        defs.remove(name);
+    }
+    let with_colour = with_flags(defs, &["MAY_DISCARD", "DISTANCE_FOG"]);
+    let mut without_colour = with_colour.clone();
+    without_colour.remove("VERTEX_COLORS");
+    let colour_inputs = |defs: &Definitions| {
+        let module = compose(source, "lod_object.wgsl", defs.clone())
+            .unwrap_or_else(|error| panic!("{error}"));
+        let (_, fragment_input) = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("ObjectFragment"))
+            .expect("ObjectFragment");
+        let wgpu::naga::TypeInner::Struct { members, .. } = &fragment_input.inner else {
+            panic!("ObjectFragment is a struct")
+        };
+        members
+            .iter()
+            .filter(|member| {
+                matches!(
+                    member.binding,
+                    Some(wgpu::naga::Binding::Location { location: 5, .. })
+                )
+            })
+            .count()
+    };
+    assert_eq!(colour_inputs(&with_colour), 1);
+    assert_eq!(colour_inputs(&without_colour), 0);
+    assert!(
+        source.contains(
+            "var vertex_rgb = vec3(1.0);\n#ifdef VERTEX_COLORS\n        vertex_rgb = in.color.rgb;\n#endif"
+        ),
+        "the vertex multiplier must default to white and take mesh colour only when present"
+    );
+}
+
+/// Output uses Bevy's post-lighting processing, as near objects and terrain LOD do. The fragment
+/// calls it once with the lit RGB and the diffuse alpha, with and without distance fog. Under the
+/// `skyrim` profile the retail fog composite (#1004) fogs this draw and Bevy's shader skips it, so
+/// the shader has no `apply_fog` call and no retail fog tail of its own: that would fog twice.
+#[test]
+fn object_lod_output_uses_bevy_post_lighting_and_adds_no_fog() {
+    use wgpu::naga::Statement;
+    let source = include_str!("streaming/lod_object.wgsl");
+    assert!(
+        !source.contains("apply_fog("),
+        "the composite fogs object LOD"
+    );
+    assert!(!source.contains("retail_fog_tail"), "no second fog tail");
+    assert!(source.contains("main_pass_post_lighting_processing(input, vec4(color, diffuse.a))"));
+    let mut defs = base_defs();
+    for name in [
+        "VERTEX_UVS_B",
+        "VERTEX_TANGENTS",
+        "STANDARD_MATERIAL_BASE_COLOR_UV_B",
+        "STANDARD_MATERIAL_NORMAL_MAP",
+    ] {
+        defs.remove(name);
+    }
+    for flags in [&["MAY_DISCARD"][..], &["MAY_DISCARD", "DISTANCE_FOG"][..]] {
+        let module = compose(source, "lod_object.wgsl", with_flags(defs.clone(), flags))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let post_lighting = module
+            .functions
+            .iter()
+            .find(|(_, function)| {
+                // naga_oil appends a module-specific suffix to imported function names.
+                function
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("main_pass_post_lighting_processing"))
+            })
+            .map(|(handle, _)| handle)
+            .expect("the post-lighting function is composed into the shader");
+        let fragment = module
+            .entry_points
+            .iter()
+            .find(|entry| entry.name == "fragment")
+            .expect("fragment entry point");
+        let calls = fragment
+            .function
+            .body
+            .iter()
+            .filter(|statement| {
+                matches!(statement, Statement::Call { function, .. } if *function == post_lighting)
+            })
+            .count();
+        assert_eq!(calls, 1, "flags {flags:?}");
+    }
+}
+
 /// A broken shader reports its file, its def set and the Naga message with a line. This is the
 /// fail case of the gate: the same report the test prints for a real shader.
 #[test]

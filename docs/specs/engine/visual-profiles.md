@@ -12,7 +12,7 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 | Profile | Pipeline |
 |---|---|
 | `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); shading and output still follow the `mudcrab` pipeline until P1c. |
+| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near-object shading and output still follow the `mudcrab` pipeline until P1c. Distant object LOD lighting uses the retail terms (#946), and the opaque scene is fogged by the retail composite (#891). |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.
@@ -36,8 +36,33 @@ The check runs twice: once on the command line, and again after saved settings a
 saved `skyrim` profile can meet a mudcrab-only flag. `--image-space`, `--image-space-weather` and
 `--image-space-slot` stay valid under both profiles; P1b reads them.
 
-Only launch options are checked. Grade and exposure values saved from the settings menu are not
-refused or hidden under `skyrim` until P1b.
+Only launch options are checked. Exposure values saved from the settings menu are not refused or
+hidden under `skyrim` until P1b.
+
+## Artistic grade default (#796)
+
+The approved grade (saturation 1.66, contrast 1.5, brightness 1.38, tint 0.56) is a Mudcrab artistic
+override. Its source note says it is not a Skyrim extraction, and retail has no such stage. Under
+`skyrim` it tinted the retail fog composite (#1004) and gave the Whiterun walls a blue cast.
+
+| | `mudcrab` | `skyrim` |
+|---|---|---|
+| Default grade mode | `snapshot-srgb` (the approved grade), unchanged | `off` |
+| Grade rows in the menu | shown for any mode except Off | *Grade mode* reads Off. The tuning rows stay hidden until the user picks a mode. |
+
+- The change touches only the grade toggle. The tonemapper (TonyMcMapface until #796 replaces it),
+  exposure and the retail curve fields do not change. Off sets `post.enabled` to 0 and leaves the
+  Bevy tonemapping alone.
+- Saved settings keep one `color_grade` value for the `mudcrab` profile and a separate
+  `skyrim_color_grade` for `skyrim`. A file from an older build has no `skyrim_color_grade`, so a
+  `skyrim` start uses Off whatever `color_grade` holds. The status line says so.
+- Choosing a grade mode in the menu under `skyrim` and choosing Save writes `skyrim_color_grade`.
+  The next `skyrim` start then uses it. A `skyrim` session that leaves the grade at Off writes
+  nothing for it. Saving from either profile keeps the other profile's value.
+- Reset restores the running profile's default: Off under `skyrim`, the approved grade under
+  `mudcrab`.
+- `--color-grade` stays refused under `skyrim`. The retail tonemap and calibrated exposure stay with
+  #796.
 
 ## Sky and fog source (#891)
 
