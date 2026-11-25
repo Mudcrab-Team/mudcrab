@@ -24,6 +24,19 @@ checks and header fixes. The sibling crates `project-wormhole-esm`, `project-wor
   the published crate, download it from crates.io (check the SHA-256 above), run `rustfmt` on both
   trees and diff them with `--strip-trailing-cr`: the reformatting otherwise hides the real changes.
 
+## Carried parser-safety changes
+
+Each spot has a `// mudcrab:` comment in the source.
+
+- `nif_file.rs`, `bsskin_meshes` and `optional_block_name` (#987): a skin data or joint index outside
+  the block list, a block of the wrong kind, and a name index outside the string table are `Err`
+  values. The name value `0xFFFFFFFF` means "no name". The published code indexed and unwrapped
+  these values and panicked.
+- `nif_file.rs`, `NifFile::parse_blocks` (#987): a block type index outside the header's type table
+  is a nom error. The published code called `unwrap`.
+
+Removal rule: none. This is a maintained fork, so the change stays.
+
 ## Updating or removing this copy
 
 There is no upstream release to move to: the fork has diverged, so it stays vendored. Moving back to
