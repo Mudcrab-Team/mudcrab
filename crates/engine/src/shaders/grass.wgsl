@@ -305,9 +305,11 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004). Only grass applies it
     // today; terrain, sky and water do not (open question: does retail apply it there too?).
     // Exposure and 1/pi: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
-    // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker
-    // than a Bevy PBR surface with the same ambient input. Retail has no such factor. The
-    // sun:ambient balance is unverified until the engine light units match retail (#706).
+    // illuminance). Bevy's own ambient has no 1/pi, and retail has no such factor. The CPU side
+    // (`grass_render.rs`, `grass_ambient`) multiplies the ambient by pi, so the 1/pi cancels and
+    // the ambient equals a Bevy PBR surface's. It also divides the sun by SunlightScale
+    // (`grass_sun_colour`): retail grass takes the raw sun, the Lighting techniques take
+    // sun * SunlightScale, and the scene sun stands for the second one.
     let shadow = directional_shadow(input);
     let light = tuning_illumination(grass.ambient.rgb,input.light,shadow,view.exposure,grass.tuning_light,grass.tuning_surface,grass.tuning_specular);
     let visibility = grass.tuning_surface.z + (1.0-grass.tuning_surface.z)*mix(1.0,shadow,grass.tuning_surface.y);

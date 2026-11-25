@@ -732,7 +732,7 @@ fn update_grass_uniforms(
         );
         if let Some(ambient) = &ambient {
             primitive.uniform.ambient =
-                Vec4::from_array(ambient.color.to_linear().to_f32_array()) * ambient.brightness;
+                grass_ambient(ambient.color.to_linear().to_f32_array(), ambient.brightness);
         }
         all_drawn &= primitive.suppress_draw
             || primitive.culled.load(Ordering::Acquire)
@@ -1029,9 +1029,33 @@ fn prepared_grass_sun(
     sun.map_or((Vec4::Y, Vec4::ZERO), |(_, light)| {
         (
             light.transform.back().extend(0.0),
-            Vec4::from_array(light.color.to_f32_array()) * light.illuminance,
+            grass_sun_colour(light.color.to_f32_array(), light.illuminance),
         )
     })
+}
+
+/// The sun colour the grass shader receives, in the engine's light units.
+///
+/// The scene's sun (`SUN_ILLUMINANCE`) stands for retail's Lighting sun,
+/// `NiLight.diffuse * SunlightScale`. Retail grass does not take `SunlightScale`: its pixel
+/// shader gets the raw `NiLight.diffuse` (RF-GRASS-004; skyrim-research NEEDS 18 question 3,
+/// skyrim_decomp PR 1059; static reading, unverified at run time). So the grass sun is the scene
+/// sun divided by `SUNLIGHT_SCALE`. Without the division, grass in the sun is `SUNLIGHT_SCALE`
+/// times too bright beside every other surface (#796).
+pub(crate) fn grass_sun_colour(colour: [f32; 4], illuminance: f32) -> Vec4 {
+    Vec4::from_array(colour) * (illuminance / crate::lights::SUNLIGHT_SCALE)
+}
+
+/// The ambient colour the grass shader receives, in the engine's light units.
+///
+/// The shader divides the whole lit sum by pi (exact for the sun, because Bevy's Lambert diffuse
+/// is `albedo / pi`). Bevy's own ambient has no `1 / pi`: a standard material gets
+/// `albedo * ambient`. Retail grass takes the same raw ambient as the Lighting techniques
+/// (RF-GRASS-004; skyrim-research NEEDS 18 question 3; unverified at run time), so the grass
+/// ambient must also be `albedo * ambient`. The shader's `1 / pi` is cancelled here. Without the
+/// factor, the grass ambient is `pi` times too dark beside every other surface (#796).
+pub(crate) fn grass_ambient(colour: [f32; 4], brightness: f32) -> Vec4 {
+    Vec4::from_array(colour) * (brightness * std::f32::consts::PI)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1475,6 +1499,32 @@ mod tests {
     use bevy::gltf::GltfPrimitive;
 
     include!("grass_render_alpha_tests.rs");
+
+    /// Retail grass takes the raw sun and the raw ambient (RF-GRASS-004). The scene's sun stands for
+    /// `diffuse * SunlightScale` and its ambient for the raw ambient. The shader divides the lit
+    /// sum by pi, so the ambient carries the matching factor and the sun does not.
+    #[test]
+    fn grass_light_units_match_the_scene_beside_retail_grass() {
+        let sun = grass_sun_colour([0.5, 1.0, 0.25, 1.0], crate::lights::SUN_ILLUMINANCE);
+        let sun_per_scale = crate::lights::SUN_ILLUMINANCE / crate::lights::SUNLIGHT_SCALE;
+        assert_eq!(sun.x, 0.5 * sun_per_scale);
+        assert_eq!(sun.y, sun_per_scale);
+        assert_eq!(sun.z, 0.25 * sun_per_scale);
+
+        let ambient = grass_ambient([0.5, 1.0, 0.25, 1.0], crate::lights::AMBIENT_ILLUMINANCE);
+        let after_pi = |value: f32| value / std::f32::consts::PI;
+        assert!((after_pi(ambient.x) - 0.5 * crate::lights::AMBIENT_ILLUMINANCE).abs() < 1.0e-2);
+        assert!((after_pi(ambient.y) - crate::lights::AMBIENT_ILLUMINANCE).abs() < 1.0e-2);
+
+        // The shader's lit sum, in the scene's units: what a standard material gets is
+        // `albedo * (sun / pi * n_dot_l + ambient)`. Retail grass (RF-GRASS-004) is the same sum with the sun
+        // scale removed, so at `n_dot_l` 1 the grass sun-to-ambient ratio is
+        // `SUNLIGHT_SCALE` times smaller than the Lighting techniques' (1 against 2.8).
+        let grass_ratio = (sun.y / std::f32::consts::PI) / after_pi(ambient.y);
+        let lighting_ratio = (crate::lights::SUN_ILLUMINANCE / std::f32::consts::PI)
+            / crate::lights::AMBIENT_ILLUMINANCE;
+        assert!((lighting_ratio / grass_ratio - crate::lights::SUNLIGHT_SCALE).abs() < 1.0e-3);
+    }
 
     /// Keep signed and unsigned BC5 decode flags through successive live updates.
     #[test]
@@ -2624,12 +2674,15 @@ mod tests {
         let mut state: SystemState<Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>> =
             SystemState::new(&mut world);
         let suns = state.get(&world).unwrap();
+        // The grass sun is the scene sun divided by SunlightScale (`grass_sun_colour`).
+        let per_scale = |value: Vec4| value / crate::lights::SUNLIGHT_SCALE;
         let (direction, color) = prepared_grass_sun(&suns, &RenderLayers::default());
         assert_eq!(direction, Vec4::Z);
-        assert_eq!(color, Vec4::new(5.0, 10.0, 20.0, 20.0));
-        assert_eq!(
-            prepared_grass_sun(&suns, &RenderLayers::layer(1)).1,
-            Vec4::new(0.0, 13.0, 0.0, 13.0)
+        assert!(color.abs_diff_eq(per_scale(Vec4::new(5.0, 10.0, 20.0, 20.0)), 1.0e-5));
+        assert!(
+            prepared_grass_sun(&suns, &RenderLayers::layer(1))
+                .1
+                .abs_diff_eq(per_scale(Vec4::new(0.0, 13.0, 0.0, 13.0)), 1.0e-5)
         );
         assert_eq!(
             prepared_grass_sun(&suns, &RenderLayers::layer(9)),
