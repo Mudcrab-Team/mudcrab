@@ -207,16 +207,18 @@ impl WeatherLighting {
     /// ambient of the `mudcrab` profile. The result is enabled. Use
     /// [`DirectionalAmbientCube::default`] to switch the term off.
     pub fn directional_ambient(&self) -> DirectionalAmbientCube {
-        let [x_plus, x_minus, y_plus, y_minus, z_plus, z_minus] = self.ambient_cube.map(|face| {
+        // F0 to F5 in file order. Their record names are labels: the first of each pair is the
+        // negative-side colour (NEEDS 41, reviewed), so the slopes follow the formula.
+        let [f0, f1, f2, f3, f4, f5] = self.ambient_cube.map(|face| {
             let raw = face.to_srgba();
             Vec3::new(raw.red, raw.green, raw.blue)
         });
         DirectionalAmbientCube {
             enabled: true,
-            mean: (x_plus + x_minus + y_plus + y_minus + z_plus + z_minus) * (1.0 / 6.0),
-            slope_x: (x_minus - x_plus) * 0.5,
-            slope_y: (y_minus - y_plus) * 0.5,
-            slope_z: (z_minus - z_plus) * 0.5,
+            mean: (f0 + f1 + f2 + f3 + f4 + f5) * (1.0 / 6.0),
+            slope_x: (f1 - f0) * 0.5,
+            slope_y: (f3 - f2) * 0.5,
+            slope_z: (f5 - f4) * 0.5,
         }
     }
 }
