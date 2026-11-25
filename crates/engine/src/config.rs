@@ -32,10 +32,11 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 ///
 /// What each key does today: `fSplitDistanceMult` and `fBlockMaximumDistance` drive terrain (the
 /// split rule, and the outer reach of tier 16 as an engineering guard, see
-/// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` are parsed and kept
-/// for the object LOD rule.
+/// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` drive the object
+/// LOD rule ([`Self::object_tier`]). `fTreeLoadDistance` is parsed and kept until tree LOD draws
+/// (#736, #901).
 ///
-/// `--ini` reads these from a `SkyrimPrefs.ini`.
+/// The defaults are the Ultra preset (#949). `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
     /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4.
@@ -48,19 +49,91 @@ pub struct TerrainLodDistances {
     pub block_maximum_distance: f32,
     /// `fSplitDistanceMult`: the terrain split multiplier (RF-LOD-003).
     pub split_distance_mult: f32,
+    /// `fTreeLoadDistance`: tree LOD (`.btt`) loads within this distance. No consumer until tree
+    /// LOD draws (#736, #901).
+    pub tree_load_distance: f32,
 }
 
-impl Default for TerrainLodDistances {
-    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults (High preset, RF-LOD-002).
-    fn default() -> Self {
+impl TerrainLodDistances {
+    /// `[TerrainManager] fBlockLevel0Distance` in `Ultra.ini` line 39 (#949).
+    pub const ULTRA_BLOCK_LEVEL0_DISTANCE: f32 = 60_000.0;
+    /// `[TerrainManager] fBlockLevel1Distance` in `Ultra.ini` line 40 (#949).
+    pub const ULTRA_BLOCK_LEVEL1_DISTANCE: f32 = 90_000.0;
+    /// `[TerrainManager] fBlockMaximumDistance` in `Ultra.ini` line 41 (#949).
+    pub const ULTRA_BLOCK_MAXIMUM_DISTANCE: f32 = 250_000.0;
+    /// `[TerrainManager] fSplitDistanceMult` in `Ultra.ini` line 42 (#949).
+    pub const ULTRA_SPLIT_DISTANCE_MULT: f32 = 1.5;
+    /// `[TerrainManager] fTreeLoadDistance` in `Ultra.ini` line 38 (#949).
+    pub const ULTRA_TREE_LOAD_DISTANCE: f32 = 75_000.0;
+}
+
+#[cfg(test)]
+impl TerrainLodDistances {
+    /// The High preset's `[TerrainManager]` values, the default before #949. Tests that pin the
+    /// rule at 35,000 / 70,000 / 250,000 use it so they do not move with the default preset.
+    pub(crate) fn high_preset() -> Self {
         Self {
             block_level0_distance: 35_000.0,
             block_level1_distance: 70_000.0,
             block_maximum_distance: 250_000.0,
             split_distance_mult: 1.5,
+            tree_load_distance: 75_000.0,
         }
     }
 }
+
+impl Default for TerrainLodDistances {
+    /// The Ultra preset's `[TerrainManager]` values, from `Ultra.ini` (#949). The High preset
+    /// (35,000 / 70,000 / 250,000 / 1.5 / 75,000) was the previous default (RF-LOD-002).
+    fn default() -> Self {
+        Self {
+            block_level0_distance: Self::ULTRA_BLOCK_LEVEL0_DISTANCE,
+            block_level1_distance: Self::ULTRA_BLOCK_LEVEL1_DISTANCE,
+            block_maximum_distance: Self::ULTRA_BLOCK_MAXIMUM_DISTANCE,
+            split_distance_mult: Self::ULTRA_SPLIT_DISTANCE_MULT,
+            tree_load_distance: Self::ULTRA_TREE_LOAD_DISTANCE,
+        }
+    }
+}
+
+/// Skyrim's LOD fade settings that have no consumer yet: object, actor and item fade-out
+/// multipliers (`[LOD]`) and the mesh LOD fade distances (`[Display]`).
+///
+/// The defaults are the Ultra preset (#949), read from `Ultra.ini`. Nothing reads these values
+/// until object LOD fade (#716) and mesh LOD (no issue yet) exist; the engine parses and keeps them so
+/// `--ini` can override them and so a later change starts from the cited default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LodFadeSettings {
+    /// `[LOD] fLODFadeOutMultObjects`.
+    pub fade_out_mult_objects: f32,
+    /// `[LOD] fLODFadeOutMultActors`.
+    pub fade_out_mult_actors: f32,
+    /// `[LOD] fLODFadeOutMultItems`.
+    pub fade_out_mult_items: f32,
+    /// `[Display] fMeshLODLevel1FadeDist`.
+    pub mesh_lod_level1_fade_distance: f32,
+    /// `[Display] fMeshLODLevel2FadeDist`.
+    pub mesh_lod_level2_fade_distance: f32,
+}
+
+impl Default for LodFadeSettings {
+    /// `Ultra.ini` `[LOD]` lines 32-34 and `[Display]` lines 17-18 (#949). The compiled defaults
+    /// are 5 / 6 / 3 and 9999999 / 9999999 (community dump, unverified for 1.7.104).
+    fn default() -> Self {
+        Self {
+            fade_out_mult_objects: 30.0,
+            fade_out_mult_actors: 15.0,
+            fade_out_mult_items: 10.0,
+            mesh_lod_level1_fade_distance: 999_999.0,
+            mesh_lod_level2_fade_distance: 999_999.0,
+        }
+    }
+}
+
+/// `[General] uLargeRefLODGridSize` in `Ultra.ini` line 2 (#949): the side, in cells, of the square around
+/// the camera whose large references promote to full models. The compiled default is 9 (community
+/// dump, unverified for 1.7.104); the presets use 5, 7, 9 and 11.
+pub const ULTRA_LARGE_REF_LOD_GRID_SIZE: i32 = 11;
 
 /// The block levels the terrain rule tests, coarse to fine, with the tier that draws when a block
 /// of that level is not split. Level 32 is absent: no level-32 tier is compiled.
@@ -255,8 +328,20 @@ pub struct EngineConfig {
     pub unload_radius: i32,
     /// Terrain radii before optional grass coverage, restored if its startup cache is unavailable.
     pub grass_terrain_radii: Option<(i32, i32)>,
-    /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
+    /// Upper bound for sun-shadow cascades from `[Display] fShadowDistance`, in Creation units.
+    /// The default is [`ULTRA_SUN_SHADOW_DISTANCE`]. `None` (code only) fits the range to the
+    /// drawn grid.
     pub sun_shadow_distance_limit: Option<f32>,
+    /// Sun shadow map edge in texels from `[Display] iShadowMapResolution`. The default is
+    /// [`ULTRA_SUN_SHADOW_MAP_SIZE`]. It must be one of [`crate::settings::SHADOW_SIZES`].
+    pub sun_shadow_map_size: usize,
+    /// Sun shadow cascade count from `[Display] iNumSplits`, 1 to 4. The default is
+    /// [`RETAIL_SUN_SHADOW_CASCADES`].
+    pub sun_shadow_cascades: usize,
+    /// `[Display] fFirstSliceDistance`, in Creation units. The default is
+    /// [`RETAIL_FIRST_SLICE_DISTANCE`]. It is an input to the cascade split, not the first cascade's
+    /// end: see `app::retail_cascade_bounds` (skyrim_decomp PR 806, section 2).
+    pub sun_first_slice_distance: f32,
     /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
     /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way. In retail the
     /// setting affects near land only; until a later change limits it, it also affects LOD land here.
@@ -274,6 +359,10 @@ pub struct EngineConfig {
     /// Explicit `[Sky]` overrides in `sun::SUN_KEYS` order; absent keys retain winning GMST values.
     pub sun_settings_overrides: [Option<f32>; 5],
     pub terrain_lod: TerrainLodDistances,
+    /// Object, actor and item LOD fade-out multipliers and the mesh LOD fade distances (#949).
+    pub lod_fade: LodFadeSettings,
+    /// `[General] uLargeRefLODGridSize`: an odd side in cells (#949).
+    pub large_ref_grid_size: i32,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
     /// Cells outside the unload radius a frame may despawn. `0` despawns every one at once, which
@@ -453,9 +542,24 @@ pub struct EngineConfig {
     pub transform_bounds_fixture: bool,
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
-    /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
-    /// every run that does not ask for lights renders exactly as it did before.
+    /// Whether a streamed `LIGH` reference places a point light. On by default: retail lights every
+    /// placed `LIGH` reference and no INI key turns them off (#955, `RF-LIGHT-GPU-007`).
+    /// `--no-lights` turns them off, for example for profiling; `--lights` is the explicit default.
     pub lights: bool,
+    /// The horizontal field of view of every camera that is not the first-person camera, in
+    /// degrees: `[Display] fDefaultWorldFOV` (#904, #949). Retail default
+    /// [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]; source:
+    /// [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md).
+    pub world_fov_degrees: f32,
+    /// The horizontal field of view of the first-person (walking) camera, in degrees:
+    /// `[Display] fDefault1stPersonFOV` (#904, #949). Retail default
+    /// [`RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES`]; source:
+    /// [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md).
+    pub first_person_fov_degrees: f32,
+    /// The distance of the camera's near plane, in Creation units: `[Display] fNearDistance`
+    /// (#949). Retail default [`RETAIL_NEAR_DISTANCE`]; source:
+    /// [skyrim-culling-rea-parity.md](../../../docs/research/skyrim-culling-rea-parity.md).
+    pub near_distance: f32,
     /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
     /// small vetted set to the references that carry them. Off by default.
     pub papyrus_scripts: bool,
@@ -464,6 +568,66 @@ pub struct EngineConfig {
 
 /// Retail's default for `[Display] bDrawLandShadows` is off. See Mudcrab #949.
 pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
+
+/// `[Display] iShadowMapResolution=4096`, from the shipped `Ultra.ini` (line 4). Mudcrab defaults
+/// to the Ultra preset (#949). The compiled default is 2048, and Low / Medium / High set
+/// 1024 / 2048 / 2048.
+pub const ULTRA_SUN_SHADOW_MAP_SIZE: usize = 4096;
+
+/// `[Display] fShadowDistance=10000`, from the shipped `Ultra.ini` (line 6). Mudcrab defaults to
+/// the Ultra preset (#949). The compiled default is 8000, and Low / Medium / High set
+/// 3000 / 3000 / 8000.
+pub const ULTRA_SUN_SHADOW_DISTANCE: f32 = 10_000.0;
+
+/// `[Display] iNumSplits=2`. No shipped INI sets it, so this is the compiled default (the
+/// skyrim_decomp sun-shadow finding, PR 806, verified; the community dump agrees, unverified).
+pub const RETAIL_SUN_SHADOW_CASCADES: usize = 2;
+
+/// `[Display] fFirstSliceDistance=2000`, from the shipped `Skyrim_Default.ini` (line 17). It wins
+/// over the compiled 1250 because a shipped template outranks a compiled default (#949).
+pub const RETAIL_FIRST_SLICE_DISTANCE: f32 = 2_000.0;
+
+/// Retail's default for `[Display] fDefaultWorldFOV`: 80 degrees, **horizontal** (#904, #949).
+///
+/// Source tier: compiled executable default. No shipped INI (`Ultra.ini`, `Skyrim_Default.ini`)
+/// sets the key. `PlayerCamera` reads it at construction (SkyrimSE 1.7.104.0, `0x1408f79f0`;
+/// `docs/research/retail/q7a-camera-states.md`, "FOV", confidence high). The community default
+/// dump lists the same 80 (unverified for 1.7.104; a cross-check only). A retail capture at 16:9
+/// confirms the value and that it is horizontal: 80 degrees horizontal, 50.534 vertical
+/// ([gpu_state.md](../../../research_notes/Skyrim%20native%20tone%20mapping/gpu_state.md)).
+pub const RETAIL_DEFAULT_WORLD_FOV_DEGREES: f32 = 80.0;
+
+/// Retail's default for `[Display] fDefault1stPersonFOV`: 80 degrees, **horizontal** (#904, #949).
+/// Same source and tier as [`RETAIL_DEFAULT_WORLD_FOV_DEGREES`]
+/// ([q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md)). Retail uses it
+/// only while the camera is in the first-person state (`0x1408fb1e0`).
+pub const RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES: f32 = 80.0;
+
+/// Retail's default for `[Display] fNearDistance`: 15 Creation units (#949).
+///
+/// Source tier: observed retail value. A read-only capture of the main camera on SkyrimSE
+/// 1.7.104.0 holds the frustum near distance 15 (`docs/research/skyrim-culling-rea-parity.md`,
+/// "Gallows Rock west doorway"; `crates/engine/tests/fixtures/gallows-rock-seam.json`). Only the
+/// value 15 is observed. The key name `fNearDistance` and its link to this value come from the
+/// community default dump (unverified for 1.7.104, which also lists 15). Nothing traces that the
+/// executable reads the camera's near distance from this key. No shipped INI sets it.
+///
+/// Room culling uses the same distance to find the player's starting room
+/// ([`crate::room_culling::RoomCullingNear`]), so the render near plane and the room lookup cannot
+/// differ.
+pub const RETAIL_NEAR_DISTANCE: f32 = 15.0;
+
+/// The smallest and largest horizontal field of view the engine accepts, in degrees. They bound
+/// the settings slider and the two `[Display]` INI keys. **A Mudcrab-only bound**, set to keep
+/// the slider usable and the projection valid. The slider used to span 30 to 110 vertical degrees
+/// (about 51 to 133 horizontal at 16:9), and this range keeps a similar reach for a horizontal
+/// angle.
+pub const FOV_RANGE_DEGREES: (f32, f32) = (30.0, 140.0);
+
+/// The largest `fNearDistance` the engine accepts, in Creation units. **A Mudcrab-only sanity bound**, set
+/// to keep an INI value from inverting the frustum: it is far below the smallest far plane the
+/// camera starts with (24,576 units at a stream radius of 1).
+pub const MAX_NEAR_DISTANCE: f32 = 1000.0;
 
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
@@ -481,13 +645,18 @@ impl Default for EngineConfig {
             stream_radius: 2,
             unload_radius: 3,
             grass_terrain_radii: None,
-            sun_shadow_distance_limit: None,
+            sun_shadow_distance_limit: Some(ULTRA_SUN_SHADOW_DISTANCE),
+            sun_shadow_map_size: ULTRA_SUN_SHADOW_MAP_SIZE,
+            sun_shadow_cascades: RETAIL_SUN_SHADOW_CASCADES,
+            sun_first_slice_distance: RETAIL_FIRST_SLICE_DISTANCE,
             land_shadows: RETAIL_DRAW_LAND_SHADOWS,
             sun_position: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,
             sun_settings_overrides: [None; 5],
             terrain_lod: TerrainLodDistances::default(),
+            lod_fade: LodFadeSettings::default(),
+            large_ref_grid_size: ULTRA_LARGE_REF_LOD_GRID_SIZE,
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
             max_cell_unloads_per_frame: 2,
@@ -596,7 +765,10 @@ impl Default for EngineConfig {
             transform_bounds_fixture: false,
             renderer_fixture: false,
             streaming_fixture: false,
-            lights: false,
+            lights: true,
+            world_fov_degrees: RETAIL_DEFAULT_WORLD_FOV_DEGREES,
+            first_person_fov_degrees: RETAIL_DEFAULT_FIRST_PERSON_FOV_DEGREES,
+            near_distance: RETAIL_NEAR_DISTANCE,
             papyrus_scripts: false,
             physics_fixture: false,
         }
@@ -630,7 +802,8 @@ Assets and start position:
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
   --background-window                   open the window behind other windows without taking focus
-  --lights                              place a point light for each streamed LIGH reference
+  --lights                              place a point light for each streamed LIGH reference (the default)
+  --no-lights                           place no point lights, for example for profiling
   --papyrus-scripts                     run the first slice of converted Papyrus scripts
 
 Streaming:
@@ -887,6 +1060,27 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    /// Cells from the camera's cell to the edge of the large-reference grid:
+    /// `uLargeRefLODGridSize` is the side, so the radius is half of it, rounded down.
+    pub fn large_ref_grid_radius(&self) -> i32 {
+        self.large_ref_grid_size.max(1) / 2
+    }
+
+    /// The horizontal field of view this run's camera starts with, in degrees. Retail uses the
+    /// first-person value in the first-person state and the world value otherwise
+    /// (`0x1408fb1e0`, [q7a-camera-states.md](../../../docs/research/retail/q7a-camera-states.md)).
+    /// The walking camera is the first-person one; every automated run (shots, benchmarks,
+    /// fixtures, auto-fly and route runs) uses a world camera. Mudcrab picks the key once at
+    /// launch. Retail picks it by camera state at run time, so a switch while playing (such as
+    /// toggling noclip) is not modelled.
+    pub fn camera_fov_degrees(&self) -> f32 {
+        if self.interactive_world_physics() {
+            self.first_person_fov_degrees
+        } else {
+            self.world_fov_degrees
+        }
+    }
+
     /// Test the configured GNAM limit after admission (default 2 admits three).
     /// Selection order follows spud (MIT, chasmlol/spud).
     pub(crate) fn effective_grass_species_cap(&self) -> usize {
@@ -1771,11 +1965,13 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--no-lights" => config.lights = false,
                 "--papyrus-scripts" => config.papyrus_scripts = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
         }
+        ini.claim_active_fov(&mut config);
         if config.terrain_water_fixture_msaa != Msaa::Off && !config.terrain_water_fixture {
             return Err(ConfigError::MissingRequirement {
                 option: "--terrain-water-fixture-msaa",
@@ -4042,16 +4238,21 @@ mod tests {
         assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
     }
 
-    /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
-    /// acceptance or benchmark baseline taken from one - is unchanged.
+    /// Retail lights every placed `LIGH` reference and has no INI key to turn them off, so the
+    /// default is on (#955). `--no-lights` is the profiling switch, `--lights` the explicit default,
+    /// and the last of the two wins.
     #[test]
-    fn lights_are_off_until_the_flag_is_given() {
-        assert!(!EngineConfig::default().lights);
+    fn lights_are_on_until_no_lights_is_given() {
+        assert!(EngineConfig::default().lights);
         assert!(
-            !run_config(&["--headless"]).lights,
-            "another flag does not turn lights on"
+            run_config(&["--headless"]).lights,
+            "another flag does not turn lights off"
         );
         assert!(run_config(&["--lights"]).lights);
+        assert!(!run_config(&["--no-lights"]).lights);
+        assert!(!run_config(&["--lights", "--no-lights"]).lights);
+        assert!(run_config(&["--no-lights", "--lights"]).lights);
+        assert!(HELP_TEXT.contains("--no-lights"));
     }
 
     #[test]
@@ -4441,6 +4642,7 @@ mod tests {
             "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
+            "--no-lights",
             "--papyrus-scripts",
             "--physics-fixture",
         ] {
@@ -5515,7 +5717,7 @@ mod tests {
     /// the cells of its level-8 block.
     #[test]
     fn terrain_tier_walks_the_retail_block_tree() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
         // Block [0, 8) holds the camera.
         assert_eq!(tier(7), Some(LodTier::Tier4));
@@ -5534,7 +5736,7 @@ mod tests {
     /// 70,000 units and are dropped at 250,000. Camera cell 0, origin 0, cells to the east.
     #[test]
     fn object_tier_follows_the_retail_object_distances() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         let tier = |x: i32, nama: f32| {
             high.object_tier(
                 DVec2::splat(f64::from(CELL_SIZE) / 2.0),
@@ -5563,9 +5765,57 @@ mod tests {
         assert_eq!(tier(70, 0.25), None);
     }
 
+    /// #949: with no INI the LOD and view-distance defaults are the cited Ultra values.
+    /// Sources: `Ultra.ini` `[TerrainManager]` lines 38-42, `[LOD]` lines 32-34, `[Display]`
+    /// lines 17-18 and `[General]` line 2.
+    #[test]
+    fn lod_defaults_are_the_ultra_values_without_an_ini() {
+        let config = EngineConfig::default();
+        let lod = config.terrain_lod;
+        assert_eq!(lod.block_level0_distance, 60_000.0, "fBlockLevel0Distance");
+        assert_eq!(lod.block_level1_distance, 90_000.0, "fBlockLevel1Distance");
+        assert_eq!(
+            lod.block_maximum_distance, 250_000.0,
+            "fBlockMaximumDistance"
+        );
+        assert_eq!(lod.split_distance_mult, 1.5, "fSplitDistanceMult");
+        assert_eq!(lod.tree_load_distance, 75_000.0, "fTreeLoadDistance");
+        let fade = config.lod_fade;
+        assert_eq!(fade.fade_out_mult_objects, 30.0, "fLODFadeOutMultObjects");
+        assert_eq!(fade.fade_out_mult_actors, 15.0, "fLODFadeOutMultActors");
+        assert_eq!(fade.fade_out_mult_items, 10.0, "fLODFadeOutMultItems");
+        assert_eq!(
+            fade.mesh_lod_level1_fade_distance, 999_999.0,
+            "fMeshLODLevel1FadeDist"
+        );
+        assert_eq!(
+            fade.mesh_lod_level2_fade_distance, 999_999.0,
+            "fMeshLODLevel2FadeDist"
+        );
+        assert_eq!(config.large_ref_grid_size, 11, "uLargeRefLODGridSize");
+        assert_eq!(config.large_ref_grid_radius(), 5);
+        assert!(config.settings_overrides.is_empty());
+    }
+
+    /// The Ultra object distances move the object LOD hand-over: the level-8 block that starts
+    /// at cell 8 is 42,768 units from this camera, so it is tier 4 under Ultra (60,000) and
+    /// tier 8 under High (35,000).
+    #[test]
+    fn ultra_object_distances_hand_over_later_than_high() {
+        let camera = DVec2::new(-10_000.0, f64::from(CELL_SIZE) / 2.0);
+        let cell = IVec2::new(8, 0).as_dvec2();
+        let tier =
+            |distances: &TerrainLodDistances| distances.object_tier(camera, cell, IVec2::ZERO, 1.0);
+        assert_eq!(tier(&TerrainLodDistances::default()), Some(LodTier::Tier4));
+        assert_eq!(
+            tier(&TerrainLodDistances::high_preset()),
+            Some(LodTier::Tier8)
+        );
+    }
+
     #[test]
     fn object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         for (cell, threshold, near, at) in [
             (16, 35_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
             (32, 70_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
@@ -5590,11 +5840,39 @@ mod tests {
         }
     }
 
+    /// The same strict crossings at the Ultra defaults (#949): 60,000, 90,000 and 250,000.
+    #[test]
+    fn ultra_object_tier_crosses_strict_thresholds_inside_one_camera_cell() {
+        let ultra = TerrainLodDistances::default();
+        for (cell, threshold, near, at) in [
+            (16, 60_000.0, Some(LodTier::Tier4), Some(LodTier::Tier8)),
+            (32, 90_000.0, Some(LodTier::Tier8), Some(LodTier::Tier16)),
+            (64, 250_000.0, Some(LodTier::Tier16), None),
+        ] {
+            let x = f64::from(cell) * f64::from(CELL_SIZE) - threshold;
+            let tier = |x| {
+                ultra.object_tier(
+                    DVec2::new(x, 0.0),
+                    IVec2::new(cell, 0).as_dvec2(),
+                    IVec2::ZERO,
+                    1.0,
+                )
+            };
+            assert_eq!(
+                (x / f64::from(CELL_SIZE)).floor(),
+                ((x + 1.0) / f64::from(CELL_SIZE)).floor()
+            );
+            assert_eq!(tier(x + 1.0), near);
+            assert_eq!(tier(x), at);
+            assert_eq!(tier(x - 1.0), at);
+        }
+    }
+
     /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
     /// `nama` never scales it.
     #[test]
     fn object_tier_applies_the_outer_cut_to_each_visited_block() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         // NAMA 16 scales the split distances by 4: level 16 splits under 280,000 and level 8 under
         // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
         // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
@@ -5653,7 +5931,7 @@ mod tests {
     /// block distances times `fSplitDistanceMult`; retail splits at the block half-diagonal.
     #[test]
     fn terrain_tier_boundaries_sit_at_the_split_distances() {
-        let high = TerrainLodDistances::default();
+        let high = TerrainLodDistances::high_preset();
         // Camera cell 0; the level-8 block [8, 16) is split while 7.5 cells (30,720) < 34,756 and
         // the block [16, 24) is not (15.5 cells = 63,488 > 34,756). So, east of the camera and with the camera cell at the start of its block, tier 4 stops at cell 15.
         let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);

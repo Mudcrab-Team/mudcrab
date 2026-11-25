@@ -15,13 +15,13 @@
 use crate::actor_animation::{ActorBodyReady, animation_targets};
 use crate::actors::{Actor, ActorHead, ActorHeadSource};
 use bevy::{
-    asset::LoadState,
+    asset::{AssetLoadError, DependencyLoadState, LoadState, RecursiveDependencyLoadState},
     gltf::GltfAssetLabel,
     mesh::skinning::SkinnedMesh,
     prelude::*,
     world_serialization::{WorldAsset, WorldAssetRoot, WorldInstanceReady},
 };
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 /// The body skeleton node a FaceGen head is rehosted onto, and the parent of a skinless head.
 pub const HEAD_BONE: &str = "NPC Head [Head]";
@@ -169,15 +169,50 @@ fn queue_actor_heads(
     }
 }
 
-/// Instantiates the head scene once the asset server has it, and reports a failed load once.
+/// How far an actor attachment scene (a FaceGen head or an outfit part) has loaded.
+pub(crate) enum AttachmentLoad {
+    /// The scene or one of its dependencies (its textures) is still loading.
+    Loading,
+    /// The scene and every dependency are loaded.
+    Ready,
+    /// The scene or one of its dependencies failed to load.
+    Failed(Arc<AssetLoadError>),
+}
+
+/// The load state of an attachment scene, including its dependencies.
+///
+/// An attachment instance is a descendant of its actor. The actor body's strict validation
+/// (`streaming::track_asset_readiness`) walks every descendant and requires each material image
+/// to be loaded. A scene whose own `load_state` is `Loaded` can still have textures in flight, so
+/// an instance spawned on that state alone fails the body's validation whenever a texture decodes
+/// after the scene. Spawn the instance only when the recursive state is `Loaded`.
+pub(crate) fn attachment_load(server: &AssetServer, handle: &Handle<WorldAsset>) -> AttachmentLoad {
+    classify_attachment_load(server.get_load_states(handle.id()))
+}
+
+fn classify_attachment_load(
+    states: Option<(LoadState, DependencyLoadState, RecursiveDependencyLoadState)>,
+) -> AttachmentLoad {
+    match states {
+        Some((LoadState::Failed(error), _, _))
+        | Some((_, _, RecursiveDependencyLoadState::Failed(error))) => {
+            AttachmentLoad::Failed(error)
+        }
+        Some((LoadState::Loaded, _, RecursiveDependencyLoadState::Loaded)) => AttachmentLoad::Ready,
+        _ => AttachmentLoad::Loading,
+    }
+}
+
+/// Instantiates the head scene once the asset server has it and all of its textures, and reports
+/// a failed load once.
 fn spawn_ready_head_scenes(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     requests: Query<(Entity, &Actor, &ActorHeadRequest)>,
 ) {
     for (actor, actor_data, request) in &requests {
-        match asset_server.load_state(request.asset.id()) {
-            LoadState::Loaded => {
+        match attachment_load(&asset_server, &request.asset) {
+            AttachmentLoad::Ready => {
                 commands.entity(actor).remove::<ActorHeadRequest>();
                 commands.spawn((
                     Name::new(format!("Head {:08X}", actor_data.base_form_id)),
@@ -189,7 +224,7 @@ fn spawn_ready_head_scenes(
                     ChildOf(actor),
                 ));
             }
-            LoadState::Failed(error) => {
+            AttachmentLoad::Failed(error) => {
                 let diagnostic = ActorHeadDiagnostic::MissingAsset {
                     base_form_id: actor_data.base_form_id,
                     path: request.path.clone(),
@@ -202,7 +237,7 @@ fn spawn_ready_head_scenes(
                 );
                 commands.entity(actor).remove::<ActorHeadRequest>();
             }
-            LoadState::NotLoaded | LoadState::Loading => {}
+            AttachmentLoad::Loading => {}
         }
     }
 }
@@ -765,6 +800,191 @@ mod tests {
         assert!(app.world().get::<ActorHeadRequest>(actor).is_none());
         assert!(head_instance(&mut app, actor).is_none());
         assert!(app.world().get_entity(actor).is_ok());
+    }
+
+    fn failure() -> Arc<AssetLoadError> {
+        Arc::new(AssetLoadError::AssetReaderError(
+            bevy::asset::io::AssetReaderError::NotFound("missing.glb".into()),
+        ))
+    }
+
+    #[test]
+    fn an_attachment_is_ready_only_when_its_dependencies_are_loaded() {
+        use DependencyLoadState as Dependency;
+        use RecursiveDependencyLoadState as Recursive;
+        let state = |load, recursive| Some((load, Dependency::Loaded, recursive));
+        assert!(matches!(
+            classify_attachment_load(state(LoadState::Loaded, Recursive::Loaded)),
+            AttachmentLoad::Ready
+        ));
+        // The scene itself is loaded and a texture is still in flight: the case that raced.
+        assert!(matches!(
+            classify_attachment_load(state(LoadState::Loaded, Recursive::Loading)),
+            AttachmentLoad::Loading
+        ));
+        assert!(matches!(
+            classify_attachment_load(state(LoadState::Loaded, Recursive::NotLoaded)),
+            AttachmentLoad::Loading
+        ));
+        assert!(matches!(
+            classify_attachment_load(state(LoadState::Loading, Recursive::Loading)),
+            AttachmentLoad::Loading
+        ));
+        assert!(matches!(
+            classify_attachment_load(None),
+            AttachmentLoad::Loading
+        ));
+        assert!(matches!(
+            classify_attachment_load(state(LoadState::Failed(failure()), Recursive::Loading)),
+            AttachmentLoad::Failed(_)
+        ));
+        assert!(matches!(
+            classify_attachment_load(state(LoadState::Loaded, Recursive::Failed(failure()))),
+            AttachmentLoad::Failed(_)
+        ));
+    }
+
+    /// A head scene whose own load finishes at once and whose one texture waits on a gate.
+    #[derive(TypePath)]
+    struct GatedHeadLoader {
+        textures: Arc<std::sync::Mutex<Vec<Handle<Image>>>>,
+    }
+
+    impl bevy::asset::AssetLoader for GatedHeadLoader {
+        type Asset = WorldAsset;
+        type Settings = ();
+        type Error = std::io::Error;
+
+        async fn load(
+            &self,
+            _: &mut dyn bevy::asset::io::Reader,
+            _: &(),
+            context: &mut bevy::asset::LoadContext<'_>,
+        ) -> Result<WorldAsset, std::io::Error> {
+            let mut labeled = context.begin_labeled_asset();
+            let texture = labeled.load::<Image>("hair.ktx2");
+            self.textures.lock().unwrap().push(texture);
+            context
+                .add_loaded_labeled_asset("Scene0", labeled.finish(WorldAsset::new(World::new())));
+            Ok(WorldAsset::new(World::new()))
+        }
+
+        fn extensions(&self) -> &[&str] {
+            &["glb"]
+        }
+    }
+
+    #[derive(TypePath)]
+    struct GatedTextureLoader {
+        gate: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl bevy::asset::AssetLoader for GatedTextureLoader {
+        type Asset = Image;
+        type Settings = ();
+        type Error = std::io::Error;
+
+        async fn load(
+            &self,
+            _: &mut dyn bevy::asset::io::Reader,
+            _: &(),
+            _: &mut bevy::asset::LoadContext<'_>,
+        ) -> Result<Image, std::io::Error> {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !self.gate.load(Ordering::Acquire) {
+                if Instant::now() > deadline {
+                    return Err(std::io::Error::other("test gate timed out"));
+                }
+                bevy::tasks::futures_lite::future::yield_now().await;
+            }
+            Ok(Image::default())
+        }
+
+        fn extensions(&self) -> &[&str] {
+            &["ktx2"]
+        }
+    }
+
+    /// Opens the gate when dropped, so a failed assertion cannot leave a loader spinning.
+    struct OpenOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for OpenOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn a_head_is_not_spawned_while_its_textures_are_still_loading() {
+        let (directory, mut app) = fixture_app();
+        let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _open = OpenOnDrop(gate.clone());
+        app.init_asset::<Image>()
+            .register_asset_loader(GatedHeadLoader {
+                textures: default(),
+            })
+            .register_asset_loader(GatedTextureLoader { gate: gate.clone() });
+        let head_path = crate::streaming::converted_model_path(FACE_NIF.to_owned())
+            .expect("the FaceGen path converts");
+        let file = directory.path().join(&head_path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, []).unwrap();
+        std::fs::write(directory.path().join("hair.ktx2"), []).unwrap();
+
+        let body = app
+            .world()
+            .resource::<AssetServer>()
+            .add(WorldAsset::new(fixture_body_world(true)));
+        let actor = spawn_actor_with_body(
+            &mut app,
+            body,
+            ActorHead::new(FACE_NIF, ActorHeadSource::Facegen).unwrap(),
+        );
+        app.world_mut().entity_mut(actor).insert(ActorBodyReady);
+
+        // Take the scene handle as soon as the head is requested, then wait until the scene itself
+        // is loaded. Its texture is held, so the scene is not loaded with its dependencies.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let scene = loop {
+            app.update();
+            if let Some(request) = app.world().get::<ActorHeadRequest>(actor) {
+                break request.asset.clone();
+            }
+            assert!(Instant::now() < deadline, "the head was never requested");
+        };
+        loop {
+            app.update();
+            let server = app.world().resource::<AssetServer>();
+            if matches!(server.load_state(scene.id()), LoadState::Loaded) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the head scene never loaded");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let server = app.world().resource::<AssetServer>().clone();
+        assert!(!server.is_loaded_with_dependencies(scene.id()));
+        for _ in 0..30 {
+            app.update();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            head_instance(&mut app, actor).is_none(),
+            "a head with a texture in flight must not be a descendant of the actor"
+        );
+        assert!(app.world().get::<ActorHeadRequest>(actor).is_some());
+
+        gate.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while head_instance(&mut app, actor).is_none() {
+            app.update();
+            assert!(
+                Instant::now() < deadline,
+                "the head never spawned after its texture loaded"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(server.is_loaded_with_dependencies(scene.id()));
+        assert!(app.world().get::<ActorHeadRequest>(actor).is_none());
     }
 
     #[test]

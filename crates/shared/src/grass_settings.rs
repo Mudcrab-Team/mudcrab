@@ -17,29 +17,29 @@ pub const SETTINGS_VERSION: u32 = 1;
 /// Grass values honoured by the engine, including reported-only Skyrim settings.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GrassSettings {
-    /// `iMinGrassSize`: retail default 20 Creation units for the candidate-count calculation.
+    /// `iMinGrassSize`: retail default 20 Creation units for the candidate-count calculation (compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052).
     #[serde(rename = "iMinGrassSize")]
     pub min_grass_size: i32,
     /// Checked after adding a species: the default 2 admits up to 3 species.
-    /// `iMaxGrassTypesPerTexure`: retail default post-add limit 2 per texture.
+    /// `iMaxGrassTypesPerTexure`: retail default post-add limit 2 per texture (compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052).
     #[serde(rename = "iMaxGrassTypesPerTexure")]
     pub max_grass_types_per_texture: i32,
-    /// `fTexturePctThreshold`: retail default 0.0 minimum texture contribution.
+    /// `fTexturePctThreshold`: retail default 0.0 minimum texture contribution (compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052).
     #[serde(rename = "fTexturePctThreshold")]
     pub texture_pct_threshold: f64,
-    /// `iGrassCellRadius`: retail default 2 cells around the player.
+    /// `iGrassCellRadius`: retail default 2 cells around the player (compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052).
     #[serde(rename = "iGrassCellRadius")]
     pub cell_radius: i32,
-    /// `fGrassStartFadeDistance`: retail default 7000.0; shipped `SkyrimPrefs.ini` also sets 7000.0.
+    /// `fGrassStartFadeDistance`: retail default 7000.0 (`Ultra.ini` sets 7000; `docs/research/retail/q2-grass.md`).
     #[serde(rename = "fGrassStartFadeDistance")]
     pub start_fade_distance: f64,
-    /// `fGrassFadeRange`: retail default 1000.0 Creation units.
+    /// `fGrassFadeRange`: retail default 1000.0 Creation units (`docs/research/retail/q2-grass.md`).
     #[serde(rename = "fGrassFadeRange")]
     pub fade_range: f64,
     /// `fGrassMinStartFadeDistance`: 0.0 as shipped in `Skyrim_Default.ini` and `SkyrimPrefs.ini` (the compiled setting holds 400.0, which the shipped INI overrides); reported only.
     #[serde(rename = "fGrassMinStartFadeDistance")]
     pub min_start_fade_distance: f64,
-    /// `fGrassMaxStartFadeDistance`: retail default 7000.0, also shipped in `Skyrim_Default.ini`; reported only.
+    /// `fGrassMaxStartFadeDistance`: retail default 7000.0 (`Skyrim_Default.ini`; compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052); reported only.
     #[serde(rename = "fGrassMaxStartFadeDistance")]
     pub max_start_fade_distance: f64,
     /// `fGrassWindMagnitudeMin`: retail default 5.0 (RF-GRASS-001); reported only.
@@ -48,19 +48,19 @@ pub struct GrassSettings {
     /// `fGrassWindMagnitudeMax`: retail default 125.0 (RF-GRASS-001); reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
-    /// `bDrawShaderGrass`: retail default true; launch-state resolution honors explicit CLI switches.
+    /// `bDrawShaderGrass`: retail default true (compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052); launch-state resolution honors explicit CLI switches.
     #[serde(rename = "bDrawShaderGrass")]
     pub draw_shader_grass: bool,
-    /// `bEnableGrassFade`: retail default true.
+    /// `bEnableGrassFade`: retail default true (compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052).
     #[serde(rename = "bEnableGrassFade")]
     pub enable_grass_fade: bool,
-    /// `bAllowCreateGrass`: retail default true; reported legacy cache switch.
+    /// `bAllowCreateGrass`: retail default true (`Skyrim_Default.ini`; compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052); reported legacy cache switch.
     #[serde(rename = "bAllowCreateGrass")]
     pub allow_create_grass: bool,
-    /// `bAllowLoadGrass`: retail default false; reported legacy cache switch.
+    /// `bAllowLoadGrass`: retail default false (`Skyrim_Default.ini`; compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052); reported legacy cache switch.
     #[serde(rename = "bAllowLoadGrass")]
     pub allow_load_grass: bool,
-    /// `bGenerateGrassDataFiles`: retail default false; reported legacy cache switch.
+    /// `bGenerateGrassDataFiles`: retail default false (compiled default, https://github.com/Mudcrab-Team/skyrim_decomp/pull/1052); reported legacy cache switch.
     #[serde(rename = "bGenerateGrassDataFiles")]
     pub generate_grass_data_files: bool,
 }

@@ -2200,6 +2200,7 @@ mod tests {
             block_level1_distance: 8.0 * CELL_SIZE,
             block_maximum_distance: 16.0 * CELL_SIZE,
             split_distance_mult: 1.0,
+            ..TerrainLodDistances::default()
         }
     }
 
@@ -2240,6 +2241,7 @@ mod tests {
                 block_level1_distance: 5.0 * CELL_SIZE,
                 block_maximum_distance: 10.0 * CELL_SIZE,
                 split_distance_mult: 1.0,
+                ..TerrainLodDistances::default()
             },
         ];
         for subset in 0u8..8 {
@@ -3085,6 +3087,7 @@ mod tests {
             block_level1_distance: 8.0 * CELL_SIZE,
             block_maximum_distance: 16.0 * CELL_SIZE,
             split_distance_mult: 1.0,
+            ..TerrainLodDistances::default()
         };
         let mut app = App::new();
         app.insert_resource(config)

@@ -66,6 +66,7 @@ pub(crate) struct TerrainBlendShaderPlugin;
 impl Plugin for TerrainBlendShaderPlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(app, "shaders/terrain_blend.wgsl");
+        load_shader_library!(app, "shaders/terrain_normal.wgsl");
     }
 }
 
