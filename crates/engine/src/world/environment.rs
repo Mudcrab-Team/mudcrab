@@ -591,6 +591,13 @@ impl EnvironmentCatalog {
         catalog
     }
 
+    /// A climate's weather list in authored order; empty when unknown.
+    pub fn climate_weathers(&self, climate_id: u32) -> &[ClimateWeather] {
+        self.climate_weathers
+            .get(&climate_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Add one weather and its image spaces to a test catalog.
     #[cfg(test)]
     pub(crate) fn with_weather_for_tests(
@@ -602,13 +609,6 @@ impl EnvironmentCatalog {
         self.weathers.insert(id, weather);
         self.image_spaces.extend(image_spaces);
         self
-    }
-
-    /// A climate's weather list in authored order; empty when unknown.
-    pub fn climate_weathers(&self, climate_id: u32) -> &[ClimateWeather] {
-        self.climate_weathers
-            .get(&climate_id)
-            .map_or(&[], Vec::as_slice)
     }
 }
 
