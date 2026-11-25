@@ -1,6 +1,7 @@
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     mesh_functions,
+    mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
     view_transformations::position_world_to_clip,
@@ -13,6 +14,9 @@ struct ObjectLighting {
     z: vec4<f32>,
     sun_direction: vec4<f32>,
     sun_rgb: vec4<f32>,
+    // x is 1 under the `skyrim` visual profile (retail terms) and 0 under `mudcrab` (the engine
+    // light scale, the exposure and the Bevy sun). The CPU fills the rows by the same flag.
+    profile: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var normal_atlas: texture_2d<f32>;
@@ -50,18 +54,42 @@ struct ObjectFragment {
     @location(13) @interpolate(flat) sun_direction: vec3<f32>,
 }
 
-// skyrim_decomp#1003 G02. Creation axes (X,Y,Z) become runtime axes (X,Z,-Y). The inputs are
-// one directional ambient slope per creation axis for one colour channel.
-fn runtime_slope(x: f32, y: f32, z: f32) -> vec3<f32> {
-    return vec3(x, z, -y);
+// skyrim_decomp#1003 G02. The ambient rows for the vertex stage, as the columns of a matrix:
+// column 0 is the red row, column 1 green and column 2 blue. Each channel's creation-axis
+// slopes (`lighting.x`, `.y`, `.z` of that channel) become runtime axes (X,Z,-Y), then rotate
+// into model space with `Rᵀ × v`. Axis i of the model is the normalised column i of the world
+// matrix, so component i is the projection on that axis. Object LOD has uniform scale.
+fn retail_ambient_rows(
+    lighting: ObjectLighting, column_x: vec3<f32>, column_y: vec3<f32>, column_z: vec3<f32>,
+) -> mat3x3<f32> {
+    return mat3x3(
+        vec3(
+            dot(normalize(column_x), vec3(lighting.x.r, lighting.z.r, -lighting.y.r)),
+            dot(normalize(column_y), vec3(lighting.x.r, lighting.z.r, -lighting.y.r)),
+            dot(normalize(column_z), vec3(lighting.x.r, lighting.z.r, -lighting.y.r)),
+        ),
+        vec3(
+            dot(normalize(column_x), vec3(lighting.x.g, lighting.z.g, -lighting.y.g)),
+            dot(normalize(column_y), vec3(lighting.x.g, lighting.z.g, -lighting.y.g)),
+            dot(normalize(column_z), vec3(lighting.x.g, lighting.z.g, -lighting.y.g)),
+        ),
+        vec3(
+            dot(normalize(column_x), vec3(lighting.x.b, lighting.z.b, -lighting.y.b)),
+            dot(normalize(column_y), vec3(lighting.x.b, lighting.z.b, -lighting.y.b)),
+            dot(normalize(column_z), vec3(lighting.x.b, lighting.z.b, -lighting.y.b)),
+        ),
+    );
 }
 
-// skyrim_decomp#1003 G02. `Rᵀ × v` for model axes expressed in world space. Component i is
-// the projection of `v` on model axis i.
-fn to_model_space(
-    axis_x: vec3<f32>, axis_y: vec3<f32>, axis_z: vec3<f32>, v: vec3<f32>,
+// skyrim_decomp#1003 G02 and G03. The to-sun vector in model space: the same `Rᵀ × v`.
+fn retail_sun_direction(
+    lighting: ObjectLighting, column_x: vec3<f32>, column_y: vec3<f32>, column_z: vec3<f32>,
 ) -> vec3<f32> {
-    return vec3(dot(axis_x, v), dot(axis_y, v), dot(axis_z, v));
+    return vec3(
+        dot(normalize(column_x), lighting.sun_direction.xyz),
+        dot(normalize(column_y), lighting.sun_direction.xyz),
+        dot(normalize(column_z), lighting.sun_direction.xyz),
+    );
 }
 
 // skyrim_decomp#1003 G02 and G05. The mean is the intercept. Each row dots with (N,1). No clamp.
@@ -90,25 +118,29 @@ fn vertex(in: ObjectVertex) -> ObjectFragment {
     out.world_position = mesh_functions::mesh_position_local_to_world(world, vec4(in.position, 1.0));
     out.position = position_world_to_clip(out.world_position.xyz);
     out.uv = in.uv;
-    out.red = in.red;
-    out.green = in.green;
-    out.blue = in.normal;
-
-    // skyrim_decomp#1003 G02 and G03. Object LOD uses uniform scale. Rotate the world inputs
-    // into the atlas basis space. Axis i of the model is the normalised column i of `world`.
-    let axis_x = normalize(world[0].xyz);
-    let axis_y = normalize(world[1].xyz);
-    let axis_z = normalize(world[2].xyz);
-    out.ambient_r = to_model_space(
-        axis_x, axis_y, axis_z, runtime_slope(lighting.x.r, lighting.y.r, lighting.z.r),
-    );
-    out.ambient_g = to_model_space(
-        axis_x, axis_y, axis_z, runtime_slope(lighting.x.g, lighting.y.g, lighting.z.g),
-    );
-    out.ambient_b = to_model_space(
-        axis_x, axis_y, axis_z, runtime_slope(lighting.x.b, lighting.y.b, lighting.z.b),
-    );
-    out.sun_direction = to_model_space(axis_x, axis_y, axis_z, lighting.sun_direction.xyz);
+    if lighting.profile.x > 0.5 {
+        // `skyrim` profile. The basis stays in model space and the light vectors rotate into it.
+        out.red = in.red;
+        out.green = in.green;
+        out.blue = in.normal;
+        let rows = retail_ambient_rows(
+            lighting, world[0].xyz, world[1].xyz, world[2].xyz,
+        );
+        out.ambient_r = rows[0];
+        out.ambient_g = rows[1];
+        out.ambient_b = rows[2];
+        out.sun_direction = retail_sun_direction(
+            lighting, world[0].xyz, world[1].xyz, world[2].xyz,
+        );
+    } else {
+        // `mudcrab` profile, unchanged. Object LOD roots have a rotation and uniform scale. Keep
+        // the relative basis lengths through interpolation and normalize only the result of the
+        // full transform.
+        let basis = mat3x3(world[0].xyz, world[1].xyz, world[2].xyz);
+        out.red = basis * in.red;
+        out.green = basis * in.green;
+        out.blue = basis * in.normal;
+    }
 
 #ifdef VERTEX_COLORS
     out.color = in.color;
@@ -126,13 +158,17 @@ fn decode_object_atlas(rgb: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    let retail = lighting.profile.x > 0.5;
     var mesh: VertexOutput;
     mesh.world_position = in.world_position;
     mesh.position = in.position;
+    // Under `skyrim` the interpolated basis is in model space, so this holds a model-space vector,
+    // not a world normal. Nothing later may read it as a world normal.
     mesh.world_normal = normalize(in.blue);
     mesh.uv = in.uv;
 #ifdef VERTEX_COLORS
-    mesh.color = vec4(1.0);
+    // `skyrim` applies the vertex colour once, below. `mudcrab` leaves it to the standard material.
+    mesh.color = select(in.color, vec4(1.0), retail);
 #endif
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     mesh.instance_index = in.instance_index;
@@ -140,36 +176,57 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     let input = pbr_input_from_standard_material(mesh, is_front);
     let diffuse = alpha_discard(input.material, input.material.base_color);
 
-    // skyrim_decomp#1003 G02 to G05.
     let tangent_normal = decode_object_atlas(textureSample(normal_atlas, atlas_sampler, in.uv).rgb);
     let normal = normalize(mat3x3(in.red, in.green, in.blue) * tangent_normal);
-    let ambient = object_ambient(
-        lighting.mean.rgb, in.ambient_r, in.ambient_g, in.ambient_b, normal,
-    );
-    let sun = object_sun(normal, in.sun_direction, lighting.sun_rgb.rgb);
-    // The ordinary exterior light assignment skips the stock object LOD root (G04). This shader
-    // has no point-light loop, so placed `LIGH` lights (#955) light the full-detail mesh only.
-    // Registry `RF-LIGHT-GPU-004`.
-    // STAND-IN(#946): use the stock zero property emission and omit shader-object additive
-    // colour. Native projected detail and auxiliary outputs have no matching engine inputs.
-    // Technique 13 has no vertex colour attribute: its vertex shader supplies white (G01).
-    var vertex_rgb = vec3(1.0);
+    var color = vec3(0.0);
+    if retail {
+        // skyrim_decomp#1003 G02 to G05.
+        let ambient = object_ambient(
+            lighting.mean.rgb, in.ambient_r, in.ambient_g, in.ambient_b, normal,
+        );
+        let sun = object_sun(normal, in.sun_direction, lighting.sun_rgb.rgb);
+        // The ordinary exterior light assignment skips the stock object LOD root (G04). This shader
+        // has no point-light loop, so placed `LIGH` lights (#955) light the full-detail mesh only.
+        // Registry `RF-LIGHT-GPU-004`.
+        // STAND-IN(#946): use the stock zero property emission and omit shader-object additive
+        // colour. Native projected detail and auxiliary outputs have no matching engine inputs.
+        // Technique 13 has no vertex colour attribute: its vertex shader supplies white (G01).
+        var vertex_rgb = vec3(1.0);
 #ifdef VERTEX_COLORS
-    vertex_rgb = in.color.rgb;
+        vertex_rgb = in.color.rgb;
 #endif
-    let lit = object_lit(sun, ambient, diffuse.rgb, vertex_rgb);
-    // Fog: retail has no fog colour in this pixel shader (unverified here; see
-    // docs/specs/engine/visual-profiles.md). The haze of stock object LOD is the full-screen depth
-    // composite after the opaque stage (`retail_fog.rs`, #1004; skyrim_decomp NEEDS 17 answer,
-    // PR pending). Under the `skyrim` profile that composite fogs this draw, and
-    // Bevy's shader fog skips it (`FOG_MODE_POWER_RAMP_BLENDED`) because the material is in the
-    // opaque or alpha-mask pass and has no transmission. Do not call `apply_fog` or a retail fog
-    // tail here: that would fog twice. Under the `mudcrab` profile the composite does not run, and
+        color = object_lit(sun, ambient, diffuse.rgb, vertex_rgb);
+    } else {
+        // `mudcrab` profile, unchanged: the engine light scale and the view exposure. The rows are
+        // already scaled by the ambient illuminance on the CPU.
+        // STAND-IN(#983): base atlas lighting uses the engine's light lists and colour pipeline.
+        // Projected detail and auxiliary outputs require retail inputs unavailable here.
+        let creation_normal = vec3(normal.x, -normal.z, normal.y);
+        var light = lighting.mean.rgb + creation_normal.x * lighting.x.rgb
+            + creation_normal.y * lighting.y.rgb + creation_normal.z * lighting.z.rgb;
+        for (var i = 0u; i < view_bindings::lights.n_directional_lights; i += 1u) {
+            let sun = view_bindings::lights.directional_lights[i];
+            light += clamp(dot(normal, sun.direction_to_light), 0.0, 1.0) * sun.color.rgb / 3.14159265;
+        }
+        // Retail's stock object LOD (BTO, techniques 13 and 15) receives no point lights:
+        // skyrim_decomp PR 1003 and NEEDS 14 found no path that fills its light list. This shader
+        // has no point-light loop, so placed `LIGH` lights (#955) light the full-detail mesh only.
+        // Registry `RF-LIGHT-GPU-004`.
+        color = diffuse.rgb * light * view_bindings::view.exposure;
+    }
+    // Fog: retail has no fog colour in this pixel shader for stock object LOD. The haze is the
+    // full-screen depth composite after the opaque stage (`retail_fog.rs`, #1004;
+    // skyrim_decomp PR 1061 and 1077; docs/specs/engine/visual-profiles.md). Under the `skyrim`
+    // profile that composite fogs this draw, and Bevy's shader fog skips it
+    // (`FOG_MODE_POWER_RAMP_BLENDED`) because the material is in the opaque or alpha-mask pass and
+    // has no transmission. Do not call `apply_fog` or a retail fog tail here: that would fog twice.
+    // Under the `mudcrab` profile the composite does not run, and
     // `main_pass_post_lighting_processing` keeps the per-material distance fog, as for near
     // objects and terrain LOD.
     var out: FragmentOutput;
-    // STAND-IN(#946): alpha omits the retail `b2[3].z` factor (G05), the property alpha times
-    // the pass fade. No engine input supplies it. Its value for stock object LOD is unverified.
-    out.color = main_pass_post_lighting_processing(input, vec4(lit, diffuse.a));
+    // STAND-IN(#946): the `skyrim` alpha omits the retail alpha factor of G05, the property alpha
+    // times the pass fade. No engine input supplies it. Its value for stock object LOD is
+    // unverified.
+    out.color = main_pass_post_lighting_processing(input, vec4(color, diffuse.a));
     return out;
 }

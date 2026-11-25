@@ -749,24 +749,152 @@ fn assert_const_fixture(fixture: &str) {
         .unwrap_or_else(|error| panic!("{}", error.emit_to_string(fixture)));
 }
 
-/// The ambient rows follow the retail path: creation-axis slopes become runtime axes, rotate into
-/// model space, and dot with the model-space normal plus the mean. At the identity rotation an
-/// upward normal (runtime +Y, creation +Z) returns `mean + z_slope`, with no clamp.
+/// The uniform struct as a WGSL fixture value. Fields in order: mean, x, y, z, sun direction,
+/// sun RGB, profile.
+fn lighting_fixture(source: &str, fields: [&str; 7]) -> String {
+    let declaration = source
+        .split_once("struct ObjectLighting {")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .expect("ObjectLighting struct")
+        .0;
+    assert_eq!(
+        declaration.matches("vec4<f32>").count(),
+        7,
+        "ObjectLighting fields changed"
+    );
+    format!(
+        "struct ObjectLighting {{{declaration}\n}}\nconst lighting_value = ObjectLighting({});\n",
+        fields.join(", ")
+    )
+}
+
+/// The vertex stage builds the ambient rows with `retail_ambient_rows`: each channel's creation
+/// slopes (`x`, `y`, `z` rows of that channel) become runtime axes (X,Z,-Y) and rotate into model
+/// space with the normalised world columns. The fixture gives every channel and axis a different
+/// value, so a swapped row, a swapped column or a dropped normalisation changes the result.
+#[test]
+fn object_lod_vertex_rows_follow_the_axis_map_and_the_model_rotation() {
+    let source = include_str!("streaming/lod_object.wgsl");
+    let mut fixture = lighting_fixture(
+        source,
+        [
+            "vec4(0.0)",
+            "vec4(0.1, 0.2, 0.3, 0.0)",
+            "vec4(0.4, 0.5, 0.6, 0.0)",
+            "vec4(0.7, 0.8, 0.9, 0.0)",
+            "vec4(0.6, 0.8, 0.0, 0.0)",
+            "vec4(0.0)",
+            "vec4(1.0, 0.0, 0.0, 0.0)",
+        ],
+    );
+    // Identity rotation. Red slopes (x, y, z) = (0.1, 0.4, 0.7) map to runtime (0.1, 0.7, -0.4).
+    fixture.push_str(&const_call(
+        source,
+        "retail_ambient_rows",
+        "id",
+        &[
+            "lighting_value",
+            "vec3(1.0, 0.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.0, 1.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert id_result[0].x == 0.1 && id_result[0].y == 0.7 && id_result[0].z == -0.4;
+         const_assert id_result[1].x == 0.2 && id_result[1].y == 0.8 && id_result[1].z == -0.5;
+         const_assert id_result[2].x == 0.3 && id_result[2].y == 0.9 && id_result[2].z == -0.6;
+",
+    );
+    // A model turned so its x axis points along world -Z and its z axis along world +X, with a
+    // uniform scale of 2 on the columns. Normalisation makes the scale drop out. The red runtime
+    // vector (0.1, 0.7, -0.4) reads as (0.4, 0.7, 0.1) in the model.
+    fixture.push_str(&const_call(
+        source,
+        "retail_ambient_rows",
+        "turn",
+        &[
+            "lighting_value",
+            "vec3(0.0, 0.0, -2.0)",
+            "vec3(0.0, 2.0, 0.0)",
+            "vec3(2.0, 0.0, 0.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert turn_result[0].x == 0.4 && turn_result[0].y == 0.7 && turn_result[0].z == 0.1;
+         const_assert turn_result[1].x == 0.5 && turn_result[1].y == 0.8 && turn_result[1].z == 0.2;
+         const_assert turn_result[2].x == 0.6 && turn_result[2].y == 0.9 && turn_result[2].z == 0.3;
+",
+    );
+    // The to-sun vector uses the same rotation. It is the `sun_direction` field, not a slope row.
+    fixture.push_str(&const_call(
+        source,
+        "retail_sun_direction",
+        "sun_id",
+        &[
+            "lighting_value",
+            "vec3(1.0, 0.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.0, 1.0)",
+        ],
+    ));
+    fixture.push_str(&const_call(
+        source,
+        "retail_sun_direction",
+        "sun_turn",
+        &[
+            "lighting_value",
+            "vec3(0.0, 0.0, -2.0)",
+            "vec3(0.0, 2.0, 0.0)",
+            "vec3(2.0, 0.0, 0.0)",
+        ],
+    ));
+    fixture.push_str(
+        "const_assert sun_id_result.x == 0.6 && sun_id_result.y == 0.8 && sun_id_result.z == 0.0;
+         const_assert sun_turn_result.x == 0.0 && sun_turn_result.y == 0.8 && sun_turn_result.z == 0.6;
+",
+    );
+    assert_const_fixture(&fixture);
+
+    // The vertex stage routes the three columns of the rows and the sun vector to the interpolants,
+    // and passes the world columns unnormalised (the helpers normalise).
+    for line in [
+        "let rows = retail_ambient_rows(\n            lighting, world[0].xyz, world[1].xyz, world[2].xyz,\n        );",
+        "out.ambient_r = rows[0];",
+        "out.ambient_g = rows[1];",
+        "out.ambient_b = rows[2];",
+        "out.sun_direction = retail_sun_direction(\n            lighting, world[0].xyz, world[1].xyz, world[2].xyz,\n        );",
+    ] {
+        assert!(source.contains(line), "vertex wiring changed: {line}");
+    }
+}
+
+/// The ambient dot: the rows dot with the model-space normal and add the mean, with no clamp.
+/// An upward normal at the identity rotation reads `mean + the z slope`.
 #[test]
 fn object_lod_ambient_is_mean_plus_the_rotated_slope_dot() {
     let source = include_str!("streaming/lod_object.wgsl");
-    let identity = [
-        "vec3(1.0, 0.0, 0.0)",
-        "vec3(0.0, 1.0, 0.0)",
-        "vec3(0.0, 0.0, 1.0)",
-    ];
-    // The red row: creation slopes x 0.25, y 0.5, z 0.125 and mean 0.5. Green and blue are zero.
-    let mut fixture = const_call(source, "runtime_slope", "slope", &["0.25", "0.5", "0.125"]);
+    let mut fixture = lighting_fixture(
+        source,
+        [
+            "vec4(0.5, 0.0, 0.0, 0.0)",
+            "vec4(0.25, 0.0, 0.0, 0.0)",
+            "vec4(0.5, 0.0, 0.0, 0.0)",
+            "vec4(0.125, 0.0, 0.0, 0.0)",
+            "vec4(0.0)",
+            "vec4(0.0)",
+            "vec4(1.0, 0.0, 0.0, 0.0)",
+        ],
+    );
     fixture.push_str(&const_call(
         source,
-        "to_model_space",
-        "row",
-        &[identity[0], identity[1], identity[2], "slope_result"],
+        "retail_ambient_rows",
+        "id",
+        &[
+            "lighting_value",
+            "vec3(1.0, 0.0, 0.0)",
+            "vec3(0.0, 1.0, 0.0)",
+            "vec3(0.0, 0.0, 1.0)",
+        ],
     ));
     for (name, normal) in [
         ("up", "vec3(0.0, 1.0, 0.0)"),
@@ -779,9 +907,9 @@ fn object_lod_ambient_is_mean_plus_the_rotated_slope_dot() {
             name,
             &[
                 "vec3(0.5, 0.0, 0.0)",
-                "row_result",
-                "vec3(0.0)",
-                "vec3(0.0)",
+                "id_result[0]",
+                "id_result[1]",
+                "id_result[2]",
                 normal,
             ],
         ));
@@ -794,28 +922,8 @@ fn object_lod_ambient_is_mean_plus_the_rotated_slope_dot() {
          const_assert south_result.x == 0.0;
 ",
     );
-    assert_const_fixture(&fixture);
-
-    // A model turned so its x axis points along world -Z and its z axis along world +X. A world +X
-    // vector reads as model +Z. World +Y stays model +Y.
-    let turned = [
-        "vec3(0.0, 0.0, -1.0)",
-        "vec3(0.0, 1.0, 0.0)",
-        "vec3(1.0, 0.0, 0.0)",
-    ];
-    let mut fixture = const_call(
-        source,
-        "to_model_space",
-        "turn",
-        &[turned[0], turned[1], turned[2], "vec3(1.0, 0.0, 0.0)"],
-    );
-    fixture.push_str(
-        "const_assert turn_result.x == 0.0 && turn_result.y == 0.0 && turn_result.z == 1.0;\n",
-    );
-    assert_const_fixture(&fixture);
-
     // The dot is not clamped: a negative slope term can pull the ambient below the mean.
-    let mut fixture = const_call(
+    fixture.push_str(&const_call(
         source,
         "object_ambient",
         "dark",
@@ -826,7 +934,7 @@ fn object_lod_ambient_is_mean_plus_the_rotated_slope_dot() {
             "vec3(0.0)",
             "vec3(0.0, 1.0, 0.0)",
         ],
-    );
+    ));
     fixture.push_str("const_assert dark_result.x == -0.375;\n");
     assert_const_fixture(&fixture);
 }
@@ -941,7 +1049,9 @@ fn object_lod_sun_and_lit_follow_the_retail_term_order() {
     assert_eq!(colour_inputs(&with_colour), 1);
     assert_eq!(colour_inputs(&without_colour), 0);
     assert!(
-        source.contains("var vertex_rgb = vec3(1.0);\n#ifdef VERTEX_COLORS\n    vertex_rgb = in.color.rgb;\n#endif"),
+        source.contains(
+            "var vertex_rgb = vec3(1.0);\n#ifdef VERTEX_COLORS\n        vertex_rgb = in.color.rgb;\n#endif"
+        ),
         "the vertex multiplier must default to white and take mesh colour only when present"
     );
 }
@@ -959,7 +1069,7 @@ fn object_lod_output_uses_bevy_post_lighting_and_adds_no_fog() {
         "the composite fogs object LOD"
     );
     assert!(!source.contains("retail_fog_tail"), "no second fog tail");
-    assert!(source.contains("main_pass_post_lighting_processing(input, vec4(lit, diffuse.a))"));
+    assert!(source.contains("main_pass_post_lighting_processing(input, vec4(color, diffuse.a))"));
     let mut defs = base_defs();
     for name in [
         "VERTEX_UVS_B",

@@ -3,7 +3,9 @@
 use super::lod_objects::{LodObjectRoot, ObjectSceneReady};
 use crate::{
     config::EngineConfig,
+    lights::AMBIENT_ILLUMINANCE,
     sun::{GameClock, world_sun_direction},
+    visual_profile::VisualProfile,
     weather_sky::{DEFAULT_WEATHER_FORM_ID, slot_weights},
     world::{
         database::{LodObjectAtlas, verify_lod_object_atlas},
@@ -48,7 +50,7 @@ const SHADER: &str = "embedded://engine/streaming/lod_object.wgsl";
 
 type ObjectMaterial = ExtendedMaterial<StandardMaterial, ObjectAtlas>;
 
-#[derive(Clone, Copy, Default, PartialEq, ShaderType)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
 struct ObjectLighting {
     mean: Vec4,
     x: Vec4,
@@ -56,6 +58,20 @@ struct ObjectLighting {
     z: Vec4,
     sun_direction: Vec4,
     sun_rgb: Vec4,
+    /// `x` is 1 under the `skyrim` visual profile and 0 under `mudcrab`. The shader picks the
+    /// retail terms or the engine light scale by this flag (a uniform branch).
+    profile: Vec4,
+}
+
+impl ObjectLighting {
+    /// The unlit starting value for a profile. Under `skyrim` this is black until the system finds
+    /// the weather rows: the retail shader has no other light source.
+    fn for_profile(profile: VisualProfile) -> Self {
+        Self {
+            profile: Vec4::new(f32::from(profile == VisualProfile::Skyrim), 0.0, 0.0, 0.0),
+            ..default()
+        }
+    }
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -101,6 +117,8 @@ struct Atlases {
     normals: HashMap<u32, Option<Handle<Image>>>,
     missing_basis: HashSet<u32>,
     materials: HashMap<u32, Handle<ObjectMaterial>>,
+    /// Worlds whose `skyrim` lighting is missing and already logged.
+    unlit: HashSet<u32>,
 }
 
 #[derive(Component)]
@@ -274,7 +292,7 @@ fn apply_object_atlases(
                     base: object_atlas_base(base),
                     extension: ObjectAtlas {
                         normal: image.clone(),
-                        lighting: ObjectLighting::default(),
+                        lighting: ObjectLighting::for_profile(config.visual_profile),
                     },
                 })
             });
@@ -315,15 +333,45 @@ fn update_object_lighting(
     catalog: Option<Res<EnvironmentCatalog>>,
     config: Res<EngineConfig>,
     mut materials: ResMut<Assets<ObjectMaterial>>,
-    atlases: Res<Atlases>,
+    mut atlases: ResMut<Atlases>,
 ) {
+    let skyrim = config.visual_profile == VisualProfile::Skyrim;
+    let Atlases {
+        materials: handles,
+        unlit,
+        ..
+    } = &mut *atlases;
     let (Some(clock), Some(catalog)) = (clock, catalog) else {
+        if skyrim {
+            for world in handles.keys() {
+                warn_unlit(
+                    &config,
+                    unlit,
+                    *world,
+                    "no game clock or environment catalog",
+                );
+            }
+        }
         return;
     };
-    for (world, handle) in &atlases.materials {
-        let Some(lighting) = object_lighting(&catalog, &config, clock.hour, *world) else {
+    for (world, handle) in handles.iter() {
+        let lighting = if skyrim {
+            object_lighting(&catalog, &config, clock.hour, *world)
+        } else {
+            mudcrab_lighting(&catalog, clock.hour, *world)
+        };
+        let Some(lighting) = lighting else {
+            if skyrim {
+                warn_unlit(
+                    &config,
+                    unlit,
+                    *world,
+                    missing_lighting_reason(&catalog, *world),
+                );
+            }
             continue;
         };
+        unlit.remove(world);
         if materials
             .get(handle)
             .is_some_and(|material| material.extension.lighting != lighting)
@@ -332,6 +380,61 @@ fn update_object_lighting(
             material.extension.lighting = lighting;
         }
     }
+}
+
+/// Logs once per world that the `skyrim` object LOD has no light inputs.
+///
+/// There is no silent fallback. The material starts with zero rows and the retail shader has no
+/// other light source, so a world that lacks the clock, the catalog, the default weather or a
+/// climate sun timing draws its object LOD black until the inputs exist. Before the retail terms
+/// the Bevy sun still lit such a mesh. Retail worlds have climate timing, so this affects
+/// fixtures, benchmarks and packs without environment tables.
+fn warn_unlit(config: &EngineConfig, unlit: &mut HashSet<u32>, world: u32, reason: &str) {
+    if unlit.insert(world) {
+        warn!(
+            world = %world_editor_id(&config.assets_dir, world),
+            "object LOD is black under the skyrim profile: {reason}"
+        );
+    }
+}
+
+/// Why `object_lighting` has no rows for a world.
+fn missing_lighting_reason(catalog: &EnvironmentCatalog, world: u32) -> &'static str {
+    if catalog.weather(DEFAULT_WEATHER_FORM_ID).is_none() {
+        "the default exterior weather is missing"
+    } else if catalog
+        .worldspace_climate(world)
+        .and_then(|id| catalog.sun_timing(id))
+        .is_none()
+    {
+        "the worldspace has no climate sun timing"
+    } else {
+        "no light inputs"
+    }
+}
+
+/// The `mudcrab` profile's object LOD lighting, unchanged by the retail terms: the directional
+/// ambient rows scaled by the engine ambient illuminance. The sun comes from the Bevy directional
+/// light in the shader, and the shader multiplies by the view exposure. A missing input leaves the
+/// rows unchanged, as before.
+// STAND-IN(#983): use the engine's default exterior weather and light scale.
+fn mudcrab_lighting(catalog: &EnvironmentCatalog, hour: f64, world: u32) -> Option<ObjectLighting> {
+    let weather = catalog.weather(DEFAULT_WEATHER_FORM_ID)?;
+    let timing = catalog
+        .worldspace_climate(world)
+        .and_then(|id| catalog.sun_timing(id))?;
+    let mut lighting = ObjectLighting::for_profile(VisualProfile::Mudcrab);
+    for (time, weight) in TimeOfDay::ALL.into_iter().zip(slot_weights(hour, timing)) {
+        if let Some(dalc) = weather.directional_ambient.get(&time) {
+            let cube = AmbientCube::from_dalc(dalc);
+            let weighted = |rgb| Vec3::from_array(rgb).extend(0.0) * (weight * AMBIENT_ILLUMINANCE);
+            lighting.mean += weighted(cube.mean);
+            lighting.x += weighted(cube.half_difference_x);
+            lighting.y += weighted(cube.half_difference_y);
+            lighting.z += weighted(cube.half_difference_z);
+        }
+    }
+    Some(lighting)
 }
 
 /// The retail directional ambient rows, sun RGB and sun direction for one worldspace and hour.
@@ -346,7 +449,7 @@ fn object_lighting(
     let timing = catalog
         .worldspace_climate(world)
         .and_then(|id| catalog.sun_timing(id))?;
-    let mut lighting = ObjectLighting::default();
+    let mut lighting = ObjectLighting::for_profile(VisualProfile::Skyrim);
     let mut sunlight_scale = 0.0;
     // STAND-IN(#946): use the engine's single exterior weather and base image space.
     // Weather transitions, flashes, image-space overrides and modifiers are unmodeled.
@@ -676,53 +779,60 @@ mod tests {
         ));
     }
 
-    /// The material that `apply_object_atlases` builds keeps a `MASK` chunk in the alpha-mask pass.
+    /// The material that `apply_object_atlases` builds keeps a `MASK` chunk in the alpha-mask pass,
+    /// and starts with the profile flag the shader branches on.
     #[test]
     fn the_applied_object_material_is_in_the_pass_the_composite_fogs() {
-        let pack = tempfile::tempdir().unwrap();
-        let mut app = test_app(pack.path());
-        let piece = add_chunk(&mut app, true);
-        let standard = app
-            .world()
-            .get::<MeshMaterial3d<StandardMaterial>>(piece)
-            .unwrap()
-            .0
-            .clone();
-        app.world_mut()
-            .resource_mut::<Assets<StandardMaterial>>()
-            .get_mut(&standard)
-            .unwrap()
-            .alpha_mode = AlphaMode::Mask(0.5);
-        let normal = app.world().resource::<Assets<Image>>().reserve_handle();
-        {
-            let mut atlases = app.world_mut().resource_mut::<Atlases>();
-            atlases.pack = pack.path().to_owned();
-            atlases.normals.insert(1, Some(normal.clone()));
+        for (profile, flag) in [(VisualProfile::Mudcrab, 0.0), (VisualProfile::Skyrim, 1.0)] {
+            let pack = tempfile::tempdir().unwrap();
+            let mut app = test_app(pack.path());
+            app.world_mut()
+                .resource_mut::<EngineConfig>()
+                .visual_profile = profile;
+            let piece = add_chunk(&mut app, true);
+            let standard = app
+                .world()
+                .get::<MeshMaterial3d<StandardMaterial>>(piece)
+                .unwrap()
+                .0
+                .clone();
+            app.world_mut()
+                .resource_mut::<Assets<StandardMaterial>>()
+                .get_mut(&standard)
+                .unwrap()
+                .alpha_mode = AlphaMode::Mask(0.5);
+            let normal = app.world().resource::<Assets<Image>>().reserve_handle();
+            {
+                let mut atlases = app.world_mut().resource_mut::<Atlases>();
+                atlases.pack = pack.path().to_owned();
+                atlases.normals.insert(1, Some(normal.clone()));
+            }
+            app.update();
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .insert(
+                    normal.id(),
+                    Image {
+                        sampler: atlas_sampler(),
+                        ..default()
+                    },
+                )
+                .unwrap();
+            app.update();
+            let handle = app
+                .world()
+                .get::<MeshMaterial3d<ObjectMaterial>>(piece)
+                .unwrap();
+            let material = app
+                .world()
+                .resource::<Assets<ObjectMaterial>>()
+                .get(&handle.0)
+                .unwrap();
+            assert_eq!(material.base.alpha_mode, AlphaMode::Mask(0.5));
+            assert_eq!(material.base.specular_transmission, 0.0);
+            assert_eq!(material.base.diffuse_transmission, 0.0);
+            assert_eq!(material.extension.lighting.profile.x, flag, "{profile:?}");
         }
-        app.update();
-        app.world_mut()
-            .resource_mut::<Assets<Image>>()
-            .insert(
-                normal.id(),
-                Image {
-                    sampler: atlas_sampler(),
-                    ..default()
-                },
-            )
-            .unwrap();
-        app.update();
-        let handle = app
-            .world()
-            .get::<MeshMaterial3d<ObjectMaterial>>(piece)
-            .unwrap();
-        let material = app
-            .world()
-            .resource::<Assets<ObjectMaterial>>()
-            .get(&handle.0)
-            .unwrap();
-        assert_eq!(material.base.alpha_mode, AlphaMode::Mask(0.5));
-        assert_eq!(material.base.specular_transmission, 0.0);
-        assert_eq!(material.base.diffuse_transmission, 0.0);
     }
 
     // The lighting fixture. Red face bytes 51,153,0,204,102,255 give mean 0.5 and slopes 0.2,
@@ -776,7 +886,10 @@ mod tests {
 
     fn assert_near(actual: Vec4, expected: [f32; 4]) {
         for (a, e) in actual.to_array().into_iter().zip(expected) {
-            assert!((a - e).abs() < 1.0e-5, "{actual:?} != {expected:?}");
+            assert!(
+                (a - e).abs() <= 1.0e-5 * e.abs().max(1.0),
+                "{actual:?} != {expected:?}"
+            );
         }
     }
 
@@ -905,24 +1018,32 @@ mod tests {
         assert!(object_lighting(&EnvironmentCatalog::default(), &config, 12.0, WORLD).is_none());
     }
 
-    #[test]
-    fn the_system_writes_the_lighting_into_the_world_material() {
-        let mut weather = day_weather();
-        weather.image_spaces[1] = Some(DAY_SPACE);
-        let catalog = catalog(weather, vec![(DAY_SPACE, space(2.5))]);
+    /// Builds an app with the lighting system, one world material and the given profile.
+    fn lighting_app(
+        profile: VisualProfile,
+        catalog: Option<EnvironmentCatalog>,
+    ) -> (App, Handle<ObjectMaterial>) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
             .init_asset::<ObjectMaterial>()
             .init_resource::<Atlases>()
-            .insert_resource(EngineConfig::default())
+            .insert_resource(EngineConfig {
+                visual_profile: profile,
+                ..default()
+            })
             .insert_resource(GameClock {
                 hour: 12.0,
                 timescale: 0.0,
             })
-            .insert_resource(catalog)
-            .add_systems(Update, update_object_lighting);
+            .add_systems(Update, update_object_lighting)
+            .edit_schedule(Update, |schedule| {
+                schedule.set_executor(SingleThreadedExecutor::new());
+            });
+        if let Some(catalog) = catalog {
+            app.insert_resource(catalog);
+        }
         let handle = app
             .world_mut()
             .resource_mut::<Assets<ObjectMaterial>>()
@@ -930,17 +1051,127 @@ mod tests {
                 base: StandardMaterial::default(),
                 extension: ObjectAtlas {
                     normal: Handle::default(),
-                    lighting: ObjectLighting::default(),
+                    lighting: ObjectLighting::for_profile(profile),
                 },
             });
         app.world_mut()
             .resource_mut::<Atlases>()
             .materials
             .insert(WORLD, handle.clone());
+        (app, handle)
+    }
+
+    fn lighting_of(app: &App, handle: &Handle<ObjectMaterial>) -> ObjectLighting {
+        app.world()
+            .resource::<Assets<ObjectMaterial>>()
+            .get(handle)
+            .unwrap()
+            .extension
+            .lighting
+    }
+
+    /// Under `mudcrab` the rows are the old ones: raw rows times the engine ambient illuminance,
+    /// no retail sun colour or direction, and the flag stays off so the shader keeps the engine
+    /// light scale, the exposure and the Bevy sun.
+    #[test]
+    fn the_mudcrab_profile_keeps_the_engine_light_scale() {
+        let mut weather = day_weather();
+        weather.image_spaces[1] = Some(DAY_SPACE);
+        let catalog = catalog(weather, vec![(DAY_SPACE, space(2.5))]);
+        let (mut app, handle) = lighting_app(VisualProfile::Mudcrab, Some(catalog));
         app.update();
-        let materials = app.world().resource::<Assets<ObjectMaterial>>();
-        let lighting = materials.get(&handle).unwrap().extension.lighting;
+        let lighting = lighting_of(&app, &handle);
+        assert_near(
+            lighting.mean,
+            [
+                0.5 * AMBIENT_ILLUMINANCE,
+                1.0 * AMBIENT_ILLUMINANCE,
+                0.0,
+                0.0,
+            ],
+        );
+        assert_near(lighting.x, [0.2 * AMBIENT_ILLUMINANCE, 0.0, 0.0, 0.0]);
+        assert_near(lighting.y, [0.4 * AMBIENT_ILLUMINANCE, 0.0, 0.0, 0.0]);
+        assert_near(lighting.z, [0.3 * AMBIENT_ILLUMINANCE, 0.0, 0.0, 0.0]);
+        assert_eq!(lighting.sun_rgb, Vec4::ZERO);
+        assert_eq!(lighting.sun_direction, Vec4::ZERO);
+        assert_eq!(lighting.profile.x, 0.0);
+    }
+
+    /// Under `skyrim` the same weather gives the retail rows with the flag on.
+    #[test]
+    fn the_skyrim_profile_writes_the_retail_rows_with_the_flag_on() {
+        let mut weather = day_weather();
+        weather.image_spaces[1] = Some(DAY_SPACE);
+        let catalog = catalog(weather, vec![(DAY_SPACE, space(2.5))]);
+        let (mut app, handle) = lighting_app(VisualProfile::Skyrim, Some(catalog));
+        app.update();
+        let lighting = lighting_of(&app, &handle);
         assert_near(lighting.mean, [0.5, 1.0, 0.0, 0.0]);
         assert_near(lighting.sun_rgb, [2.5, 0.5, 0.0, 0.0]);
+        assert_eq!(lighting.profile.x, 1.0);
+    }
+
+    /// A `mudcrab` world without lighting inputs is unchanged and silent, as before.
+    #[test]
+    fn the_mudcrab_profile_stays_silent_without_inputs() {
+        let (mut app, handle) = lighting_app(VisualProfile::Mudcrab, None);
+        let warnings = Warnings::default();
+        tracing::subscriber::with_default(Registry::default().with(warnings.clone()), || {
+            app.update();
+            app.update();
+        });
+        assert!(warnings.0.lock().unwrap().is_empty());
+        assert_eq!(
+            lighting_of(&app, &handle),
+            ObjectLighting::for_profile(VisualProfile::Mudcrab)
+        );
+    }
+
+    /// A `skyrim` world without the clock, the catalog, the weather or the climate is black and
+    /// says so once, however many frames pass.
+    #[test]
+    fn a_skyrim_world_without_inputs_is_black_and_logged_once() {
+        let cases = [
+            (None, "no game clock or environment catalog"),
+            (
+                Some(EnvironmentCatalog::default()),
+                "the default exterior weather is missing",
+            ),
+            (
+                Some(EnvironmentCatalog::default().with_weather_for_tests(
+                    DEFAULT_WEATHER_FORM_ID,
+                    day_weather(),
+                    Vec::new(),
+                )),
+                "the worldspace has no climate sun timing",
+            ),
+        ];
+        for (catalog, reason) in cases {
+            let (mut app, handle) = lighting_app(VisualProfile::Skyrim, catalog);
+            let warnings = Warnings::default();
+            tracing::subscriber::with_default(Registry::default().with(warnings.clone()), || {
+                for _ in 0..3 {
+                    app.update();
+                }
+            });
+            let messages = warnings.0.lock().unwrap();
+            assert_eq!(
+                messages.iter().filter(|text| text.contains(reason)).count(),
+                1,
+                "{reason}: {messages:?}"
+            );
+            let lighting = lighting_of(&app, &handle);
+            assert_eq!(lighting.profile.x, 1.0);
+            for value in [
+                lighting.mean,
+                lighting.x,
+                lighting.y,
+                lighting.z,
+                lighting.sun_rgb,
+            ] {
+                assert_eq!(value, Vec4::ZERO, "{reason}");
+            }
+        }
     }
 }
