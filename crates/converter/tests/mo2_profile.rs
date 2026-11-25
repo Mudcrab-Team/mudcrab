@@ -1376,7 +1376,7 @@ async fn resume_rebuilds_input_and_vfs_after_profile_change() {
     write(&staging, "scripts/stale.luau", "stale converted script");
     write(&staging, "textures/stale.ktx2", "stale converted texture");
     write(&instance, "profiles/Default/modlist.txt", "-High\n+Low\n");
-    assert_eq!(original_hash, configuration_hash(&config).unwrap());
+    assert_ne!(original_hash, configuration_hash(&config).unwrap());
     config.resume_staging = Some(staging.clone());
     let report = run(config.clone(), Cancellation::new()).await.unwrap();
     assert!(report.complete && report.skipped == 0, "{report:?}");
@@ -1420,4 +1420,30 @@ async fn refuses_source_overlap_and_conflicting_plugin_selection() {
     let roundtrip: PipelineConfig =
         serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
     assert_eq!(roundtrip.mo2.unwrap().profile, "Default");
+}
+
+#[test]
+fn moving_mo2_instance_preserves_configuration_hash() {
+    let (_dir, mut config, instance) = fixture();
+    let before = configuration_hash(&config).unwrap();
+
+    let moved_root = tempfile::tempdir().unwrap();
+    let moved_data = moved_root.path().join("MovedData");
+    let moved_instance = moved_root.path().join("MovedMO2");
+    fs::rename(&config.data_dir, &moved_data).unwrap();
+    fs::rename(&instance, &moved_instance).unwrap();
+
+    config.data_dir = moved_data;
+    config.mo2.as_mut().unwrap().instance_path = moved_instance.clone();
+
+    let after_move = configuration_hash(&config).unwrap();
+    assert_eq!(before, after_move);
+
+    // Changing enabled mods still invalidates the hash.
+    write(
+        &moved_instance,
+        "profiles/Default/modlist.txt",
+        "+Low\n-Disabled\n+High\n",
+    );
+    assert_ne!(after_move, configuration_hash(&config).unwrap());
 }

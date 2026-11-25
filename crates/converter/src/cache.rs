@@ -774,7 +774,10 @@ pub(crate) fn legacy_projection5_reader_identity(language: &str) -> Option<serde
     Some(identity)
 }
 
-/// Hash the unchanged settings payload with an explicitly selected metadata identity.
+const MO2_CONFIGURATION_KEY_VERSION: u32 = 2;
+
+/// MO2 identity uses the profile name and enabled-mod list, not filesystem paths.
+/// Winning input bytes are hashed separately per source.
 fn configuration_hash_with_identity(
     config: &crate::config::PipelineConfig,
     schema: u32,
@@ -792,14 +795,13 @@ fn configuration_hash_with_identity(
     }
     if let Some(selection) = &config.mo2 {
         let instance = mo2::Instance::open(&selection.instance_path)?;
-        let profile = instance.profile_dir(&selection.profile)?;
+        let identity = instance.profile_identity(&selection.profile)?;
+        let enabled_mods_hash = hash_bytes(&serde_json::to_vec(&identity.enabled_mods)?);
 
         relevant["mo2"] = serde_json::json!({
-            "instance": instance.instance_path,
-            "profile": profile,
-            "mods": instance.mods_dir,
-            "overwrite": instance.overwrite_dir,
-            "data": std::fs::canonicalize(&config.data_dir)?,
+            "version": MO2_CONFIGURATION_KEY_VERSION,
+            "profile": identity.profile,
+            "enabled_mods_hash": enabled_mods_hash,
         });
     }
     if schema >= 16 {
