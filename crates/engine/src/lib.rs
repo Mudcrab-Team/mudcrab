@@ -28,6 +28,7 @@ pub mod grass_render;
 pub mod grass_tuning;
 pub mod hdr_probe;
 pub mod indirect_metrics;
+pub mod light_dynamics;
 pub mod lights;
 mod live_console;
 mod matched_route;
@@ -49,6 +50,7 @@ pub mod render;
 mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
+pub mod retail_fog;
 pub mod room_culling;
 pub mod route;
 mod scene_evidence;
@@ -69,6 +71,8 @@ pub mod sun;
 pub mod swap_bridge;
 mod terrain_lod_noise;
 pub mod terrain_merge;
+#[cfg(test)]
+mod terrain_normal;
 pub mod terrain_upload;
 #[cfg(test)]
 mod test_support;

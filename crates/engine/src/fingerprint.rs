@@ -137,15 +137,17 @@ pub struct RendererFingerprint {
 pub struct GraphicsFingerprint {
     pub stream_radius: i32,
     pub unload_radius: i32,
-    /// `fBlockLevel0Distance` in Creation units: the object LOD level-8 handover. Unused until
-    /// object LOD lands.
+    /// `fBlockLevel0Distance` in Creation units: the object LOD level-8 handover.
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: the object LOD level-16 handover. Unused until object LOD lands.
+    /// `fBlockLevel1Distance`: the object LOD level-16 handover.
     pub block_level1_distance: f32,
     /// `fBlockMaximumDistance`: with `fSplitDistanceMult`, the outer reach of terrain tier 16.
     pub block_maximum_distance: f32,
     /// `fSplitDistanceMult`, the terrain split multiplier (RF-LOD-003).
     pub split_distance_mult: f32,
+    /// `uLargeRefLODGridSize`: the side, in cells, of the large-reference grid. It changes how
+    /// many large references load.
+    pub large_ref_grid_size: i32,
     /// MiB of newly loaded render assets a frame may prepare; `0` is unlimited.
     pub max_upload_mib_per_frame: usize,
     /// Whether streamed `LIGH` references place point lights.
@@ -215,6 +217,7 @@ impl RunFingerprint {
                 block_level1_distance: config.terrain_lod.block_level1_distance,
                 block_maximum_distance: config.terrain_lod.block_maximum_distance,
                 split_distance_mult: config.terrain_lod.split_distance_mult,
+                large_ref_grid_size: config.large_ref_grid_size,
                 max_upload_mib_per_frame: config.max_upload_mib_per_frame,
                 lights: config.lights,
                 headless: config.headless,
@@ -263,7 +266,9 @@ mod tests {
                 block_level1_distance: 2000.0,
                 block_maximum_distance: 3000.0,
                 split_distance_mult: 1.25,
+                ..crate::config::TerrainLodDistances::default()
             },
+            large_ref_grid_size: 7,
             lights: true,
             ..EngineConfig::default()
         };
@@ -308,6 +313,7 @@ mod tests {
             serde_json::json!(3000.0)
         );
         assert_eq!(graphics["split_distance_mult"], serde_json::json!(1.25));
+        assert_eq!(graphics["large_ref_grid_size"], serde_json::json!(7));
         assert_eq!(graphics["lights"], serde_json::json!(true));
         assert_eq!(graphics["present_mode"], serde_json::Value::Null);
         assert_eq!(graphics["visual_profile"], serde_json::json!("mudcrab"));

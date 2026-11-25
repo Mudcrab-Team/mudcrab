@@ -51,6 +51,7 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
 | Sky and fog colours | the record's `NAM0`, mixed by time of day | the same | Mudcrab-only: the approved grey replaces them |
 | Fog near and far, power, max | the record's `FNAM`, mixed by time of day | the same | the same, with both distances divided by the density scale 0.25 (Mudcrab-only) |
 | Sun glow in the fog | none | Mudcrab-only warm glow | Mudcrab-only warm glow |
+| Where the opaque scene is fogged | one full-screen pass after the opaque stage (see below) | each material's shader | each material's shader |
 
 - Retail facts and their tags come from
   [skyrim_decomp#812](https://github.com/Mudcrab-Team/skyrim_decomp/pull/812) (static reading of
@@ -65,6 +66,31 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
   and max. One day weight mixes all four (sky.md#fog). The fog formula is a power ramp capped by max
   (verified); how Mudcrab's per-pixel world distance differs from retail's projected distance is
   unverified.
+- **Opaque fog is a full-screen pass (verified, #891).** Retail does not fog opaque geometry in the
+  Lighting pixel shader. An image-space composite (`ISSAOCompositeSAOFog` family) runs after the
+  opaque colour stage and before the blended stage (skyrim_decomp PRs 1061 and 1077, static
+  reading of 1.7.104.0, independently reviewed). Per channel, `out = saturate(k * ((1 - Fc) * A * L +
+  Fc * Cfc))`, with `Fc = min(saturate(z * r - near * r) ^ p, max)` from the linear view depth,
+  `Cfc` the fog colour at `Fc`, `A` the SAO factor and `k = 1 / FramebufferRange` (0.8333 from `output_scale.rs`; in an ordinary exterior frame the live retail value is the initial one, and only the console command `SetFramebufferRange` changes it, skyrim-research NEEDS 24, reviewed, PR pending). The
+  sky (depth at the far plane) skips the fog and `k`. `skyrim` draws it in
+  `crates/engine/src/retail_fog.rs`. At `Fc = 0` it still scales opaque pixels by `k`, so the
+  whole opaque scene is 0.8333 as bright as before (brightness work: #796). The Fog setting
+  (retail's `bSAOApplyFog`) turns the pass off, and `k` with it. A record whose fog ramp draws
+  nothing keeps the pass with `Fc = 0`, as retail's fallback does. A record that omitted a fog
+  field has no fog property: no pass.
+  - **Stand-ins and omissions.** `A = 1`, STAND-IN(#995): factor one replaces the retail SAO texture, which Mudcrab has no pass for. The SSR term of `L` is
+    omitted: Mudcrab's water reflection is a separate pass that draws after this one. The outer
+    `saturate` is omitted: the frame is still HDR and uses the `mudcrab` tone curve until P1c.
+    The retail depth rescale `d' = 1.01 * d - 0.01` is not copied: retail's `z` is about 1 percent
+    below the true view depth near the camera, and Mudcrab uses the true depth (skyrim-research
+    NEEDS 17b, unreviewed; open until a capture confirms it).
+  - **Blended draws.** Water, effects and other blended draws fog themselves in retail. In Mudcrab
+    they keep Bevy's shader fog (`FogFalloff::PowerRampBlended`, the same ramp). Retail's blended
+    draws apply `min(k * M, B)` in the shader (`T = 1`) and Mudcrab's apply the plain mix: a
+    follow-up. Grass skips Bevy's fog, but keeps its own `k` (`output_scale.rs`), so a grass
+    pixel gets `k` squared at `Fc = 0`. Retail does the same (skyrim-research NEEDS 24, reviewed,
+    PR pending). Whether grass is in retail's depth prepass is an open parity point (unverified).
+  - **Unchanged.** Interiors keep the cell's own Bevy fog. `mudcrab` keeps Bevy's per-material fog.
 - A record that lacks a `NAM0` colour cannot be used. `skyrim` then refuses to start and names the
   colour. `mudcrab` warns and keeps its built-in preset sky. A record that lacks an `FNAM` field
   keeps its colours, draws no exterior fog, and prints a warning that names the field. No

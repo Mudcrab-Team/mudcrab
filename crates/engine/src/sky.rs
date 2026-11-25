@@ -376,24 +376,42 @@ pub fn fog_for(palette: &SkyPalette) -> Option<DistanceFog> {
     exterior_fog(palette, 1.0, FogLook::Mudcrab)
 }
 
-/// [`fog_for`] with the player's fog-density multiplier and the look. The density scales divide
-/// the distances, so a larger scale draws a denser fog. The floor keeps a zero multiplier finite.
-fn exterior_fog(palette: &SkyPalette, user_multiplier: f32, look: FogLook) -> Option<DistanceFog> {
+/// The weather's fog fields for one frame, scaled by the density scales, in the fog colours. The
+/// density scales divide the distances, so a larger scale draws a denser fog; the floor keeps a
+/// zero multiplier finite. `None` when the palette has no ramp (the record omitted a fog field).
+/// The result may still be a ramp that draws nothing; see `RetailFogParams::is_drawn`.
+///
+/// The far colour is the clear colour - the Fog Far colour the dome's transparent band lets
+/// through - so fogged terrain runs into the band without a seam.
+fn exterior_params(
+    palette: &SkyPalette,
+    user_multiplier: f32,
+) -> Option<crate::retail_fog::RetailFogParams> {
     let ramp = palette.fog_ramp?;
     let scale = (palette.fog_density_scale * user_multiplier).max(1.0e-3);
-    let (near, far) = (ramp.near / scale, ramp.far / scale);
-    let drawn = near.is_finite()
-        && far.is_finite()
-        && far > near
-        && ramp.max > 0.0
-        && ramp.power.is_finite()
-        && ramp.power > 0.0;
-    if !drawn {
-        return None;
-    }
-    // The far colour is the clear colour - the Fog Far colour the dome's transparent band lets
-    // through - so fogged terrain runs into the band without a seam. The cap is the colour's alpha.
-    let cap = ramp.max.clamp(0.0, 1.0);
+    let linear = |colour: Color| {
+        let linear = colour.to_linear();
+        [linear.red, linear.green, linear.blue]
+    };
+    let params = crate::retail_fog::RetailFogParams {
+        near: ramp.near / scale,
+        far: ramp.far / scale,
+        power: ramp.power,
+        max: ramp.max.clamp(0.0, 1.0),
+        near_rgb: linear(palette.fog_near_colour()),
+        far_rgb: linear(palette.clear_colour(CameraSpace::Exterior)),
+    };
+    Some(params)
+}
+
+/// [`fog_for`] with the player's fog-density multiplier and the look.
+///
+/// Under [`FogLook::Retail`] the falloff is `FogFalloff::PowerRampBlended`: the same ramp, which
+/// Bevy's shaders apply only to draws that are not in the opaque pass (water, effects and other
+/// blended draws). The opaque scene takes its fog from the full-screen pass of [`retail_fog_pass`].
+fn exterior_fog(palette: &SkyPalette, user_multiplier: f32, look: FogLook) -> Option<DistanceFog> {
+    let params = exterior_params(palette, user_multiplier).filter(|params| params.is_drawn())?;
+    // The cap is the colour's alpha.
     let (glow, exponent) = match look {
         FogLook::Mudcrab => (FOG_DIRECTIONAL_LIGHT_COLOR, FOG_DIRECTIONAL_LIGHT_EXPONENT),
         FogLook::Retail => (
@@ -401,17 +419,47 @@ fn exterior_fog(palette: &SkyPalette, user_multiplier: f32, look: FogLook) -> Op
             DistanceFog::default().directional_light_exponent,
         ),
     };
+    let (start, end, power) = (params.near, params.far, params.power);
+    let near_color = palette.fog_near_colour();
     Some(DistanceFog {
-        color: palette.clear_colour(CameraSpace::Exterior).with_alpha(cap),
+        color: palette
+            .clear_colour(CameraSpace::Exterior)
+            .with_alpha(params.max),
         directional_light_color: glow,
         directional_light_exponent: exponent,
-        falloff: FogFalloff::PowerRamp {
-            start: near,
-            end: far,
-            power: ramp.power,
-            near_color: palette.fog_near_colour(),
+        falloff: match look {
+            FogLook::Mudcrab => FogFalloff::PowerRamp {
+                start,
+                end,
+                power,
+                near_color,
+            },
+            FogLook::Retail => FogFalloff::PowerRampBlended {
+                start,
+                end,
+                power,
+                near_color,
+            },
         },
     })
+}
+
+/// The retail fog composite for one palette (`retail_fog.rs`), from the same weather fog fields as
+/// [`exterior_fog`]. `None` for [`FogLook::Mudcrab`], which fogs in its materials, and when the
+/// palette has no ramp because the record omitted a fog field: no composite and no `k` scale, and
+/// nothing invented. A ramp that draws nothing keeps the pass, with `Fc = 0` (retail's fallback).
+fn retail_fog_pass(
+    palette: &SkyPalette,
+    user_multiplier: f32,
+    look: FogLook,
+) -> Option<crate::retail_fog::RetailFogPass> {
+    match look {
+        FogLook::Mudcrab => None,
+        FogLook::Retail => Some(crate::retail_fog::RetailFogPass::new(exterior_params(
+            palette,
+            user_multiplier,
+        )?)),
+    }
 }
 
 /// Marks a camera that gets a sky dome and whose clear colour the sky controls.
@@ -698,6 +746,65 @@ fn drive_sky_palette(
     palette.set_if_neq(source.sky_palette(*preset, clock.hour));
 }
 
+/// Follows the game clock: sets the exterior sun colour and ambient colour from the active weather
+/// at the clock's hour (#653).
+///
+/// The static findings found no sun/moon switch and no night fade (RF-SUN-005,
+/// `skyrim_decomp#1003` G02, amended by `skyrim_decomp#1080`; unverified at run time). The night
+/// look comes from the record's `NAM0` Sunlight colour and the `DALC` cube in their night slots,
+/// mixed by the same day-part weights as the sky (`WeatherSky::lighting_at`). Only the colours
+/// change here. The sun's illuminance and the ambient brightness keep the scene's scale
+/// (`SUN_ILLUMINANCE`, `AMBIENT_ILLUMINANCE`), so the record's colour carries the darkness and no
+/// night factor exists.
+///
+/// This runs under the `skyrim` profile only. `mudcrab` keeps its fixed look. A weather that lacks
+/// one of these colours leaves the light as it is (the start-up report names what is missing). A
+/// sun that holds an interior key light (`ExteriorSunState`) is not touched, and the ambient stays
+/// with it: the interior system owns both until the player returns outside. Values are written
+/// only when they differ, so a frozen clock leaves both change ticks quiet.
+///
+/// The settings' sun colour and ambient colour controls have no lasting effect under `skyrim`,
+/// because this system rewrites both when the hour changes (#1006). The start-up note says so.
+pub(crate) fn drive_exterior_lighting(
+    clock: Option<Res<crate::sun::GameClock>>,
+    source: Option<Res<crate::color_pipeline::SceneGradeSource>>,
+    mut suns: Query<
+        &mut DirectionalLight,
+        (
+            With<crate::world::environment::interior::WorldSun>,
+            Without<crate::world::environment::interior::ExteriorSunState>,
+        ),
+    >,
+    ambient: Option<ResMut<GlobalAmbientLight>>,
+) {
+    let (Some(clock), Some(source)) = (clock, source) else {
+        return;
+    };
+    if source.profile != crate::visual_profile::VisualProfile::Skyrim {
+        return;
+    }
+    let Some(lighting) = source
+        .weather
+        .as_ref()
+        .and_then(|weather| weather.lighting_at(clock.hour))
+    else {
+        return;
+    };
+    let mut outside = false;
+    for mut sun in &mut suns {
+        outside = true;
+        if sun.color != lighting.sunlight {
+            sun.color = lighting.sunlight;
+        }
+    }
+    if outside && let Some(mut ambient) = ambient {
+        let color = lighting.mean_ambient();
+        if ambient.color != color {
+            ambient.color = color;
+        }
+    }
+}
+
 /// The sky systems that read the frame's underwater state, in order: sky, then the water's copy
 /// of the sky, then fog. `apply_fog` reads `InteriorFog`, which `EnvironmentSet` writes in the
 /// same schedule, so it runs after that set: a door or room crossing changes the fog in the same
@@ -708,6 +815,8 @@ fn sky_systems() -> ScheduleConfigs<ScheduleSystem> {
         apply_sky,
         sync_water_sky,
         apply_fog.after(crate::world::environment::interior::EnvironmentSet),
+        // After the interior system: it owns the sun and ambient while the player is indoors.
+        drive_exterior_lighting.after(crate::world::environment::interior::EnvironmentSet),
     )
         .chain()
 }
@@ -741,6 +850,11 @@ fn sync_water_sky(
 /// cell fog of sky modes 1 and 2 (`InteriorFog`), or no fog when there is none. Under water it
 /// gives neither (RF-WATER-031). The component is written only when the wanted fog differs from
 /// the camera's.
+///
+/// Under the `skyrim` profile the exterior fog is two parts (#891): the camera's `DistanceFog`
+/// holds Bevy's `PowerRampBlended` mode, which fogs the blended draws in their own shaders, and a
+/// [`crate::retail_fog::RetailFogPass`] fogs the opaque scene in one full-screen pass. Under
+/// `mudcrab` the camera has `DistanceFog` with `PowerRamp` for every draw and no pass.
 #[allow(
     clippy::too_many_arguments,
     reason = "a Bevy system: each argument is a resource or query it reads"
@@ -749,13 +863,14 @@ fn apply_fog(
     mut commands: Commands,
     palette: Res<SkyPalette>,
     space: Res<CameraSpace>,
-    cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
+    cameras: crate::retail_fog::FogCameraQuery,
     settings: Option<Res<crate::settings::RenderingSettings>>,
     interior_fog: Option<Res<crate::world::environment::interior::InteriorFog>>,
     underwater: Res<crate::underwater::UnderwaterState>,
     profile: Option<Res<crate::visual_profile::VisualProfile>>,
 ) {
     let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
+    let mut wanted_pass = None;
     let wanted = match (*space, fog_on) {
         // Below the surface retail replaces the view with the water's own fog (RF-WATER-031), which
         // the underwater post-pass draws over the whole frame; the exterior fog would fog it twice.
@@ -770,6 +885,7 @@ fn apply_fog(
             let look = profile
                 .as_deref()
                 .map_or(FogLook::Mudcrab, |profile| FogLook::of(*profile));
+            wanted_pass = retail_fog_pass(&scaled, user_multiplier, look);
             exterior_fog(&scaled, user_multiplier, look)
         }
         // Sky modes 1 and 2 fog an interior with the cell's own fog (RF-LIGHT-CPU-013).
@@ -779,7 +895,15 @@ fn apply_fog(
             .map(|fog| fog.distance_fog()),
         _ => None,
     };
-    for (camera, current) in &cameras {
+    for (camera, current, current_pass) in &cameras {
+        if current_pass != wanted_pass.as_ref() {
+            match wanted_pass {
+                Some(pass) => commands.entity(camera).insert(pass),
+                None => commands
+                    .entity(camera)
+                    .remove::<crate::retail_fog::RetailFogPass>(),
+            };
+        }
         let up_to_date = match (&wanted, current) {
             (Some(fog), Some(current)) => same_fog(current, fog),
             (None, None) => true,
@@ -827,6 +951,20 @@ fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
                 power: wanted_power,
                 near_color: wanted_near,
             },
+        )
+        | (
+            FogFalloff::PowerRampBlended {
+                start: current_start,
+                end: current_end,
+                power: current_power,
+                near_color: current_near,
+            },
+            FogFalloff::PowerRampBlended {
+                start: wanted_start,
+                end: wanted_end,
+                power: wanted_power,
+                near_color: wanted_near,
+            },
         ) => {
             current_start == wanted_start
                 && current_end == wanted_end
@@ -835,6 +973,45 @@ fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
         }
         _ => false,
     }
+}
+
+/// A grade source whose weather has distinct sun colours and `DALC` cubes in every slot: sunlight
+/// 200,190,180 by day and 10,20,40 by night, ambient faces dim at night. Test data only.
+#[cfg(test)]
+pub(crate) fn lit_test_source(
+    profile: crate::visual_profile::VisualProfile,
+) -> crate::color_pipeline::SceneGradeSource {
+    use crate::weather_sky::WeatherSky;
+    use crate::world::environment::{DirectionalAmbient, TimeOfDay, Weather, WeatherFog};
+    let mut weather = Weather {
+        fog: WeatherFog::default(),
+        ..Default::default()
+    };
+    for (time, sun, face) in [
+        (TimeOfDay::Sunrise, [100, 80, 60], 60_u8),
+        (TimeOfDay::Day, [200, 190, 180], 120),
+        (TimeOfDay::Sunset, [180, 120, 90], 90),
+        (TimeOfDay::Night, [10, 20, 40], 20),
+    ] {
+        for name in ["sky_upper", "sky_lower", "horizon", "fog_near", "fog_far"] {
+            weather
+                .colors
+                .insert((name.to_owned(), time), [90, 100, 110]);
+        }
+        weather.colors.insert(("sunlight".to_owned(), time), sun);
+        weather.directional_ambient.insert(
+            time,
+            DirectionalAmbient {
+                colors: [[face, face + 1, face + 2]; 6],
+                ..Default::default()
+            },
+        );
+    }
+    let timing = crate::sun::SunTiming([33, 60, 96, 123]);
+    crate::color_pipeline::SceneGradeSource::default().with_weather(
+        profile,
+        Some(WeatherSky::from_weather(0x81A, &weather, timing).unwrap()),
+    )
 }
 
 #[cfg(test)]
@@ -1613,8 +1790,10 @@ mod tests {
         matches!(
             (&a.falloff, &b.falloff),
             (
-                FogFalloff::PowerRamp { start: a0, end: a1, power: a2, .. },
-                FogFalloff::PowerRamp { start: b0, end: b1, power: b2, .. },
+                FogFalloff::PowerRamp { start: a0, end: a1, power: a2, .. }
+                    | FogFalloff::PowerRampBlended { start: a0, end: a1, power: a2, .. },
+                FogFalloff::PowerRamp { start: b0, end: b1, power: b2, .. }
+                    | FogFalloff::PowerRampBlended { start: b0, end: b1, power: b2, .. },
             ) if a0 == b0 && a1 == b1 && a2 == b2
         )
     }
@@ -1729,6 +1908,150 @@ mod tests {
             fog,
             &exterior_fog(&SkyPalette::SKYRIM_CLEAR_DAY, 1.0, FogLook::Retail).unwrap()
         ));
+    }
+
+    fn skyrim_fog_app(profile: crate::visual_profile::VisualProfile) -> (App, Entity) {
+        let mut app = sky_app();
+        app.insert_resource(profile);
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default(), FogCamera))
+            .id();
+        (app, camera)
+    }
+
+    /// Profile gating (#891): only `skyrim` gets the full-screen composite, and its camera fog
+    /// is the mode that skips the opaque draws the composite covers. `mudcrab` keeps Bevy's fog
+    /// for every draw, with no composite.
+    #[test]
+    fn only_the_skyrim_profile_gets_the_opaque_fog_composite() {
+        use crate::retail_fog::RetailFogPass;
+        use crate::visual_profile::VisualProfile;
+        let (mut app, camera) = skyrim_fog_app(VisualProfile::Mudcrab);
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        assert!(matches!(
+            app.world().get::<DistanceFog>(camera).unwrap().falloff,
+            FogFalloff::PowerRamp { .. }
+        ));
+
+        let (mut app, camera) = skyrim_fog_app(VisualProfile::Skyrim);
+        app.update();
+        assert!(matches!(
+            app.world().get::<DistanceFog>(camera).unwrap().falloff,
+            FogFalloff::PowerRampBlended { .. }
+        ));
+        let pass = app.world().get::<RetailFogPass>(camera).unwrap();
+        // `SkyrimClear` by day: near 0, far 80,000, power 0.4, max 0.85.
+        assert_eq!((pass.near(), pass.far()), (0.0, 80_000.0));
+        assert!((pass.power() - 0.4).abs() < 1e-6);
+        assert_eq!(pass.max(), 0.85);
+        assert_eq!(
+            pass.output_scale(),
+            crate::output_scale::framebuffer_output_scale(true)
+        );
+
+        // No resource (a fixture without a profile) is the `mudcrab` look.
+        let mut app = sky_app();
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default(), FogCamera))
+            .id();
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+    }
+
+    /// The pass follows the same gates as the camera fog: interiors, the fog setting and water.
+    #[test]
+    fn the_composite_is_removed_inside_with_fog_off_and_under_water() {
+        use crate::retail_fog::RetailFogPass;
+        let (mut app, camera) = skyrim_fog_app(crate::visual_profile::VisualProfile::Skyrim);
+        app.insert_resource(crate::settings::RenderingSettings::default());
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_some());
+
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Interior;
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        // The interior keeps the cell's own fog path, which is not the composite.
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Exterior;
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_some());
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog = false;
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+    }
+
+    /// The pass takes the weather's fields and colours as the palette blends them, the density
+    /// scales divide the distances, and the colours are the near and far fog colours.
+    #[test]
+    fn the_composite_takes_the_weather_fields() {
+        use crate::retail_fog::RetailFogPass;
+        let (mut app, camera) = skyrim_fog_app(crate::visual_profile::VisualProfile::Skyrim);
+        let palette = SkyPalette {
+            fog_ramp: Some(FogRamp {
+                near: 100.0,
+                far: 900.0,
+                power: 0.5,
+                max: 0.6,
+            }),
+            fog_density_scale: 2.0,
+            ..SkyPalette::SKYRIM_CLEAR_DAY
+        };
+        *app.world_mut().resource_mut::<SkyPalette>() = palette;
+        app.update();
+        let pass = app.world().get::<RetailFogPass>(camera).unwrap();
+        assert_eq!((pass.near(), pass.far()), (50.0, 450.0));
+        assert_eq!((pass.power(), pass.max()), (0.5, 0.6));
+        let near = palette.fog_near_colour().to_linear();
+        let far = palette.clear_colour(CameraSpace::Exterior).to_linear();
+        assert_eq!(pass.near_rgb(), [near.red, near.green, near.blue]);
+        assert_eq!(pass.far_rgb(), [far.red, far.green, far.blue]);
+        // It is the same ramp the camera fog holds for the blended draws.
+        let fog = app.world().get::<DistanceFog>(camera).unwrap();
+        assert!(matches!(
+            fog.falloff,
+            FogFalloff::PowerRampBlended { start, end, power, .. }
+                if start == 50.0 && end == 450.0 && power == 0.5
+        ));
+    }
+
+    /// A record that omitted a fog field has no fog property: no composite and no `k` scale, and
+    /// nothing is invented. A record whose ramp draws nothing keeps the composite with `Fc = 0`
+    /// (retail's fallback for far equal to near), so `k` still applies.
+    #[test]
+    fn a_missing_fog_field_makes_no_pass_and_an_empty_ramp_keeps_k() {
+        use crate::retail_fog::RetailFogPass;
+        let (mut app, camera) = skyrim_fog_app(crate::visual_profile::VisualProfile::Skyrim);
+        *app.world_mut().resource_mut::<SkyPalette>() = SkyPalette {
+            fog_ramp: None,
+            ..SkyPalette::SKYRIM_CLEAR_DAY
+        };
+        app.update();
+        assert!(app.world().get::<RetailFogPass>(camera).is_none());
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+
+        *app.world_mut().resource_mut::<SkyPalette>() = SkyPalette {
+            fog_ramp: Some(FogRamp {
+                near: 500.0,
+                far: 500.0,
+                power: 1.0,
+                max: 0.85,
+            }),
+            ..SkyPalette::SKYRIM_CLEAR_DAY
+        };
+        app.update();
+        let pass = app.world().get::<RetailFogPass>(camera).unwrap();
+        assert_eq!(pass.max(), 0.0);
+        assert_eq!(
+            pass.output_scale(),
+            crate::output_scale::framebuffer_output_scale(true)
+        );
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
     }
 
     /// A palette with no ramp (a record that omitted a fog field) leaves the camera unfogged.
@@ -1921,6 +2244,139 @@ mod tests {
             clear,
             SkyPalette::SKYRIM_CLEAR_DAY.clear_colour(CameraSpace::Exterior),
             "the multiplier must change the clear colour for this test to mean anything"
+        );
+    }
+
+    fn lighting_app(profile: crate::visual_profile::VisualProfile, hour: f64) -> (App, Entity) {
+        let mut app = App::new();
+        app.insert_resource(lit_test_source(profile))
+            .insert_resource(crate::sun::GameClock {
+                hour,
+                timescale: 0.0,
+            })
+            .insert_resource(GlobalAmbientLight {
+                color: WeatherLighting::default().mean_ambient(),
+                brightness: crate::lights::AMBIENT_ILLUMINANCE,
+                ..default()
+            })
+            .add_systems(Update, drive_exterior_lighting);
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    color: WeatherLighting::default().sunlight,
+                    illuminance: crate::lights::SUN_ILLUMINANCE,
+                    ..default()
+                },
+                crate::world::environment::interior::WorldSun,
+            ))
+            .id();
+        (app, sun)
+    }
+
+    /// The `skyrim` profile drives the sun colour and ambient colour from the record by hour, and
+    /// leaves the scene's light scale alone. Night is the night slot, not a factor (#653).
+    #[test]
+    fn the_skyrim_profile_lights_the_exterior_from_the_weather_by_hour() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, sun) = lighting_app(VisualProfile::Skyrim, 12.0);
+        app.update();
+        let light = app.world().get::<DirectionalLight>(sun).unwrap();
+        assert_eq!(light.color, Color::srgb_u8(200, 190, 180));
+        assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
+        let day_ambient = app.world().resource::<GlobalAmbientLight>().color;
+        assert_eq!(
+            day_ambient,
+            WeatherLighting {
+                sunlight: Color::BLACK,
+                ambient_cube: [Color::srgb_u8(120, 121, 122); 6],
+            }
+            .mean_ambient()
+        );
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().brightness,
+            crate::lights::AMBIENT_ILLUMINANCE
+        );
+        // A frozen clock leaves both change ticks quiet.
+        app.update();
+        assert!(
+            !app.world()
+                .resource_ref::<GlobalAmbientLight>()
+                .is_changed()
+        );
+        assert!(
+            !app.world()
+                .entity(sun)
+                .get_ref::<DirectionalLight>()
+                .unwrap()
+                .is_changed()
+        );
+        // Midnight: the night slot, much darker, with the same illuminance and brightness.
+        app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 0.0;
+        app.update();
+        let light = app.world().get::<DirectionalLight>(sun).unwrap();
+        assert_eq!(light.color, Color::srgb_u8(10, 20, 40));
+        assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
+        let night_ambient = app.world().resource::<GlobalAmbientLight>().color;
+        assert!(night_ambient.to_linear().green < day_ambient.to_linear().green * 0.2);
+        // Sunset midpoint: the sunset slot.
+        app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 18.5;
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            Color::srgb_u8(180, 120, 90)
+        );
+    }
+
+    /// `mudcrab` keeps its fixed look, and a run without a weather record keeps the built-in light.
+    #[test]
+    fn the_mudcrab_profile_and_a_weatherless_run_keep_the_fixed_light() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, sun) = lighting_app(VisualProfile::Mudcrab, 0.0);
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            WeatherLighting::default().sunlight
+        );
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().color,
+            WeatherLighting::default().mean_ambient()
+        );
+        let (mut app, sun) = lighting_app(VisualProfile::Skyrim, 0.0);
+        app.insert_resource(
+            crate::color_pipeline::SceneGradeSource::default()
+                .with_weather(VisualProfile::Skyrim, None),
+        );
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            WeatherLighting::default().sunlight
+        );
+    }
+
+    /// A weather record without sun colours and DALC blocks gives no lighting: nothing is filled in.
+    #[test]
+    fn a_record_without_sun_colours_leaves_the_light_alone() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, sun) = lighting_app(VisualProfile::Skyrim, 0.0);
+        // A record with the sky colours and no sun colour or DALC at all.
+        let mut record = crate::world::environment::Weather::default();
+        for time in crate::world::environment::TimeOfDay::ALL {
+            for name in ["sky_upper", "sky_lower", "horizon", "fog_near", "fog_far"] {
+                record.colors.insert((name.to_owned(), time), [1, 2, 3]);
+            }
+        }
+        let timing = crate::sun::SunTiming([33, 60, 96, 123]);
+        let bare = crate::weather_sky::WeatherSky::from_weather(0x81A, &record, timing).unwrap();
+        assert_eq!(bare.lighting_omissions.len(), 8);
+        app.insert_resource(
+            crate::color_pipeline::SceneGradeSource::default()
+                .with_weather(VisualProfile::Skyrim, Some(bare)),
+        );
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            WeatherLighting::default().sunlight
         );
     }
 }

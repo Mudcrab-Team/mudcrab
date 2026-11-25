@@ -337,6 +337,25 @@ pub enum FogFalloff {
         /// The colour at the start of the ramp, linear RGB. The alpha channel is not used.
         near_color: Color,
     },
+
+    // mudcrab: the `skyrim` profile's exterior fog (#891). Mudcrab-only, like `PowerRamp`.
+    /// The same ramp and colours as [`FogFalloff::PowerRamp`], applied only to draws that are not in
+    /// the opaque or alpha-mask pass, or that read the view transmission texture (water). Mudcrab
+    /// fogs the opaque scene in one full-screen pass after the opaque stage (`retail_fog.rs`),
+    /// so a draw that is already covered by that pass must not be fogged again in its shader.
+    PowerRampBlended {
+        /// Distance from the camera where fog starts, in world units.
+        start: f32,
+
+        /// Distance from the camera where the ramp reaches 1 before the cap, in world units.
+        end: f32,
+
+        /// Exponent of the ramp.
+        power: f32,
+
+        /// The colour at the start of the ramp, linear RGB. The alpha channel is not used.
+        near_color: Color,
+    },
 }
 
 impl FogFalloff {

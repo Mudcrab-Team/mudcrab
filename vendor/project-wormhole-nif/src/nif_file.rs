@@ -244,7 +244,19 @@ impl Parse<&[u8]> for NifFile {
     fn parse(i: &[u8]) -> nom::IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         // Parse header first
         let (i, header) = NifHeader::parse(i)?;
+        Self::parse_blocks(header, i)
+    }
+}
 
+impl NifFile {
+    /// Parses the blocks that follow an already parsed header.
+    ///
+    /// mudcrab: a block type index outside the header's type table is a parse error here. The
+    /// published crate called `unwrap` on it and panicked.
+    pub fn parse_blocks(
+        header: NifHeader,
+        i: &[u8],
+    ) -> nom::IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         // Init block vector
         let mut blocks = Vec::new();
 
@@ -256,11 +268,14 @@ impl Parse<&[u8]> for NifFile {
             let (i, raw) =
                 take::<u32, &[u8], nom::error::Error<&[u8]>>(header.block_size_index[index])(data)?;
             data = i;
-            let (_, block) = NifBlock::parse_with_version(
-                raw,
-                header.get_block_type(index).unwrap().to_string(),
-                header.bethesda_version,
-            )?;
+            let Ok(block_type) = header.get_block_type(index) else {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    raw,
+                    nom::error::ErrorKind::Verify,
+                )));
+            };
+            let (_, block) =
+                NifBlock::parse_with_version(raw, block_type.to_string(), header.bethesda_version)?;
             blocks.push(block);
         }
 
@@ -451,7 +466,7 @@ fn nif_to_model_inner(
         {
             legacy_skinned_meshes(nif, &mesh.bones, recover_skin, unresolved_skin, diagnostics)?
         } else {
-            (bsskin_meshes(nif, &mesh), nif.get_mesh_materials_ids())
+            (bsskin_meshes(nif, &mesh)?, nif.get_mesh_materials_ids())
         };
 
         model.skeletal_meshes = meshes;
@@ -537,7 +552,11 @@ fn nif_to_model_inner(
 }
 
 /// Builds the Fallout 4 `BSSkinInstance` mesh list.
-fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Vec<SkeletalMesh> {
+///
+/// mudcrab: a bad block index, a block of the wrong kind or a bad name index is a typed error
+/// here, and `0xFFFFFFFF` is "no name". The published crate indexed and unwrapped these values
+/// and panicked. See `README.mudcrab.md`.
+fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Result<Vec<SkeletalMesh>, String> {
     let mut mesh = mesh.clone();
 
     // Init empty mesh vector
@@ -547,12 +566,7 @@ fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Vec<SkeletalMesh> {
         let NifBlock::BSTriShape(shape) = block else {
             continue;
         };
-        let name = Some(
-            nif.header
-                .get_string(shape.av.object.name as usize)
-                .unwrap()
-                .to_string(),
-        );
+        let name = optional_block_name(nif, shape.av.object.name, index)?;
         mesh.mesh = Some(tri_shape_to_mesh(shape, name));
         mesh.source_block = Some(index as u32);
         mesh.weights = shape.get_vertex_weights();
@@ -565,12 +579,7 @@ fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Vec<SkeletalMesh> {
             continue;
         };
         let shape = &dynamic.bs_tri_shape;
-        let name = Some(
-            nif.header
-                .get_string(shape.av.object.name as usize)
-                .unwrap()
-                .to_string(),
-        );
+        let name = optional_block_name(nif, shape.av.object.name, index)?;
         mesh.mesh = Some(tri_shape_to_mesh(shape, name));
         mesh.source_block = Some(index as u32);
         mesh.weights = shape.get_vertex_weights();
@@ -583,12 +592,7 @@ fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Vec<SkeletalMesh> {
             continue;
         };
         let shape = &seg.bs_tri_shape;
-        let name = Some(
-            nif.header
-                .get_string(shape.av.object.name as usize)
-                .unwrap()
-                .to_string(),
-        );
+        let name = optional_block_name(nif, shape.av.object.name, index)?;
         mesh.mesh = Some(tri_shape_to_mesh(shape, name));
         mesh.source_block = Some(index as u32);
         mesh.weights = shape.get_vertex_weights();
@@ -600,43 +604,82 @@ fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Vec<SkeletalMesh> {
         let mut inverse_bind_matrices = Vec::new();
 
         // Get the inverse position matrices
-        match &nif.blocks[skin.data as usize] {
-            NifBlock::BSSkinBoneData(bone_data) => {
+        match nif.blocks.get(skin.data as usize) {
+            Some(NifBlock::BSSkinBoneData(bone_data)) => {
                 for bone_transform in &bone_data.bone_list {
                     inverse_bind_matrices.push(bone_transform.into_matrix4());
                 }
             }
-            _ => {
-                panic!("Inverse position block is not a BSSkinBoneData")
+            Some(_) => {
+                return Err(format!(
+                    "skin {skin_index}: inverse bind block {} is not a BSSkinBoneData",
+                    skin.data
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "skin {skin_index}: inverse bind block {} is outside the {} blocks",
+                    skin.data,
+                    nif.blocks.len()
+                ));
             }
         }
 
         let mut joint_names = Vec::new();
-        warn!("{:?}", skin.bones.len());
+        debug!("skin {skin_index} has {} joints", skin.bones.len());
 
         for joint_index in &skin.bones {
-            match &nif.blocks[*joint_index as usize] {
-                NifBlock::NiNode(node) => {
-                    joint_names.push(
-                        nif.header
-                            .get_string(node.name() as usize)
-                            .unwrap()
-                            .to_string(),
-                    );
+            match nif.blocks.get(*joint_index as usize) {
+                Some(NifBlock::NiNode(node)) => {
+                    let Some(name) = optional_block_name(nif, node.name(), *joint_index as usize)?
+                    else {
+                        return Err(format!(
+                            "skin {skin_index}: joint block {joint_index} has no name"
+                        ));
+                    };
+                    joint_names.push(name);
                 }
-                _ => {
-                    panic!("Skin bone is not a NiNode")
+                Some(_) => {
+                    return Err(format!(
+                        "skin {skin_index}: joint block {joint_index} is not a NiNode"
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "skin {skin_index}: joint block {joint_index} is outside the {} blocks",
+                        nif.blocks.len()
+                    ));
                 }
             }
         }
 
         debug!("Joint names: {:?}", joint_names);
 
-        meshes[skin_index].skin = joint_names;
-        meshes[skin_index].inverse_bind_matrices = inverse_bind_matrices;
+        let mesh_count = meshes.len();
+        let Some(target) = meshes.get_mut(skin_index) else {
+            return Err(format!(
+                "skin {skin_index} has no shape: the file holds {mesh_count} shapes"
+            ));
+        };
+        target.skin = joint_names;
+        target.inverse_bind_matrices = inverse_bind_matrices;
     }
 
-    meshes
+    Ok(meshes)
+}
+
+/// Reads a block's name. `0xFFFFFFFF` is the format's "no name" and gives `None`.
+/// Any other index that the string table does not hold is an error.
+///
+/// mudcrab: replaces `get_string(..).unwrap()`, which panicked on an unnamed block.
+fn optional_block_name(nif: &NifFile, name: u32, block: usize) -> Result<Option<String>, String> {
+    if name == u32::MAX {
+        return Ok(None);
+    }
+    nif.header
+        .get_string(name as usize)
+        .map(|value| Some(value.to_string()))
+        .map_err(|_| format!("block {block}: name index {name} is outside the string table"))
 }
 
 /// Exports each legacy skin independently so a bad skin cannot discard its neighbours.

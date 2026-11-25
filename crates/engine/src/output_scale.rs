@@ -8,14 +8,20 @@
 //! distances are both 0, the grass constant is 1.0 instead. This module is the single source for
 //! the value; other passes must use it and not a copy.
 //!
-//! Engine status: only grass applies the scale. Terrain, sky and water do not, so grass is 0.8333
+//! Engine status: grass applies the scale in its shader, and under the `skyrim` profile the fog
+//! composite (`retail_fog.rs`) applies it to every opaque pixel. Otherwise only grass applies it. Terrain, sky and water do not, so grass is 0.8333
 //! of terrain strength relative to retail if retail applies it to those passes too (unverified,
 //! open question). The retail fog condition is replaced by a proxy: a `DistanceFog` component
 //! on the camera (exterior cell, Fog setting on). The proxy is unverified. Turning the Fog
 //! setting off makes grass about 20 percent brighter (1.0 against 0.8333) while terrain does
 //! not change.
 
-/// Retail default `FramebufferRange` (`1 / 0.8333333`).
+/// Retail's `FramebufferRange` (`1 / 0.8333333`). The shared global holds `1 / range`. In the
+/// ordinary exterior frame the live value equals this initial value, and only the console command
+/// `SetFramebufferRange` changes it (skyrim-research NEEDS 24, reviewed, PR pending). This constant
+/// is the single source of `k` for every Mudcrab pass: the grass shader and the fog composite
+/// (`retail_fog.rs`) take their scale from [`framebuffer_output_scale`] and must not hard-code
+/// 0.8333.
 pub const FRAMEBUFFER_RANGE: f32 = 1.2;
 
 /// The output scale for a pass. `fog_active` stands for the retail fog object having non-zero

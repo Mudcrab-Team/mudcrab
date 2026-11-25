@@ -89,7 +89,12 @@ that finding: verified, inferred or unverified.
   A fragment then runs from its lit colour to `Cf` by `F`. This is a power ramp capped by max,
   linear when power is 1. It is not exponential. With both endpoints zero retail uploads max 0, so
   no fog is drawn; Mudcrab draws no fog for `far <= near` or `max <= 0`.
-- **What Mudcrab draws.** `FogFalloff::PowerRamp`, a mode Mudcrab adds to its vendored `bevy_pbr`
+- **Opaque draws under the `skyrim` profile.** Retail fogs opaque geometry in a full-screen composite,
+  not in the material shader. See [visual-profiles.md](visual-profiles.md#sky-and-fog-source-891) and
+  `crates/engine/src/retail_fog.rs`. The composite reads linear view depth `z` (axial), not the
+  vertex fog's `|clip.xyz|`. The camera's `DistanceFog` then holds `FogFalloff::PowerRampBlended`,
+  which only fogs the draws the composite does not cover.
+- **What Mudcrab draws (`mudcrab` profile, and blended draws under `skyrim`).** `FogFalloff::PowerRamp`, a mode Mudcrab adds to its vendored `bevy_pbr`
   (`vendor/BEVY_PATCHES.md`). It takes near, far, power, the near colour and, in the fog colour's
   alpha, max. Every shader that applies fog through Bevy's `apply_fog` (materials, terrain, water
   and grass) gets it. The Graphics fog-density multiplier and the `cool-gray` density scale divide

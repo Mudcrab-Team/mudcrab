@@ -339,6 +339,17 @@ fn variants(relative: &str) -> Vec<(String, Definitions)> {
                 ),
             ),
         ],
+        // `retail_fog.rs` sets DEPTH_SAMPLES and, above one sample, MULTISAMPLED.
+        "crates/engine/src/shaders/retail_fog.wgsl" => vec![
+            variant(
+                "one depth sample",
+                with_uints(base.clone(), &[("DEPTH_SAMPLES", 1)]),
+            ),
+            variant(
+                "multisampled depth",
+                with_flags(with_uints(base, &[("DEPTH_SAMPLES", 4)]), &["MULTISAMPLED"]),
+            ),
+        ],
         // `water_depth.rs` sets BED_DEPTH_SAMPLES and, above one sample, MULTISAMPLED.
         "crates/engine/src/shaders/water_depth.wgsl" => vec![
             variant(

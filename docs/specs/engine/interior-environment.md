@@ -72,8 +72,9 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    changes the fog in the same frame as the light.
 
 Point lights are on by default (`--no-lights` turns them off) and use retail's falloff and unit
-([point-lights.md](point-lights.md)). Light fade 0/0 means no fade (RF-LIGHT-CPU-003,
-RF-LIGHT-CPU-007); the fade factor is reported for #488.
+([point-lights.md](point-lights.md)). A stored light fade of 0/0 does not mean "no fade": a
+zero begin or end is replaced by the INI values, so 0/0 reads as 3500/4000 and the distance
+dimmer applies (NEEDS 20; see section 4 of [point-lights.md](point-lights.md)).
 
 ## Reported only
 

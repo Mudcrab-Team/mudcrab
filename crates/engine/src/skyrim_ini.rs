@@ -21,11 +21,18 @@
 //! | `[Display]` | `fDefaultWorldFOV` | horizontal field of view of every camera but the first-person one, in degrees (retail 80; accepted 30 to 140, a Mudcrab-only bound); converted to Bevy's vertical angle at the window's aspect ratio |
 //! | `[Display]` | `fDefault1stPersonFOV` | horizontal field of view of the first-person (walking) camera, in degrees (retail 80) |
 //! | `[Display]` | `fNearDistance` | camera near plane and room-lookup distance, in Creation units (retail 15 is observed; the key name is from the community default dump, unverified; accepted above 0 up to 1000, a Mudcrab-only bound) |
+//! | `[Display]` | `fLightLODStartFade` | distance at which a placed light's distance fade begins, in Creation units (retail 3500 from `Skyrim_Default.ini`; 0 or more) |
+//! | `[Display]` | `fLightLODRange` | length added to the start fade for the end distance (retail compiled default 500; 0 or more) |
+//! | `[General]` | `fFlickeringLightDistance` | distance from the player within which flickering and pulsing lights update (retail compiled default 1024; above 0) |
 //! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 matches [Skyrim](https://github.com/Mudcrab-Team/skyrim_decomp/blob/main/findings/sun-shadows-retail-facts.md#4-object-and-terrain-lod). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
-//! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
-//! | `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
+//! | `[TerrainManager]` | `fBlockLevel0Distance` | object LOD rule: level 8 hands over to level 4 (default 60,000, `Ultra.ini`); does not affect terrain |
+//! | `[TerrainManager]` | `fBlockLevel1Distance` | object LOD rule: level 16 hands over to level 8 (default 90,000, `Ultra.ini`); does not affect terrain |
+//! | `[TerrainManager]` | `fTreeLoadDistance` | parsed and kept for tree LOD (default 75,000, `Ultra.ini`); changes nothing on screen until tree LOD draws (#736, #901) |
+//! | `[LOD]` | `fLODFadeOutMultObjects`, `fLODFadeOutMultActors`, `fLODFadeOutMultItems` | parsed and kept (defaults 30 / 15 / 10, `Ultra.ini`); changes nothing on screen until LOD fade-out exists (#716) |
+//! | `[Display]` | `fMeshLODLevel1FadeDist`, `fMeshLODLevel2FadeDist` | parsed and kept (defaults 999999, `Ultra.ini`); changes nothing on screen until mesh LOD exists |
+//! | `[General]` | `uLargeRefLODGridSize` | side of the large-reference grid in cells, an odd number (default 11, `Ultra.ini`) |
 //! | `[Grass]` | `iMinGrassSize` | candidate-count spacing |
 //! | `[Grass]` | `iMaxGrassTypesPerTexure` | species cap per texture |
 //! | `[Grass]` | `fTexturePctThreshold` | minimum blended texture weight |
@@ -73,6 +80,17 @@ fn parse_grids(raw: &str) -> Option<i32> {
         .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
         .filter(|grids| *grids >= 1 && grids % 2 == 1 && (grids - 1) / 2 <= MAX_STREAM_RADIUS)
+}
+
+/// The largest `uLargeRefLODGridSize` accepted. The retail presets use 5 to 11; a larger grid
+/// asks for more large-reference rows than the admission bound is sized for.
+const MAX_LARGE_REF_GRID_SIZE: i32 = 31;
+
+/// An odd whole grid side: the large-reference grid is centred on the camera's cell.
+fn parse_large_ref_grid_size(raw: &str) -> Option<i32> {
+    raw.parse::<i32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|size| *size >= 1 && size % 2 == 1 && *size <= MAX_LARGE_REF_GRID_SIZE)
 }
 
 /// A shadow distance the cascade builder accepts.
@@ -125,6 +143,10 @@ fn expected_range(section: &str, key: &str) -> Option<String> {
             "a distance above 0 and at most {}",
             crate::config::MAX_NEAR_DISTANCE
         )),
+        ("display", "flightlodstartfade") | ("display", "flightlodrange") => {
+            Some("a distance of 0 or more".into())
+        }
+        ("general", "fflickeringlightdistance") => Some("a distance above 0".into()),
         _ => None,
     }
 }
@@ -134,6 +156,13 @@ fn parse_positive(raw: &str) -> Option<f32> {
     raw.parse::<f32>()
         .ok() // silent-ok: The INI merge reports invalid values before inserting them.
         .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+/// A finite number of at least zero.
+fn parse_non_negative(raw: &str) -> Option<f32> {
+    raw.parse::<f32>()
+        .ok() // silent-ok: The INI merge reports invalid values before inserting them.
+        .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
 /// Whether a value of a key `apply` validates is usable: `Some(true)` or `Some(false)`, or `None`
@@ -153,10 +182,21 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
             Some(parse_fov(raw).is_some())
         }
         ("display", "fneardistance") => Some(parse_near_distance(raw).is_some()),
+        ("display", "flightlodstartfade") | ("display", "flightlodrange") => {
+            Some(parse_non_negative(raw).is_some())
+        }
+        ("general", "fflickeringlightdistance") => Some(parse_positive(raw).is_some()),
         ("terrainmanager", "fblocklevel0distance")
         | ("terrainmanager", "fblocklevel1distance")
         | ("terrainmanager", "fblockmaximumdistance")
-        | ("terrainmanager", "fsplitdistancemult") => Some(parse_positive(raw).is_some()),
+        | ("terrainmanager", "fsplitdistancemult")
+        | ("terrainmanager", "ftreeloaddistance")
+        | ("lod", "flodfadeoutmultobjects")
+        | ("lod", "flodfadeoutmultactors")
+        | ("lod", "flodfadeoutmultitems")
+        | ("display", "fmeshlodlevel1fadedist")
+        | ("display", "fmeshlodlevel2fadedist") => Some(parse_positive(raw).is_some()),
+        ("general", "ulargereflodgridsize") => Some(parse_large_ref_grid_size(raw).is_some()),
         ("sky", _) => crate::sun::SUN_KEYS
             .iter()
             .position(|name| name.eq_ignore_ascii_case(key))
@@ -166,6 +206,31 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
             }),
         _ => None,
     }
+}
+
+/// Decodes INI bytes. A line that is valid UTF-8 stays as it is. Any other line is
+/// Windows-1252, the code page of Skyrim's own text files, and gets a warning with the
+/// file name, the line number and the count of bytes decoded that way. Only that line
+/// can change: the rest of the file applies as usual.
+fn decode_ini(bytes: &[u8], source: &str) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    let mut text = String::with_capacity(bytes.len());
+    for (index, line) in bytes.split_inclusive(|&byte| byte == b'\n').enumerate() {
+        match std::str::from_utf8(line) {
+            Ok(valid) => text.push_str(valid),
+            Err(_) => {
+                let high = line.iter().filter(|byte| !byte.is_ascii()).count();
+                eprintln!(
+                    "warning: {source}:{}: line is not UTF-8; decoding {high} non-ASCII byte(s) as Windows-1252",
+                    index + 1
+                );
+                text.push_str(&shared::plugin_selection::decode_windows_1252(line));
+            }
+        }
+    }
+    text
 }
 
 /// Values from one or more INI files, keyed by lower-cased section and key.
@@ -178,10 +243,13 @@ pub struct SkyrimIni {
 impl SkyrimIni {
     /// Reads `path` over the values already read, as Skyrim layers its INI files.
     pub fn merge_file(&mut self, path: &Path) -> std::io::Result<()> {
-        let text = std::fs::read_to_string(path)?;
-        self.merge_named_str(&text, &path.display().to_string());
+        let bytes = std::fs::read(path)?;
+        let name = path.display().to_string();
+        let text = decode_ini(&bytes, &name);
+        self.merge_named_str(&text, &name);
+        // The source hash covers the raw file bytes, not the decoded text.
         self.sources
-            .push(Source::from_bytes(path.to_owned(), text.as_bytes()));
+            .push(Source::from_bytes(path.to_owned(), &bytes));
         Ok(())
     }
 
@@ -332,6 +400,30 @@ impl SkyrimIni {
                 ),
             }
         }
+        for (section, key, setting) in [
+            (
+                "Display",
+                "fLightLODStartFade",
+                &mut config.light_lod_start_fade,
+            ),
+            ("Display", "fLightLODRange", &mut config.light_lod_range),
+        ] {
+            let Some(raw) = self.get(section, key) else {
+                continue;
+            };
+            match parse_non_negative(raw) {
+                Some(value) => *setting = value,
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected 0 or more"),
+            }
+        }
+        if let Some(raw) = self.get("General", "fFlickeringLightDistance") {
+            match parse_positive(raw) {
+                Some(value) => config.flickering_light_distance = value,
+                None => eprintln!(
+                    "warning: ignoring fFlickeringLightDistance={raw:?}; expected a positive number"
+                ),
+            }
+        }
         if let Some(raw) = self.get("Display", "bDrawLandShadows") {
             match parse_flag(raw) {
                 Some(value) => config.land_shadows = value,
@@ -357,6 +449,7 @@ impl SkyrimIni {
             ("fBlockLevel1Distance", &mut lod.block_level1_distance),
             ("fBlockMaximumDistance", &mut lod.block_maximum_distance),
             ("fSplitDistanceMult", &mut lod.split_distance_mult),
+            ("fTreeLoadDistance", &mut lod.tree_load_distance),
         ] {
             let Some(raw) = self.get("TerrainManager", key) else {
                 continue;
@@ -367,6 +460,54 @@ impl SkyrimIni {
                     config.settings_overrides.push(format!("ini:{key}"));
                 }
                 None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
+            }
+        }
+        let fade = &mut config.lod_fade;
+        for (section, key, setting) in [
+            (
+                "LOD",
+                "fLODFadeOutMultObjects",
+                &mut fade.fade_out_mult_objects,
+            ),
+            (
+                "LOD",
+                "fLODFadeOutMultActors",
+                &mut fade.fade_out_mult_actors,
+            ),
+            ("LOD", "fLODFadeOutMultItems", &mut fade.fade_out_mult_items),
+            (
+                "Display",
+                "fMeshLODLevel1FadeDist",
+                &mut fade.mesh_lod_level1_fade_distance,
+            ),
+            (
+                "Display",
+                "fMeshLODLevel2FadeDist",
+                &mut fade.mesh_lod_level2_fade_distance,
+            ),
+        ] {
+            let Some(raw) = self.get(section, key) else {
+                continue;
+            };
+            match parse_positive(raw) {
+                Some(value) => {
+                    *setting = value;
+                    config.settings_overrides.push(format!("ini:{key}"));
+                }
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
+            }
+        }
+        if let Some(raw) = self.get("General", "uLargeRefLODGridSize") {
+            match parse_large_ref_grid_size(raw) {
+                Some(size) => {
+                    config.large_ref_grid_size = size;
+                    config
+                        .settings_overrides
+                        .push("ini:uLargeRefLODGridSize".into());
+                }
+                None => eprintln!(
+                    "warning: ignoring uLargeRefLODGridSize={raw:?}; expected an odd whole number from 1 to {MAX_LARGE_REF_GRID_SIZE}"
+                ),
             }
         }
         self.apply_grass(config);
@@ -459,8 +600,67 @@ mod tests {
         config
     }
 
+    /// One Windows-1252 byte in a comment must not drop the rest of the file. The source
+    /// hash covers the raw bytes.
+    #[test]
+    fn non_utf8_comment_keeps_the_other_keys_and_hashes_the_raw_bytes() {
+        let bytes: &[u8] = b"[General]\r\n; Jos\xe9's settings\r\nbAlwaysActive=1\r\n[Display]\r\nsName=Caf\xe9\r\n";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Skyrim.ini");
+        std::fs::write(&path, bytes).unwrap();
+        let mut ini = SkyrimIni::default();
+        ini.merge_file(&path).unwrap();
+        assert_eq!(ini.get("General", "bAlwaysActive"), Some("1"));
+        assert_eq!(ini.get("Display", "sName"), Some("Caf\u{e9}"));
+        assert_eq!(
+            ini.sources[0].sha256,
+            Source::from_bytes(path.clone(), bytes).sha256
+        );
+    }
+
+    /// Valid UTF-8 text decodes unchanged, and only invalid lines use Windows-1252.
+    #[test]
+    fn decode_ini_changes_only_the_invalid_lines() {
+        let utf8 = "[A]\n; caf\u{e9}\nk=v\n";
+        assert_eq!(decode_ini(utf8.as_bytes(), "t"), utf8);
+        assert_eq!(
+            decode_ini(b"[A]\n; caf\xe9\n; \xc3\xa9\nk=\x80\n", "t"),
+            "[A]\n; caf\u{e9}\n; \u{e9}\nk=\u{20ac}\n"
+        );
+    }
+
     /// #904, #949: the camera keys default to 80, 80 and 15 and an INI overrides each one. The
     /// sources are cited at the constants in `config.rs`.
+    /// The point-light distance fade and flicker keys (#955): the defaults of
+    /// [point-lights.md](../../../docs/specs/engine/point-lights.md), INI overrides, and a rejected
+    /// value keeps the default.
+    #[test]
+    fn light_distance_keys_default_to_retail_and_take_the_ini() {
+        let config = EngineConfig::default();
+        assert_eq!(config.light_lod_start_fade, 3500.0);
+        assert_eq!(config.light_lod_range, 500.0);
+        assert_eq!(config.flickering_light_distance, 1024.0);
+
+        let config = apply(
+            "[Display]\nfLightLODStartFade=1200\nfLightLODRange=0\n[General]\nfFlickeringLightDistance=2048\n",
+        );
+        assert_eq!(config.light_lod_start_fade, 1200.0);
+        assert_eq!(config.light_lod_range, 0.0);
+        assert_eq!(config.flickering_light_distance, 2048.0);
+
+        let config = apply(
+            "[Display]\nfLightLODStartFade=-1\nfLightLODRange=abc\n[General]\nfFlickeringLightDistance=0\n",
+        );
+        assert_eq!(config.light_lod_start_fade, 3500.0);
+        assert_eq!(config.light_lod_range, 500.0);
+        assert_eq!(config.flickering_light_distance, 1024.0);
+        // The key `fLightLODMaxStartFade` has no setting in the executable and is ignored.
+        assert_eq!(
+            apply("[Display]\nfLightLODMaxStartFade=100\n").light_lod_start_fade,
+            3500.0
+        );
+    }
+
     #[test]
     fn camera_keys_default_to_retail_and_an_ini_overrides_them() {
         let config = apply("");
@@ -594,6 +794,47 @@ mod tests {
             LodTier::ALL.map(|tier| lod.reach_cells(tier)),
             [20, 39, 146]
         );
+    }
+
+    /// #949: an INI value replaces each Ultra default, and an unusable value leaves it alone.
+    #[test]
+    fn ini_overrides_each_lod_and_view_distance_default() {
+        let config = apply(
+            "[TerrainManager]\nfBlockLevel0Distance=35000\nfBlockLevel1Distance=70000\n\
+             fTreeLoadDistance=12500\n[LOD]\nfLODFadeOutMultObjects=5\nfLODFadeOutMultActors=6\n\
+             fLODFadeOutMultItems=3\n[Display]\nfMeshLODLevel1FadeDist=4000\n\
+             fMeshLODLevel2FadeDist=1600\n[General]\nuLargeRefLODGridSize=9\n",
+        );
+        assert_eq!(config.terrain_lod.block_level0_distance, 35_000.0);
+        assert_eq!(config.terrain_lod.block_level1_distance, 70_000.0);
+        assert_eq!(config.terrain_lod.tree_load_distance, 12_500.0);
+        assert_eq!(config.lod_fade.fade_out_mult_objects, 5.0);
+        assert_eq!(config.lod_fade.fade_out_mult_actors, 6.0);
+        assert_eq!(config.lod_fade.fade_out_mult_items, 3.0);
+        assert_eq!(config.lod_fade.mesh_lod_level1_fade_distance, 4_000.0);
+        assert_eq!(config.lod_fade.mesh_lod_level2_fade_distance, 1_600.0);
+        assert_eq!(config.large_ref_grid_size, 9);
+        assert_eq!(config.large_ref_grid_radius(), 4);
+
+        let defaults = EngineConfig::default();
+        for text in [
+            "[TerrainManager]\nfTreeLoadDistance=0\n",
+            "[LOD]\nfLODFadeOutMultObjects=-1\n",
+            "[Display]\nfMeshLODLevel1FadeDist=nan\n",
+            "[General]\nuLargeRefLODGridSize=10\n",
+            "[General]\nuLargeRefLODGridSize=0\n",
+            "[General]\nuLargeRefLODGridSize=33\n",
+            // Keys outside their section change nothing.
+            "[Display]\nfLODFadeOutMultObjects=5\n",
+        ] {
+            let config = apply(text);
+            assert_eq!(config.terrain_lod, defaults.terrain_lod, "{text}");
+            assert_eq!(config.lod_fade, defaults.lod_fade, "{text}");
+            assert_eq!(
+                config.large_ref_grid_size, defaults.large_ref_grid_size,
+                "{text}"
+            );
+        }
     }
 
     #[test]
