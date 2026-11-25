@@ -87,6 +87,19 @@ fn a_stored_zero_fade_is_replaced_by_the_settings() {
     // A nonzero begin with a zero end gets 500 + 3500, below a begin above 4000.
     let fade = resolve_light_fade(Some((5000.0, 0.0)), start, range);
     assert_eq!((fade.begin, fade.end), (5000.0, 4000.0));
+    // The dimmer of that pair is a step: 1 below the begin, 0 at and above it.
+    assert_eq!(
+        distance_dimmer(4999.0f32.powi(2), 0.0, Some(&fade), true),
+        1.0
+    );
+    assert_eq!(
+        distance_dimmer(5000.0f32.powi(2), 0.0, Some(&fade), true),
+        0.0
+    );
+    assert_eq!(
+        distance_dimmer(4500.0f32.powi(2), 0.0, Some(&fade), true),
+        1.0
+    );
     // The exterior, and INI overrides.
     let fade = resolve_light_fade(None, start, range);
     assert_eq!((fade.begin, fade.end), (3500.0, 4000.0));
@@ -121,7 +134,7 @@ fn a_pulse_advances_by_dt_times_period_and_wraps_once() {
     light.phase[0] = TAU - 0.1;
     light.advance(0.2);
     assert!((light.phase[0] - 0.3).abs() < 1.0e-5);
-    // The translation follows the phase, in Bevy axes.
+    // The translation follows the phase, in Creation axes.
     let creation = pulse_offset(light.phase[0], 4.0);
     assert!((light.offset() - creation).length() < 1.0e-5);
 }
@@ -176,7 +189,7 @@ fn a_flicker_moves_its_phases_and_keeps_its_fade_inside_the_amplitude_band() {
         let before = light.fade();
         light.advance(1.0 / 60.0);
         changed |= (light.fade() - before).abs() > 1.0e-4;
-        // base 2.0, I = 0.3, n in [-0.2, 0.5333]: factor in [0.64, 0.8600] + 0.3 x ... see below.
+        // base 2.0, I = 0.3, n in [-0.2, 0.5333]: factor = 1 - I + I n, in [0.64, 0.86].
         let factor = light.fade() / 2.0;
         assert!((1.0 - 0.3 - 0.3 * 0.2 - 1.0e-2..=1.0 - 0.3 + 0.3 * 0.5334).contains(&factor));
     }
@@ -351,4 +364,65 @@ mod system {
         let intensity = app.world().get::<PointLight>(steady).unwrap().intensity;
         assert_eq!(intensity, retail_intensity(2.0));
     }
+}
+
+#[test]
+fn a_pulse_reaches_the_same_phase_at_any_frame_rate() {
+    let mut slow = dynamics(0x80, 0.7, 0.5, 0.0);
+    let mut fast = slow.clone();
+    for _ in 0..60 {
+        slow.advance(1.0 / 60.0);
+    }
+    for _ in 0..240 {
+        fast.advance(1.0 / 240.0);
+    }
+    assert!((slow.phase[0] - 0.7).abs() < 1.0e-3, "{}", slow.phase[0]);
+    assert!((slow.phase[0] - fast.phase[0]).abs() < 1.0e-3);
+}
+
+#[test]
+fn a_wrap_keeps_what_is_left_over_one_turn() {
+    assert!((wrap_once(TAU + 0.5) - 0.5).abs() < 1.0e-6);
+    // One subtraction only: two turns leave one turn.
+    assert!((wrap_once(2.0 * TAU + 0.5) - (TAU + 0.5)).abs() < 1.0e-5);
+    assert_eq!(wrap_once(TAU), TAU);
+}
+
+#[test]
+fn each_flicker_phase_advances_inside_its_rate_range() {
+    let (dt, period) = (0.01, 0.5);
+    let mut light = dynamics(0x8, period, 0.6, 0.0);
+    let ranges = [(1.1, 13.1), (1.2, 13.2), (1.3, 19.3)];
+    let mut highest = [0.0f32; 3];
+    for _ in 0..2000 {
+        let before = light.phase;
+        light.advance(dt);
+        for (slot, (low, high)) in ranges.into_iter().enumerate() {
+            let rate = (light.phase[slot] - before[slot]).rem_euclid(TAU) / (dt * period);
+            assert!(
+                (low - 1.0e-3..=high + 1.0e-3).contains(&rate),
+                "slot {slot}: {rate}"
+            );
+            highest[slot] = highest[slot].max(rate);
+        }
+    }
+    // The third phase reaches rates the other two cannot.
+    assert!(highest[2] > 14.0, "{highest:?}");
+}
+
+#[test]
+fn flicker_noise_has_its_table_sine_values() {
+    // Hand values from n = ((sin(1.3 B + 0.65) + 1) / 12)(sin(1.1 A + 1.87) + 1) + 0.2 sin(3 C + 0.9)
+    // with each argument truncated to 2 pi / 512 steps.
+    assert!((flicker_noise(0.0, 0.0, 0.0) - 0.416_371_5).abs() < 1.0e-5);
+    assert!((flicker_noise(1.0, 2.0, 3.0) - -0.001_906_6).abs() < 1.0e-5);
+}
+
+#[test]
+fn a_never_fades_reference_is_not_dimmed() {
+    let mut source = row(0, 0.0, 0.0, 0.0);
+    source.reference_never_fades = true;
+    let light = LightDynamics::new(&evaluate_light(&source, None), 7);
+    assert!(!light.distance_fade);
+    assert!(dynamics(0, 0.0, 0.0, 0.0).distance_fade);
 }

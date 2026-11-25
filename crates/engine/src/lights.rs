@@ -283,14 +283,14 @@ fn record_light_coverage(
     }
 }
 
-/// STAND-IN(#999): retail gives one geometry at most 7 point lights (after the sun and up to 4
-/// shadow lights), cut in the order of the geometry's own light list, not by distance. Bevy's
-/// clustered forward lights loop over the lights of a cluster, not of a mesh, and the cluster
-/// order is not attach order, so a per-fragment cap of 7 would cut arbitrarily and flicker as the
-/// camera moves. Mudcrab keeps the nearest lights instead. A room where more than 7 non-shadow
-/// lights reach one mesh can be brighter than retail. Source: the NEEDS 20 findings,
-/// [skyrim_decomp PR 1073](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1073).
-///
+// STAND-IN(#999): retail gives one geometry at most 7 point lights (after the sun and up to 4
+// shadow lights), cut in the order of the geometry's own light list, not by distance. Bevy's
+// clustered forward lights loop over the lights of a cluster, not of a mesh, and the cluster
+// order is not attach order, so a per-fragment cap of 7 would cut arbitrarily and flicker as the
+// camera moves. Mudcrab keeps the nearest lights instead, so it uses more lights per geometry
+// than retail. Source: the NEEDS 20 findings,
+// [skyrim_decomp PR 1073](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1073).
+
 /// How many of the spawned lights are enabled at once. Bevy's clustered forward renderer draws
 /// every enabled light in a cluster it reaches, and the game's spaces hold whole halls of `LIGH`
 /// references, so the far ones are switched off rather than paid for.

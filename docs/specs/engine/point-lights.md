@@ -225,12 +225,16 @@ amplitude / 2`:
   `n = ((sin(1.3 B + 0.65) + 1) / 12) x (sin(1.1 A + 1.87) + 1) + 0.2 sin(3 C + 0.9)`, clamped to [-1, 1] (its range is
   [-0.2, 0.5333]). The sines come from a 512-entry table, so each argument is truncated to steps of 2 pi / 512.
   `fade = base x (1 - I + I n)`.
-- Only lights within `fFlickeringLightDistance` of the camera (the player's stand-in) advance. The others keep their
+- Only lights within `fFlickeringLightDistance` of the camera advance. STAND-IN(#955): retail measures from the
+  player; Mudcrab uses the camera. Unverified: an interior in sky mode 3 and a pack without the lighting table get the
+  exterior fade pair. The others keep their
   last fade.
 - A modulated fade below 0.05 turns the light off until it rises again. A fade below 0 (amplitude above 1) is 0 here,
   because this backend cannot subtract light.
 - Unverified: the unit of retail's frame delta `dt` (Mudcrab uses seconds), and whether other code modulates Flicker Slow.
-  The random numbers come from a per-light generator seeded with the reference's form id, so a run repeats.
+  The initial pulse and flicker phases are also unverified: every light starts at phase 0. The random numbers come from
+  a per-light generator seeded with the reference's form id, so a run repeats only for the same frame times and the
+  same camera path. Retail draws new rates every update too, so the flicker is smoother at a high frame rate.
 - STAND-IN(#1000): the findings give the flicker movement as `0.5 x movement x s1 x s2` but not its axes, so a
   flickering light does not move. The pulse movement is applied.
 
@@ -239,7 +243,7 @@ lights, cut in the order of the geometry's own light list. A small queued node (
 candidates by `(distance to the node's bound centre - bound radius) / light radius`, largest first, so the nearest
 candidates drop out first. Bevy's clustered lights loop over a cluster's lights, not a mesh's, and the cluster order is
 not attach order, so a per-fragment cap would cut arbitrarily and flicker. Mudcrab keeps the 64 nearest enabled lights
-(section 6). A room where more than 7 non-shadow lights reach one mesh can be brighter than retail. The attach path per
+(section 6), so it uses more lights per geometry than retail. The attach path per
 placed mesh and the runtime list order are open in the findings.
 
 ## 5. Evidence and remaining gates
@@ -313,6 +317,11 @@ The set is what is remembered, not the count: a cell that unloads as another str
 number of lights is invisible to a count, and a room walked into and stopped in would stay dark until
 the player moved another 256 units. Re-choosing is a sort over every spawned light, so it is not done
 every frame.
+
+The distance dimmer and the flicker or pulse (section 4) set a light's intensity to 0 when the dimmer
+is 0 or a modulated fade drops below 0.05. That light then moves to the non-emitting class, and the
+budget re-chooses. A light near the 4000-unit ring while the camera moves, or a flicker near the 0.05
+limit, can therefore cause a re-choice on many frames. The cost in a dense cell is not measured yet.
 
 ### Shadows
 

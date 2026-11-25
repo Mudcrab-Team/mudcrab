@@ -206,9 +206,9 @@ impl AmbientCube {
 /// The selected light fade distances and their squares (RF-LIGHT-CPU-001: inheritance bit 0x400
 /// selects begin and end; RF-LIGHT-CPU-003: retail stores `begin^2` and `end^2` at 0x1433d3d34
 /// and 0x1433d3d38). Present only when both distances are present. The raw values stay in
-/// `Lighting::light_fade_begin` and `light_fade_end`. Reported only. Retail applies the fade only
-/// to a light whose BSLight `+0x63` flag is set (RF-LIGHT-CPU-007, see
-/// [`point_light_fade_factor`]).
+/// `Lighting::light_fade_begin` and `light_fade_end`. The distance dimmer uses the pair after
+/// [`resolve_light_fade`] replaces zero values. Retail applies the fade only to a light whose
+/// BSLight `+0x63` flag is set (RF-LIGHT-CPU-007, see [`point_light_fade_factor`]).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct LightFade {
     pub begin: f32,
@@ -234,8 +234,9 @@ impl LightFade {
 /// begin of exactly 0.0 is replaced by `start_fade` (`fLightLODStartFade`), and a stored end of
 /// exactly 0.0 by `range + start_fade` (`fLightLODRange + fLightLODStartFade`). The exterior, with
 /// no override, uses `start_fade` and `start_fade + range`. A stored nonzero begin with a zero end
-/// therefore gets `range + start_fade`, which can be below the begin (the dimmer then ramps the
-/// wrong way, as in retail). The same replacement is applied to a room template's pair: the
+/// therefore gets `range + start_fade`, which can be below the begin. The dimmer is then a step:
+/// 1 below `begin`, 0 at and beyond it (no ramp). What retail does for that pair is unverified;
+/// this follows the traced formula. The same replacement is applied to a room template's pair: the
 /// answer states it only for the cell initialiser, so that part is unverified.
 pub fn resolve_light_fade(stored: Option<(f32, f32)>, start_fade: f32, range: f32) -> LightFade {
     let (begin, end) = stored.unwrap_or((start_fade, range + start_fade));

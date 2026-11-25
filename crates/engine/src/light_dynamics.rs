@@ -164,6 +164,8 @@ impl LightDynamics {
             intensity_amplitude: intensity.unwrap_or(0.0),
             movement_amplitude: movement.unwrap_or(0.0),
             distance_fade: !source.reference_never_fades,
+            // Unverified: the findings do not give the initial phases (NEEDS 25), so every light
+            // starts at 0 and the pulsing lights of one cell start in step.
             phase: [0.0; 3],
             rng: seed.wrapping_mul(2_654_435_761) | 1,
             factor: 1.0,
@@ -180,8 +182,9 @@ impl LightDynamics {
         low + (x as f32 / u32::MAX as f32) * (high - low)
     }
 
-    /// Advances the modulation by `dt` seconds. The unit of retail's frame delta is open (NEEDS 20),
-    /// so Mudcrab uses seconds.
+    /// Advances the modulation by `dt` seconds. The unit of retail's frame delta is open (NEEDS 20,
+    /// asked as NEEDS 25), so Mudcrab uses seconds. Retail draws new flicker rates every update,
+    /// so the flicker is smoother at a high frame rate. That is parity, not a defect to tune.
     pub fn advance(&mut self, dt: f32) {
         match self.motion {
             LightMotion::None => {}
@@ -240,6 +243,8 @@ pub(crate) fn update_light_dynamics(
         With<SkyrimLight>,
     >,
 ) {
+    // STAND-IN(#955): retail measures the flicker gate and the dimmer from the player. Mudcrab
+    // uses the streaming camera, so in a free or third-person camera the gate follows the camera.
     let Ok(camera) = camera.single() else {
         return;
     };
@@ -248,7 +253,9 @@ pub(crate) fn update_light_dynamics(
     let config = config.as_deref().unwrap_or(&defaults);
     let (start, range) = (config.light_lod_start_fade, config.light_lod_range);
     // The current room's pair, else the cell's, else the exterior's. A cell without lighting data
-    // has no pair: its lights are not dimmed.
+    // has no pair: its lights are not dimmed. Unverified: `active_render` is also `None` for an
+    // interior in sky mode 3 and for a pack without the lighting table, and those scenes get the
+    // exterior pair here. The findings say nothing about them.
     let fade = match scene
         .as_deref()
         .and_then(|scene| scene.active_render(Some(camera)))
