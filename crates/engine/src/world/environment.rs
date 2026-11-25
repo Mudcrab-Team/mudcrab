@@ -597,6 +597,19 @@ impl EnvironmentCatalog {
             .get(&climate_id)
             .map_or(&[], Vec::as_slice)
     }
+
+    /// Add one weather and its image spaces to a test catalog.
+    #[cfg(test)]
+    pub(crate) fn with_weather_for_tests(
+        mut self,
+        id: u32,
+        weather: Weather,
+        image_spaces: Vec<(u32, ImageSpace)>,
+    ) -> Self {
+        self.weathers.insert(id, weather);
+        self.image_spaces.extend(image_spaces);
+        self
+    }
 }
 
 /// Retain good climate rows when one optional TNAM row is incomplete or malformed.
