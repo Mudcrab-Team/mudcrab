@@ -568,18 +568,25 @@ fn the_near_and_object_lod_ambient_share_one_axis_map() {
         near.contains("vec3<f32>(world_normal.x, -world_normal.z, world_normal.y)"),
         "the near ambient lost the Creation axis map"
     );
+    // Object LOD under `skyrim` (#953): the Creation-axis slopes become runtime axes (X, Z, -Y), so
+    // the dot with the runtime normal is `n.x * sx + n.y * sz - n.z * sy`, the near path's
+    // `(n.x, -n.z, n.y) . (sx, sy, sz)`. NEEDS 41 (pre-review) gives the same axes.
+    assert!(
+        lod.contains("vec3(lighting.x.r, lighting.z.r, -lighting.y.r)"),
+        "the object LOD rows changed their Creation-to-runtime axis map: change the near ambient \
+         with it (NEEDS 41, pre-review)"
+    );
+    // Object LOD under `mudcrab` keeps the older form of the same map.
     assert!(
         lod.contains("let creation_normal = vec3(normal.x, -normal.z, normal.y);"),
         "the object LOD shader changed its Creation axis map: change the near ambient with it"
     );
-    for source in [&near, &lod] {
-        assert!(
-            source.contains("creation_normal.x *")
-                && source.contains("creation_normal.y *")
-                && source.contains("creation_normal.z *"),
-            "a shader no longer dots the slopes with the Creation normal"
-        );
-    }
+    assert!(
+        near.contains("creation_normal.x *")
+            && near.contains("creation_normal.y *")
+            && near.contains("creation_normal.z *"),
+        "the near shader no longer dots the slopes with the Creation normal"
+    );
 }
 
 #[test]

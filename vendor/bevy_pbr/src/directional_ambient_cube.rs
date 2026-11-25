@@ -18,7 +18,8 @@ use bevy_ecs::prelude::Resource;
 use bevy_math::Vec3;
 use bevy_render::extract_resource::ExtractResource;
 
-/// The `DALC` ambient of the active scene: a mean and three slopes, in linear light.
+/// The `DALC` ambient of the active scene: a mean and three slopes, in whatever colour units the
+/// caller supplies. Mudcrab supplies the record's raw bytes divided by 255, with no sRGB decode.
 ///
 /// ## Axes and face order
 ///
@@ -38,7 +39,7 @@ use bevy_render::extract_resource::ExtractResource;
 ///
 /// A normal along +X leans to stored face 1, +Y to face 3 and +Z (up) to face 5.
 ///
-/// Colours are linear and unscaled. The render world multiplies them by the
+/// Colours are unscaled. The render world multiplies them by the
 /// `GlobalAmbientLight` brightness, the same factor the flat ambient takes.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, ExtractResource)]
 pub struct DirectionalAmbientCube {
@@ -55,9 +56,10 @@ pub struct DirectionalAmbientCube {
 }
 
 impl DirectionalAmbientCube {
-    /// The ambient colour for the engine-space world normal `normal` (X, Y up, Z south), in linear
-    /// light and before the brightness scale. This is the CPU twin of `ambient_cube` in
-    /// `pbr_ambient.wgsl`: the same axis map and the same arithmetic, with no clamp.
+    /// The ambient colour for the engine-space world normal `normal` (X, Y up, Z south), in the
+    /// cube's own colour units and before the brightness scale. This is the CPU twin of
+    /// `directional_ambient_for_normal` in `pbr_ambient.wgsl`: the same axis map and the
+    /// same arithmetic, with no clamp.
     pub fn evaluate(&self, normal: Vec3) -> Vec3 {
         // mudcrab: Creation (x, y, z) is engine (x, z, -y), so a Creation normal is
         // (engine.x, -engine.z, engine.y). Keep in step with `lod_object.wgsl`.
