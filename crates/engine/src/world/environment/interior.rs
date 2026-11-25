@@ -417,6 +417,16 @@ impl EnvironmentCatalog {
     }
 }
 
+/// The fraction of the far distance that retail uses as the fog near distance when the authored
+/// near is not usable: near <= 0 or near beyond far (`RF-FOG-001`, constant at `0x141869ddc`,
+/// code `0x140413D7B`-`0x140413DB8`; `RF-LIGHT-CPU-023` for the room path `0x140416050`).
+///
+/// Skyrim authors near 0 for many interiors (84 in the pack's `cell_lighting` own near <= 0 with
+/// far > 0, and template-inherited cells come on top), so a near of 0 never means "fog from the
+/// camera": retail starts the ramp at 0.17 of the far distance. A near 0, far 5000 cell starts its
+/// fog at 850.
+const FOG_NEAR_CLAMP_FRACTION: f32 = 0.17;
+
 /// The cell fog the engine applies in sky modes 1 and 2. Retail scene fog (RF-WATER-011) is
 /// `f = min(saturate((d - near) / (far - near))^power, max)` and `colour = lerp(near colour, far
 /// colour, f)`, so `max` caps the factor. Bevy's linear fog (`fog.wgsl` `linear_fog`) is
@@ -424,7 +434,10 @@ impl EnvironmentCatalog {
 /// and `end = near + max * (far - near)` it is `min(saturate((d - near) / (far - near)), max)`,
 /// the retail factor for `power = 1`. Bevy has no power term and one colour, so `power` and
 /// `far_color` are reported only.
-/// The near/far clamps are not traced. Clip distance is reported in [`InteriorLighting`] only.
+/// The near distance is clamped as retail does ([`FOG_NEAR_CLAMP_FRACTION`]). Retail's far clamp
+/// (far <= 0 or above 163,840 becomes 163,840, `RF-FOG-001`) is not applied: a far of 163,840 puts
+/// the fog's near at 27,853 units, far past any interior, so "no fog" is the same picture.
+/// Clip distance is reported in [`InteriorLighting`] only.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub(crate) struct CellFog {
     pub near_color: [u8; 3],
@@ -437,8 +450,12 @@ pub(crate) struct CellFog {
 
 impl CellFog {
     /// A missing field is 0, as the retail getter returns for a cell without XCLL
-    /// (RF-LIGHT-CPU-014). Fog with `far <= near` has no linear ramp, and fog with an authored
-    /// `max <= 0` has a factor of 0 everywhere, so the engine draws no fog for either.
+    /// (RF-LIGHT-CPU-014). Fog with `far <= 0` has no ramp worth drawing (retail's far clamp puts
+    /// it at 163,840), and fog with an authored `max <= 0` has a factor of 0 everywhere, so the
+    /// engine draws no fog for either. A near that is not usable (<= 0 or beyond far) becomes
+    /// [`FOG_NEAR_CLAMP_FRACTION`] of far, as in retail (`RF-FOG-001`), so fog is drawn for those.
+    /// A near equal to far is usable but leaves a zero-width ramp: retail draws no fog there
+    /// (`RF-LIGHT-CPU-021`, the "no fog" constant block), so this returns `None`.
     ///
     /// A missing `max` with an authored near and far is different: it comes from a short XCLL
     /// (72 to 91 bytes, which ends before the max field) or a short template. What retail does
@@ -447,10 +464,15 @@ impl CellFog {
     /// No shipped interior has a short XCLL. Six of the 786 take fog near and far from a short
     /// (72-byte) lighting template without a max, and now get that fog with no cap.
     fn from_lighting(lighting: &Lighting) -> Option<Self> {
-        let near = lighting.fog_near.unwrap_or(0.0);
         let far = lighting.fog_far.unwrap_or(0.0);
+        let authored_near = lighting.fog_near.unwrap_or(0.0);
+        let near = if authored_near <= 0.0 || authored_near > far {
+            FOG_NEAR_CLAMP_FRACTION * far
+        } else {
+            authored_near
+        };
         let max = lighting.fog_max.unwrap_or(1.0);
-        (far > near && max > 0.0).then(|| Self {
+        (far > 0.0 && near < far && max > 0.0).then(|| Self {
             near_color: lighting.fog_near_color.unwrap_or([0; 3]),
             far_color: lighting.fog_far_color.unwrap_or([0; 3]),
             near,
@@ -514,18 +536,19 @@ impl InteriorRender {
 
     /// RF-LIGHT-CPU-013: in modes 1 and 2 a room lighting template has precedence over XCLL for
     /// the colour source (`0x140412df0`, `0x140416fc0`): directional, the DALC cube and the fog
-    /// colours. The rotation (`Sun::Update`, RF-LIGHT-CPU-011) and the fog distances stay the
-    /// cell's. Retail blends to the new template. The engine switches at once.
+    /// colours. RF-LIGHT-CPU-023: it also supplies the fog near, far, power and max (template
+    /// getters `LGTM+0x2C`, `+0x30`, `+0x44`, `+0x6C`, with the same clamps as the cell). The
+    /// cell's inherit bits do not apply to a room: a template without a fog ramp gives a room
+    /// without fog, even in a cell that has one. Only the key-light rotation
+    /// (`Sun::Update`, RF-LIGHT-CPU-011) stays the cell's. Retail blends to the new template
+    /// (RF-LIGHT-CPU-024); the engine switches at once.
     fn with_room_template(mut self, template: &super::LightingTemplate) -> Self {
         let lighting = &template.lighting;
         self.key_color = lighting.directional.unwrap_or([0; 3]);
         self.ambient_faces = template
             .directional_ambient
             .map_or([[0; 3]; 6], |dalc| dalc.colors);
-        if let Some(fog) = self.fog.as_mut() {
-            fog.near_color = lighting.fog_near_color.unwrap_or([0; 3]);
-            fog.far_color = lighting.fog_far_color.unwrap_or([0; 3]);
-        }
+        self.fog = CellFog::from_lighting(lighting);
         self
     }
 
@@ -1450,8 +1473,8 @@ mod tests {
                  VALUES(659862,'FarmLightingTemplate',92,45,48,48,65,70,80,31,52,46,100.0,4000.0,
                     0,45,1.0,1.0,31,52,46,
                     49,48,50,40,48,45,45,50,48,45,45,48,21,22,21,68,73,74),
-                   (201356,'BleakFallsBarrowMedium',92,0,0,0,68,79,81,7,8,9,0.0,1.0,
-                    0,0,1.0,1.0,7,8,9,
+                   (201356,'BleakFallsBarrowMedium',92,0,0,0,68,79,81,7,8,9,0.0,5000.0,
+                    0,0,1.0,0.9,7,8,9,
                     11,11,11,11,11,11,11,11,11,11,11,11,11,11,11,11,11,11);
                  INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,
                     half_x,half_y,half_z,lighting_template_id)
@@ -1701,18 +1724,18 @@ mod tests {
     fn fog_max_caps_the_factor_and_does_not_scale_it() {
         let fog = |max: f32| {
             CellFog::from_lighting(&Lighting {
-                fog_near: Some(0.0),
-                fog_far: Some(100.0),
+                fog_near: Some(10.0),
+                fog_far: Some(110.0),
                 fog_power: Some(1.0),
                 fog_max: Some(max),
                 ..default()
             })
         };
-        // RF-WATER-011 with power 1: f = min(saturate(d / 100), max).
+        // RF-WATER-011 with power 1: f = min(saturate((d - 10) / 100), max).
         for max in [0.5, 1.0, 2.0] {
             let bevy = fog(max).unwrap().distance_fog();
             for distance in [0.0, 25.0, 50.0, 75.0, 100.0, 150.0] {
-                let retail = (distance / 100.0_f32).clamp(0.0, 1.0).min(max);
+                let retail = ((distance - 10.0) / 100.0_f32).clamp(0.0, 1.0).min(max);
                 let actual = bevy_linear_factor(&bevy, distance);
                 assert!(
                     (actual - retail).abs() < 1.0e-6,
@@ -1720,9 +1743,9 @@ mod tests {
                 );
             }
         }
-        // Max 0.5: the factor is 0.5 at distance 50, not 0.25.
+        // Max 0.5: the factor is 0.5 at distance 60 (half way along the ramp), not 0.25.
         let half = fog(0.5).unwrap().distance_fog();
-        assert!((bevy_linear_factor(&half, 50.0) - 0.5).abs() < 1.0e-6);
+        assert!((bevy_linear_factor(&half, 110.0) - 0.5).abs() < 1.0e-6);
         // Max 0: no fog, and no zero-length ramp.
         assert_eq!(fog(0.0), None);
     }
@@ -2095,6 +2118,8 @@ mod tests {
         );
         let fog = app.world().resource::<InteriorFog>().0.unwrap();
         assert_eq!((fog.near_color, fog.far), ([75, 99, 97], 12000.0));
+        // The cell authors near 0: retail starts its fog at 0.17 of far (RF-FOG-001).
+        assert_eq!(fog.near, 0.17 * 12000.0);
         // Inside room 90193 (Creation centre (7936, -5015, -1952)): the room template colours.
         app.world_mut()
             .get_mut::<Transform>(camera)
@@ -2115,8 +2140,13 @@ mod tests {
             }
             .ambient_color()
         );
+        // The room template supplies the whole fog (RF-LIGHT-CPU-023): colour, near (0 clamped to
+        // 0.17 of far), far and max. The cell's 12000 and max 1.0 do not apply.
         let fog = app.world().resource::<InteriorFog>().0.unwrap();
-        assert_eq!((fog.near_color, fog.far), ([7, 8, 9], 12000.0));
+        assert_eq!(
+            (fog.near_color, fog.near, fog.far, fog.max),
+            ([7, 8, 9], 0.17 * 5000.0, 5000.0, 0.9)
+        );
         // The rotation stays the cell's.
         assert_vec(
             app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z,
@@ -2129,6 +2159,95 @@ mod tests {
             .translation = Vec3::ZERO;
         app.update();
         assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(44, 47, 48));
+    }
+
+    /// Retail's fog near clamp (`RF-FOG-001`): near <= 0 or beyond far becomes 0.17 of far; a
+    /// usable near is kept; no far, or a max of 0, is no fog.
+    #[test]
+    fn the_fog_near_clamp_follows_retail() {
+        let fog = |near: Option<f32>, far: Option<f32>| {
+            CellFog::from_lighting(&Lighting {
+                fog_near: near,
+                fog_far: far,
+                fog_max: Some(1.0),
+                ..default()
+            })
+        };
+        assert_eq!(FOG_NEAR_CLAMP_FRACTION, 0.17, "RF-FOG-001");
+        // The pack's example: near 0, far 5000 starts at 850.
+        let zero_near = fog(Some(0.0), Some(5000.0)).unwrap();
+        assert_eq!((zero_near.near, zero_near.far), (850.0, 5000.0));
+        // A missing near is 0 and is clamped the same way, a negative near too.
+        assert_eq!(fog(None, Some(5000.0)).unwrap().near, 850.0);
+        assert_eq!(fog(Some(-5.0), Some(5000.0)).unwrap().near, 850.0);
+        // A near beyond far is clamped; the ramp is no longer empty.
+        assert_eq!(fog(Some(6000.0), Some(5000.0)).unwrap().near, 850.0);
+        // A usable near is kept.
+        assert_eq!(fog(Some(100.0), Some(5000.0)).unwrap().near, 100.0);
+        // Near equal to far is a zero-width ramp, which retail draws as no fog
+        // (RF-LIGHT-CPU-021); Bevy's linear fog would divide by zero.
+        assert_eq!(fog(Some(5000.0), Some(5000.0)), None);
+        // No far: nothing to ramp to.
+        assert_eq!(fog(Some(100.0), None), None);
+        assert_eq!(fog(Some(0.0), Some(0.0)), None);
+        // The Bevy ramp starts at the clamped near: no fog there, a full ramp at far.
+        let bevy = zero_near.distance_fog();
+        assert_eq!(bevy_linear_factor(&bevy, 850.0), 0.0);
+        assert!((bevy_linear_factor(&bevy, 5000.0) - 1.0).abs() < 1.0e-6);
+    }
+
+    /// A room template supplies fog near, far, power and max, not only the colours
+    /// (`RF-LIGHT-CPU-023`), and the cell's inherit bits do not apply to a room: a template
+    /// with no fog ramp makes a room without fog in a cell that has one.
+    #[test]
+    fn a_room_template_supplies_the_whole_fog() {
+        let cell = InteriorRender::new(
+            &Lighting {
+                fog_near: Some(300.0),
+                fog_far: Some(9000.0),
+                fog_power: Some(2.0),
+                fog_max: Some(0.5),
+                fog_near_color: Some([1, 1, 1]),
+                ..default()
+            },
+            1.0,
+        );
+        assert_eq!(cell.fog.unwrap().far, 9000.0);
+        let template = |lighting: Lighting| super::super::LightingTemplate {
+            lighting,
+            ..default()
+        };
+        let room = cell.with_room_template(&template(Lighting {
+            fog_near: Some(0.0),
+            fog_far: Some(4000.0),
+            fog_power: Some(1.0),
+            fog_max: Some(0.75),
+            fog_near_color: Some([7, 8, 9]),
+            fog_far_color: Some([4, 5, 6]),
+            ..default()
+        }));
+        let fog = room.fog.unwrap();
+        assert_eq!(fog.near, 0.17 * 4000.0, "near 0 is clamped like the cell's");
+        assert_eq!((fog.far, fog.power, fog.max), (4000.0, 1.0, 0.75));
+        assert_eq!((fog.near_color, fog.far_color), ([7, 8, 9], [4, 5, 6]));
+        // A short template (no max) keeps retail's constructor value, 1.0.
+        let short = cell.with_room_template(&template(Lighting {
+            fog_near: Some(100.0),
+            fog_far: Some(2000.0),
+            ..default()
+        }));
+        assert_eq!(short.fog.unwrap().max, 1.0);
+        // No fog ramp in the template: no room fog, whatever the cell has. Near equal to far is
+        // no ramp either (RF-LIGHT-CPU-021).
+        assert_eq!(cell.with_room_template(&template(default())).fog, None);
+        let equal = template(Lighting {
+            fog_near: Some(2000.0),
+            fog_far: Some(2000.0),
+            ..default()
+        });
+        assert_eq!(cell.with_room_template(&equal).fog, None);
+        // The rotation stays the cell's.
+        assert_eq!(room.key_travel, cell.key_travel);
     }
 
     /// Retail takes the sky mode from the cell the player is in (RF-LIGHT-CPU-010), and an
