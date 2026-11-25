@@ -28,6 +28,7 @@ pub mod grass_render;
 pub mod grass_tuning;
 pub mod hdr_probe;
 pub mod indirect_metrics;
+pub mod light_dynamics;
 pub mod lights;
 mod live_console;
 mod matched_route;

@@ -2117,14 +2117,23 @@ fn spawn_cell(
             let shadow_flagged = evaluated_light
                 .as_ref()
                 .is_some_and(crate::lights::LightEvaluation::shadow_flagged);
+            let dynamics = evaluated_light
+                .as_ref()
+                .map(|evaluation| evaluation.dynamics(reference.form_id));
             if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
                     shadow_flagged,
                 };
+                // `dynamics` is `Some` whenever the light row is.
+                let dynamics = dynamics.expect("a light has dynamics");
                 if !lights {
-                    entity.insert(crate::lights::DeferredPointLight { light, marker });
+                    entity.insert(crate::lights::DeferredPointLight {
+                        light,
+                        marker,
+                        dynamics,
+                    });
                 } else {
                     // A reference without a model has no visibility components, so its light child
                     // could never become visible: Bevy warned (B0004) and extract_lights dropped every
@@ -2134,6 +2143,7 @@ fn spawn_cell(
                         Name::new(format!("Light {:08X}", reference.form_id)),
                         light,
                         marker,
+                        dynamics,
                         // Not the reference's propagated placed-object layer: a light keeps
                         // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
                         crate::render::light_render_layers(),
@@ -10685,6 +10695,10 @@ mod tests {
             falloff: None,
             reference_data: None,
             radius_status: None,
+            flicker_period: None,
+            flicker_intensity_amplitude: None,
+            flicker_movement_amplitude: None,
+            reference_never_fades: false,
         }
     }
 

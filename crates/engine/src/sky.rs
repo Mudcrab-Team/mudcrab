@@ -746,6 +746,65 @@ fn drive_sky_palette(
     palette.set_if_neq(source.sky_palette(*preset, clock.hour));
 }
 
+/// Follows the game clock: sets the exterior sun colour and ambient colour from the active weather
+/// at the clock's hour (#653).
+///
+/// The static findings found no sun/moon switch and no night fade (RF-SUN-005,
+/// `skyrim_decomp#1003` G02, amended by `skyrim_decomp#1080`; unverified at run time). The night
+/// look comes from the record's `NAM0` Sunlight colour and the `DALC` cube in their night slots,
+/// mixed by the same day-part weights as the sky (`WeatherSky::lighting_at`). Only the colours
+/// change here. The sun's illuminance and the ambient brightness keep the scene's scale
+/// (`SUN_ILLUMINANCE`, `AMBIENT_ILLUMINANCE`), so the record's colour carries the darkness and no
+/// night factor exists.
+///
+/// This runs under the `skyrim` profile only. `mudcrab` keeps its fixed look. A weather that lacks
+/// one of these colours leaves the light as it is (the start-up report names what is missing). A
+/// sun that holds an interior key light (`ExteriorSunState`) is not touched, and the ambient stays
+/// with it: the interior system owns both until the player returns outside. Values are written
+/// only when they differ, so a frozen clock leaves both change ticks quiet.
+///
+/// The settings' sun colour and ambient colour controls have no lasting effect under `skyrim`,
+/// because this system rewrites both when the hour changes (#1006). The start-up note says so.
+pub(crate) fn drive_exterior_lighting(
+    clock: Option<Res<crate::sun::GameClock>>,
+    source: Option<Res<crate::color_pipeline::SceneGradeSource>>,
+    mut suns: Query<
+        &mut DirectionalLight,
+        (
+            With<crate::world::environment::interior::WorldSun>,
+            Without<crate::world::environment::interior::ExteriorSunState>,
+        ),
+    >,
+    ambient: Option<ResMut<GlobalAmbientLight>>,
+) {
+    let (Some(clock), Some(source)) = (clock, source) else {
+        return;
+    };
+    if source.profile != crate::visual_profile::VisualProfile::Skyrim {
+        return;
+    }
+    let Some(lighting) = source
+        .weather
+        .as_ref()
+        .and_then(|weather| weather.lighting_at(clock.hour))
+    else {
+        return;
+    };
+    let mut outside = false;
+    for mut sun in &mut suns {
+        outside = true;
+        if sun.color != lighting.sunlight {
+            sun.color = lighting.sunlight;
+        }
+    }
+    if outside && let Some(mut ambient) = ambient {
+        let color = lighting.mean_ambient();
+        if ambient.color != color {
+            ambient.color = color;
+        }
+    }
+}
+
 /// The sky systems that read the frame's underwater state, in order: sky, then the water's copy
 /// of the sky, then fog. `apply_fog` reads `InteriorFog`, which `EnvironmentSet` writes in the
 /// same schedule, so it runs after that set: a door or room crossing changes the fog in the same
@@ -756,6 +815,8 @@ fn sky_systems() -> ScheduleConfigs<ScheduleSystem> {
         apply_sky,
         sync_water_sky,
         apply_fog.after(crate::world::environment::interior::EnvironmentSet),
+        // After the interior system: it owns the sun and ambient while the player is indoors.
+        drive_exterior_lighting.after(crate::world::environment::interior::EnvironmentSet),
     )
         .chain()
 }
@@ -912,6 +973,45 @@ fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
         }
         _ => false,
     }
+}
+
+/// A grade source whose weather has distinct sun colours and `DALC` cubes in every slot: sunlight
+/// 200,190,180 by day and 10,20,40 by night, ambient faces dim at night. Test data only.
+#[cfg(test)]
+pub(crate) fn lit_test_source(
+    profile: crate::visual_profile::VisualProfile,
+) -> crate::color_pipeline::SceneGradeSource {
+    use crate::weather_sky::WeatherSky;
+    use crate::world::environment::{DirectionalAmbient, TimeOfDay, Weather, WeatherFog};
+    let mut weather = Weather {
+        fog: WeatherFog::default(),
+        ..Default::default()
+    };
+    for (time, sun, face) in [
+        (TimeOfDay::Sunrise, [100, 80, 60], 60_u8),
+        (TimeOfDay::Day, [200, 190, 180], 120),
+        (TimeOfDay::Sunset, [180, 120, 90], 90),
+        (TimeOfDay::Night, [10, 20, 40], 20),
+    ] {
+        for name in ["sky_upper", "sky_lower", "horizon", "fog_near", "fog_far"] {
+            weather
+                .colors
+                .insert((name.to_owned(), time), [90, 100, 110]);
+        }
+        weather.colors.insert(("sunlight".to_owned(), time), sun);
+        weather.directional_ambient.insert(
+            time,
+            DirectionalAmbient {
+                colors: [[face, face + 1, face + 2]; 6],
+                ..Default::default()
+            },
+        );
+    }
+    let timing = crate::sun::SunTiming([33, 60, 96, 123]);
+    crate::color_pipeline::SceneGradeSource::default().with_weather(
+        profile,
+        Some(WeatherSky::from_weather(0x81A, &weather, timing).unwrap()),
+    )
 }
 
 #[cfg(test)]
@@ -2144,6 +2244,139 @@ mod tests {
             clear,
             SkyPalette::SKYRIM_CLEAR_DAY.clear_colour(CameraSpace::Exterior),
             "the multiplier must change the clear colour for this test to mean anything"
+        );
+    }
+
+    fn lighting_app(profile: crate::visual_profile::VisualProfile, hour: f64) -> (App, Entity) {
+        let mut app = App::new();
+        app.insert_resource(lit_test_source(profile))
+            .insert_resource(crate::sun::GameClock {
+                hour,
+                timescale: 0.0,
+            })
+            .insert_resource(GlobalAmbientLight {
+                color: WeatherLighting::default().mean_ambient(),
+                brightness: crate::lights::AMBIENT_ILLUMINANCE,
+                ..default()
+            })
+            .add_systems(Update, drive_exterior_lighting);
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    color: WeatherLighting::default().sunlight,
+                    illuminance: crate::lights::SUN_ILLUMINANCE,
+                    ..default()
+                },
+                crate::world::environment::interior::WorldSun,
+            ))
+            .id();
+        (app, sun)
+    }
+
+    /// The `skyrim` profile drives the sun colour and ambient colour from the record by hour, and
+    /// leaves the scene's light scale alone. Night is the night slot, not a factor (#653).
+    #[test]
+    fn the_skyrim_profile_lights_the_exterior_from_the_weather_by_hour() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, sun) = lighting_app(VisualProfile::Skyrim, 12.0);
+        app.update();
+        let light = app.world().get::<DirectionalLight>(sun).unwrap();
+        assert_eq!(light.color, Color::srgb_u8(200, 190, 180));
+        assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
+        let day_ambient = app.world().resource::<GlobalAmbientLight>().color;
+        assert_eq!(
+            day_ambient,
+            WeatherLighting {
+                sunlight: Color::BLACK,
+                ambient_cube: [Color::srgb_u8(120, 121, 122); 6],
+            }
+            .mean_ambient()
+        );
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().brightness,
+            crate::lights::AMBIENT_ILLUMINANCE
+        );
+        // A frozen clock leaves both change ticks quiet.
+        app.update();
+        assert!(
+            !app.world()
+                .resource_ref::<GlobalAmbientLight>()
+                .is_changed()
+        );
+        assert!(
+            !app.world()
+                .entity(sun)
+                .get_ref::<DirectionalLight>()
+                .unwrap()
+                .is_changed()
+        );
+        // Midnight: the night slot, much darker, with the same illuminance and brightness.
+        app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 0.0;
+        app.update();
+        let light = app.world().get::<DirectionalLight>(sun).unwrap();
+        assert_eq!(light.color, Color::srgb_u8(10, 20, 40));
+        assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
+        let night_ambient = app.world().resource::<GlobalAmbientLight>().color;
+        assert!(night_ambient.to_linear().green < day_ambient.to_linear().green * 0.2);
+        // Sunset midpoint: the sunset slot.
+        app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 18.5;
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            Color::srgb_u8(180, 120, 90)
+        );
+    }
+
+    /// `mudcrab` keeps its fixed look, and a run without a weather record keeps the built-in light.
+    #[test]
+    fn the_mudcrab_profile_and_a_weatherless_run_keep_the_fixed_light() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, sun) = lighting_app(VisualProfile::Mudcrab, 0.0);
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            WeatherLighting::default().sunlight
+        );
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().color,
+            WeatherLighting::default().mean_ambient()
+        );
+        let (mut app, sun) = lighting_app(VisualProfile::Skyrim, 0.0);
+        app.insert_resource(
+            crate::color_pipeline::SceneGradeSource::default()
+                .with_weather(VisualProfile::Skyrim, None),
+        );
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            WeatherLighting::default().sunlight
+        );
+    }
+
+    /// A weather record without sun colours and DALC blocks gives no lighting: nothing is filled in.
+    #[test]
+    fn a_record_without_sun_colours_leaves_the_light_alone() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, sun) = lighting_app(VisualProfile::Skyrim, 0.0);
+        // A record with the sky colours and no sun colour or DALC at all.
+        let mut record = crate::world::environment::Weather::default();
+        for time in crate::world::environment::TimeOfDay::ALL {
+            for name in ["sky_upper", "sky_lower", "horizon", "fog_near", "fog_far"] {
+                record.colors.insert((name.to_owned(), time), [1, 2, 3]);
+            }
+        }
+        let timing = crate::sun::SunTiming([33, 60, 96, 123]);
+        let bare = crate::weather_sky::WeatherSky::from_weather(0x81A, &record, timing).unwrap();
+        assert_eq!(bare.lighting_omissions.len(), 8);
+        app.insert_resource(
+            crate::color_pipeline::SceneGradeSource::default()
+                .with_weather(VisualProfile::Skyrim, Some(bare)),
+        );
+        app.update();
+        assert_eq!(
+            app.world().get::<DirectionalLight>(sun).unwrap().color,
+            WeatherLighting::default().sunlight
         );
     }
 }

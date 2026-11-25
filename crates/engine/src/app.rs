@@ -379,7 +379,25 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                             weather.fog_omissions.join(", ")
                         );
                     }
-                    let note = format!("weather {}: sky and fog from the record", weather.label());
+                    let skyrim =
+                        config.visual_profile == crate::visual_profile::VisualProfile::Skyrim;
+                    // The lighting driver runs only under `skyrim` (`sky::drive_exterior_lighting`).
+                    if skyrim && !weather.lighting_omissions.is_empty() {
+                        eprintln!(
+                            "warning: weather {}: the record has no {}; the exterior sun and ambient keep the fixed day light at every hour (#1007)",
+                            weather.label(),
+                            weather.lighting_omissions.join(", ")
+                        );
+                    }
+                    let lighting = if skyrim && weather.lighting_omissions.is_empty() {
+                        "; sun and ambient colour from the record by hour (the sun and ambient colour settings have no effect, #1006)"
+                    } else {
+                        ""
+                    };
+                    let note = format!(
+                        "weather {}: sky and fog from the record{lighting}",
+                        weather.label()
+                    );
                     grade_source.weather = Some(weather);
                     note
                 }
