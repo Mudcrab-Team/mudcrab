@@ -99,10 +99,10 @@ pub struct RenderingSettings {
     pub mouse_sensitivity: f32,
     /// Horizontal field of view in degrees, as retail's `fDefaultWorldFOV` and
     /// `fDefault1stPersonFOV` are (#904): the angle across a 16:9 window. Retail holds the
-    /// matching vertical angle at every window shape ([`RETAIL_FOV_REFERENCE_ASPECT`],
-    /// `docs/research/retail/q7a-camera-states.md`). The field was a vertical angle named
-    /// `fov_degrees` until #904; an older settings file keeps that key, which is ignored, so the
-    /// retail default applies.
+    /// matching vertical angle on other windows, measured at 4:3, 16:9 and 21:9, assumed for other
+    /// shapes ([`RETAIL_FOV_REFERENCE_ASPECT`], `docs/research/retail/q7a-camera-states.md`). The
+    /// field was a vertical angle named `fov_degrees` until #904; an older settings file keeps that
+    /// key, which is ignored, so the retail default applies.
     pub horizontal_fov_degrees: f32,
     pub vsync: bool,
     pub window_mode: usize,
@@ -365,7 +365,7 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
             "Khronos PBR neutral",
         ]
     ),
-    number!(Graphics, "Image", "Horizontal field of view (degrees)", horizontal_fov_degrees; crate::config::FOV_RANGE_DEGREES.0 as f64, crate::config::FOV_RANGE_DEGREES.1 as f64, 5.0),
+    number!(Graphics, "Image", "Horizontal field of view at 16:9 (degrees)", horizontal_fov_degrees; crate::config::FOV_RANGE_DEGREES.0 as f64, crate::config::FOV_RANGE_DEGREES.1 as f64, 5.0),
     choice!(
         "Image",
         "Visual profile (restart)",
@@ -1274,34 +1274,23 @@ fn apply_metal_direct_default(
     }
 }
 
-/// The vertical field of view in radians that gives `horizontal_degrees` across a window of
-/// `aspect` (width over height). Retail's field of view keys are horizontal angles; Bevy's
-/// projection takes the vertical one (#904). An aspect ratio that is not a positive finite number
-/// is the one a camera has before its first frame; it is taken as square.
-pub fn vertical_fov_radians(horizontal_degrees: f32, aspect: f32) -> f32 {
-    let aspect = if aspect.is_finite() && aspect > 0.0 {
-        aspect
-    } else {
-        1.0
-    };
-    crate::shots::vertical_fov_degrees(horizontal_degrees, aspect).to_radians()
-}
-
 /// The window shape retail's field of view keys are defined at. Retail holds the vertical angle
 /// and shows more at the sides of a wider window (Hor+): FOV 80 is 80 degrees across a 16:9
-/// window, and 4:3 and 21:9 windows show the scene at the size the held vertical angle gives
+/// window, and the vertical angle stays the same on other windows, measured at 4:3, 16:9 and
+/// 21:9, assumed for other shapes
 /// (`docs/research/retail/q7a-camera-states.md`, "Window shape").
 pub const RETAIL_FOV_REFERENCE_ASPECT: f32 = 16.0 / 9.0;
 
-/// Bevy's vertical angle for a retail field of view key, the same at every window shape.
+/// Bevy's vertical angle for a retail field of view key: the vertical angle of that many degrees
+/// across 16:9, held on every window (measured at 4:3, 16:9 and 21:9, assumed for other shapes).
 pub fn retail_vertical_fov_radians(horizontal_degrees: f32) -> f32 {
-    vertical_fov_radians(horizontal_degrees, RETAIL_FOV_REFERENCE_ASPECT)
+    crate::shots::vertical_fov_degrees(horizontal_degrees, RETAIL_FOV_REFERENCE_ASPECT).to_radians()
 }
 
 /// The retail-convention angle that frames a `--shots` pose. A pose's `hfov` is the angle across
 /// its own frame, so its vertical angle is expressed again as the angle across 16:9.
 pub fn retail_fov_for_frame(hfov_degrees: f32, aspect: f32) -> f32 {
-    let half_vertical = vertical_fov_radians(hfov_degrees, aspect) * 0.5;
+    let half_vertical = crate::shots::vertical_fov_degrees(hfov_degrees, aspect).to_radians() * 0.5;
     (half_vertical.tan() * RETAIL_FOV_REFERENCE_ASPECT)
         .atan()
         .to_degrees()
@@ -3663,32 +3652,6 @@ mod tests {
         assert_eq!(app.world().resource::<EngineConfig>().io_threads, 0);
     }
 
-    /// The vertical angle that gives a horizontal angle across a window of each shape.
-    #[test]
-    fn horizontal_field_of_view_converts_by_aspect_ratio() {
-        for (name, aspect, vertical) in [
-            ("16:9", 16.0 / 9.0, 50.54),
-            ("16:10", 16.0 / 10.0, 55.34),
-            ("21:9", 21.0 / 9.0, 39.57),
-            ("4:3", 4.0 / 3.0, 64.4),
-        ] {
-            let got = vertical_fov_radians(80.0, aspect).to_degrees();
-            assert!((got - vertical).abs() < 0.1, "{name}: {got} vs {vertical}");
-            // The defining relation of a rectilinear projection.
-            let horizontal = ((got.to_radians() * 0.5).tan() * aspect).atan() * 2.0;
-            assert!((horizontal.to_degrees() - 80.0).abs() < 1e-3, "{name}");
-        }
-        // A square window shows the same angle both ways; a camera that has not seen a window yet
-        // reports an aspect ratio that is not usable and is taken as square.
-        assert!((vertical_fov_radians(80.0, 1.0).to_degrees() - 80.0).abs() < 1e-3);
-        for unusable in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            assert_eq!(
-                vertical_fov_radians(80.0, unusable),
-                vertical_fov_radians(80.0, 1.0)
-            );
-        }
-    }
-
     /// #904, #949: with no INI the camera starts at retail's 80 degrees horizontal, and the
     /// walking camera and the automated cameras take their own key.
     #[test]
@@ -3825,7 +3788,9 @@ mod tests {
     }
 
     /// Measured on retail: FOV 80 is 80 degrees across 16:9 and the vertical angle is held, so a
-    /// 4:3 window shows 64.4 degrees across and a 21:9 window 95.5.
+    /// 4:3 window shows 64.4 degrees across and a 21:9 window 95.5. 16:10, 32:9 and the portrait
+    /// 9:16 are not measured; they follow the same rule, and the portrait case catches an
+    /// inverted aspect ratio.
     #[test]
     fn retail_field_of_view_is_horizontal_at_16_9_and_held_vertically() {
         let vertical = retail_vertical_fov_radians(80.0);
@@ -3834,6 +3799,9 @@ mod tests {
             ("16:9", 16.0 / 9.0, 80.0),
             ("4:3", 4.0 / 3.0, 64.37),
             ("21:9", 21.0_f32 / 9.0, 95.52),
+            ("16:10", 16.0 / 10.0, 74.12),
+            ("32:9", 32.0 / 9.0, 118.42),
+            ("9:16 portrait", 9.0 / 16.0, 29.74),
         ] {
             let shown = ((vertical * 0.5).tan() * aspect).atan().to_degrees() * 2.0;
             assert!((shown - across).abs() < 0.05, "{name}: {shown}");
@@ -3844,11 +3812,12 @@ mod tests {
             (80.0, 16.0 / 9.0),
             (18.0, 1379.0 / 911.0),
             (75.0, 4.0 / 3.0),
+            (30.0, 9.0 / 16.0),
         ] {
             let retail = retail_fov_for_frame(hfov, aspect);
+            let own = crate::shots::vertical_fov_degrees(hfov, aspect).to_radians();
             assert!(
-                (retail_vertical_fov_radians(retail) - vertical_fov_radians(hfov, aspect)).abs()
-                    < 1e-5,
+                (retail_vertical_fov_radians(retail) - own).abs() < 1e-5,
                 "{hfov} at {aspect}"
             );
         }
