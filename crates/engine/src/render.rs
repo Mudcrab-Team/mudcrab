@@ -439,6 +439,7 @@ impl Plugin for VercidiumRendererPlugin {
             crate::prepass_vertex_alpha::PrepassVertexAlphaPlugin,
             crate::water_depth::WaterDepthPlugin,
             crate::underwater_pass::UnderwaterPassPlugin,
+            crate::retail_fog::RetailFogPlugin,
             ExtractComponentPlugin::<crate::world::components::StreamingCamera>::default(),
         ))
         .init_resource::<RendererMetrics>()
