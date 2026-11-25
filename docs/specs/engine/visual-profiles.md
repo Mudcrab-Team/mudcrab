@@ -12,7 +12,7 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 | Profile | Pipeline |
 |---|---|
 | `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near-object shading and output still follow the `mudcrab` pipeline until P1c. Distant object LOD lighting uses the retail terms (#946), and the opaque scene is fogged by the retail composite (#891). |
+| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near-object shading and output still follow the `mudcrab` pipeline until P1c, except the near ambient, which is retail's directional ambient (#1010). Distant object LOD lighting uses the retail terms (#946), and the opaque scene is fogged by the retail composite (#891). |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.
@@ -122,6 +122,26 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
   distance is ever filled in.
 - A run without a world database (a fixture) has no weather record and keeps the built-in
   `SkyrimClear` day palette in both profiles.
+
+## Near directional ambient (#1010)
+
+Retail's near Lighting shader adds the `DALC` cube per pixel normal to the diffuse sum, as a mean
+plus linear slopes, and nothing scales it (skyrim-research NEEDS 26). The face order is F0 on -X,
+F1 on +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z in Creation axes (NEEDS 41, reviewed).
+
+Under `skyrim` the engine writes the cube (`DirectionalAmbientCube`, a vendored `bevy_pbr`
+resource) from the weather by game hour outside, and from the cell or room template inside. The
+values are the record bytes divided by 255, with no sRGB decode, as for object LOD. The diffuse
+part is `albedo * ambient` with no `EnvBRDFApprox` scale. Bevy's specular ambient part is kept:
+no retail counterpart is known. Grass takes the cube's mean. `mudcrab` keeps its flat ambient.
+
+Known differences:
+
+- The near scene shades one retail unit as `AMBIENT_ILLUMINANCE` nits, which is about 1.37 after
+  the camera exposure. Object LOD writes one retail unit as 1.0. The two paths therefore differ
+  by that factor with equal inputs.
+- The sun, the interior key light and the point lights are still decoded from sRGB, while the
+  ambient is raw.
 
 ## Receipts
 
