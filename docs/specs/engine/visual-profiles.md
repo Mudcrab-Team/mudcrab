@@ -214,8 +214,9 @@ F1 on +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z in Creation axes (NEEDS 41, 
 Under `skyrim` the engine writes the cube (`DirectionalAmbientCube`, a vendored `bevy_pbr`
 resource) from the weather by game hour outside, and from the cell or room template inside. The
 values are the record bytes divided by 255, with no sRGB decode, as for object LOD. The diffuse
-part is `albedo * ambient` with no `EnvBRDFApprox` scale. Bevy's specular ambient part is kept:
-no retail counterpart is known. Grass takes the cube's mean. `mudcrab` keeps its flat ambient.
+part is `albedo * ambient` with no `EnvBRDFApprox` scale. Bevy's specular ambient part is kept
+because no retail counterpart is known (unverified). Grass takes the cube's mean. `mudcrab` keeps
+its flat ambient.
 
 Known differences:
 
