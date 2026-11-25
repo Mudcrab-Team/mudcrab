@@ -81,6 +81,9 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
   - **Stand-ins and omissions.** `A = 1`, STAND-IN(#995): factor one replaces the retail SAO texture, which Mudcrab has no pass for. The SSR term of `L` is
     omitted: Mudcrab's water reflection is a separate pass that draws after this one. The outer
     `saturate` is omitted: the frame is still HDR and uses the `mudcrab` tone curve until P1c.
+    The retail depth rescale `d' = 1.01 * d - 0.01` is not copied: retail's `z` is about 1 percent
+    below the true view depth near the camera, and Mudcrab uses the true depth (skyrim-research
+    NEEDS 17b, unreviewed; open until a capture confirms it).
   - **Blended draws.** Water, effects and other blended draws fog themselves in retail. In Mudcrab
     they keep Bevy's shader fog (`FogFalloff::PowerRampBlended`, the same ramp). Retail's blended
     draws apply `min(k * M, B)` in the shader (`T = 1`) and Mudcrab's apply the plain mix: a

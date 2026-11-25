@@ -11,7 +11,7 @@
 // notes in `retail_fog.rs` say why. A = 1 while Mudcrab has no SAO pass: STAND-IN(#995): factor one replaces the retail SAO texture. A pixel with no
 // geometry (depth 0 in Mudcrab's reverse-Z buffer, the sky) skips both the fog and the `k` scale.
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
-#import bevy_render::view::View
+#import bevy_render::view::{View, frag_coord_to_uv, position_ndc_to_view, uv_to_ndc}
 
 struct RetailFog {
     // x = near, y = far, z = power, w = max.
@@ -42,10 +42,16 @@ fn fragment(in: FullscreenVertexOutput, @builtin(sample_index) sample_index: u32
     if ndc <= 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    // Linear view depth. Bevy's reverse-Z projection has clip.z = m22 * z + m32 and clip.w = -z for
-    // a point in front of the camera, so ndc = m32 / d - m22 and d = m32 / (ndc + m22). For the
-    // infinite reverse-Z projection m22 = 0 and m32 = near, which gives d = near / ndc.
-    let z = view.clip_from_view[3][2] / (ndc + view.clip_from_view[2][2]);
+    // Axial linear view depth. The depth is unprojected through the full inverse projection, not
+    // `near / depth`: the water reflection camera has an oblique near plane, so its depth is not a
+    // function of the view distance alone. For the world camera (infinite reverse-Z, m22 = 0 and
+    // m32 = near) this gives `near / depth`, and the tests `view_depth_*` in `retail_fog.rs` pin both.
+    let uv = frag_coord_to_uv(in.position.xy, view.viewport);
+    let view_position = position_ndc_to_view(
+        vec3<f32>(uv_to_ndc(uv), ndc),
+        view.view_from_clip,
+    );
+    let z = -view_position.z;
     let near = fog.range.x;
     let r = 1.0 / (fog.range.y - fog.range.x);
     let s = clamp(z * r - near * r, 0.0, 1.0);

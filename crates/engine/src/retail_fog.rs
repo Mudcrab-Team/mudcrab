@@ -52,10 +52,19 @@
 //!   cannot be read back.
 //! - **Depth.** Retail rebuilds `z` from its forward-Z buffer with its own near and far planes
 //!   (15 and 10240 on the default path). Mudcrab's depth is reverse-Z and infinite, so the sky is
-//!   depth 0 and is skipped, and `z = near / depth` is the same axial linear view depth. Retail
-//!   skips depth at or above 0.999999, which also skips terrain near its far plane; Mudcrab does
-//!   not. The composite's `z` is axial, not the vertex fog's `|clip.xyz|`, so Mudcrab's two fog
-//!   paths (this pass and the blended mode) differ off-axis, as retail's do.
+//!   depth 0 and is skipped. The shader unprojects the depth through the camera's inverse
+//!   projection and takes the axial view depth. That is `near / depth` for the world camera, and
+//!   it stays correct for the water reflection camera, whose oblique near plane makes its depth a
+//!   function of more than the view distance. Retail skips depth at or above 0.999999, which also
+//!   skips terrain near its far plane; Mudcrab does not. The composite's `z` is axial, not the
+//!   vertex fog's `|clip.xyz|`, so Mudcrab's two fog paths (this pass and the blended mode) differ
+//!   off-axis, as retail's do.
+//! - **Not copied: retail's depth rescale.** The retail linearisation first maps the depth by
+//!   `d' = 1.01 * d - 0.01` (skyrim-research NEEDS 17b, unreviewed). Its `z` is then about 1 percent
+//!   below the true view depth near the camera (0.990 at depth 100, 0.995 at 5000, 0.9998 at
+//!   10000 with near 15 and far 10240). Mudcrab uses the true depth. The difference moves the fog
+//!   start and the ramp by at most 1 percent of the distance. It is open until a capture confirms
+//!   the rescale.
 //! - **Blended draws.** Water, effects and other blended draws are fogged in their own shaders in
 //!   retail, and in Mudcrab by Bevy's `FogFalloff::PowerRampBlended` (the same ramp, with a mode
 //!   that skips draws this pass covers). Retail's blended draws apply `min(k * M, B)` inside the
@@ -708,6 +717,111 @@ mod tests {
         assert_eq!(pass.far_rgb(), [0.5, 0.6, 0.7]);
         assert_eq!(pass.output_scale(), k());
         assert_eq!(pass.far_colour.w, RetailFogPass::SAO_FACTOR);
+    }
+
+    /// The shader's depth unprojection: `view_from_clip * (ndc.xy, depth, 1)`, then `-z / w`.
+    fn view_depth(clip_from_view: Mat4, uv: Vec2, ndc_depth: f32) -> f32 {
+        let ndc_xy = uv * Vec2::new(2.0, -2.0) + Vec2::new(-1.0, 1.0);
+        let position = clip_from_view.inverse() * ndc_xy.extend(ndc_depth).extend(1.0);
+        -(position.z / position.w)
+    }
+
+    /// The depth a point at `view` (view space, looking down -Z) writes, and the uv it covers.
+    fn project(clip_from_view: Mat4, view: Vec3) -> (Vec2, f32) {
+        let clip = clip_from_view * view.extend(1.0);
+        let ndc = clip.truncate() / clip.w;
+        (Vec2::new(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5), ndc.z)
+    }
+
+    fn relative_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= expected.abs() * 1.0e-3,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    /// The world camera is infinite reverse-Z with near 15 (`fNearDistance`, #949): the unprojected
+    /// depth is the axial view depth, `near / depth`, at every distance the fog ramp reaches.
+    #[test]
+    fn view_depth_is_the_axial_distance_for_the_world_camera() {
+        let projection = Projection::Perspective(PerspectiveProjection {
+            near: 15.0,
+            ..default()
+        });
+        let clip_from_view = projection.get_clip_from_view();
+        for (x, y, z) in [
+            (0.0, 0.0, 15.5),
+            (30.0, -10.0, 100.0),
+            (-500.0, 200.0, 1_000.0),
+            (4_000.0, 900.0, 10_000.0),
+            (0.0, 0.0, 80_000.0),
+        ] {
+            let (uv, depth) = project(clip_from_view, Vec3::new(x, y, -z));
+            relative_close(view_depth(clip_from_view, uv, depth), z);
+            // The same value as `near / depth` (m22 = 0, m32 = near).
+            relative_close(15.0 / depth, z);
+        }
+    }
+
+    /// The water reflection camera clips obliquely at the water plane (`reflection_lens`), so its
+    /// depth also depends on the pixel. `near / depth` is wrong there; the unprojection is not.
+    #[test]
+    fn view_depth_is_the_axial_distance_for_the_oblique_reflection_camera() {
+        let projection = Projection::Perspective(PerspectiveProjection {
+            near: 15.0,
+            near_clip_plane: Vec3::new(0.2, 0.9, -0.3).normalize().extend(-12.0),
+            ..default()
+        });
+        let clip_from_view = projection.get_clip_from_view();
+        let mut worst_flat_error: f32 = 0.0;
+        for (x, y, z) in [
+            (0.0, 0.0, 100.0),
+            (300.0, 200.0, 1_000.0),
+            (-800.0, 100.0, 2_500.0),
+            (1_500.0, 600.0, 6_000.0),
+        ] {
+            let (uv, depth) = project(clip_from_view, Vec3::new(x, y, -z));
+            relative_close(view_depth(clip_from_view, uv, depth), z);
+            worst_flat_error = worst_flat_error.max((15.0 / depth - z).abs() / z);
+        }
+        assert!(
+            worst_flat_error > 0.01,
+            "the oblique matrix should break `near / depth` (error {worst_flat_error})"
+        );
+    }
+
+    /// The shader draws the formula pinned above. Each line below is a term of it.
+    #[test]
+    fn the_shader_draws_the_pinned_formula() {
+        let shader = include_str!("shaders/retail_fog.wgsl");
+        let code: String = shader
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for term in [
+            // Fc = min(saturate(z * r - near * r) ^ p, max), r = 1 / (far - near).
+            "let r = 1.0 / (fog.range.y - fog.range.x);",
+            "let s = clamp(z * r - near * r, 0.0, 1.0);",
+            "let fc = min(exp2(log2(s) * fog.range.z), fog.range.w);",
+            // Cfc = nearRGB + Fc * (farRGB - nearRGB).
+            "let cfc = fog.near_colour.rgb + fc * (fog.far_colour.rgb - fog.near_colour.rgb);",
+            // The blend: src.rgb = k * Fc * Cfc, src.a = k * (1 - Fc) * A.
+            "return vec4<f32>(k * fc * cfc, k * (1.0 - fc) * fog.far_colour.w);",
+            // k is the uniform's, never a literal. The sky (depth 0) is the blend's identity.
+            "let k = fog.near_colour.w;",
+            "if ndc <= 0.0 {",
+            "return vec4<f32>(0.0, 0.0, 0.0, 1.0);",
+            // The axial depth, unprojected through the full inverse projection.
+            "view.view_from_clip,",
+            "let z = -view_position.z;",
+        ] {
+            assert!(code.contains(term), "retail_fog.wgsl lost `{term}`");
+        }
+        assert!(
+            !code.contains("0.8333") && !code.contains("0.833_3"),
+            "k must come from the uniform"
+        );
     }
 
     /// The blend is `src.rgb + dst.rgb * src.a` and leaves the alpha channel alone.
