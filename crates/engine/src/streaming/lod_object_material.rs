@@ -271,10 +271,7 @@ fn apply_object_atlases(
                     diffuse.sampler = atlas_sampler();
                 }
                 atlas_materials.add(ExtendedMaterial {
-                    base: StandardMaterial {
-                        opaque_render_method: OpaqueRendererMethod::Forward,
-                        ..base.clone()
-                    },
+                    base: object_atlas_base(base),
                     extension: ObjectAtlas {
                         normal: image.clone(),
                         lighting: ObjectLighting::default(),
@@ -287,6 +284,29 @@ fn apply_object_atlases(
                 .insert(MeshMaterial3d(handle.clone()));
         }
         commands.entity(entity).remove::<PendingObjectAtlas>();
+    }
+}
+
+/// The base material of an object LOD draw: the chunk's own material in the forward renderer, in
+/// the opaque or alpha-mask pass and without transmission.
+///
+/// Under the `skyrim` profile the retail fog composite (`retail_fog.rs`, #1004) runs after the
+/// opaque pass and before the transmissive and transparent passes. It fogs only draws in the
+/// opaque, alpha-mask or alpha-to-coverage phases that do not read the view transmission texture.
+/// Bevy's shader fog skips exactly those draws. A draw outside that set would not be fogged by
+/// the composite and would not be fogged by the shader either. The converter writes `MASK` for
+/// object LOD, so this keeps the chunk's mode and only repairs a mode that leaves the set.
+fn object_atlas_base(base: &StandardMaterial) -> StandardMaterial {
+    let alpha_mode = match base.alpha_mode {
+        mode @ (AlphaMode::Opaque | AlphaMode::Mask(_) | AlphaMode::AlphaToCoverage) => mode,
+        _ => AlphaMode::Opaque,
+    };
+    StandardMaterial {
+        opaque_render_method: OpaqueRendererMethod::Forward,
+        alpha_mode,
+        specular_transmission: 0.0,
+        diffuse_transmission: 0.0,
+        ..base.clone()
     }
 }
 
@@ -315,7 +335,7 @@ fn update_object_lighting(
 }
 
 /// The retail directional ambient rows, sun RGB and sun direction for one worldspace and hour.
-/// Fog and output use Bevy's distance fog in the shader, so no fog input is built here.
+/// The shader has no fog input: the retail fog composite fogs the draw (`object_atlas_base`).
 fn object_lighting(
     catalog: &EnvironmentCatalog,
     config: &EngineConfig,
@@ -617,6 +637,94 @@ mod tests {
             "{messages:?}"
         );
     }
+
+    /// The composite fogs a draw only in the opaque, alpha-mask or alpha-to-coverage phase without
+    /// transmission (`object_atlas_base`). A chunk material outside that set is repaired, and one
+    /// inside it keeps its mode.
+    #[test]
+    fn the_atlas_material_stays_in_the_opaque_pass_without_transmission() {
+        for mode in [
+            AlphaMode::Opaque,
+            AlphaMode::Mask(0.5),
+            AlphaMode::AlphaToCoverage,
+        ] {
+            let base = object_atlas_base(&StandardMaterial {
+                alpha_mode: mode,
+                ..default()
+            });
+            assert_eq!(base.alpha_mode, mode);
+        }
+        for mode in [
+            AlphaMode::Blend,
+            AlphaMode::Premultiplied,
+            AlphaMode::Add,
+            AlphaMode::Multiply,
+        ] {
+            let base = object_atlas_base(&StandardMaterial {
+                alpha_mode: mode,
+                specular_transmission: 0.5,
+                diffuse_transmission: 0.25,
+                ..default()
+            });
+            assert_eq!(base.alpha_mode, AlphaMode::Opaque, "{mode:?}");
+            assert_eq!(base.specular_transmission, 0.0);
+            assert_eq!(base.diffuse_transmission, 0.0);
+        }
+        assert!(matches!(
+            object_atlas_base(&default()).opaque_render_method,
+            OpaqueRendererMethod::Forward
+        ));
+    }
+
+    /// The material that `apply_object_atlases` builds keeps a `MASK` chunk in the alpha-mask pass.
+    #[test]
+    fn the_applied_object_material_is_in_the_pass_the_composite_fogs() {
+        let pack = tempfile::tempdir().unwrap();
+        let mut app = test_app(pack.path());
+        let piece = add_chunk(&mut app, true);
+        let standard = app
+            .world()
+            .get::<MeshMaterial3d<StandardMaterial>>(piece)
+            .unwrap()
+            .0
+            .clone();
+        app.world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .get_mut(&standard)
+            .unwrap()
+            .alpha_mode = AlphaMode::Mask(0.5);
+        let normal = app.world().resource::<Assets<Image>>().reserve_handle();
+        {
+            let mut atlases = app.world_mut().resource_mut::<Atlases>();
+            atlases.pack = pack.path().to_owned();
+            atlases.normals.insert(1, Some(normal.clone()));
+        }
+        app.update();
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .insert(
+                normal.id(),
+                Image {
+                    sampler: atlas_sampler(),
+                    ..default()
+                },
+            )
+            .unwrap();
+        app.update();
+        let handle = app
+            .world()
+            .get::<MeshMaterial3d<ObjectMaterial>>(piece)
+            .unwrap();
+        let material = app
+            .world()
+            .resource::<Assets<ObjectMaterial>>()
+            .get(&handle.0)
+            .unwrap();
+        assert_eq!(material.base.alpha_mode, AlphaMode::Mask(0.5));
+        assert_eq!(material.base.specular_transmission, 0.0);
+        assert_eq!(material.base.diffuse_transmission, 0.0);
+    }
+
     // The lighting fixture. Red face bytes 51,153,0,204,102,255 give mean 0.5 and slopes 0.2,
     // 0.4 and 0.3. Green is all 255 (mean 1, no slope). Blue is all 0.
     const WORLD: u32 = 7;

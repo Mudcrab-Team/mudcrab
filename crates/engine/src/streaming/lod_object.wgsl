@@ -83,15 +83,6 @@ fn object_lit(
     return (sun + ambient) * diffuse * vertex_rgb;
 }
 
-// skyrim_decomp NEEDS 17 answer (PR pending). The retail pixel-shader tail for frame flags
-// (S,T) = (1,0): `M = L + F (Cf - L)`, `out = L - max(0, k M - B)` per channel, with k = 0.8333
-// and B = 1.0. It equals `L` while every channel of `M` is at most 1.2. Not called yet.
-fn retail_fog_tail(
-    lit: vec3<f32>, fog_colour: vec3<f32>, fog_strength: f32, k: f32, b: f32,
-) -> vec3<f32> {
-    return lit - max(vec3(0.0), k * (lit + fog_strength * (fog_colour - lit)) - vec3(b));
-}
-
 @vertex
 fn vertex(in: ObjectVertex) -> ObjectFragment {
     let world = mesh_functions::get_world_from_local(in.instance_index);
@@ -167,12 +158,14 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
     vertex_rgb = in.color.rgb;
 #endif
     let lit = object_lit(sun, ambient, diffuse.rgb, vertex_rgb);
-    // STAND-IN(#946): fog uses Bevy's distance fog, as near objects and terrain LOD do. Retail
-    // draws exterior object LOD with frame flags (S,T) = (1,0) and no fog colour in this
-    // pixel shader (skyrim_decomp NEEDS 17 answer, PR pending). Its haze is a full-screen depth
-    // composite after the opaque stage. The engine has no such composite yet. When it exists,
-    // this fog and the stand-in leave the shader. `retail_fog_tail` above is the (1,0) tail,
-    // kept as a tested pure function and not called.
+    // Fog: retail has no fog colour in this pixel shader. The haze of stock object LOD is the
+    // full-screen depth composite after the opaque stage (`retail_fog.rs`, #1004; skyrim_decomp
+    // NEEDS 17 answer, PR pending). Under the `skyrim` profile that composite fogs this draw, and
+    // Bevy's shader fog skips it (`FOG_MODE_POWER_RAMP_BLENDED`) because the material is in the
+    // opaque or alpha-mask pass and has no transmission. Do not call `apply_fog` or a retail fog
+    // tail here: that would fog twice. Under the `mudcrab` profile the composite does not run, and
+    // `main_pass_post_lighting_processing` keeps the per-material distance fog, as for near
+    // objects and terrain LOD.
     var out: FragmentOutput;
     // STAND-IN(#946): alpha omits the retail `b2[3].z` factor (G05), the property alpha times
     // the pass fade. No engine input supplies it. Its value for stock object LOD is unverified.
