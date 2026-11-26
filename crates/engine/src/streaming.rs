@@ -2100,7 +2100,8 @@ fn spawn_cell(
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
             // surfaces once they are instantiated below it; see `crate::emittance`.
             if let Some(rgb) = reference.emittance {
-                entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
+                let units = crate::retail_lighting::LightUnits::of_colour_space(colour_srgb);
+                entity.insert(crate::emittance::ReferenceEmittance::of(units, rgb));
             }
             // Under `skyrim` the source's colour follows the day parts.
             if !colour_srgb && let Some(parts) = reference.emittance_day_parts {

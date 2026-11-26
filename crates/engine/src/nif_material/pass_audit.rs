@@ -14,7 +14,10 @@
 //! A rule the specification leaves open carries a [`Open`] row. The table then states what the
 //! engine does, so no case has a silent default.
 
-use super::{NativeMaterialHandler, native_depth_flags, retail};
+use super::{
+    NativeMaterialHandler, has_external_emittance, has_model_space_normals,
+    is_additive_emittance_decal, native_depth_flags, palette_lookup, retail,
+};
 use ::gltf::Material;
 use bevy::prelude::*;
 use shared::nif_alpha::NifAlphaProperty;
@@ -274,13 +277,7 @@ fn rule(authored: &Authored) -> (Option<Pass>, BTreeSet<Open>) {
 fn drawn(handler: &NativeMaterialHandler, source: &Material<'_>) -> Pass {
     // The stock glTF material, then the loader's own two steps.
     let stock = StandardMaterial {
-        alpha_mode: match source.alpha_mode() {
-            ::gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
-            ::gltf::material::AlphaMode::Mask => {
-                AlphaMode::Mask(source.alpha_cutoff().unwrap_or(0.5))
-            }
-            ::gltf::material::AlphaMode::Blend => AlphaMode::Blend,
-        },
+        alpha_mode: drawn_alpha_mode(source),
         base_color: Color::linear_rgba(
             1.0,
             1.0,
@@ -567,6 +564,31 @@ impl Class {
     }
 }
 
+/// How a material with `External_Emittance` takes its reference's source colour
+/// (`crate::emittance`). The colour itself is `byte / 255` on every path that takes it.
+fn emittance_path(handler: &NativeMaterialHandler, source: &Material<'_>) -> &'static str {
+    let state = handler.depth_state(source, drawn_alpha_mode(source));
+    if palette_lookup(source).is_some() {
+        "STAND-IN(#984): a palette effect does not take the source colour"
+    } else if has_model_space_normals(source) {
+        "STAND-IN(#362): a model-space-normal surface does not take the source colour"
+    } else if retail::is_lighting(source) {
+        "lit surface: the source replaces the emissive colour (SPEC-1 section 2.7)"
+    } else if state.is_some_and(|state| is_additive_emittance_decal(source, state)) {
+        "STAND-IN(#984): an additive effect decal multiplies its emission by the source, unfogged"
+    } else {
+        "STAND-IN(#984): another effect surface multiplies its emission by the source"
+    }
+}
+
+fn drawn_alpha_mode(source: &Material<'_>) -> AlphaMode {
+    match source.alpha_mode() {
+        ::gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+        ::gltf::material::AlphaMode::Mask => AlphaMode::Mask(source.alpha_cutoff().unwrap_or(0.5)),
+        ::gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+    }
+}
+
 /// Reads every mesh of a converted pack. It writes nothing into the pack.
 #[test]
 #[ignore = "needs a converted pack: set MUDCRAB_PASS_AUDIT_PACK and MUDCRAB_PASS_AUDIT_REPORT"]
@@ -583,6 +605,7 @@ fn pack_pass_audit() {
     let mut opens = BTreeMap::<Open, Class>::new();
     let mut gaps = BTreeMap::<Gap, Class>::new();
     let mut unexplained = 0;
+    let mut emittance = BTreeMap::<&str, Class>::new();
     for file in &files {
         let name = file.strip_prefix(&meshes).unwrap().display().to_string();
         // silent-ok: the count of unreadable meshes is in the report.
@@ -594,6 +617,12 @@ fn pack_pass_audit() {
             continue;
         };
         for source in document.materials() {
+            if has_external_emittance(&source) {
+                emittance
+                    .entry(emittance_path(&handler, &source))
+                    .or_default()
+                    .add(&name);
+            }
             let Some(authored) = authored(&source) else {
                 unpublished += 1;
                 continue;
@@ -655,6 +684,11 @@ fn pack_pass_audit() {
              | Stand-in | Materials | Examples |\n| --- | --- | --- |\n";
     for (open, class) in &opens {
         text += &class.row(open.label());
+    }
+    text += "\n## External emittance\n\nEvery material with the flag, by the path that gives it its \
+             reference's colour.\n\n| Path | Materials | Examples |\n| --- | --- | --- |\n";
+    for (path, class) in &emittance {
+        text += &class.row(path);
     }
     std::fs::write(&report, text).unwrap();
     println!("judged {judged}, matched {matched}, unexplained {unexplained}, report {report}");

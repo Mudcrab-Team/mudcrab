@@ -5,12 +5,14 @@
 //! from the light or region its reference names in `XEMI`. Building windows name regions whose
 //! weather is black by day and amber at night, which is how Skyrim keeps windows dark in daylight.
 //! The converter resolves every source's colour at each time of day into the `emittance` table
-//! (`docs/specs/converters/db-schema.md`); the engine has one time of day, the day (`sky.rs`), and
-//! multiplies the emission the model publishes by that day colour.
+//! (`docs/specs/converters/db-schema.md`). `mudcrab` multiplies the model's emission by the day
+//! colour. `skyrim` mixes the day parts by the game hour and takes the bytes without a decode.
 //!
 //! A surface whose reference names no source, or one the converter could not resolve, keeps the
 //! model's own emission.
-use crate::{nif_depth::NifDepthMaterial, nif_material::ExternalEmittance};
+use crate::{
+    nif_depth::NifDepthMaterial, nif_material::ExternalEmittance, retail_lighting::LightUnits,
+};
 use bevy::{app::SceneSpawnerSystems, prelude::*};
 use std::collections::HashMap;
 
@@ -80,13 +82,11 @@ fn drive_emittance_by_hour(
     let weights = crate::weather_sky::slot_weights(clock.hour, timing);
     for (parts, mut emittance, evaluation, children) in &mut references {
         let source = parts.mixed(weights);
-        emittance.set_if_neq(ReferenceEmittance::from_srgb(source));
+        emittance.set_if_neq(ReferenceEmittance::of(LightUnits::Retail, source));
         let (Some(evaluation), Some(children)) = (evaluation, children) else {
             continue;
         };
-        let Some(wanted) =
-            evaluation.point_light_in(crate::retail_lighting::LightUnits::Retail, Some(source))
-        else {
+        let Some(wanted) = evaluation.point_light_in(LightUnits::Retail, Some(source)) else {
             continue;
         };
         for &child in children {
@@ -108,14 +108,22 @@ fn register_emittance<M: EmittingMaterial>(app: &mut App) {
         .add_systems(Update, forget_freed_materials::<M>);
 }
 
-/// The linear colour a reference's `XEMI` source lends its model's `External_Emittance` surfaces.
+/// The colour a reference's `XEMI` source lends its model's `External_Emittance` surfaces, as
+/// the profile's shaders read it.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct ReferenceEmittance(pub LinearRgba);
 
 impl ReferenceEmittance {
-    /// The source's colour as the database stores it: 8-bit sRGB, like weather and light colours.
-    pub fn from_srgb(rgb: [u8; 3]) -> Self {
-        Self(Color::srgb_u8(rgb[0], rgb[1], rgb[2]).to_linear())
+    /// The source's record bytes in the scene's units. `mudcrab` decodes them as sRGB. `skyrim`
+    /// takes `byte / 255` with no decode (SPEC-1 section 2.1,
+    /// `docs/specs/engine/near-lighting.md`), for lit and effect surfaces alike. A decode there
+    /// turns the Whiterun windows' dusk orange into red.
+    pub fn of(units: LightUnits, rgb: [u8; 3]) -> Self {
+        let authored = Color::srgb_u8(rgb[0], rgb[1], rgb[2]);
+        Self(match units {
+            LightUnits::Mudcrab => authored.to_linear(),
+            LightUnits::Retail => crate::retail_lighting::raw_colour(authored).to_linear(),
+        })
     }
 }
 
@@ -179,10 +187,9 @@ fn lit_by<M: EmittingMaterial>(material: &M, colour: LinearRgba) -> M {
         // bytes / 255 times the model's multiple, and the file colour is not multiplied in
         // (SPEC-1 section 2.7, docs/specs/engine/near-lighting.md).
         Some(surface) => {
-            let source = Color::LinearRgba(colour).to_srgba();
-            tint.red = source.red * surface.emissive_multiple;
-            tint.green = source.green * surface.emissive_multiple;
-            tint.blue = source.blue * surface.emissive_multiple;
+            tint.red = colour.red * surface.emissive_multiple;
+            tint.green = colour.green * surface.emissive_multiple;
+            tint.blue = colour.blue * surface.emissive_multiple;
         }
         None => {
             tint.red *= colour.red;
@@ -385,7 +392,7 @@ mod tests {
         let root = world.spawn_empty().add_children(&[window, wall]).id();
         let mut reference = world.spawn_empty();
         if let Some(rgb) = emittance {
-            reference.insert(ReferenceEmittance::from_srgb(rgb));
+            reference.insert(ReferenceEmittance::of(LightUnits::Mudcrab, rgb));
         }
         let reference = reference.add_child(root).id();
         (reference, window, wall)
@@ -447,7 +454,7 @@ mod tests {
             .spawn((MeshMaterial3d(material.clone()), ExternalEmittance))
             .id();
         app.world_mut()
-            .spawn(ReferenceEmittance::from_srgb([0, 0, 0]))
+            .spawn(ReferenceEmittance::of(LightUnits::Mudcrab, [0, 0, 0]))
             .add_child(surface);
         app.update();
 
@@ -633,12 +640,93 @@ mod tests {
         );
     }
 
+    /// The fuzz of the decode fault behind the red Whiterun windows: every byte value, on every
+    /// path a source colour takes into a surface or a light, in both profiles' colour spaces.
+    #[test]
+    fn every_path_takes_the_source_bytes_in_the_profile_colour_space() {
+        use crate::nif_depth::{DECAL, DEPTH_TEST, NifDepthState, depth_material};
+        use bevy::pbr::RetailSurface;
+
+        let multiple = 2.0;
+        let published = LinearRgba::rgb(0.5, 1.0, 2.0);
+        let lit_surface = StandardMaterial {
+            retail_surface: Some(RetailSurface {
+                emissive_multiple: multiple,
+                ..RetailSurface::MATTE
+            }),
+            ..default()
+        };
+        let emitting = StandardMaterial {
+            emissive: published,
+            ..default()
+        };
+        let mut state = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Blend).unwrap();
+        state.uses_effect_emittance = true;
+        let glow = depth_material(
+            StandardMaterial {
+                base_color: published.into(),
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            },
+            state,
+        );
+        let white = crate::lights::evaluate_light(&white_light(), None);
+        for byte in 0..=u8::MAX {
+            let rgb = [byte, byte.wrapping_add(85), byte.wrapping_add(170)];
+            for units in [LightUnits::Mudcrab, LightUnits::Retail] {
+                let expected = rgb.map(|part| {
+                    let authored = f32::from(part) / 255.0;
+                    match units {
+                        LightUnits::Retail => authored,
+                        LightUnits::Mudcrab => Color::srgb(authored, 0.0, 0.0).to_linear().red,
+                    }
+                });
+                let colour = ReferenceEmittance::of(units, rgb).0;
+                let close = |found: LinearRgba, scale: [f32; 3]| {
+                    let found = [found.red, found.green, found.blue];
+                    for channel in 0..3 {
+                        let wanted = expected[channel] * scale[channel];
+                        assert!(
+                            (found[channel] - wanted).abs() < 1.0e-5,
+                            "{units:?} {rgb:?}: {found:?} channel {channel} wants {wanted}"
+                        );
+                    }
+                };
+                let base = [published.red, published.green, published.blue];
+                close(lit_by(&emitting, colour).emissive, base);
+                close(lit_by(&glow, colour).base.base_color.to_linear(), base);
+                if units.is_retail() {
+                    close(lit_by(&lit_surface, colour).emissive, [multiple; 3]);
+                    let light = white.point_light_in(units, Some(rgb)).unwrap();
+                    close(light.color.to_linear(), [1.0; 3]);
+                }
+            }
+        }
+    }
+
+    fn white_light() -> crate::world::database::LightRow {
+        crate::world::database::LightRow {
+            radius: 512.0,
+            color: [255, 255, 255],
+            flags: 0,
+            fade: None,
+            fade_status: None,
+            falloff: None,
+            reference_data: None,
+            radius_status: None,
+            flicker_period: None,
+            flicker_intensity_amplitude: None,
+            flicker_movement_amplitude: None,
+            reference_never_fades: false,
+        }
+    }
+
     /// Under `skyrim` the source's colour is the mix of its day parts at the game hour, and the
     /// reference's light takes the record bytes times it. A reference without day parts (the
     /// `mudcrab` profile) keeps the day colour.
     #[test]
     fn the_day_parts_drive_the_surfaces_and_the_light_by_the_hour() {
-        use crate::retail_lighting::LightUnits;
         let parts = EmittanceDayParts([[200, 100, 0], [0, 0, 0], [100, 200, 40], [10, 20, 30]]);
         assert_eq!(parts.mixed([0.0, 1.0, 0.0, 0.0]), [0, 0, 0]);
         assert_eq!(parts.mixed([0.0, 0.2, 0.8, 0.0]), [80, 160, 32]);
@@ -661,21 +749,7 @@ mod tests {
                 timescale: 0.0,
             })
             .add_systems(Update, drive_emittance_by_hour);
-        let row = crate::world::database::LightRow {
-            radius: 512.0,
-            color: [255, 255, 255],
-            flags: 0,
-            fade: None,
-            fade_status: None,
-            falloff: None,
-            reference_data: None,
-            radius_status: None,
-            flicker_period: None,
-            flicker_intensity_amplitude: None,
-            flicker_movement_amplitude: None,
-            reference_never_fades: false,
-        };
-        let evaluation = crate::lights::evaluate_light(&row, None);
+        let evaluation = crate::lights::evaluate_light(&white_light(), None);
         let light = app
             .world_mut()
             .spawn((
@@ -691,7 +765,11 @@ mod tests {
             .id();
         let reference = app
             .world_mut()
-            .spawn((parts, ReferenceEmittance::from_srgb([0, 0, 0]), evaluation))
+            .spawn((
+                parts,
+                ReferenceEmittance::of(LightUnits::Mudcrab, [0, 0, 0]),
+                evaluation,
+            ))
             .add_child(light)
             .id();
         app.update();
@@ -702,7 +780,7 @@ mod tests {
         app.update();
         assert_eq!(
             *app.world().get::<ReferenceEmittance>(reference).unwrap(),
-            ReferenceEmittance::from_srgb([80, 160, 32])
+            ReferenceEmittance::of(LightUnits::Retail, [80, 160, 32])
         );
         assert_eq!(
             colour(&app),
