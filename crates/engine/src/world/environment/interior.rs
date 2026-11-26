@@ -1972,7 +1972,7 @@ mod tests {
         app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
         let sun = spawn_world_sun(&mut app);
         app.update();
-        let exterior = sun_light(&app, sun).clone();
+        let exterior = *sun_light(&app, sun);
         enter(&mut app, Some(ALVOR));
         app.update();
         assert_ne!(sun_light(&app, sun).color, exterior.color);
