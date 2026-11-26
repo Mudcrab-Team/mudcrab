@@ -17,23 +17,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Get-RustConstant([string]$Repository, [string]$Name) {
-    # Schema versions are defined once in Rust; read them from there so this script cannot
-    # drift from the converter and runtime it checks. Two definitions that disagree fail loudly.
-    $values = @()
-    foreach ($relative in @("crates\shared\src\lib.rs", "crates\converter\src\cache.rs")) {
-        $path = Join-Path $Repository $relative
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-        foreach ($match in Select-String -LiteralPath $path -Pattern "pub const ${Name}: u32 = (\d+);") {
-            $values += [int]$match.Matches[0].Groups[1].Value
-        }
-    }
-    $distinct = @($values | Select-Object -Unique)
-    if ($distinct.Count -eq 0) { throw "$Name was not found under $Repository\crates" }
-    if ($distinct.Count -gt 1) { throw "$Name has conflicting definitions: $($distinct -join ', ')" }
-    return $distinct[0]
-}
-
 $repository = Split-Path -Parent $PSScriptRoot
 $engine = Join-Path $repository "target\release\engine.exe"
 $inspector = Join-Path $repository "target\release\world-inspect.exe"
@@ -61,11 +44,11 @@ try {
     }
     $manifest = Get-Content -LiteralPath (Join-Path $resolvedAssets "conversion-manifest.json") -Raw | ConvertFrom-Json
     if ($manifest.complete -ne $true) { throw "conversion-manifest.json is not complete" }
-    $converterSchema = Get-RustConstant $repository "CONVERTER_SCHEMA_VERSION"
+    $converterSchema = [uint32](Get-Content -LiteralPath (Join-Path $repository "crates\shared\converter-schema-version.txt") -Raw)
     if ($manifest.schema_version -ne $converterSchema) { throw "conversion-manifest.json schema must be $converterSchema, found $($manifest.schema_version)" }
     $integration = Get-Content -LiteralPath (Join-Path $resolvedAssets "integration-report.json") -Raw | ConvertFrom-Json
     if ($integration.passed -ne $true) { throw "integration-report.json did not pass" }
-    $databaseSchema = Get-RustConstant $repository "WORLD_DATABASE_SCHEMA_VERSION"
+    $databaseSchema = [uint32](Get-Content -LiteralPath (Join-Path $repository "crates\shared\world-database-schema-version.txt") -Raw)
     if ($integration.schema_version -ne $databaseSchema) { throw "integration-report.json schema must be $databaseSchema, found $($integration.schema_version)" }
 
     if (-not $SkipBuild -or -not (Test-Path -LiteralPath $engine -PathType Leaf) -or -not (Test-Path -LiteralPath $inspector -PathType Leaf)) {
