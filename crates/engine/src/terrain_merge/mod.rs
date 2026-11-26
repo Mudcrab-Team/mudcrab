@@ -1025,7 +1025,7 @@ mod tests {
                 .unwrap_err()
                 .contains("repeating sampler")
         );
-        let mut flat = good.clone();
+        let mut flat = good;
         flat.texture_view_descriptor = None;
         assert!(
             validate_array_image(&flat, slot, usage, true)
@@ -1214,7 +1214,7 @@ mod tests {
     fn only_exterior_cells_with_terrain_wait_for_the_setup() {
         let classes = Arc::new(TerrainClasses::from_table(vanilla_table(6)).unwrap());
         let mut merge =
-            TerrainMerge::with_state(MergeState::AwaitingDevice(classes.clone()), PathBuf::new());
+            TerrainMerge::with_state(MergeState::AwaitingDevice(classes), PathBuf::new());
         assert!(merge.holds_cell(exterior(0, 0), true));
         assert!(!merge.holds_cell(exterior(0, 0), false), "no LAND");
         assert!(!merge.holds_cell(CellKey::Interior(7), true), "an interior");

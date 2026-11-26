@@ -571,7 +571,7 @@ fn setup(
             double_sided: true,
             ..default()
         },
-        extension: MergedTerrainExtension::new(&lit_diffuse, &normal, entries.clone()).unwrap(),
+        extension: MergedTerrainExtension::new(&lit_diffuse, &normal, entries).unwrap(),
     });
     let grey = || Quad {
         slots: vec![0],
@@ -587,7 +587,7 @@ fn setup(
     ));
     commands.spawn((
         Mesh3d(lit_mesh.clone()),
-        MeshMaterial3d(lit.clone()),
+        MeshMaterial3d(lit),
         // Turned over: the rotation maps the mesh onto the lit row from below, so the whole cell
         // stays inside the view and the camera's near and far planes.
         Transform::from_xyz(4096.0, 0.0, -12288.0)
@@ -595,7 +595,7 @@ fn setup(
     ));
     commands.spawn((
         Mesh3d(lit_mesh),
-        MeshMaterial3d(material.clone()),
+        MeshMaterial3d(material),
         // The unlit twin, one row below the lit row.
         Transform::from_xyz(0.0, 0.0, -12288.0),
     ));

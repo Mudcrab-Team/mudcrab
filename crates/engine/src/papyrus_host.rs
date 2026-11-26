@@ -1939,7 +1939,7 @@ return Script
         // only enough for about three.
         let mut config = HostConfig::new(dir.path());
         config.call_budget = 100_000;
-        let mut host = PapyrusHost::new(config.clone(), Rc::new(forms)).unwrap();
+        let mut host = PapyrusHost::new(config, Rc::new(forms)).unwrap();
         host.attach_reference(REFERENCE);
         host.begin_frame();
         host.budget().reset();

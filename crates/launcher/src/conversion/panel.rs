@@ -1387,7 +1387,7 @@ mod tests {
             skyrim_data_path: Some(data),
             converted_assets_path: output,
         });
-        app.world_mut().resource_mut::<CurrentConversion>().0 = before.clone();
+        app.world_mut().resource_mut::<CurrentConversion>().0 = before;
         (directory, app)
     }
 
@@ -1767,7 +1767,7 @@ mod tests {
         let (engine, log) = engine_process("engine-log");
         let mut app = input_app(GamePathConfig {
             skyrim_data_path: Some(data.clone()),
-            converted_assets_path: output.clone(),
+            converted_assets_path: output,
         });
         app.insert_resource(engine);
 

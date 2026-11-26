@@ -986,7 +986,7 @@ mod tests {
             *changed.pointer_mut(pointer).unwrap() = 3.into();
             assert_ne!(hash(&changed), original, "unhashed occurrence: {pointer}");
         }
-        let mut moved = document.clone();
+        let mut moved = document;
         moved["scenes"] = moved.as_object_mut().unwrap().remove("nodes").unwrap();
         assert_ne!(
             hash(&moved),

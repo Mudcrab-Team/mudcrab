@@ -905,7 +905,7 @@ mod tests {
         assert!(!not_ready.is_quiet(), "an unready renderer is not settled");
 
         // Pending LOD work holds the receipt back whatever the failure baseline says.
-        let mut pending_lod = earlier_failures.clone();
+        let mut pending_lod = earlier_failures;
         pending_lod.pending_lod_queries = 1;
         let mut pending =
             captured_work(&ticket, &pending_lod, &renderer, &profiler, &uploads, true);

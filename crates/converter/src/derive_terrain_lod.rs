@@ -702,7 +702,7 @@ mod tests {
         fs::write(&database, b"database").unwrap();
         fs::hard_link(&database, target.join("skyrim_world.db")).unwrap();
         let options = DeriveTerrainLodOptions {
-            target: target.clone(),
+            target,
             registry,
             clone_of: "pack".into(),
             data: directory.path().into(),

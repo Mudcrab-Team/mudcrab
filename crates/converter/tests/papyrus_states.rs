@@ -344,7 +344,7 @@ fn undeclared_auto_state_uses_empty_fallback() {
     dispatch
         .call::<()>((
             runtime.clone(),
-            failing.clone(),
+            failing,
             "Absent",
             lua.create_table().unwrap(),
         ))

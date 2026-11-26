@@ -1225,7 +1225,7 @@ mod tests {
                 .resource::<AssetServer>()
                 .add(WorldAsset::new(body_world));
             app.update();
-            let actor = spawn_actor(&mut app, scene, clips.clone());
+            let actor = spawn_actor(&mut app, scene, clips);
 
             wait_until(&mut app, "the actor's animation player", |app| {
                 app.world().get::<AnimationPlayer>(actor).is_some()

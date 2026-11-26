@@ -2756,17 +2756,17 @@ mod tests {
         let sources = [
             LandTextureSource {
                 ltex_form_id: 0x100,
-                diffuse: good.clone(),
+                diffuse: good,
                 normal: Some(garbage.clone()),
             },
             LandTextureSource {
                 ltex_form_id: 0x200,
-                diffuse: missing.clone(),
+                diffuse: missing,
                 normal: Some(good_normal),
             },
             LandTextureSource {
                 ltex_form_id: 0x300,
-                diffuse: garbage.clone(),
+                diffuse: garbage,
                 normal: None,
             },
         ];

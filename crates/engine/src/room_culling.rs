@@ -5916,7 +5916,7 @@ mod tests {
         };
         let broken = Room {
             center: Vec3::new(f32::NAN, 0.0, 0.0),
-            ..finite.clone()
+            ..finite
         };
         assert!(rooms_overlap(&finite, &broken));
         assert!(rooms_overlap(&broken, &finite));
@@ -6426,7 +6426,7 @@ mod tests {
         assert_eq!(&reached[..3], [true, true, true]);
         // Removing those portals makes the reached corridor incomplete. Even though the camera
         // keeps its own portal, the whole cell must stay drawn.
-        let mut open = graph.clone();
+        let mut open = graph;
         open.portals.clear();
         park_portals(&mut open.rooms, &mut open.portals, &[0]);
         assert!(reached_rooms(&open, Vec3::ZERO, clip_from_local()).is_none());

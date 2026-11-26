@@ -100,7 +100,6 @@ impl Plugin for RenderTimingPlugin {
         if let Some(extract_app) = app.get_sub_app_mut(RenderExtractApp)
             && let Some(mut hand_over) = extract_app.take_extract()
         {
-            let timings = timings.clone();
             extract_app.set_extract(move |main_world, world| {
                 let started = Instant::now();
                 hand_over(main_world, world);

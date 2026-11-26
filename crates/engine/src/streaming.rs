@@ -9068,13 +9068,9 @@ mod tests {
             .contains("palette image color space mismatch")
         );
         assert!(
-            validate_effect_palette_material(
-                &material(linear.clone(), linear.clone()),
-                &images,
-                false
-            )
-            .unwrap_err()
-            .contains("palette image color space mismatch")
+            validate_effect_palette_material(&material(linear.clone(), linear), &images, false)
+                .unwrap_err()
+                .contains("palette image color space mismatch")
         );
         assert!(
             validate_effect_palette_material(&material(Handle::default(), srgb), &images, true)

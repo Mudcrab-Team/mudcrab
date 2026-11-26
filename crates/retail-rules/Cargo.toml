@@ -19,3 +19,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [lints.clippy]
 undocumented_unsafe_blocks = "warn"
+# A clone that nothing needs is waste. CI and local Clippy both fail on it.
+implicit_clone = "deny"
+redundant_clone = "deny"

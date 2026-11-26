@@ -675,9 +675,9 @@ async fn rejected_condition_drops_only_its_strings_in_real_publication() {
     assert_eq!(
         condition_fields,
         [
-            (*b"CTDA", first.to_vec()),
+            (*b"CTDA", first.clone()),
             (*b"CIS2", b"first_variable\0".to_vec()),
-            (*b"CTDA", third.to_vec()),
+            (*b"CTDA", third.clone()),
             (*b"CIS2", b"third_variable\0".to_vec()),
         ]
     );

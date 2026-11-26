@@ -2931,7 +2931,7 @@ mod tests {
         enqueue_due_lod_retries(&mut streaming, second_retry_at);
         assert_eq!(
             streaming.pending_chunks.front(),
-            Some(&(7, metadata.clone(), Some(2)))
+            Some(&(7, metadata, Some(2)))
         );
 
         assert_eq!(

@@ -217,7 +217,7 @@ fn archived_model(root: &Path, reader: RecordReader, form_id: u32) -> Option<Vec
         .subrecords
         .iter()
         .find(|field| field.tag == *b"MODL")
-        .map(|field| field.data.to_vec())
+        .map(|field| field.data.clone())
 }
 
 /// `TACT`, `ADDN`, `APPA` and `ARTO` references resolve a model path (#269 gap 4), and the legacy
