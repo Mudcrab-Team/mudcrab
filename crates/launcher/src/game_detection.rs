@@ -253,7 +253,7 @@ mod tests {
         fs::create_dir_all(&elsewhere).unwrap();
 
         assert_eq!(data_dir_from_drop(&data), Some(data.clone()));
-        assert_eq!(data_dir_from_drop(&install), Some(data.clone()));
+        assert_eq!(data_dir_from_drop(&install), Some(data));
         assert_eq!(data_dir_from_drop(&elsewhere), None);
 
         fs::remove_dir_all(root).unwrap();

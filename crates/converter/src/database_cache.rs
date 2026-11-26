@@ -1163,7 +1163,7 @@ mod tests {
         let second = fixture.config.data_dir.join("Other.esm");
         fs::copy(&fixture.plugins[0], &second).unwrap();
         let ordered = [fixture.plugins[0].clone(), second.clone()];
-        let reversed = [second.clone(), fixture.plugins[0].clone()];
+        let reversed = [second, fixture.plugins[0].clone()];
         assert_ne!(
             key(&fixture.config, &ordered),
             key(&fixture.config, &reversed)

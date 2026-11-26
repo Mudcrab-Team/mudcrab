@@ -211,7 +211,7 @@ mod tests {
                 assert_eq!(hit.surface.water_type_form_id, Some(103));
             }
         }
-        let mut dry_high = high.clone();
+        let mut dry_high = high;
         dry_high.heights.fill(30.0);
         assert_eq!(
             water_at_point([&low, &dry_high], 60, point(64.0, 64.0, 0.0))

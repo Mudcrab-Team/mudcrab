@@ -204,8 +204,7 @@ impl RunWatch {
         if event.is_asset_failure() {
             self.failures += 1;
             if self.failed.len() < Self::NAMED_FAILURES {
-                self.failed
-                    .extend(event.current_file.clone().map(|file| file.to_path_buf()));
+                self.failed.extend(event.current_file.clone());
             }
         }
     }

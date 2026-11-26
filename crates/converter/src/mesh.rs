@@ -4670,7 +4670,7 @@ mod tests {
         let winner = dir.path().join("overwrite/skeleton.nif");
         let relative = Path::new("meshes/actors/character/armor/body.nif");
         let key = PathBuf::from("meshes/actors/character/character assets/skeleton.nif");
-        let mut sources = std::collections::BTreeMap::from([(key.clone(), lower.clone())]);
+        let mut sources = std::collections::BTreeMap::from([(key.clone(), lower)]);
         assert_eq!(
             resolve_skeleton(relative, &sources),
             SkeletonResolution::Skeleton(key.clone())

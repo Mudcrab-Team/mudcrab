@@ -1432,7 +1432,7 @@ mod tests {
         assert!(
             crate::lod::terrain::validate_terrain_glb(&chunk.glb[..chunk.glb.len() - 4]).is_err()
         );
-        let mut damaged = chunk.glb.clone();
+        let mut damaged = chunk.glb;
         let json_length = u32::from_le_bytes(damaged[12..16].try_into().unwrap()) as usize;
         let binary_start = 20 + json_length + 8;
         // Positions come first; turn the first vertex x into NaN.

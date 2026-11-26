@@ -129,7 +129,7 @@ fn legacy_projection_identity_separates_current_and_historical_full_hashes() {
         configuration_hash_for_schema(&legacy, 15).unwrap(),
         "9a58fda00b27d0f2a8e46afb9334ea869602556393a35bffd7fcb39582a08a4f"
     );
-    let mut changed_identity = identity.clone();
+    let mut changed_identity = identity;
     changed_identity["projection_version"] =
         serde_json::json!(crate::esm::inhouse::LEGACY_PROJECTION_VERSION + 1);
     assert_ne!(

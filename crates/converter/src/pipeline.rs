@@ -2508,7 +2508,7 @@ impl ConversionBatch<'_> {
                                     key,
                                     String::new(),
                                     target_rel,
-                                    relative.clone(),
+                                    relative,
                                     Err(err),
                                     target,
                                     fatal,
@@ -2612,7 +2612,7 @@ impl ConversionBatch<'_> {
                                         key,
                                         hash,
                                         target_rel,
-                                        relative.clone(),
+                                        relative,
                                         Ok(Produced::CacheHit),
                                         target,
                                         false,
@@ -2748,14 +2748,7 @@ impl ConversionBatch<'_> {
                             .map(|_| Produced::Converted { digest: None })
                             .wrap_err_with(|| format!("failed to convert {}", relative.display()));
                         let _ = outcome_tx.send((
-                            index,
-                            key,
-                            hash,
-                            target_rel,
-                            relative.to_path_buf(),
-                            result,
-                            target,
-                            fatal,
+                            index, key, hash, target_rel, relative, result, target, fatal,
                         ));
                     },
                 );

@@ -472,7 +472,7 @@ impl TextureRegistry {
         let mut runtime_path = if is_srgb {
             srgb_texture_alias(&canonical)?
         } else {
-            canonical.clone()
+            canonical
         };
         if let Some(sampler) = wrap_texture_suffix(clamp) {
             runtime_path = format!(
@@ -1310,7 +1310,7 @@ fn validate_material(
         material.texture_clamp_mode <= 3,
         "invalid NIF texture clamp mode"
     );
-    let values = material
+    let mut values = material
         .base_color
         .into_iter()
         .chain(material.specular_color)
@@ -1324,7 +1324,7 @@ fn validate_material(
             material.emissive_multiple,
         ]);
     ensure!(
-        values.clone().all(f32::is_finite),
+        values.all(f32::is_finite),
         "{}",
         material_error(
             source,

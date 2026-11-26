@@ -2540,7 +2540,7 @@ fn age_source(
             .unwrap();
     }
     manifest.configuration_hash = combined_hash(&config, &identity, abi);
-    let mut old_abi = config.clone();
+    let mut old_abi = config;
     old_abi.script_abi_version = abi;
     manifest.asset_configuration_hashes.insert(
         "pex".into(),

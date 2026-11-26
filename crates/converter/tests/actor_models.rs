@@ -956,7 +956,7 @@ fn shifted_patch_body_chain_matches_across_frontends() {
         ),
     )
     .unwrap();
-    let paths = [skyrim.clone(), unrelated, patch];
+    let paths = [skyrim, unrelated, patch];
 
     let legacy_path = root.path().join("legacy.db");
     EsmParser::convert_plugins(&paths, &legacy_path).unwrap();
@@ -1150,7 +1150,7 @@ fn shifted_light_patch_template_skin_and_additional_race_links_match_frontends()
     );
     patch_bytes[8..12].copy_from_slice(&0x200u32.to_le_bytes());
     fs::write(&patch, patch_bytes).unwrap();
-    let paths = [skyrim.clone(), unrelated, patch];
+    let paths = [skyrim, unrelated, patch];
 
     let legacy_path = root.path().join("legacy.db");
     EsmParser::convert_plugins(&paths, &legacy_path).unwrap();
