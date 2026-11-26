@@ -229,8 +229,9 @@ a pending receipt, contains a symlink, contains a mount point or any entry on an
 or sits outside `<storage>/builds`. `prune --apply` and `settle --apply` run all of these checks.
 The trim and the crash recovery run only the lease, open-file, symlink and device checks. The trim
 touches only the regenerable `incremental` directory. Recovery treats a leftover as the tool's own
-only if it holds a `build.json` or a receipt in `evidence/` names it, because it only finishes a
-removal that the tool already approved. Whole slots are only removed by `prune` with an age
+only if it holds a `build.json` (for a retired build) or the receipt for that removal lists the
+exact leftover path under `builds/`. Older receipts omit those paths. Recovery holds older
+markerless leftovers for manual inspection. Whole slots are only removed by `prune` with an age
 (7 days by default), never by the automatic rules. The tool never deletes anything in `packs/` or
 `scratch/`. In `evidence/` it only adds receipts. It removes a receipt only when it wrote that
 receipt moments before and the removal then failed to start.
