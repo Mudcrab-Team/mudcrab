@@ -1494,7 +1494,7 @@ fn moving_mo2_instance_preserves_configuration_hash() {
     let after_move = configuration_hash(&config).unwrap();
     assert_eq!(before, after_move);
 
-    // Changing enabled mods still invalidates the hash.
+    // Changing enabled mods invalidates the hash.
     write(
         &moved_instance,
         "profiles/Default/modlist.txt",
@@ -1526,5 +1526,54 @@ async fn legacy_mo2_manifest_mismatch_notifies_before_rebuilding_cached_assets()
         }),
         "{:?}",
         resumed.notices
+    );
+}
+
+/// Repair explains that an MO2 hash mismatch may stem from an older MO2 identity or enabled-mod change.
+#[tokio::test]
+async fn repair_explains_mo2_hash_mismatch_for_legacy_or_changed_modlist() {
+    let (_dir, config, instance) = fixture();
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete, "{first:?}");
+
+    let manifest_path = config.output_dir.join("conversion-manifest.json");
+    let original = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+
+    let mut legacy = original.clone();
+    legacy.failures.insert(
+        "meshes/synthetic-failure.nif".into(),
+        "synthetic failure for repair configuration check".into(),
+    );
+    legacy.complete = false;
+    legacy.configuration_hash = "legacy-path-based-mo2-hash".into();
+    legacy.save(&manifest_path).unwrap();
+
+    let legacy_error = converter::repair::repair_failed(&config, false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        legacy_error.contains("old MO2 identity")
+            && legacy_error.contains("enabled-mod list")
+            && legacy_error.contains("normal conversion"),
+        "{legacy_error}"
+    );
+
+    let mut current = original;
+    current.failures.insert(
+        "meshes/synthetic-failure.nif".into(),
+        "synthetic failure for repair configuration check".into(),
+    );
+    current.complete = false;
+    current.save(&manifest_path).unwrap();
+
+    write(&instance, "profiles/Default/modlist.txt", "+Low\n+High\n");
+    let modlist_error = converter::repair::repair_failed(&config, false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        modlist_error.contains("old MO2 identity")
+            && modlist_error.contains("enabled-mod list")
+            && modlist_error.contains("normal conversion"),
+        "{modlist_error}"
     );
 }

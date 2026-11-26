@@ -777,8 +777,10 @@ pub(crate) fn legacy_projection5_reader_identity(language: &str) -> Option<serde
 // Version 1 was the unversioned path-based key; version 2 uses path-independent profile identity.
 const MO2_CONFIGURATION_KEY_VERSION: u32 = 2;
 
-/// MO2 identity uses the profile name and enabled-mod list, not filesystem paths.
-/// Winning input bytes are hashed separately per source.
+/// Hash the unchanged settings payload with an explicitly selected metadata identity.
+///
+/// MO2 identity uses the profile name and enabled-mod list, not filesystem paths;
+/// winning input bytes are hashed separately per source.
 fn configuration_hash_with_identity(
     config: &crate::config::PipelineConfig,
     schema: u32,
