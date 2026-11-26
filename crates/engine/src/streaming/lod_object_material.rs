@@ -643,7 +643,7 @@ mod tests {
         {
             let mut atlases = app.world_mut().resource_mut::<Atlases>();
             atlases.pack = pack.path().to_owned();
-            atlases.normals.insert(1, Some(normal.clone()));
+            atlases.normals.insert(1, Some(normal));
         }
 
         let warnings = Warnings::default();

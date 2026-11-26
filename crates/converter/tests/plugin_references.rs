@@ -4037,6 +4037,7 @@ fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
     let first = placement_group(0x901, portal(0x810));
     let second = placement_group(0x902, portal(0x820));
     let deletion = record(b"REFR", 0x850, 0x20, Vec::new());
+    let superseding = plugin(data, "Superseding.esp", &["Skyrim.esm"], 0, second.clone());
     let cases = [
         (
             "late rejection",
@@ -4075,7 +4076,6 @@ fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
             vec!["accepted", "skipped"],
         ),
     ];
-    let superseding = plugin(data, "Superseding.esp", &["Skyrim.esm"], 0, second.clone());
     let mut failures = Vec::new();
     for (name, placements, expected_cell, expected_history) in cases {
         let patch = plugin(
@@ -7179,8 +7179,8 @@ fn native_new_cell_and_placement_ids_cannot_reuse_an_earlier_edit() {
     let create = |id| serde_json::json!({"id":id,"editor_id":"FreshInterior"});
     for value in [
         serde_json::json!({"cells":[create(used)]}),
-        serde_json::json!({"cells":[create(cell)],"edits":[room_edit.clone(), put(used, cell)]}),
-        serde_json::json!({"cells":[create(cell)],"edits":[room_edit.clone(), put(cell, cell)]}),
+        serde_json::json!({"cells":[create(cell)],"edits":[room_edit, put(used, cell)]}),
+        serde_json::json!({"cells":[create(cell)],"edits":[room_edit, put(cell, cell)]}),
     ] {
         let result = run(value);
         assert!(!result.status.success());
@@ -7971,11 +7971,7 @@ fn portal_geometry_requires_one_valid_transform_and_positive_aperture() {
             [aperture_valid.clone(), sub(b"XPRM", &[0; 4])].concat(),
         ),
         ("missing transform", Vec::new(), aperture_valid.clone()),
-        (
-            "short transform",
-            sub(b"DATA", &[0; 20]),
-            aperture_valid.clone(),
-        ),
+        ("short transform", sub(b"DATA", &[0; 20]), aperture_valid),
         ("missing aperture", transform.clone(), Vec::new()),
         (
             "12-byte aperture",

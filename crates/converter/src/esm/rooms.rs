@@ -727,14 +727,14 @@ impl RoomLinkLayout {
         }
     }
 
-    fn read<'a>(fields: impl Iterator<Item = (&'a [u8], &'a [u8])> + Clone) -> Self {
+    fn read<'a>(mut fields: impl Iterator<Item = (&'a [u8], &'a [u8])> + Clone) -> Self {
         let mut layout = Self::default();
         let mut headers = fields
             .clone()
             .enumerate()
             .filter(|(_, (tag, _))| *tag == b"XRMR");
         let Some((header_index, (_, header))) = headers.next() else {
-            if fields.clone().any(|(tag, _)| is_room_link_field(tag)) {
+            if fields.any(|(tag, _)| is_room_link_field(tag)) {
                 layout.anomaly = Some("has room-link fields without an XRMR header".into());
             }
             return layout;

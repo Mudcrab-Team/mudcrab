@@ -316,7 +316,7 @@ impl PipelineConfig {
         // on publish, staging is deleted after it, and the cache is pruned, so
         // none of them may be, hold, or sit inside the game data.
         let data = std::fs::canonicalize(&self.data_dir)?;
-        let mut sources = vec![data.clone()];
+        let mut sources = vec![data];
         if let Some(selection) = &self.mo2 {
             color_eyre::eyre::ensure!(
                 self.plugins_file.is_none(),
@@ -586,7 +586,7 @@ mod tests {
         config.terrain_default_texture = TerrainDefaultTexture::White;
 
         // An ini needs the skyrim-ini default; white with an ini is refused.
-        config.terrain_ini = Some(ini.clone());
+        config.terrain_ini = Some(ini);
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("skyrim-ini default texture"), "{error}");
         config.merged_terrain = true;
@@ -815,7 +815,7 @@ mod tests {
             "{error}"
         );
         // The resume folder itself.
-        config.cache_dir = Some(staging.clone());
+        config.cache_dir = Some(staging);
         assert!(config.validate().is_err());
         // Beside it is fine.
         config.cache_dir = Some(directory.path().join("cache"));
@@ -931,7 +931,7 @@ mod tests {
         let mut inside = config.clone();
         inside.output_dir = data.join("modern");
         assert!(inside.validate().is_err());
-        let mut cache = config.clone();
+        let mut cache = config;
         cache.cache_dir = Some(data.join("cache"));
         assert!(cache.validate().is_err());
 

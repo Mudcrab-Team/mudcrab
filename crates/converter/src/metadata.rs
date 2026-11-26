@@ -2199,7 +2199,7 @@ mod metadata_schema_controls {
             crate::esm::inhouse::configured_reader_identity(&settings).unwrap(),
             identity
         );
-        let mut altered = identity.clone();
+        let mut altered = identity;
         altered["string_table_encoding"] = serde_json::json!("windows-1252");
         assert!(settings_for_source_reader(&config, &altered, schemas()).is_err());
     }

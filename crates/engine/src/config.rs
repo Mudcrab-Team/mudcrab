@@ -3701,7 +3701,7 @@ mod tests {
         assert!(
             EngineConfig {
                 benchmark_frames: Some(60),
-                ..flying.clone()
+                ..flying
             }
             .records_fly_lag()
         );
@@ -5678,7 +5678,7 @@ mod tests {
         std::fs::write(&utility, "--meshoptimizer x").unwrap();
         assert_eq!(
             script_paths(directory.path()),
-            vec![registered.clone(), utility.clone()]
+            vec![registered, utility.clone()]
         );
         assert_eq!(
             checked_script_engine_flags(&std::fs::read_to_string(&utility).unwrap(), &utility),

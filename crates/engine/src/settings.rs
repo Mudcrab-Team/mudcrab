@@ -3415,8 +3415,7 @@ mod tests {
         assert_eq!(persisted.color_grade, saved.color_grade);
         assert!(persisted.point_lights);
         assert!(persisted.hud);
-        let (reloaded, file) =
-            prepare_settings_at(&mut EngineConfig::default(), Some(path.clone()));
+        let (reloaded, file) = prepare_settings_at(&mut EngineConfig::default(), Some(path));
         assert_eq!(
             reloaded.color_grade,
             crate::color_pipeline::SceneGradeMode::SnapshotSrgb.index()

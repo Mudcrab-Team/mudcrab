@@ -496,7 +496,7 @@ mod tests {
             "a header flag change on a texture record changes the key"
         );
 
-        let mut moved_land = land.clone();
+        let mut moved_land = land;
         moved_land.cell_form_id = Some(moved_land.cell_form_id.unwrap_or(0) ^ 0x10);
         assert_ne!(
             reference,

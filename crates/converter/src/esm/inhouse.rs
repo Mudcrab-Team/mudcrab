@@ -566,7 +566,7 @@ impl Warnings {
                 .is_none_or(|chosen| key < *chosen)
             {
                 self.notice_keys.insert(plugin.to_owned(), key);
-                entry.1 = records::diagnostics::bounded_summary(message.clone());
+                entry.1 = records::diagnostics::bounded_summary(message);
             }
         } else {
             let entry = self.summary.entry(plugin.to_owned()).or_default();
@@ -577,7 +577,7 @@ impl Warnings {
                 .is_none_or(|chosen| key < *chosen)
             {
                 self.summary_keys.insert(plugin.to_owned(), key);
-                entry.1 = records::diagnostics::bounded_summary(message.clone());
+                entry.1 = records::diagnostics::bounded_summary(message);
             }
         }
     }

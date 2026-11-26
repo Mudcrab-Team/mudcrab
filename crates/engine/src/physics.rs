@@ -1117,7 +1117,7 @@ fn setup_physics_fixture(
         Name::new("Physics fixture step"),
         FixtureArena,
         Mesh3d(step_mesh),
-        MeshMaterial3d(stone.clone()),
+        MeshMaterial3d(stone),
         Transform::from_xyz(320.0, 12.0, 240.0),
         RigidBody::Fixed,
         Collider::cuboid(110.0, 12.0, 110.0),

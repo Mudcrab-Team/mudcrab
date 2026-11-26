@@ -880,7 +880,7 @@ mod tests {
             record_tag in prop::sample::select(vec![*b"INFO", *b"PACK", *b"PERK", *b"QUST", *b"SCEN", *b"STAT"]),
         ) {
             let _ = parse_vmad(&bytes, &record_tag);
-            let mut remapped = bytes.clone();
+            let mut remapped = bytes;
             let _ = remap_primary_form_ids(&mut remapped, Ok);
         }
 

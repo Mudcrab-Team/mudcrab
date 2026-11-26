@@ -1887,7 +1887,7 @@ mod tests {
             (effect(0xC000_0008, "effect", greyscale.clone()), None),
             (effect(0, "effect", greyscale.clone()), None),
             // Bits 4 and 5 mean other things on a lighting shader.
-            (effect(0xC000_0078, "lighting", greyscale.clone()), None),
+            (effect(0xC000_0078, "lighting", greyscale), None),
             (
                 effect(
                     0xC000_0078,

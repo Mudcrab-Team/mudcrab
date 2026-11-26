@@ -23,7 +23,7 @@ fn exported_fixture() -> Connection {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("Skyrim.esm");
     fs::write(&path, esm::plugin(&spec).unwrap()).unwrap();
-    let paths = [path.clone()];
+    let paths = [path];
     let order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
     let decoded = converter::records::read_plugins(&paths, &order).unwrap();
     for diagnostic in decoded.diagnostics.values() {

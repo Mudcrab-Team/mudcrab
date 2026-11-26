@@ -1589,7 +1589,7 @@ mod tests {
             compile_object_chunk(tier8, ORIGIN, &block(vec![two_segments]), &atlas()).is_err(),
             "only level 4 splits a shape into cells"
         );
-        let mut marked = good.clone();
+        let mut marked = good;
         marked.large_ref_blocks.push(OpaqueBlock {
             block_index: 0,
             block_type: "BSDistantObjectLargeRefExtraData".into(),
@@ -1763,7 +1763,7 @@ mod tests {
         assert!(validate_object_glb(&chunk.glb[..20]).is_err());
         assert!(validate_object_glb(b"not a glb at all, really").is_err());
         // A terrain-shaped GLB has no `objects` group.
-        let mut renamed = chunk.glb.clone();
+        let mut renamed = chunk.glb;
         let needle = b"\"objects\"";
         let at = renamed
             .windows(needle.len())

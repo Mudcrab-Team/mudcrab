@@ -2348,7 +2348,7 @@ mod tests {
             .unwrap()
         );
         assert_ne!(recorded, configuration_hash(&config).unwrap());
-        let mut changed = config.clone();
+        let mut changed = config;
         changed.texture_fallback_quality += 1;
         assert!(
             !retained_configuration_matches_for_reader(
@@ -2756,7 +2756,7 @@ mod tests {
             }))
             .unwrap();
         assert!(!recipe_less_converter_entry.covers(IngestionSelection::ConverterInputsV1));
-        let mut conflicting = raw_entry.clone();
+        let mut conflicting = raw_entry;
         conflicting.recipe = "all-v1".into();
         assert!(!conflicting.covers(IngestionSelection::All));
         conflicting.recipe = "unknown-v99".into();

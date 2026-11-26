@@ -455,7 +455,7 @@ mod tests {
             MeshMaterial3d(water_material.clone()),
             ChildOf(root),
         ));
-        world.spawn((Mesh3d(placed_mesh.clone()), ChildOf(root)));
+        world.spawn((Mesh3d(placed_mesh), ChildOf(root)));
         let demand = collect_surface_demand(&mut world, root);
         assert_eq!(demand.meshes, vec![surface_mesh.id()]);
         assert_eq!(demand.images.len(), 2);

@@ -836,7 +836,7 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
         }
     }
     // The positive-Z reconstruction clamps XY samples outside the unit disk.
-    let mut outside_disk = args.clone();
+    let mut outside_disk = args;
     outside_disk[0] = vec![1.0, 1.0, 0.9];
     outside_disk[4][0] = 1.0;
     let length = 2.0_f32.sqrt();
