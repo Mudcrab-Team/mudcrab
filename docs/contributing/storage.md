@@ -36,6 +36,15 @@ The wrapper holds a process lease for the entire Cargo command, including `cargo
 tests. Matching compiler/dependency/configuration keys get first choice of a free slot;
 other builds reuse either idle slot. There are two slots total, not two per branch or key.
 Cargo decides which artifacts need rebuilding. Leases are released by the OS after exit.
+
+Cargo gives a path package (a workspace member or a `vendor/` crate) the same fingerprint in
+every checkout, and judges freshness by mtime. It can therefore report another checkout's
+output as `Fresh`. When a slot last served a different checkout, the wrapper removes the
+slot's fingerprints for all packages that do not come from a registry or git, before the
+command starts. Cargo then rebuilds those packages and the packages that depend on them.
+The wrapper prefers the slot that last served your checkout. `cargo fmt` removes nothing.
+An older copy of `workspace.py` does not do this, so use `--isolated` from a branch that
+carries one. If the wrapper does not recognize Cargo's output layout, it stops the command.
 When both slots are busy, the command fails without allocating another directory. Retry
 when a slot becomes free. Do not run slot binaries directly; another build can replace them.
 
