@@ -52,6 +52,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 7 | output tail, `k`, `B`, `B2` | `render/pbr_retail.wgsl`, object LOD `lod_object.wgsl` |
 | 8 | fog property, composite records 53 and 49, clear colour | `sky.rs`, `retail_fog.rs`, `interior::FogFields` |
 | 9.2 | model-space normals, face, face tint, hair, landscape | `shaders/skyrim_skin.wgsl`, terrain shaders |
+| 9.3 | a lit decal that does not blend draws before the composite and writes depth | `NifDepthState::retail_first_stage`, vendored `extended_material.rs` |
 | 10 | image space, adaptation, bloom, tonemap | `retail_hdr*.rs` and `shaders/retail_hdr*.wgsl` |
 | 11 | worked examples A to D | `retail_lighting_examples.rs` (CPU), `retail_lighting_gpu_tests.rs` (GPU) |
 
@@ -96,9 +97,9 @@ Each row differs from retail, or rests on an inferred or open item of SPEC-1.
 | Ambient occlusion factor `A` is 1 in the composite | STAND-IN(#995): no SAO pass |
 | Every point light of a cluster adds; retail caps a geometry at 7 | STAND-IN(#999): light list order |
 | Vertex fog is evaluated per pixel, with camera planes 15 and 10240 | STAND-IN(#891): vertex fog inputs |
-| Composite uses the true axial depth, not `1.01 d - 0.01` | STAND-IN(#891): retail composite depth rescale |
+| Composite uses the true axial depth, not `1.01 d - 0.01`; it also sees the depth a first-stage decal writes | STAND-IN(#891): retail composite depth rescale |
 | Shadow masks are Mudcrab's shadow maps; interiors have no sun shadow | STAND-IN(#362): shadow mask production |
-| Blended decals draw after the composite with the second-stage tail | STAND-IN(#362): decal stage order |
+| Blended decals, and other surfaces without depth write, draw after the composite with the second-stage tail | STAND-IN(#362): decal stage order |
 | Additive term `cb1[8]` is 0; the specular distance fade is 1 | STAND-IN(#362): open run-time inputs |
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
 | Specular strength and colour are clamped to `[0, 1]` by the converter, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |

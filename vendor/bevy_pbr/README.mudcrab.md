@@ -36,6 +36,7 @@ so a still actor also keeps the base shape.
 | Add `DirectionalAmbientCube`: retail's directional ambient. With it enabled, the ambient term is `mean + slopes . N` per pixel normal (Creation axes, the object LOD shader's map) and its diffuse part is `albedo * ambient`, with no `EnvBRDFApprox` scale. With it disabled (the default) the shader is the original | **Mudcrab's own addition, not a Bevy change** | `src/directional_ambient_cube.rs`, `src/lib.rs`, `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_ambient.wgsl` |
 
 | Add `RetailSurface`: retail's near `Lighting` path for a `StandardMaterial` that sets `retail_surface` (`render/pbr_retail.wgsl`). Unitless light sum, retail attenuation, specular and output tail; no Bevy light model, exposure or shader fog; no back-face normal flip. `None` (the default) is the original | **Mudcrab's own addition, not a Bevy change** | `src/retail_surface.rs`, `src/lib.rs`, `src/pbr_material.rs`, `src/render/pbr_retail.wgsl`, `src/render/pbr_types.wgsl`, `src/render/pbr_fragment.wgsl`, `src/render/pbr_functions.wgsl` |
+| Add `MaterialExtension::instance_alpha_mode`: the alpha mode of one extended material, for an extension that picks the render phase per material. The default returns `alpha_mode()` | **Mudcrab's own addition, not a Bevy change** | `src/extended_material.rs` |
 
 Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists the touched spots.
 

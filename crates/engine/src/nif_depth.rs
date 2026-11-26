@@ -40,6 +40,9 @@ pub struct NifDepthState {
     pub cast_shadows: bool,
     pub blend_factors: Option<[u8; 2]>,
     pub uses_effect_emittance: bool,
+    /// Drawn in the opaque or cutout phase, with the base material's alpha mode, so that the fog
+    /// composite runs after it ([`Self::retail_first_stage`]).
+    pub first_stage: bool,
 }
 
 impl NifDepthState {
@@ -73,7 +76,25 @@ impl NifDepthState {
                 blend_factors
             },
             uses_effect_emittance: false,
+            first_stage: false,
         })
+    }
+
+    /// The retail stage of a lit decal that does not blend (SPEC-1 section 9.3,
+    /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): retail draws it in the
+    /// first stage, before the composite, and it writes depth. A blended surface, a surface that
+    /// is not a decal and a surface without a depth test keep the sorted draw.
+    /// STAND-IN(#362): blended decals and other surfaces without depth write draw after the composite.
+    #[must_use]
+    pub fn retail_first_stage(mut self, alpha_mode: AlphaMode) -> Self {
+        if self.decal
+            && self.depth_test
+            && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_))
+        {
+            self.first_stage = true;
+            self.depth_write = true;
+        }
+        self
     }
 
     /// [`Self::from_material`] under the `skyrim` profile: the blend pair is retail's
@@ -103,6 +124,7 @@ impl NifDepthState {
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
             blend_factors,
             uses_effect_emittance: false,
+            first_stage: false,
         })
     }
 
@@ -141,6 +163,13 @@ impl MaterialExtension for NifDepthExtension {
         // The sorted color pass runs after opaque and cutout geometry. The base material's
         // GPU flags still control opaque alpha, mask discard, and genuine alpha blending.
         Some(AlphaMode::Blend)
+    }
+
+    fn instance_alpha_mode(&self) -> Option<AlphaMode> {
+        if self.state.first_stage {
+            return None;
+        }
+        Self::alpha_mode()
     }
 
     fn enable_prepass() -> bool {
@@ -312,6 +341,38 @@ mod tests {
                     && matches!(def, bevy::shader::ShaderDefVal::Bool(_, true))
             })
         })
+    }
+
+    #[test]
+    fn a_retail_decal_that_does_not_blend_draws_in_the_first_stage_and_writes_depth() {
+        // The Whiterun wall-top cap: a decal with an alpha test and no depth-write flag.
+        for alpha_mode in [AlphaMode::Mask(0.5), AlphaMode::Opaque] {
+            let authored = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, alpha_mode).unwrap();
+            assert!(!authored.first_stage && !authored.depth_write);
+            let state = authored.retail_first_stage(alpha_mode);
+            assert!(state.first_stage && state.depth_write && state.decal);
+            let base = StandardMaterial {
+                alpha_mode,
+                ..default()
+            };
+            let first = depth_material(base.clone(), state);
+            assert_eq!(Material::alpha_mode(&first), alpha_mode);
+            // The sorted draw of the same surface stays after the composite.
+            let sorted = depth_material(base, authored);
+            assert_eq!(Material::alpha_mode(&sorted), AlphaMode::Blend);
+        }
+    }
+
+    #[test]
+    fn other_authored_surfaces_keep_the_sorted_draw_under_retail() {
+        for (flags_1, alpha_mode) in [
+            (DEPTH_TEST | DECAL, AlphaMode::Blend),
+            (DEPTH_TEST, AlphaMode::Mask(0.5)),
+            (DECAL, AlphaMode::Mask(0.5)),
+        ] {
+            let authored = NifDepthState::from_flags(flags_1, 0, alpha_mode).unwrap();
+            assert_eq!(authored.retail_first_stage(alpha_mode), authored);
+        }
     }
 
     #[test]

@@ -428,6 +428,7 @@ mod tests {
             cast_shadows: false,
             blend_factors: None,
             uses_effect_emittance: false,
+            first_stage: false,
         };
         let glow = LinearRgba::new(2.0, 2.0, 2.0, 1.0);
         let material = app

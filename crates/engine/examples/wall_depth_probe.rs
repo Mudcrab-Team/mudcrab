@@ -372,6 +372,7 @@ fn capture(
                         cast_shadows: true,
                         blend_factors: None,
                         uses_effect_emittance: false,
+                        first_stage: false,
                     },
                     false,
                 )

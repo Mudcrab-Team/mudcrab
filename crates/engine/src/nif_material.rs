@@ -530,12 +530,17 @@ impl NativeMaterialHandler {
             return native_depth_state(material, alpha_mode);
         }
         let (flags_1, flags_2) = native_depth_flags(material)?;
-        NifDepthState::retail_from_material(
+        let state = NifDepthState::retail_from_material(
             flags_1,
             flags_2,
             alpha_mode,
             authored_blend_factors(material),
-        )
+        )?;
+        Some(if retail::is_lighting(material) {
+            state.retail_first_stage(alpha_mode)
+        } else {
+            state
+        })
     }
 }
 
@@ -1622,6 +1627,36 @@ mod tests {
         assert_eq!(wrapped.base.extension.palette(), &palette);
         assert_eq!(wrapped.base.base.alpha_mode, AlphaMode::Mask(0.5));
         assert_eq!(bevy::pbr::Material::alpha_mode(&wrapped), AlphaMode::Blend);
+    }
+
+    /// The Whiterun wall-top cap: a lit decal with an alpha test and no depth-write flag. Under
+    /// `skyrim` it draws before the fog composite (SPEC-1 section 9.3); under `mudcrab` it keeps
+    /// the sorted draw.
+    #[test]
+    fn only_skyrim_draws_a_lit_cutout_decal_in_the_first_stage() {
+        let document = |family: &str| {
+            first_material(serde_json::json!({
+                "alphaMode": "MASK",
+                "extras": {"openSkyrim": {"shaderFamily": family,
+                    "shaderFlags1": DEPTH_TEST | DECAL, "shaderFlags2": 0}}
+            }))
+        };
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        let mudcrab = NativeMaterialHandler::default();
+        let mode = AlphaMode::Mask(0.5);
+        let lighting = document("lighting");
+        let source = lighting.materials().next().unwrap();
+        let state = skyrim.depth_state(&source, mode).unwrap();
+        assert!(state.first_stage && state.depth_write);
+        let state = mudcrab.depth_state(&source, mode).unwrap();
+        assert!(!state.first_stage && !state.depth_write);
+        // An effect surface keeps the sorted draw: its retail stage is not a lit decal's.
+        let effect = document("effect");
+        let source = effect.materials().next().unwrap();
+        assert!(!skyrim.depth_state(&source, mode).unwrap().first_stage);
     }
 
     #[test]

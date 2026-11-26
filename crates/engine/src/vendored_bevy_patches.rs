@@ -29,6 +29,20 @@ const MARKER_26095: &str = "mudcrab: bevyengine/bevy#26095";
 const MARKER_26588: &str = "mudcrab: bevyengine/bevy#26588";
 const MARKER_POWER_RAMP: &str = "mudcrab: ";
 
+/// The links of the per-material alpha mode of a material extension: the file and the code it must
+/// hold. A lost link draws a retail first-stage decal after the fog composite again, which still
+/// draws, only without fog (SPEC-1 section 9.3).
+const EXTENSION_ALPHA_LINKS: [(&str, &str); 2] = [
+    (
+        "src/extended_material.rs",
+        "fn instance_alpha_mode(&self) -> Option<AlphaMode> { Self::alpha_mode() }",
+    ),
+    (
+        "src/extended_material.rs",
+        "match E::instance_alpha_mode(&self.extension) {",
+    ),
+];
+
 /// The links of the retail Lighting path (`RetailSurface`): the file and the code it must hold.
 /// Every link has to hold. A lost link draws the surface with Bevy's light model, whose picture
 /// looks plausible, so only this check fails.
@@ -359,6 +373,15 @@ fn check_patches(pbr: &Path, render: &Path) {
         );
     }
 
+    // Mudcrab's per-material extension alpha mode (#1010), not a Bevy change.
+    for (file, needed) in EXTENSION_ALPHA_LINKS {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(&code(needed)),
+            "{file} lost the per-material extension alpha mode (`{needed}` or its marker)"
+        );
+    }
+
     // Mudcrab's retail Lighting path (#1010), not a Bevy change.
     for (file, needed) in RETAIL_SURFACE_LINKS {
         let source = required_source(pbr, file);
@@ -545,6 +568,7 @@ fn vendored_copy_with_endings(
         ("bevy_pbr", "src/directional_ambient_cube.rs"),
         ("bevy_pbr", "src/lib.rs"),
         ("bevy_pbr", "src/retail_surface.rs"),
+        ("bevy_pbr", "src/extended_material.rs"),
         ("bevy_pbr", "src/pbr_material.rs"),
         ("bevy_pbr", "src/render/pbr_types.wgsl"),
         ("bevy_pbr", "src/render/pbr_fragment.wgsl"),
@@ -677,6 +701,17 @@ fn changing_the_retail_attenuation_fails() {
         text.replace(
             "1.0 - clamp(distance_squared * inverse_radius_squared, 0.0, 1.0)",
             "1.0 - distance_squared * inverse_radius_squared",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the per-material extension alpha mode")]
+fn reading_the_type_level_extension_alpha_mode_again_fails() {
+    check_copy(&vendored_copy("src/extended_material.rs", |text| {
+        text.replace(
+            "match E::instance_alpha_mode(&self.extension) {",
+            "match E::alpha_mode() {",
         )
     }));
 }
