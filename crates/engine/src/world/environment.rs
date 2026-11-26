@@ -85,6 +85,10 @@ pub struct LightingTemplate {
     pub directional_ambient: Option<DirectionalAmbient>,
 }
 
+/// `WRLD DATA` flag bit marking a worldspace as having no grass
+/// ([skyrim_decomp#879](https://github.com/Mudcrab-Team/skyrim_decomp/issues/879)).
+pub const WORLDSPACE_NO_GRASS: u8 = 0x80;
+
 /// A worldspace's climate, lighting template, music and flags.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct WorldspaceEnvironment {
@@ -534,6 +538,16 @@ impl EnvironmentCatalog {
         self.worldspaces.get(&worldspace_id)
     }
 
+    /// True when the winning `WRLD DATA` for `worldspace_id` sets bit `0x80` (`no_grass`),
+    /// skipping grass generation and drawing in this worldspace
+    /// ([skyrim_decomp#879](https://github.com/Mudcrab-Team/skyrim_decomp/issues/879)).
+    pub fn worldspace_no_grass(&self, worldspace_id: u32) -> bool {
+        self.worldspaces
+            .get(&worldspace_id)
+            .and_then(|environment| environment.data_flags)
+            .is_some_and(|flags| flags & WORLDSPACE_NO_GRASS != 0)
+    }
+
     pub fn lighting_template(&self, id: u32) -> Option<&LightingTemplate> {
         self.templates.get(&id)
     }
@@ -588,6 +602,24 @@ impl EnvironmentCatalog {
         );
         catalog.sun_timings.insert(climate, timing);
         catalog.sun_settings = settings;
+        catalog
+    }
+
+    /// Test catalog with explicit `WRLD DATA` flags per worldspace.
+    #[cfg(test)]
+    pub(crate) fn with_worldspace_flags_for_tests(
+        flags: impl IntoIterator<Item = (u32, Option<u8>)>,
+    ) -> Self {
+        let mut catalog = Self::default();
+        for (worldspace, data_flags) in flags {
+            catalog.worldspaces.insert(
+                worldspace,
+                WorldspaceEnvironment {
+                    data_flags,
+                    ..Default::default()
+                },
+            );
+        }
         catalog
     }
 
@@ -1347,5 +1379,28 @@ mod tests {
         assert_eq!(climate[0].weather, Some(0x81A), "authored order");
         assert_eq!(climate[0].chance_global, Some(0x6000));
         assert_eq!(climate[1].chance, 20);
+    }
+
+    #[test]
+    fn worldspace_no_grass_honours_wrld_data_bit_0x80() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO worldspace_environment(worldspace_id, data_flags) VALUES
+                    (1, 128),
+                    (2, 129),
+                    (3, 127),
+                    (4, 0),
+                    (5, NULL);",
+            )
+            .unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        assert!(catalog.worldspace_no_grass(1));
+        assert!(catalog.worldspace_no_grass(2));
+        assert!(!catalog.worldspace_no_grass(3));
+        assert!(!catalog.worldspace_no_grass(4));
+        assert!(!catalog.worldspace_no_grass(5));
+        assert!(!catalog.worldspace_no_grass(99));
     }
 }
