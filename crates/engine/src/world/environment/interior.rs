@@ -954,8 +954,12 @@ fn apply_interior_lighting(
                 // written value equal to the interior one (shadows off) must still count.
                 if let Some(mut saved) = saved {
                     if light.is_changed() {
-                        saved.color = light.color;
-                        saved.illuminance = light.illuminance;
+                        // Under `skyrim` the settings write no sun colour or level, so the
+                        // light still holds the interior key: only the shadow switch is new.
+                        if !skyrim {
+                            saved.color = light.color;
+                            saved.illuminance = light.illuminance;
+                        }
                         saved.shadow_maps_enabled = light.shadow_maps_enabled;
                     }
                     if transform.is_changed() {
@@ -990,8 +994,10 @@ fn apply_interior_lighting(
                 // The exit frame. A preference applied in `Update` just before this frame wrote
                 // the exterior values after the last snapshot, and they are the ones to keep.
                 if light.is_changed() {
-                    saved.color = light.color;
-                    saved.illuminance = light.illuminance;
+                    if !skyrim {
+                        saved.color = light.color;
+                        saved.illuminance = light.illuminance;
+                    }
                     saved.shadow_maps_enabled = light.shadow_maps_enabled;
                 }
                 if transform.is_changed() {
@@ -1956,6 +1962,31 @@ mod tests {
             day_ambient
         );
         assert!(app.world().get::<ExteriorSunState>(sun).is_none());
+    }
+
+    /// Under `skyrim` a settings write indoors (the shadow switch) must not save the interior
+    /// key light as the exterior sun.
+    #[test]
+    fn a_skyrim_shadow_change_indoors_keeps_the_exterior_sun() {
+        let mut app = app(rule_catalog());
+        app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+        let sun = spawn_world_sun(&mut app);
+        app.update();
+        let exterior = sun_light(&app, sun).clone();
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        assert_ne!(sun_light(&app, sun).color, exterior.color);
+        app.world_mut()
+            .get_mut::<DirectionalLight>(sun)
+            .unwrap()
+            .shadow_maps_enabled = false;
+        app.update();
+        enter(&mut app, None);
+        app.update();
+        let light = sun_light(&app, sun);
+        assert_eq!(light.color, exterior.color);
+        assert_eq!(light.illuminance, exterior.illuminance);
+        assert!(!light.shadow_maps_enabled);
     }
 
     #[test]
