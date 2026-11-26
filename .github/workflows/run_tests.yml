@@ -148,35 +148,11 @@ jobs:
           fi
           python3 -B scripts/check_retail_claims.py --base "$base"
 
-      - name: Test retail claim source gate
-        run: python3 -B -m unittest discover -s scripts/tests -p test_check_retail_claims.py -v
-
       - name: Stand-in count does not rise above the baseline
         run: python3 -B scripts/check_retail_claims.py --audit --baseline scripts/stand_in_baseline.json
 
-      - name: Test model inspector launcher
-        run: python3 -B -m unittest discover -s scripts/tests -p test_inspect_model.py -v
-
-      - name: Test repeated terrain startup runner
-        run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
-
-      - name: Test Riverwood LOD capture gates
-        run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
-
-      - name: Test room culling count reader
-        run: python3 -m unittest discover -s scripts/tests -p test_room_culling_counts.py -v
-
-      - name: Test shared storage tool
-        run: python3 -I -B -m unittest discover -s scripts/tests -p 'test_workspace*.py' -v
-
-      - name: Test pull request size labeler
-        run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
-
-      - name: Test branch sync conflict rules
-        run: python3 -B -m unittest discover -s scripts/tests -p test_sync_branch.py -v
-
-      - name: Test milestone assignment
-        run: python3 -B -m unittest discover -s scripts/tests -p test_assign_milestones.py -v
+      - name: Discover script unit tests in isolated Python
+        run: python3 -I -B -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
@@ -194,24 +170,6 @@ jobs:
         run: |
           python3 -B tools/actor_idle/test_actor_idle_cpu_qualification.py
           python3 -B tools/actor_idle/test_actor_idle_preparation.py
-
-      - name: Test Riverwood asset reuse audit
-        run: python3 -B -m unittest discover -s scripts/tests -p test_audit_riverwood_reuse.py -v
-
-      - name: Test phase 1 LOD capture
-        run: python3 -B -m unittest discover -s scripts/tests -p test_capture_lod_phase1.py -v
-
-      - name: Test tonemap tuning capture evidence
-        run: python3 -B -m unittest discover -s scripts/tests -p test_capture_tonemap_tuning.py -v
-
-      - name: Test streaming comparison analysis
-        run: python3 -B -m unittest discover -s scripts/tests -p test_streaming_comparison_analysis.py -v
-
-      - name: Test streaming comparison runner
-        run: python3 -B -m unittest discover -s scripts/tests -p test_streaming_comparison_runner.py -v
-
-      - name: Test perf harness
-        run: python3 -B -m unittest discover -s scripts/tests -p test_perf_harness.py -v
 
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
@@ -246,9 +204,6 @@ jobs:
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
 
-      - name: Test release payload binaries and notices
-        run: python3 -B -m unittest discover -s scripts/tests -p test_stage_release_payload.py -v
-
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail
@@ -261,15 +216,6 @@ jobs:
             fi
           done < <(git ls-files '*.ps1')
           exit "$failed"
-
-      - name: Verify LOD acceptance summary checks
-        run: python3 -m unittest discover -s scripts/tests -p test_lod_acceptance_summary.py -v
-
-      - name: Verify stage receipt comparison
-        run: python3 -m unittest discover -s scripts/tests -p test_compare_stage_receipts.py -v
-
-      - name: Verify cluster timing receipt validation
-        run: python3 -B -m unittest discover -s scripts/tests -p test_cluster_timing_receipt.py -v
 
       - name: Verify terrain LOD helper commands
         run: python3 -m unittest discover -s scripts/lod-performance -p test_helpers.py -v
