@@ -2126,28 +2126,35 @@ fn spawn_cell(
                     cell_id: reference.cell_id,
                     shadow_flagged,
                 };
-                // `dynamics` is `Some` whenever the light row is.
-                let dynamics = dynamics.expect("a light has dynamics");
-                if !lights {
-                    entity.insert(crate::lights::DeferredPointLight {
-                        light,
-                        marker,
-                        dynamics,
-                    });
-                } else {
-                    // A reference without a model has no visibility components, so its light child
-                    // could never become visible: Bevy warned (B0004) and extract_lights dropped every
-                    // such light. The reference needs Visibility for the hierarchy to propagate.
-                    entity.insert(Visibility::default());
-                    entity.with_child((
-                        Name::new(format!("Light {:08X}", reference.form_id)),
-                        light,
-                        marker,
-                        dynamics,
-                        // Not the reference's propagated placed-object layer: a light keeps
-                        // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
-                        crate::render::light_render_layers(),
-                    ));
+                match dynamics {
+                    // `dynamics` is `Some` whenever the light row is, so this cannot happen today.
+                    None => error!(
+                        reference_form_id = format_args!("{:08X}", reference.form_id),
+                        "light not spawned: the evaluated light has no dynamics"
+                    ),
+                    Some(dynamics) if !lights => {
+                        entity.insert(crate::lights::DeferredPointLight {
+                            light,
+                            marker,
+                            dynamics,
+                        });
+                    }
+                    Some(dynamics) => {
+                        // A reference without a model has no visibility components, so its light
+                        // child could never become visible: Bevy warned (B0004) and extract_lights
+                        // dropped every such light. The reference needs Visibility for the
+                        // hierarchy to propagate.
+                        entity.insert(Visibility::default());
+                        entity.with_child((
+                            Name::new(format!("Light {:08X}", reference.form_id)),
+                            light,
+                            marker,
+                            dynamics,
+                            // Not the reference's propagated placed-object layer: a light keeps
+                            // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
+                            crate::render::light_render_layers(),
+                        ));
+                    }
                 }
             }
             if let Some(door) = crate::doors::load_door(reference.form_id, reference.door.as_ref())
