@@ -118,6 +118,7 @@ changes the picture is unverified.
 | The composite's unsigned copy keeps only the sign clamp, not its 11/10-bit precision | STAND-IN(#362): the composite input format |
 | A blend pair outside retail's table draws as a plain alpha blend | STAND-IN(#362): inherited blend modes |
 | The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): the player position as origin |
+| A palette effect surface does not take its reference's emittance colour; an additive effect decal takes it after the composite, unfogged | STAND-IN(#984): the effect shader's emittance, tint and fog |
 
 ## Pass rules
 
