@@ -1896,3 +1896,345 @@ fn header_declares_skin(bytes: &[u8]) -> bool {
             })
     })
 }
+
+type Mat4 = [[f32; 4]; 4];
+
+/// Column-major `[column][row]` product `a * b`.
+fn mat_mul(a: &Mat4, b: &Mat4) -> Mat4 {
+    let mut out = [[0.0; 4]; 4];
+    for (column, out_column) in out.iter_mut().enumerate() {
+        for (row, value) in out_column.iter_mut().enumerate() {
+            *value = (0..4).map(|k| a[k][row] * b[column][k]).sum();
+        }
+    }
+    out
+}
+
+/// Translation * rotation (xyzw quaternion) * uniform scale, the order the
+/// NIF bone transform and a glTF node's TRS both use.
+fn trs(translation: [f32; 3], q: [f32; 4], scale: f32) -> Mat4 {
+    let [x, y, z, w] = q;
+    let columns = [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y + z * w),
+            2.0 * (x * z - y * w),
+        ],
+        [
+            2.0 * (x * y - z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z + x * w),
+        ],
+        [
+            2.0 * (x * z + y * w),
+            2.0 * (y * z - x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ];
+    let mut out = [[0.0; 4]; 4];
+    for (column, rotation) in columns.iter().enumerate() {
+        for (row, value) in rotation.iter().enumerate() {
+            out[column][row] = value * scale;
+        }
+    }
+    out[3] = [translation[0], translation[1], translation[2], 1.0];
+    out
+}
+
+fn transform_point(matrix: &Mat4, point: [f32; 3]) -> [f32; 3] {
+    [0, 1, 2].map(|row| (0..3).map(|k| matrix[k][row] * point[k]).sum::<f32>() + matrix[3][row])
+}
+
+fn accessor_mat4(glb: &Glb, index: u64) -> Vec<Mat4> {
+    let accessor = &glb.json["accessors"][index as usize];
+    assert_eq!(accessor["componentType"], 5126);
+    assert_eq!(accessor["type"], "MAT4");
+    let view = &glb.json["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+    let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize
+        + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let count = accessor["count"].as_u64().unwrap() as usize;
+    (0..count)
+        .map(|matrix| {
+            let mut out = [[0.0; 4]; 4];
+            for (column, out_column) in out.iter_mut().enumerate() {
+                for (row, value) in out_column.iter_mut().enumerate() {
+                    let at = offset + (matrix * 16 + column * 4 + row) * 4;
+                    *value = f32::from_le_bytes(glb.bin[at..at + 4].try_into().unwrap());
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+fn node_local_transform(node: &Value) -> Mat4 {
+    assert!(
+        node.get("matrix").is_none(),
+        "expected TRS node without raw matrix: {node}"
+    );
+    let vec3 = |field: &str, default: [f32; 3]| -> [f32; 3] {
+        node.get(field).map_or(default, |value| {
+            let array = value.as_array().unwrap();
+            assert_eq!(array.len(), 3, "{field} must have 3 elements");
+            [0, 1, 2].map(|axis| array[axis].as_f64().unwrap() as f32)
+        })
+    };
+    let translation = vec3("translation", [0.0, 0.0, 0.0]);
+    let rotation = node.get("rotation").map_or([0.0, 0.0, 0.0, 1.0], |value| {
+        let array = value.as_array().unwrap();
+        assert_eq!(array.len(), 4, "rotation must have 4 elements");
+        [0, 1, 2, 3].map(|axis| array[axis].as_f64().unwrap() as f32)
+    });
+    let scale = vec3("scale", [1.0, 1.0, 1.0]);
+    assert!(
+        scale[0] == scale[1] && scale[1] == scale[2],
+        "non-uniform node scale {scale:?} is unsupported"
+    );
+    trs(translation, rotation, scale[0])
+}
+
+/// glTF skinning of every vertex, with each node whose name appears in
+/// `joint_locals` given that local transform instead of its exported TRS and
+/// every other node keeping its exported TRS. Each joint's matrix relative to
+/// the mesh is accumulated along the exported node hierarchy up to the mesh
+/// node's parent, verifying the mesh node itself has the identity transform.
+fn skin_vertices(glb: &Glb, joint_locals: &BTreeMap<&str, Mat4>) -> Vec<[f32; 3]> {
+    let nodes = gltf_nodes(glb);
+    let skinned: Vec<(usize, usize, usize)> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_index, node)| {
+            let skin = node["skin"].as_u64()? as usize;
+            let mesh = node["mesh"].as_u64()? as usize;
+            Some((node_index, mesh, skin))
+        })
+        .collect();
+    assert_eq!(skinned.len(), 1, "expected exactly one skinned mesh node");
+    let (mesh_node, mesh_index, skin_index) = skinned[0];
+
+    let (parents, reachable) = scene_graph(glb);
+    let identity = trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0);
+    assert!(
+        reachable.contains(&mesh_node),
+        "skinned mesh node {mesh_node} is not reachable from the scene"
+    );
+    assert_eq!(
+        node_local_transform(&nodes[mesh_node]),
+        identity,
+        "skinned mesh node {mesh_node} must have the identity local transform"
+    );
+    let mesh_parent = parents.get(&mesh_node).copied();
+
+    let attributes = &glb.json["meshes"][mesh_index]["primitives"][0]["attributes"];
+    let positions = accessor_f32x3(glb, attributes["POSITION"].as_u64().unwrap());
+    let joints = accessor_u8x4(glb, attributes["JOINTS_0"].as_u64().unwrap());
+    let weights = accessor_f32x4(glb, attributes["WEIGHTS_0"].as_u64().unwrap());
+    let skin = &glb.json["skins"][skin_index];
+    let inverse_binds = accessor_mat4(glb, skin["inverseBindMatrices"].as_u64().unwrap());
+    let skin_joints = skin["joints"].as_array().unwrap();
+    assert_eq!(
+        skin_joints.len(),
+        inverse_binds.len(),
+        "skin joint and inverse-bind counts differ"
+    );
+
+    let mut used_locals = BTreeSet::new();
+    let joint_matrices: Vec<Mat4> = skin_joints
+        .iter()
+        .zip(&inverse_binds)
+        .map(|(node, inverse_bind)| {
+            let joint_node = node.as_u64().unwrap() as usize;
+            let mut chain = Vec::new();
+            let mut cursor = Some(joint_node);
+            loop {
+                match cursor {
+                    Some(node_index) if Some(node_index) == mesh_parent => {
+                        assert!(
+                            reachable.contains(&node_index),
+                            "mesh parent node {node_index} is not reachable from the scene"
+                        );
+                        break;
+                    }
+                    Some(node_index) => {
+                        assert!(
+                            reachable.contains(&node_index),
+                            "joint ancestor node {node_index} is not reachable from the scene"
+                        );
+                        chain.push(node_index);
+                        cursor = parents.get(&node_index).copied();
+                    }
+                    None => {
+                        assert!(
+                            mesh_parent.is_none(),
+                            "joint node {joint_node} reached a scene root without encountering mesh parent {mesh_parent:?}"
+                        );
+                        break;
+                    }
+                }
+            }
+            chain.reverse();
+
+            let mut joint_transform = identity;
+            for node_index in chain {
+                let node = &nodes[node_index];
+                let local = match node["name"]
+                    .as_str()
+                    .and_then(|name| joint_locals.get_key_value(name))
+                {
+                    Some((&name, matrix)) => {
+                        used_locals.insert(name);
+                        *matrix
+                    }
+                    None => node_local_transform(node),
+                };
+                joint_transform = mat_mul(&joint_transform, &local);
+            }
+            mat_mul(&joint_transform, inverse_bind)
+        })
+        .collect();
+    assert_eq!(
+        used_locals.len(),
+        joint_locals.len(),
+        "unused joint_locals entries: {:?}",
+        joint_locals
+            .keys()
+            .filter(|name| !used_locals.contains(**name))
+            .collect::<Vec<_>>()
+    );
+    positions
+        .iter()
+        .enumerate()
+        .map(|(vertex, position)| {
+            let mut out = [0.0; 3];
+            for slot in 0..4 {
+                let weight = weights[vertex][slot];
+                if weight == 0.0 {
+                    continue;
+                }
+                let moved = transform_point(
+                    &joint_matrices[usize::from(joints[vertex][slot])],
+                    *position,
+                );
+                for axis in 0..3 {
+                    out[axis] += weight * moved[axis];
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// The skinned position the fixture's own constants predict: each influence
+/// slot binds the instance bone its palette row names, its weights are
+/// normalised to sum to one, and the bind matrix is the NIF bone transform.
+fn expected_skinned_vertices(bone_locals: [Mat4; 2]) -> Vec<[f32; 3]> {
+    let vertices: [[f32; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [-0.5, 3.0_f32.sqrt() / 2.0, 0.0],
+        [-0.5, -3.0_f32.sqrt() / 2.0, 0.0],
+    ];
+    let bind =
+        BONE_TRANSFORMS.map(|(translation, rotation, scale)| trs(translation, rotation, scale));
+    vertices
+        .iter()
+        .zip(WEIGHTS)
+        .map(|(vertex, weights)| {
+            let total: f32 = weights.iter().sum();
+            let mut out = [0.0; 3];
+            for (slot, weight) in weights
+                .iter()
+                .enumerate()
+                .filter(|(_, weight)| **weight > 0.0)
+            {
+                let bone = usize::from(SHUFFLED_PALETTE[slot]);
+                let moved = transform_point(&mat_mul(&bone_locals[bone], &bind[bone]), *vertex);
+                for axis in 0..3 {
+                    out[axis] += weight / total * moved[axis];
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+fn assert_close(actual: &[[f32; 3]], expected: &[[f32; 3]], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}: vertex count");
+    for (vertex, (a, e)) in actual.iter().zip(expected).enumerate() {
+        for axis in 0..3 {
+            // Weights are stored as 16-bit normalised values, so allow their step.
+            assert!(
+                (a[axis] - e[axis]).abs() < 2e-3,
+                "{context}: vertex {vertex} axis {axis}: emitted skin gives {a:?}, fixture predicts {e:?}"
+            );
+        }
+    }
+}
+
+/// The emitted skin must deform the mesh the way the NIF's own bone transforms,
+/// weights and palette say it should, rather than merely carry JOINTS_0/WEIGHTS_0.
+/// Expected values come from the fixture's constants, not from the GLB under test.
+#[test]
+fn legacy_skin_deforms_as_the_nif_specifies() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = spec(
+        SkinInstanceKind::Dismember,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let nif_path = write_fixture(directory.path(), &fixture);
+    let skeleton_path = write_skeleton_fixture(directory.path(), &fixture);
+    let glb_path = directory.path().join("skin.glb");
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+    let glb = read_glb(&glb_path);
+
+    let identity = trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0);
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let rest_expected = expected_skinned_vertices([identity, identity]);
+    assert_close(
+        &skin_vertices(&glb, &BTreeMap::new()),
+        &rest_expected,
+        "rest pose",
+    );
+
+    // Move each joint differently, so swapping the two joints or ignoring a joint's
+    // transform changes the answer.
+    let bone0 = trs([1.0, 2.0, 3.0], [0.0, half, 0.0, half], 1.0);
+    let bone1 = trs([0.0, 0.0, -1.5], [half, 0.0, 0.0, half], 1.0);
+    let posed = BTreeMap::from([("Bone0", bone0), ("Bone1", bone1)]);
+    let posed_expected = expected_skinned_vertices([bone0, bone1]);
+    let posed_actual = skin_vertices(&glb, &posed);
+    assert_close(&posed_actual, &posed_expected, "posed");
+
+    let moved = posed_expected
+        .iter()
+        .zip(&rest_expected)
+        .any(|(a, b)| (0..3).any(|axis| (a[axis] - b[axis]).abs() > 0.5));
+    assert!(
+        moved,
+        "the posed expectation must differ from rest, or the test proves nothing"
+    );
+
+    // With Bone1 nested under Bone0 (via NestedParent), Bone0's pose must
+    // propagate down to Bone1 through the exported glTF hierarchy.
+    let nested_nif = directory.path().join("nested.nif");
+    fs::write(&nested_nif, legacy_nested_skinned_shape(&fixture).unwrap()).unwrap();
+    let nested_skeleton = write_single_node_skeleton(directory.path(), "Bone0");
+    let nested_glb_path = directory.path().join("nested.glb");
+    convert(&nested_nif, &nested_skeleton, &nested_glb_path).unwrap();
+    let nested_glb = read_glb(&nested_glb_path);
+    let nested_expected = expected_skinned_vertices([bone0, mat_mul(&bone0, &bone1)]);
+    let nested_actual = skin_vertices(&nested_glb, &posed);
+    assert_close(&nested_actual, &nested_expected, "nested posed");
+
+    let hierarchy_differs = nested_expected
+        .iter()
+        .zip(&posed_expected)
+        .any(|(a, b)| (0..3).any(|axis| (a[axis] - b[axis]).abs() > 0.5));
+    assert!(
+        hierarchy_differs,
+        "the nested expectation must differ from the sibling-bone expectation"
+    );
+}
