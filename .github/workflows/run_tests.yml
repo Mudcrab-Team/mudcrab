@@ -147,28 +147,16 @@ jobs:
             base="$(git merge-base FETCH_HEAD HEAD)"
           fi
           python3 -B scripts/check_retail_claims.py --base "$base"
+          echo "COMMENT_BASE=$base" >> "$GITHUB_ENV"
 
       - name: Test the comment name check
         run: python3 -B -m unittest discover -s tools/comment_names -p 'test_*.py' -v
 
-      - name: Comments gain no name that the code does not have
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSH_BEFORE: ${{ github.event.before }}
+      - name: Added comment lines name only symbols that the code has
         run: |
           set -euo pipefail
-          # A pull request runs on the merge commit, whose first parent is its base.
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base="$(git rev-parse HEAD^1)"
-          else
-            base="$PUSH_BEFORE"
-          fi
-          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "::notice::No base commit to compare with; the comparison is skipped."
-            exit 0
-          fi
-          git worktree add --detach "$RUNNER_TEMP/comment-names-base" "$base"
-          python3 -B tools/comment_names/comment_names.py --base-root "$RUNNER_TEMP/comment-names-base"
+          # COMMENT_BASE is the base that the retail claim check chose above.
+          python3 -B tools/comment_names/comment_names.py --base "$COMMENT_BASE"
 
       - name: Stand-in count does not rise above the baseline
         run: python3 -B scripts/check_retail_claims.py --audit --baseline scripts/stand_in_baseline.json
