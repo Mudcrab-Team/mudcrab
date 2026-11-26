@@ -2469,6 +2469,9 @@ mod tests {
         // never launches the engine, so its flags are not engine options.
         ("workspace.py", "--apply"),
         ("workspace.py", "--artifact-dir"),
+        ("workspace.py", "--cached"),
+        ("workspace.py", "--exclude-standard"),
+        ("workspace.py", "--others"),
         ("workspace.py", "--get"),
         ("workspace.py", "--git-common-dir"),
         ("workspace.py", "--git-hook"),
