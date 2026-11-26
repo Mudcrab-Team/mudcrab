@@ -379,8 +379,9 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
         );
         var world_normal = model_space_world_normal(tbn, normal.xyz);
 #ifndef SKINNED
-        // Retail does not normalise a non-skinned model-space normal (SPEC-1 section 9.2); the
-        // mesh transform's rotation applies and its scale does not.
+        // Retail does not normalise a non-skinned model-space normal (SPEC-1 section 9.2,
+        // docs/specs/engine/near-lighting.md); the mesh transform's rotation applies and its
+        // scale does not. [near-lighting.md](../../../../docs/specs/engine/near-lighting.md)
         if retail {
             world_normal = mat3x3<f32>(
                 normalize(tbn[0]), normalize(tbn[1]), normalize(tbn[2]),

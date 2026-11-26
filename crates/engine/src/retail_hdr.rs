@@ -1,5 +1,7 @@
 //! Retail's HDR image-space chain for the `skyrim` visual profile (#796, #361).
 //!
+//! The engine rules are in [near-lighting.md](../../../docs/specs/engine/near-lighting.md).
+//!
 //! Before this module the `skyrim` profile still ran Bevy's TonyMcMapface and a fixed EV100 of
 //! 9.7. Retail has neither. It tone maps once, with a luminance curve whose input is the lit and
 //! fogged scene, it adds bloom, and it adapts to the scene brightness over time. This module is
@@ -14,6 +16,8 @@
 //! readings of 1.7.104.0. No capture confirms any value, so every number below is a static result.
 //!
 //! ## What retail does, in order
+//!
+//! [near-lighting.md](../../../docs/specs/engine/near-lighting.md), section 10 of its source.
 //!
 //! 1. The lit scene is composited with fog (`retail_fog.rs`). The composite's own output is
 //!    **saturated** (D3). Draws after the composite (the sorted alpha passes, the first-person
@@ -49,7 +53,8 @@
 //! ## The input scale
 //!
 //! There is none. Under `skyrim` the scene is lit in retail's own unitless values
-//! (`retail_lighting.rs`, SPEC-1 section 2.1) and the camera exposure is 1, so the HDR target
+//! (`retail_lighting.rs`, [near-lighting.md](../../../docs/specs/engine/near-lighting.md),
+//! SPEC-1 section 2.1) and the camera exposure is 1, so the HDR target
 //! holds what retail's holds.
 //!
 //! ## What Mudcrab does differently from retail

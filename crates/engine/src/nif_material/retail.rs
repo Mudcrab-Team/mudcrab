@@ -1,5 +1,6 @@
 //! The retail inputs of a converted `Lighting` material under the `skyrim` profile (SPEC-1
-//! sections 2.7, 2.8, 6.2 and 6.3).
+//! sections 2.7, 2.8, 6.2 and 6.3;
+//! [near-lighting.md](../../../../docs/specs/engine/near-lighting.md)).
 //!
 //! The converter publishes a glTF material for Bevy's light model. This reads back what the retail
 //! shader needs and marks the material with a [`RetailSurface`], so the vendored retail path

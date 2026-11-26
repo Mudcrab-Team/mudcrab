@@ -2491,7 +2491,7 @@ mod tests {
     }
 
     /// The `skyrim` profile drives the sun and the ambient from the record by hour, in retail
-    /// units: the record bytes / 255, the image space's `SunlightScale` and an ambient brightness
+    /// units ([near-lighting.md](../../../docs/specs/engine/near-lighting.md)): the record bytes / 255, the image space's `SunlightScale` and an ambient brightness
     /// of 1. Night is the night slot, not a factor (#653).
     #[test]
     fn the_skyrim_profile_lights_the_exterior_from_the_weather_by_hour() {

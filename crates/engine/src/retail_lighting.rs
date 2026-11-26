@@ -59,7 +59,8 @@ pub enum LightUnits {
     /// The `mudcrab` profile's physical units, unchanged.
     #[default]
     Mudcrab,
-    /// The `skyrim` profile: one retail unit is a Lambert response of 1.
+    /// The `skyrim` profile: one retail unit is a Lambert response of 1
+    /// ([near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
     Retail,
 }
 

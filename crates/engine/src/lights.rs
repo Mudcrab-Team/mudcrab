@@ -58,7 +58,8 @@ pub const AMBIENT_ILLUMINANCE: f32 = SUN_ILLUMINANCE / (core::f32::consts::PI * 
 
 /// The sun's illuminance in the `mudcrab` world path, in lux. With that profile's EV100 of 9.7
 /// this puts a white surface facing the sun at about 3.8 in linear radiance before tone mapping.
-/// The `skyrim` profile does not use it: its lights are in retail units (`retail_lighting.rs`).
+/// The `skyrim` profile does not use it: its lights are in retail units (`retail_lighting.rs`,
+/// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
 pub const SUN_ILLUMINANCE: f32 = 12_000.0;
 
 /// How much brighter than the ambient cube Skyrim's `SunlightScale` makes the sun's colour

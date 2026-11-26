@@ -192,7 +192,8 @@ impl LightDynamics {
         }
     }
 
-    /// [`Self::new`] for the `skyrim` profile (SPEC-1 section 2.6): the base fade is the size of
+    /// [`Self::new`] for the `skyrim` profile (SPEC-1 section 2.6,
+    /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): the base fade is the size of
     /// the unclamped authored fade (its sign sits on the colour), the intensity is in retail
     /// units, a flicker's third phase starts at `16 / radius^2` and a flicker moves its light.
     pub fn retail(evaluation: &LightEvaluation, seed: u32) -> Self {

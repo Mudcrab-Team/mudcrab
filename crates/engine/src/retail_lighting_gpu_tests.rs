@@ -272,7 +272,8 @@ fn set_ambient(app: &mut App, faces: [[u8; 3]; 6]) {
     assert!(app.world().resource::<DirectionalAmbientCube>().enabled);
 }
 
-/// The camera height at which the surface's retail clip length is `distance` (section 3.3).
+/// The camera height at which the surface's retail clip length is `distance` (section 3.3 of
+/// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)'s source).
 fn height_for_clip_length(distance: f32) -> f32 {
     distance * (CAMERA_FAR - CAMERA_NEAR) / CAMERA_FAR + CAMERA_NEAR
 }
