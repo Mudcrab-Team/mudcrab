@@ -108,7 +108,8 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
   - **Stand-ins and omissions.** `A = 1`, STAND-IN(#995): factor one replaces the retail SAO texture, which Mudcrab has no pass for. The SSR term of `L` is
     omitted: Mudcrab's water reflection is a separate pass that draws after this one. The outer
     `saturate` is a separate draw right after this pass (see "Retail HDR chain"), because this
-    pass is a blend and cannot clip.
+    pass is a blend and cannot clip. A draw before it raises negative scene values to 0, as
+    retail's unsigned scene copy does ([near-lighting.md](near-lighting.md)).
     The retail depth rescale `d' = 1.01 * d - 0.01` is not copied: retail's `z` is about 1 percent
     below the true view depth near the camera, and Mudcrab uses the true depth (skyrim-research
     NEEDS 17b, unreviewed; open until a capture confirms it).
