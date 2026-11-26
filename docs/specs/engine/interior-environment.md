@@ -52,8 +52,9 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
 6. **Ambient**: `GlobalAmbientLight.color` is the mean of the six DALC colours, with the same
    averaging as `WeatherLighting::mean_ambient`. Brightness stays `AMBIENT_ILLUMINANCE`. XCLL
    ambient is not a Lighting-shader input (RF-LIGHT-GPU-002) and is reported only. Under `skyrim`
-   the near meshes read the whole DALC cube by normal instead, from the raw record bytes
-   (`visual-profiles.md`, #1010).
+   the key light, the whole DALC cube and the fog take the raw record bytes in retail units, with
+   the cell image space's `SunlightScale`, and the interior draws the retail power ramp and
+   composite instead of the linear fog below ([near-lighting.md](near-lighting.md), #1010).
 7. **Fog**: Bevy linear fog from the resolved near and far and the near colour. Fog max is a cap:
    Bevy multiplies its ramp by the colour alpha, so the engine sets alpha = max and ends the ramp
    at `near + max * (far - near)`, which gives `min(ramp, max)`. Max 0 draws no fog.

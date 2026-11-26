@@ -149,7 +149,9 @@ Mudcrab reproduces them in two parts:
    `pbr_lighting.wgsl` returns `saturate(1 - d^2 / range^2)` in place of Bevy's `window(d) / d^2`. `range`
    is the light's backend range, which is the retail radius (§1). This is a Mudcrab addition: Bevy has no
    such mode.
-2. **Intensity.** `retail_intensity(fade) = 4 pi^2 x AMBIENT_ILLUMINANCE x fade` lumens. Bevy divides lumens
+2. **Intensity.** This item is the `mudcrab` profile. Under `skyrim` the colour is the raw record
+   bytes and the intensity is `4 pi^2 x fade x dimmer`, in retail units
+   ([near-lighting.md](near-lighting.md), section 2.6). `retail_intensity(fade) = 4 pi^2 x AMBIENT_ILLUMINANCE x fade` lumens. Bevy divides lumens
    by `4 pi` and the diffuse BRDF supplies `1 / pi`, so a unit-fade light puts `albedo x colour x
    AMBIENT_ILLUMINANCE` nits on a surface at its centre. The scene already shades one retail unit as
    `AMBIENT_ILLUMINANCE` nits: the interior ambient light is that brightness times the DALC mean (under `skyrim`, times the DALC cube by normal), and the key
@@ -357,10 +359,10 @@ Runs that must not move, such as an acceptance or benchmark baseline taken befor
 ## 8. Scope limits
 
 XLIG end-distance cap, shadow-mode cone angles and DATA falloff, cone/near clip, flicker movement (#1000), the
-per-geometry 7-light choice (#999), the retail output stage and the retail Lighting path (#706) remain open
-under #133/#264/#364. Light colours stay sRGB-decoded, as the near-object sun and ambient colours are: the raw-colour
-Lighting path of the `skyrim` profile (#362, #706) owns that change. Object LOD under `skyrim`
-already reads the weather sun and directional ambient colours raw (#946); see
+per-geometry 7-light choice (#999) remain open under #133/#264/#364. Under `mudcrab`, light colours stay
+sRGB-decoded. Under `skyrim` the retail Lighting path, the raw colours, the flicker movement and the output
+stage are in [near-lighting.md](near-lighting.md). Object LOD under `skyrim`
+reads the weather sun and directional ambient colours raw too (#946); see
 [lod-architecture.md](lod-architecture.md). Interior environment selection is
 separately owned.
 

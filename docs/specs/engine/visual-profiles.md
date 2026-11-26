@@ -12,7 +12,7 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 | Profile | Pipeline |
 |---|---|
 | `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near-object shading still follows the `mudcrab` pipeline until P1c. Distant object LOD lighting uses the retail terms (#946), the opaque scene is fogged by the retail composite (#891), and the output is retail's HDR chain: its own tonemap, eye adaptation and image-space grade, with no Bevy tone map (#796, #361). |
+| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); the sky and fog come from the active weather record (#891); near surfaces, terrain, grass and object LOD take retail's unitless light sum and output tail ([near-lighting.md](near-lighting.md), #1010); the scene is fogged by the retail composite indoors and out (#891); and the output is retail's HDR chain: its own tonemap, eye adaptation and image-space grade, with no Bevy tone map (#796, #361). |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.
@@ -102,9 +102,9 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
   sky (depth at the far plane) skips the fog and `k`. `skyrim` draws it in
   `crates/engine/src/retail_fog.rs`. At `Fc = 0` it still scales opaque pixels by `k`, so the
   whole opaque scene is 0.8333 as bright as before (brightness work: #796). The Fog setting
-  (retail's `bSAOApplyFog`) turns the pass off, and `k` with it. A record whose fog ramp draws
+  (retail's `bSAOApplyFog`) selects the no-fog composite, which applies no `k`. A record whose fog ramp draws
   nothing keeps the pass with `Fc = 0`, as retail's fallback does. A record that omitted a fog
-  field has no fog property: no pass.
+  field has no fog property: the no-fog composite.
   - **Stand-ins and omissions.** `A = 1`, STAND-IN(#995): factor one replaces the retail SAO texture, which Mudcrab has no pass for. The SSR term of `L` is
     omitted: Mudcrab's water reflection is a separate pass that draws after this one. The outer
     `saturate` is a separate draw right after this pass (see "Retail HDR chain"), because this
@@ -112,13 +112,15 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
     The retail depth rescale `d' = 1.01 * d - 0.01` is not copied: retail's `z` is about 1 percent
     below the true view depth near the camera, and Mudcrab uses the true depth (skyrim-research
     NEEDS 17b, unreviewed; open until a capture confirms it).
-  - **Blended draws.** Water, effects and other blended draws fog themselves in retail. In Mudcrab
-    they keep Bevy's shader fog (`FogFalloff::PowerRampBlended`, the same ramp). Retail's blended
-    draws apply `min(k * M, B)` in the shader (`T = 1`) and Mudcrab's apply the plain mix: a
-    follow-up. Grass skips Bevy's fog, but keeps its own `k` (`output_scale.rs`), so a grass
+  - **Blended draws.** Blended Lighting surfaces apply retail's `min(k * M, B)` in the shader
+    (`T = 1`; [near-lighting.md](near-lighting.md)). Water and effects keep Bevy's shader fog
+    (`FogFalloff::PowerRampBlended`, the same ramp). Grass skips Bevy's fog, but keeps its own `k` (`output_scale.rs`), so a grass
     pixel gets `k` squared at `Fc = 0`. Retail does the same (skyrim-research NEEDS 24, reviewed,
     PR pending). Whether grass is in retail's depth prepass is an open parity point (unverified).
-  - **Unchanged.** Interiors keep the cell's own Bevy fog. `mudcrab` keeps Bevy's per-material fog.
+  - **Interiors** take the same power ramp and composite from the cell's fog fields
+    ([near-lighting.md](near-lighting.md), section 8). With the fog toggle off, or without a fog
+    property, the composite is retail's no-fog record: it clips and applies no `k`.
+  - **Unchanged.** `mudcrab` keeps Bevy's per-material fog.
 - A record that lacks a `NAM0` colour cannot be used. `skyrim` then refuses to start and names the
   colour. `mudcrab` warns and keeps its built-in preset sky. A record that lacks an `FNAM` field
   keeps its colours, draws no exterior fog, and prints a warning that names the field. No
@@ -130,7 +132,7 @@ fixed Mudcrab choice; retail picks the weather from the climate and region lists
 
 Under `skyrim` the output stage is retail's, in `crates/engine/src/retail_hdr.rs`,
 `retail_hdr_chain.rs`, `retail_hdr_render.rs` and the shaders `retail_hdr*.wgsl`. Bevy's tone map is
-off (`Tonemapping::None`) and the camera exposure is fixed. `mudcrab` is unchanged. Facts:
+off (`Tonemapping::None`) and the camera exposure is 1. `mudcrab` is unchanged. Facts:
 skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24, 25, 26 and 27
 (reviewed), all static readings of 1.7.104.0. No capture confirms a value. Public sources:
 [skyrim_decomp#1059](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059) and the
@@ -157,7 +159,8 @@ skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24,
   same 4 taps. Later steps take 16 taps (-1.5 to 1.5 source texels, nearest) and divide by 4 again
   until 2 by 2. The average is linear.
 - **Adaptation.** With an adapted pair, the adapt draw replaces the last step: it takes the 16 taps
-  (bilinear) and moves each channel by `sign(d) * min(|d|, max(|d * rate|, 1/256))`. Rates:
+  (bilinear) and moves each channel by `sign(d * rate) * min(|d|, max(|d * rate|, 1/256))`, so
+  nothing moves at rate 0 ([near-lighting.md](near-lighting.md), section 10). Rates:
   `y = 1 - max(1 - 0.01 S, 0)^E`, `x = 1 - max(1 - 0.01 S / K, 0)^E`, with `S = 2.0 *
   EyeAdaptSpeed`, `K = 0.4 * EyeAdaptStrength` and `E = 30 T`. `T` is the smoothed real frame time:
   `(sum - min(largest, 0.05) - smallest) / 6` over the last 8 frame times, with a raw time above
@@ -170,13 +173,8 @@ skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24,
   with `k_r` 0.8333333 and `T = BloomThreshold + fGlobalBloomThresholdBoost`. Pass 1 is the
   horizontal blur. The `2k + 1` weights are the engine's stored tables, pinned in a test. The
   tonemap samples the result bilinearly.
-- **Input scale.** STAND-IN(#796): the input scale of the chain, which waits for the near-lighting
-  specification (SPEC-1). One retail unit is taken to be `AMBIENT_ILLUMINANCE` = 12,000 / (pi x
-  2.8) nits, about 1,364, the scale the ambient light already uses (`retail_hdr::HDR_INPUT_SCALE_NITS`,
-  [skyrim_decomp#1059](https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059)). Bevy's exposure is
-  `2^-EV100 / 1.2`, so the camera runs at EV100 about 10.15 (`retail_hdr::input_scale_ev100`). It is
-  Mudcrab's own scale, not a retail reading. No constant is fitted to a picture. The settings
-  menu's EV100 row steers the `mudcrab` profile.
+- **Input scale.** None. The scene is lit in retail's unitless values
+  ([near-lighting.md](near-lighting.md)), so the HDR target holds what retail's holds.
 - **Image space.** Exterior: the weather's four `IMSP` day-part forms, mixed by the sky's day-part
   weights (current-weather share 1: the weather does not change). A day part with no form uses
   `DefaultImageSpace` (0x167). Interior: the cell's own link (XCIM, or 0x167 when it has none),
@@ -196,11 +194,7 @@ skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24,
   `Ultra.ini` sets only `bUse64bitsHDRRenderTarget`.
 - **Not applied.** IMAD modifiers and `SetHDRParam`, room image spaces and their cross-fade, the
   map-menu boosts, a screen fade, and the `ClearAdaptedLight` requests from the sky, menus and
-  player moves. Interiors have no composite, so they are not saturated. Retail's no-fog composite
-  record 49 has no `k`, while the fog records 51 and 53 apply `k` even at `Fc = 0`.
-- **Not done here.** The sun and ambient colours are decoded from sRGB by Bevy's light colour while
-  textures are raw, so the scene is not raw end to end (see PR 1013, "Open"). The sun's illuminance
-  uses the fixed `SUNLIGHT_SCALE` (2.8) and not the image space's `SunlightScale`.
+  player moves.
 - **Tests.** Unit tests cover the arithmetic. `retail_hdr_gpu_matches_the_cpu_reference` runs the
   shaders on a headless GPU against a CPU reference; it is ignored by default (run it with
   `--ignored`).
@@ -213,18 +207,10 @@ F1 on +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z in Creation axes (NEEDS 41, 
 
 Under `skyrim` the engine writes the cube (`DirectionalAmbientCube`, a vendored `bevy_pbr`
 resource) from the weather by game hour outside, and from the cell or room template inside. The
-values are the record bytes divided by 255, with no sRGB decode, as for object LOD. The diffuse
-part is `albedo * ambient` with no `EnvBRDFApprox` scale. Bevy's specular ambient part is kept
-because no retail counterpart is known (unverified). Grass takes the cube's mean. `mudcrab` keeps
-its flat ambient.
-
-Known differences:
-
-- The near scene shades one retail unit as `AMBIENT_ILLUMINANCE` nits, which is about 1.37 after
-  the camera exposure. Object LOD writes one retail unit as 1.0. The two paths therefore differ
-  by that factor with equal inputs.
-- The sun, the interior key light and the point lights are still decoded from sRGB, while the
-  ambient is raw.
+values are the record bytes divided by 255, with no sRGB decode, at a brightness of 1. Retail
+surfaces add it unscaled ([near-lighting.md](near-lighting.md)). Surfaces that Bevy's own shaders
+draw (effects) keep Bevy's specular ambient part. Grass takes the cube's mean. `mudcrab` keeps its
+flat ambient.
 
 ## Receipts
 
