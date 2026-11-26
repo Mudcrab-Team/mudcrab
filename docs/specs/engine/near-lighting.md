@@ -90,7 +90,8 @@ and the same output tail.
 
 ## Stand-ins and gaps
 
-Each row differs from retail, or rests on an inferred or open item of SPEC-1.
+Each row differs from retail, or rests on an inferred or open item of SPEC-1. How far each one
+changes the picture is unverified.
 
 | Stand-in | Issue |
 | --- | --- |
