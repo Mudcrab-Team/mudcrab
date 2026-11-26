@@ -52,7 +52,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 7 | output tail, `k`, `B`, `B2` | `render/pbr_retail.wgsl`, object LOD `lod_object.wgsl` |
 | 8 | fog property, composite records 53 and 49, clear colour | `sky.rs`, `retail_fog.rs`, `interior::FogFields` |
 | 9.2 | model-space normals, face, face tint, hair, landscape | `shaders/skyrim_skin.wgsl`, terrain shaders |
-| 9.3 | a lit decal that does not blend draws before the composite and writes depth | `NifDepthState::retail_first_stage`, vendored `extended_material.rs` |
+| 8.1, 9.2, 9.3 | the pass of a surface: unblended lit surfaces and decals before the composite, blended surfaces after it | `NifDepthState::retail_first_stage`, `nif_material/retail.rs`, vendored `extended_material.rs`; table `nif_material/pass_audit.rs` |
 | 10 | image space, adaptation, bloom, tonemap | `retail_hdr*.rs` and `shaders/retail_hdr*.wgsl` |
 | 11 | worked examples A to D | `retail_lighting_examples.rs` (CPU), `retail_lighting_gpu_tests.rs` (GPU) |
 
@@ -99,7 +99,7 @@ Each row differs from retail, or rests on an inferred or open item of SPEC-1.
 | Vertex fog is evaluated per pixel, with camera planes 15 and 10240 | STAND-IN(#891): vertex fog inputs |
 | Composite uses the true axial depth, not `1.01 d - 0.01`; it also sees the depth a first-stage decal writes | STAND-IN(#891): retail composite depth rescale |
 | Shadow masks are Mudcrab's shadow maps; interiors have no sun shadow | STAND-IN(#362): shadow mask production |
-| Blended decals, and other surfaces without depth write, draw after the composite with the second-stage tail | STAND-IN(#362): decal stage order |
+| Blended decals draw after the composite with the second-stage tail ([Pass rules](#pass-rules)) | STAND-IN(#362): decal stage order |
 | Additive term `cb1[8]` is 0; the specular distance fade is 1 | STAND-IN(#362): open run-time inputs |
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
 | Specular strength and colour are clamped to `[0, 1]` by the converter, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
@@ -117,6 +117,30 @@ Each row differs from retail, or rests on an inferred or open item of SPEC-1.
 | The composite's unsigned copy keeps only the sign clamp, not its 11/10-bit precision | STAND-IN(#362): the composite input format |
 | A blend pair outside retail's table draws as a plain alpha blend | STAND-IN(#362): inherited blend modes |
 | The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): the player position as origin |
+
+## Pass rules
+
+`nif_material/pass_audit.rs` holds the retail pass of a material as a table. A test compares it with
+the loader over every flag combination, and an ignored test compares it over a converted pack. The
+open rules of that table, then the rules it gives that the engine does not follow:
+
+| Open rule |
+| --- |
+| STAND-IN(#362): water, sky and other shader families keep their own passes |
+| STAND-IN(#946): LOD techniques are outside the near rules |
+| STAND-IN(#362): a refraction surface has no Lighting pass and draws as a surface |
+| STAND-IN(#362): the pass of a surface without a depth test is not specified |
+| STAND-IN(#362): the effect shader's pass is specified only for a plain blended surface |
+| STAND-IN(#362): depth write of an unblended surface follows its flag |
+| STAND-IN(#362): a sorted blended draw writes no depth |
+| STAND-IN(#362): a blend pair outside the table draws as a plain alpha blend |
+| STAND-IN(#362): the two-sided flag does not change the pass |
+| STAND-IN(#362): a decal with property alpha below one and no blend is not specified |
+| STAND-IN(#362): the alpha cut of a flag-41 decal depends on the unknown prepass |
+| STAND-IN(#362): a decal stays out of the depth prepass |
+| STAND-IN(#362): a blended decal draws after the composite and applies it in its shader |
+| STAND-IN(#362): a blended surface with an alpha test and depth write draws as a cutout |
+| STAND-IN(#362): a blended surface with an alpha test and no depth write is not cut |
 
 Water and effect shaders are outside SPEC-1. Water keeps its own program and its decoded record
 colours, so its sky reflection does not match the retail sky exactly (unverified how far).

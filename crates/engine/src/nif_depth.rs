@@ -80,19 +80,16 @@ impl NifDepthState {
         })
     }
 
-    /// The retail stage of a lit decal that does not blend (SPEC-1 section 9.3,
+    /// The retail stage of a lit surface that does not blend (SPEC-1 sections 8.1, 9.2 and 9.3,
     /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): retail draws it in the
-    /// first stage, before the composite, and it writes depth. A blended surface, a surface that
-    /// is not a decal and a surface without a depth test keep the sorted draw.
-    /// STAND-IN(#362): blended decals and other surfaces without depth write draw after the composite.
+    /// first stage, before the composite. A decal writes depth there; another surface keeps its
+    /// authored write. A blended surface and a surface without a depth test keep the sorted draw.
+    /// STAND-IN(#362): a blended decal draws after the composite and applies it in its shader.
     #[must_use]
     pub fn retail_first_stage(mut self, alpha_mode: AlphaMode) -> Self {
-        if self.decal
-            && self.depth_test
-            && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_))
-        {
+        if self.depth_test && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
             self.first_stage = true;
-            self.depth_write = true;
+            self.depth_write |= self.decal;
         }
         self
     }
@@ -167,7 +164,9 @@ impl MaterialExtension for NifDepthExtension {
 
     fn instance_alpha_mode(&self) -> Option<AlphaMode> {
         if self.state.first_stage {
-            return None;
+            // A surface that writes no depth draws in the cutout phase, after the opaque
+            // surfaces that could otherwise cover it.
+            return (!self.state.depth_write).then_some(AlphaMode::Mask(0.5));
         }
         Self::alpha_mode()
     }
@@ -364,10 +363,18 @@ mod tests {
     }
 
     #[test]
+    fn a_retail_surface_without_depth_write_draws_first_after_the_opaque_phase() {
+        let authored = NifDepthState::from_flags(DEPTH_TEST, 0, AlphaMode::Opaque).unwrap();
+        let state = authored.retail_first_stage(AlphaMode::Opaque);
+        assert!(state.first_stage && !state.depth_write);
+        let material = depth_material(StandardMaterial::default(), state);
+        assert_eq!(Material::alpha_mode(&material), AlphaMode::Mask(0.5));
+    }
+
+    #[test]
     fn other_authored_surfaces_keep_the_sorted_draw_under_retail() {
         for (flags_1, alpha_mode) in [
             (DEPTH_TEST | DECAL, AlphaMode::Blend),
-            (DEPTH_TEST, AlphaMode::Mask(0.5)),
             (DECAL, AlphaMode::Mask(0.5)),
         ] {
             let authored = NifDepthState::from_flags(flags_1, 0, alpha_mode).unwrap();

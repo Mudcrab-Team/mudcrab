@@ -1020,6 +1020,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
 mod palette_shader_check;
 
 #[cfg(test)]
+#[path = "nif_material/pass_audit.rs"]
+mod pass_audit;
+
+#[cfg(test)]
 #[path = "nif_material/skin_load_tests.rs"]
 pub(crate) mod skin_load_tests;
 

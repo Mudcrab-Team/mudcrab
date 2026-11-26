@@ -15,6 +15,10 @@
 //!   emission adds to the light sum, so the diffuse-modulated emissive texture that stands in for
 //!   that under Bevy's model is not used.
 //! - **Alpha test:** the reference `trunc(threshold x property alpha) / 255`.
+//! - **Blending:** a surface that is not a decal blends with its blend bit or a property alpha
+//!   below one (section 9.2). The converter publishes `MASK` for a material with the test bit, so
+//!   such a surface blends here only when it writes no depth.
+//!   STAND-IN(#362): a blended surface with an alpha test loses one of the two (see `pass_audit.rs`).
 
 use super::{SLSF1_EXTERNAL_EMITTANCE, native_depth_flags, native_tag};
 use crate::skin_material::{SkyrimSkinFlags, SkyrimSkinMaterial};
@@ -32,7 +36,7 @@ const SLSF1_OWN_EMIT: u32 = 1 << 22;
 const SLSF1_ANY_DECAL: u32 = (1 << 26) | (1 << 27);
 /// Property flag bit 18, which selects the hair technique.
 const SLSF1_HAIR_BIT_18: u32 = 1 << 18;
-/// Property flag bit 32 is bit 0 of the second flag word.
+/// Property flag bit 32 is bit 0 of the second flag word: depth write.
 const SLSF2_BIT_32: u32 = 1;
 
 /// Marks a retail hair decal (SPEC-1 section 6.3): a decal with property flags 32 and 18 runs the
@@ -116,10 +120,22 @@ pub(super) fn apply(
     };
     material.emissive = LinearRgba::new(emission.x, emission.y, emission.z, published.alpha);
 
+    // A sorted draw takes the fog and `k` in its shader only when the material blends.
+    let alpha = loaded.base_color.to_linear().alpha;
+    let blends = flags_1 & SLSF1_ANY_DECAL == 0
+        && (super::authored_blend_factors(source).is_some() || alpha < 1.0);
+    let converts = match material.alpha_mode {
+        AlphaMode::Opaque => true,
+        AlphaMode::Mask(_) => flags_2 & SLSF2_BIT_32 == 0,
+        _ => false,
+    };
+    if blends && converts {
+        material.alpha_mode = AlphaMode::Blend;
+    }
+
     if let AlphaMode::Mask(cutoff) = material.alpha_mode {
         // The published cutoff is the threshold byte / 255; the half step guards the f32 product.
         let threshold = (cutoff * 255.0).round();
-        let alpha = loaded.base_color.to_linear().alpha;
         material.alpha_mode = AlphaMode::Mask((threshold * alpha + 1.0e-3).floor() / 255.0);
     }
 
@@ -222,7 +238,15 @@ mod tests {
 
     #[test]
     fn the_alpha_reference_is_the_truncated_threshold_times_the_property_alpha() {
-        let material = applied(0, 0, "");
+        let material = applied(0, SLSF2_BIT_32, "");
         assert_eq!(material.alpha_mode, AlphaMode::Mask(64.0 / 255.0));
+    }
+
+    /// The fixture's property alpha is 0.5, so a surface that is not a decal blends (section 9.2).
+    #[test]
+    fn a_surface_below_full_alpha_without_depth_write_blends_unless_it_is_a_decal() {
+        assert_eq!(applied(0, 0, "").alpha_mode, AlphaMode::Blend);
+        let decal = applied(SLSF1_ANY_DECAL, 0, "");
+        assert_eq!(decal.alpha_mode, AlphaMode::Mask(64.0 / 255.0));
     }
 }
