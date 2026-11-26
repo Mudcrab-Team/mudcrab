@@ -259,21 +259,22 @@ class Workspace:
                 name = re.search(r'^name = "([^"]+)"', block, re.MULTILINE)
                 if name:
                     (external if re.search(r"^source = ", block, re.MULTILINE) else local).add(name[1])
-        # A new or newly patched path crate can be missing from a stale lock file.
+        # A new or newly patched path crate can be missing from a stale lock file. Read every
+        # listed manifest, and follow `path` values into directories that Git ignores. Matching
+        # any `name` or `path` over-selects, which only costs a rebuild.
         listed = git(self.repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
                      "--", "Cargo.toml", "*/Cargo.toml")
-        for relative in filter(None, listed.split("\0")):
-            manifest = self.repo / relative
-            if not manifest.is_file():
+        pending = [self.repo / relative for relative in filter(None, listed.split("\0"))]
+        seen: set[Path] = set()
+        while pending:
+            manifest = pending.pop().resolve()
+            if manifest in seen or not manifest.is_file():
                 continue
-            section = ""
-            for line in manifest.read_text(encoding="utf-8").splitlines():
-                if line.startswith("["):
-                    section = line.split("#", 1)[0].strip()
-                elif section == "[package]":
-                    name = re.match(r"""name\s*=\s*["']([^"']+)["']""", line)
-                    if name:
-                        local.add(name[1])
+            seen.add(manifest)
+            text = manifest.read_text(encoding="utf-8")
+            local.update(re.findall(r"""\bname["']?\s*=\s*["']([^"'\n]+)["']""", text))
+            pending.extend(manifest.parent / value / "Cargo.toml"
+                           for value in re.findall(r"""\bpath["']?\s*=\s*["']([^"'\n]+)["']""", text))
         return external - local
 
     def forget_path_crates(self, slot: Path) -> int:

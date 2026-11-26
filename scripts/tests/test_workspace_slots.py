@@ -155,6 +155,19 @@ class ForgetTests(SlotCase):
         for profile in profiles:
             self.assertEqual(self.left(profile), ["git-dep", "serde"])
 
+    def test_an_ignored_or_indented_manifest_still_counts_as_a_path_package(self):
+        # Both packages are still registry packages in the stale lock file.
+        self.write(self.b, {
+            ".gitignore": "ignored/\n",
+            "app/Cargo.toml": '[package]\nname = "app"\n[dependencies]\n'
+                              'serde = { path = "../ignored/serde" }\n',
+            "ignored/serde/Cargo.toml": '  [package]\n  name = "serde"\n',
+        })
+        self.run_slot(self.ws_a)
+        self.fill()
+        self.run_slot(self.ws_b)
+        self.assertEqual(self.left(), ["git-dep"])
+
     def test_the_same_checkout_keeps_every_fingerprint(self):
         self.run_slot(self.ws_a)
         self.fill()
