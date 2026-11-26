@@ -94,7 +94,10 @@ fn pbr_input_from_standard_material(
     let alpha_cutoff = pbr_bindings::material.alpha_cutoff;
 #endif
 
-    let double_sided = (flags & pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u;
+    // mudcrab: retail's Lighting shader does not turn the normal of a back face (SPEC-1 section
+    // 3.2 reads no front-face input), so a retail surface is never flipped.
+    let double_sided = (flags & pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u
+        && (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u;
 
     var pbr_input: pbr_types::PbrInput = pbr_input_from_vertex_output(in, is_front, double_sided);
     pbr_input.material.flags = flags;
@@ -240,6 +243,14 @@ pbr_input.material.uv_transform = uv_transform;
 
     pbr_input.material.flags = flags;
     pbr_input.material.alpha_cutoff = alpha_cutoff;
+
+    // mudcrab: the retail specular colour and glossiness (`RetailSurface`).
+#ifdef BINDLESS
+    pbr_input.material.retail_specular =
+        pbr_bindings::material_array[material_indices[slot].material].retail_specular;
+#else   // BINDLESS
+    pbr_input.material.retail_specular = pbr_bindings::material.retail_specular;
+#endif  // BINDLESS
 
     // NOTE: Unlit bit not set means == 0 is true, so the true case is if lit
     if ((flags & pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u) {
@@ -680,7 +691,8 @@ pbr_input.material.uv_transform = uv_transform;
 
 #ifdef STANDARD_MATERIAL_NORMAL_MAP
 
-        let Nt =
+        // mudcrab: keep the whole sample; the alpha is the retail specular mask.
+        let normal_sample =
 #ifdef MESHLET_MESH_MATERIAL_PASS
             textureSampleGrad(
 #else   // MESHLET_MESH_MATERIAL_PASS
@@ -704,7 +716,10 @@ pbr_input.material.uv_transform = uv_transform;
 #else   // MESHLET_MESH_MATERIAL_PASS
                 bias.mip_bias,
 #endif  // MESHLET_MESH_MATERIAL_PASS
-            ).rgb;
+            );
+        let Nt = normal_sample.rgb;
+        // mudcrab: the retail specular mask (SPEC-1 section 6.2).
+        pbr_input.retail_specular_mask = normal_sample.a;
 
         pbr_input.N = pbr_functions::apply_normal_mapping(flags, TBN, double_sided, is_front, Nt);
 

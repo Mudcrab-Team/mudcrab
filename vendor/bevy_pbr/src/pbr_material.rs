@@ -98,6 +98,12 @@ pub struct StandardMaterial {
     /// Defaults to `0.0`
     pub emissive_exposure_weight: f32,
 
+    /// mudcrab: shade this surface as Skyrim's near `Lighting` shader does ([`RetailSurface`]).
+    /// `None` (the default) is unpatched Bevy.
+    ///
+    /// [`RetailSurface`]: crate::RetailSurface
+    pub retail_surface: Option<RetailSurface>,
+
     /// The UV channel to use for the [`StandardMaterial::emissive_texture`].
     ///
     /// Defaults to [`UvChannel::Uv0`].
@@ -858,6 +864,8 @@ impl Default for StandardMaterial {
             base_color_texture: None,
             emissive: LinearRgba::BLACK,
             emissive_exposure_weight: 0.0,
+            // mudcrab: no retail surface by default.
+            retail_surface: None,
             emissive_channel: UvChannel::Uv0,
             emissive_texture: None,
             // Matches Blender's default roughness.
@@ -989,6 +997,9 @@ bitflags::bitflags! {
         const ANISOTROPY_TEXTURE         = 1 << 17;
         const SPECULAR_TEXTURE           = 1 << 18;
         const SPECULAR_TINT_TEXTURE      = 1 << 19;
+        // mudcrab: the retail Lighting path (`RetailSurface`), and its specular term.
+        const RETAIL_LIGHTING            = 1 << 20;
+        const RETAIL_SPECULAR            = 1 << 21;
         const ALPHA_MODE_RESERVED_BITS   = Self::ALPHA_MODE_MASK_BITS << Self::ALPHA_MODE_SHIFT_BITS; // ← Bitmask reserving bits for the `AlphaMode`
         const ALPHA_MODE_OPAQUE          = 0 << Self::ALPHA_MODE_SHIFT_BITS;                          // ← Values are just sequential values bitshifted into
         const ALPHA_MODE_MASK            = 1 << Self::ALPHA_MODE_SHIFT_BITS;                          //   the bitmask, and can range from 0 to 7.
@@ -1061,6 +1072,8 @@ pub struct StandardMaterialUniform {
     pub max_relief_mapping_search_steps: u32,
     /// ID for specifying which deferred lighting pass should be used for rendering this material, if any.
     pub deferred_lighting_pass_id: u32,
+    /// mudcrab: `RetailSurface`: specular colour times strength in `xyz`, glossiness in `w`.
+    pub retail_specular: Vec4,
 }
 
 impl AsBindGroupShaderType<StandardMaterialUniform> for StandardMaterial {
@@ -1176,6 +1189,16 @@ impl AsBindGroupShaderType<StandardMaterialUniform> for StandardMaterial {
             flags |= StandardMaterialFlags::ATTENUATION_ENABLED;
         }
 
+        // mudcrab: the retail Lighting path (`RetailSurface`).
+        let mut retail_specular = Vec4::ZERO;
+        if let Some(surface) = self.retail_surface {
+            flags |= StandardMaterialFlags::RETAIL_LIGHTING;
+            if surface.specular {
+                flags |= StandardMaterialFlags::RETAIL_SPECULAR;
+            }
+            retail_specular = surface.specular_color.extend(surface.glossiness);
+        }
+
         let mut emissive = self.emissive.to_vec4();
         emissive[3] = self.emissive_exposure_weight;
 
@@ -1207,6 +1230,7 @@ impl AsBindGroupShaderType<StandardMaterialUniform> for StandardMaterial {
             lightmap_exposure: self.lightmap_exposure,
             max_relief_mapping_search_steps: self.parallax_mapping_method.max_steps(),
             deferred_lighting_pass_id: self.deferred_lighting_pass_id as u32,
+            retail_specular,
             uv_transform: self.uv_transform.into(),
         }
     }

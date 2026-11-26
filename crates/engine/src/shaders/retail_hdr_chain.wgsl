@@ -77,14 +77,15 @@ fn is_nan(value: f32) -> bool {
     return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u;
 }
 
-// delta = target - previous; step = sign(delta) * min(|delta|, max(|delta * rate|, 1/256));
-// new = previous + step. A NaN target keeps the previous value.
+// delta = target - previous; step = sign(delta * rate) * min(|delta|, max(|delta * rate|, 1/256));
+// new = previous + step. At rate 0 the channel does not move (SPEC-1 section 10, correction C1).
+// A NaN target keeps the previous value.
 fn adapt_channel(previous_value: f32, measured: f32, rate: f32) -> f32 {
     if is_nan(measured) {
         return previous_value;
     }
     let delta = measured - previous_value;
-    let step = sign(delta) * min(abs(delta), max(abs(delta * rate), 1.0 / 256.0));
+    let step = sign(delta * rate) * min(abs(delta), max(abs(delta * rate), 1.0 / 256.0));
     return previous_value + step;
 }
 

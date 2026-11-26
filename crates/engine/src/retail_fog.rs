@@ -229,6 +229,17 @@ impl RetailFogPass {
     /// `A` while Mudcrab has no SAO pass. STAND-IN(#995): factor one replaces the retail SAO texture.
     pub const SAO_FACTOR: f32 = 1.0;
 
+    /// Retail's no-fog composite (record 49): the clip alone, with no fog and no `k`
+    /// (SPEC-1 section 8.3). With `Fc = 0` and a `k` of 1 the blend leaves the colour as it is,
+    /// and the saturate draw after it clips.
+    pub fn without_fog() -> Self {
+        Self {
+            range: Vec4::new(0.0, 1.0, 1.0, 0.0),
+            near_colour: Vec3::ZERO.extend(1.0),
+            far_colour: Vec3::ZERO.extend(Self::SAO_FACTOR),
+        }
+    }
+
     /// The pass for `params`. A ramp that draws nothing (`far <= near`, a max that is not positive,
     /// or a power that is not positive and finite) takes retail's fallback: its composite still
     /// runs with `Fc = 0` and still applies `k`. The weather record must have published its fog

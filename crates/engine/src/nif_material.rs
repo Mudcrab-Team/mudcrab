@@ -29,6 +29,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// The retail inputs of a lighting material under `skyrim`.
+mod retail;
+
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
 pub struct NifMaterialPlugin;
 
@@ -502,6 +505,12 @@ impl NativeMaterialHandler {
         }
         self.skin_labels.insert(label.to_owned());
     }
+
+    /// Whether this profile draws a material through a native one: always the converter-tagged
+    /// cases, and under `skyrim` every lighting material, which takes the retail surface.
+    fn needs_native(&self, material: &gltf::Material<'_>) -> bool {
+        needs_native_material(material) || (self.raw_colour_texels && retail::is_lighting(material))
+    }
 }
 
 /// The stock hook records this dependency before our hook replaces its render binding.
@@ -752,7 +761,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         label: &str,
     ) {
         let palette = self.palette(source);
-        if !needs_native_material(source) && palette.is_none() {
+        if !self.needs_native(source) && palette.is_none() {
             return;
         }
         // Reuse Bevy's fully constructed standard material instead of duplicating
@@ -762,6 +771,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             .and_then(|asset| asset.get::<StandardMaterial>())
             .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
         let mut material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+        // The raw colour space belongs to the `skyrim` profile, and so does the retail surface.
+        if self.raw_colour_texels && retail::is_lighting(source) {
+            retail::apply(source, standard, &mut material);
+        }
         let mut depth = native_depth_state(source, material.alpha_mode);
         if palette.is_none()
             && let Some(state) = depth.as_mut()
@@ -837,7 +850,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         context.add_labeled_asset(
                             format!("{label}/skin-depth"),
                             depth_material(
-                                hair_material(material.clone(), tint, self.raw_colour_texels),
+                                retail::hair_decal(
+                                    source,
+                                    hair_material(material.clone(), tint, self.raw_colour_texels),
+                                ),
                                 state,
                             ),
                         );
@@ -901,7 +917,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         if has_external_emittance(material) {
             entity.insert(ExternalEmittance);
         }
-        if palette || needs_native_material(material) {
+        if palette || self.needs_native(material) {
             let source = entity
                 .get::<MeshMaterial3d<StandardMaterial>>()
                 .expect("NifMaterialPlugin requires the stock PBR glTF handler before it")

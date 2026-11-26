@@ -760,6 +760,7 @@ fn advance_terrain_merge(
                     pending.join(", ")
                 )))
             } else {
+                let retail_surface = crate::render::retail_terrain_surface(colour_srgb);
                 // Every array the material binds, for the bridge's declaration of each cell.
                 let bound = diffuse.iter().chain(normal).map(Handle::id).collect();
                 match MergedTerrainExtension::new(diffuse, normal, entries.clone()) {
@@ -772,6 +773,7 @@ fn advance_terrain_merge(
                                 perceptual_roughness: 0.92,
                                 cull_mode: None,
                                 double_sided: true,
+                                retail_surface,
                                 ..default()
                             },
                             extension,

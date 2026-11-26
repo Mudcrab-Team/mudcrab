@@ -35,12 +35,14 @@ so a still actor also keeps the base shape.
 | Add `RetailPointFalloff`, a marker component for a `PointLight`. The light gets the `RETAIL_FALLOFF` flag (bit 6 of the clustered light flags) and the shader attenuates it by `saturate(1 - d^2 / range^2)`, Skyrim's falloff, instead of `window(d) / d^2`. There is no `1 / d^2`, so `color x intensity / (4 pi^2)` is the radiance that an albedo-1 surface facing the light receives at its centre. Spot lights ignore the marker (#955) | **Mudcrab's own addition, not a Bevy change** | `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_lighting.wgsl` |
 | Add `DirectionalAmbientCube`: retail's directional ambient. With it enabled, the ambient term is `mean + slopes . N` per pixel normal (Creation axes, the object LOD shader's map) and its diffuse part is `albedo * ambient`, with no `EnvBRDFApprox` scale. With it disabled (the default) the shader is the original | **Mudcrab's own addition, not a Bevy change** | `src/directional_ambient_cube.rs`, `src/lib.rs`, `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_ambient.wgsl` |
 
+| Add `RetailSurface`: retail's near `Lighting` path for a `StandardMaterial` that sets `retail_surface` (`render/pbr_retail.wgsl`). Unitless light sum, retail attenuation, specular and output tail; no Bevy light model, exposure or shader fog; no back-face normal flip. `None` (the default) is the original | **Mudcrab's own addition, not a Bevy change** | `src/retail_surface.rs`, `src/lib.rs`, `src/pbr_material.rs`, `src/render/pbr_retail.wgsl`, `src/render/pbr_types.wgsl`, `src/render/pbr_fragment.wgsl`, `src/render/pbr_functions.wgsl` |
+
 Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists the touched spots.
 
 ## Updating or removing this copy
 
 Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` when a Bevy release
 that Mudcrab uses contains `bevyengine/bevy#26504`, `#26095` and `#26588`, or equivalent fixes (each can go on its own). If Bevy lands a different
-change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read. The power ramp fog and the directional ambient are Mudcrab's own additions: keep them, since no Bevy release replaces them.
+change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read. The power ramp fog, the retail point-light falloff, the directional ambient and the retail lighting path are Mudcrab's own additions: keep them, since no Bevy release replaces them.
 After any change run `cargo test --locked -p engine` and the Metal shader-validation run in
 `vendor/BEVY_PATCHES.md`, and confirm it reports 0 out-of-bounds reads.

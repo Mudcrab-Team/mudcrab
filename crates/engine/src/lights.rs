@@ -32,7 +32,10 @@
 //! unshadowed, so an unflagged light also lights the far side of the wall it is mounted on, as in
 //! retail.
 
-use crate::world::{components::StreamingCamera, database::LightRow};
+use crate::{
+    retail_lighting::LightUnits,
+    world::{components::StreamingCamera, database::LightRow},
+};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -53,10 +56,9 @@ pub const LIGHT_FLAG_NEGATIVE: u32 = 0x0000_0004;
 /// Global environment policy, independent of the local-light compatibility transform.
 pub const AMBIENT_ILLUMINANCE: f32 = SUN_ILLUMINANCE / (core::f32::consts::PI * SUNLIGHT_SCALE);
 
-/// The sun's illuminance in the world path, in lux. With the `mudcrab` profile's EV100 of 9.7 this
-/// puts a white surface facing the sun at about 3.8 in linear radiance before tone mapping. Under
-/// `skyrim` the exposure is `retail_hdr::input_scale_ev100` (about 10.15), which makes it
-/// `SUNLIGHT_SCALE` (2.8) and one unit of ambient exactly 1.
+/// The sun's illuminance in the `mudcrab` world path, in lux. With that profile's EV100 of 9.7
+/// this puts a white surface facing the sun at about 3.8 in linear radiance before tone mapping.
+/// The `skyrim` profile does not use it: its lights are in retail units (`retail_lighting.rs`).
 pub const SUN_ILLUMINANCE: f32 = 12_000.0;
 
 /// How much brighter than the ambient cube Skyrim's `SunlightScale` makes the sun's colour
@@ -106,7 +108,7 @@ impl LightEvaluation {
         self.source.flags & LIGHT_FLAG_SHADOW_MODES != 0
     }
 
-    /// The actual streaming consumer uses this conversion for both immediate and deferred lights.
+    /// The `mudcrab` conversion.
     pub fn point_light(&self) -> Option<PointLight> {
         if self.suppressed_flags {
             return None;
@@ -122,6 +124,60 @@ impl LightEvaluation {
             shadow_maps_enabled: false,
             ..default()
         })
+    }
+
+    /// The actual streaming consumer uses this conversion for both immediate and deferred lights.
+    ///
+    /// Under [`LightUnits::Retail`] (SPEC-1 section 2.6) the colour is the record bytes / 255 with
+    /// no sRGB decode, and the product `colour x fade` has no clamp: a Negative light (`DATA` flag
+    /// `0x4`) or a negative fade gives a negative colour. `emittance` is the colour of the
+    /// reference's `XEMI` source: it multiplies the record colour, and the Negative flag is then
+    /// not applied again.
+    ///
+    /// STAND-IN(#362): the emittance colour is the converter's day colour, and only a reference
+    /// with `XEMI` takes it; retail also lists a light whose model has an external-emittance
+    /// property, and follows the region's weather over the day.
+    pub fn point_light_in(
+        &self,
+        units: LightUnits,
+        emittance: Option<[u8; 3]>,
+    ) -> Option<PointLight> {
+        if !units.is_retail() {
+            return self.point_light();
+        }
+        if self.source.flags & LIGHT_FLAG_OFF_BY_DEFAULT != 0 {
+            return None;
+        }
+        let record = Vec3::from_array(self.source.color.map(f32::from)) / 255.0;
+        let (colour, sign) = match emittance {
+            Some(source) => (
+                record * Vec3::from_array(source.map(f32::from)) / 255.0,
+                1.0,
+            ),
+            None if self.source.flags & LIGHT_FLAG_NEGATIVE != 0 => (record, -1.0),
+            None => (record, 1.0),
+        };
+        let colour = colour * sign * self.retail_fade().signum();
+        Some(PointLight {
+            color: Color::linear_rgb(colour.x, colour.y, colour.z),
+            intensity: units.point_intensity(self.retail_fade().abs()),
+            range: self.backend_range?,
+            shadow_maps_enabled: false,
+            ..default()
+        })
+    }
+
+    /// The fade the retail path scales the colour by: `FNAM` plus the reference offset, with no
+    /// clamp.
+    pub fn retail_fade(&self) -> f32 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a sum of two f32 values, bounded by the f32 range below"
+        )]
+        let fade = self
+            .authored_fade
+            .clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32;
+        fade
     }
 }
 
@@ -415,6 +471,18 @@ impl LightEvaluation {
     /// `seed` is the reference's form id.
     pub fn dynamics(&self, seed: u32) -> crate::light_dynamics::LightDynamics {
         crate::light_dynamics::LightDynamics::new(self, seed)
+    }
+
+    /// [`Self::dynamics`] for the light [`Self::point_light_in`] builds in `units`.
+    pub fn dynamics_in(
+        &self,
+        units: LightUnits,
+        seed: u32,
+    ) -> crate::light_dynamics::LightDynamics {
+        match units {
+            LightUnits::Mudcrab => self.dynamics(seed),
+            LightUnits::Retail => crate::light_dynamics::LightDynamics::retail(self, seed),
+        }
     }
 }
 

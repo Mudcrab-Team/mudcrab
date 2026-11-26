@@ -1087,22 +1087,18 @@ impl GrassLightUnits {
 
     /// The sun colour the grass shader receives.
     ///
-    /// The scene's sun (`SUN_ILLUMINANCE`) stands for retail's Lighting sun,
-    /// `NiLight.diffuse * SunlightScale`. Retail grass does not take `SunlightScale`: its pixel
-    /// shader gets the raw `NiLight.diffuse` (RF-GRASS-004; skyrim-research NEEDS 18 question 3,
-    /// skyrim_decomp PR 1059; static reading, unverified at run time). So under `skyrim` the
-    /// grass sun is the scene sun divided by `SUNLIGHT_SCALE`. Without the division, grass in the
-    /// sun is `SUNLIGHT_SCALE` times too bright beside every other surface (#796). The constant
-    /// is the exterior's; an interior key light carries its own scale (XCIM), so a later
-    /// interior-grass change must not copy it. The optional sheen reads this colour too, so it
-    /// drops by the same factor.
+    /// Retail grass takes the raw `NiLight.diffuse`, without `SunlightScale` (RF-GRASS-004;
+    /// skyrim-research NEEDS 18 question 3, skyrim_decomp PR 1059; static reading, unverified at
+    /// run time). Under `skyrim` the scene sun's linear colour is that diffuse (SPEC-1 section
+    /// 2.3) and its illuminance carries the scale, so grass takes the colour alone, times the `pi`
+    /// that cancels the shader's `1 / pi`. A sun that is switched off (illuminance 0) stays off.
+    /// `mudcrab` takes the scene sun, colour times illuminance.
     pub(crate) fn sun(self, colour: [f32; 4], illuminance: f32) -> Vec4 {
-        let scale = if self.retail {
-            crate::lights::SUNLIGHT_SCALE
-        } else {
-            1.0
-        };
-        Vec4::from_array(colour) * (illuminance / scale)
+        if !self.retail {
+            return Vec4::from_array(colour) * illuminance;
+        }
+        let on = if illuminance > 0.0 { 1.0 } else { 0.0 };
+        Vec4::from_array(colour) * (std::f32::consts::PI * on)
     }
 
     /// The ambient colour the grass shader receives.
@@ -1575,10 +1571,10 @@ mod tests {
 
     include!("grass_render_alpha_tests.rs");
 
-    /// Retail grass takes the raw sun and the raw ambient (RF-GRASS-004). The scene's sun stands for
-    /// `diffuse * SunlightScale`, so grass divides it. The shader divides the lit sum by pi, so
-    /// the grass ambient carries the matching factor and the sun does not. `mudcrab` keeps the
-    /// scene's own values.
+    /// Retail grass takes the raw sun and the raw ambient (RF-GRASS-004). Under `skyrim` the
+    /// scene sun's colour is the raw diffuse and its illuminance holds `SunlightScale`, which
+    /// grass leaves out. The shader divides the lit sum by pi, so both grass values carry the
+    /// matching factor. `mudcrab` keeps the scene's own values.
     #[test]
     fn grass_light_units_by_profile() {
         let retail = GrassLightUnits::of(crate::visual_profile::VisualProfile::Skyrim);
@@ -1588,8 +1584,17 @@ mod tests {
 
         let colour = [0.5, 1.0, 0.25, 1.0];
         let lux = crate::lights::SUN_ILLUMINANCE;
-        let divided = Vec4::from_array(colour) * (lux / crate::lights::SUNLIGHT_SCALE);
-        assert!(retail.sun(colour, lux).abs_diff_eq(divided, 1.0e-3));
+        let pi_colour = Vec4::from_array(colour) * std::f32::consts::PI;
+        // Whatever scale the scene sun carries, grass takes the colour alone.
+        for scale in [1.0, 1.8, 2.8] {
+            let illuminance = crate::retail_lighting::sun_illuminance(scale);
+            assert!(
+                retail
+                    .sun(colour, illuminance)
+                    .abs_diff_eq(pi_colour, 1.0e-6)
+            );
+        }
+        assert_eq!(retail.sun(colour, 0.0), Vec4::ZERO);
         // The old expression, bit for bit.
         assert_eq!(scene.sun(colour, lux), Vec4::from_array(colour) * lux);
 
@@ -2879,16 +2884,16 @@ mod tests {
         let mut state: SystemState<Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>> =
             SystemState::new(&mut world);
         let suns = state.get(&world).unwrap();
-        // Under `skyrim` the grass sun is the scene sun divided by SunlightScale.
+        // Under `skyrim` the grass sun is the scene sun's colour, times pi.
         let units = GrassLightUnits { retail: true };
-        let per_scale = |value: Vec4| value / crate::lights::SUNLIGHT_SCALE;
+        let times_pi = |value: Vec4| value * std::f32::consts::PI;
         let (direction, color) = prepared_grass_sun(&suns, &RenderLayers::default(), units);
         assert_eq!(direction, Vec4::Z);
-        assert!(color.abs_diff_eq(per_scale(Vec4::new(5.0, 10.0, 20.0, 20.0)), 1.0e-5));
+        assert!(color.abs_diff_eq(times_pi(Vec4::new(0.25, 0.5, 1.0, 1.0)), 1.0e-5));
         assert!(
             prepared_grass_sun(&suns, &RenderLayers::layer(1), units)
                 .1
-                .abs_diff_eq(per_scale(Vec4::new(0.0, 13.0, 0.0, 13.0)), 1.0e-5)
+                .abs_diff_eq(times_pi(Vec4::new(0.0, 1.0, 0.0, 1.0)), 1.0e-5)
         );
         assert_eq!(
             prepared_grass_sun(&suns, &RenderLayers::layer(9), units),

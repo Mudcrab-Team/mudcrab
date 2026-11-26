@@ -50,6 +50,8 @@ const FLAG_SPECULAR: u32 = 4u;
 const FLAG_FACEGEN: u32 = 8u;
 const FLAG_SKIN_TINT: u32 = 16u;
 const FLAG_HAIR_TINT: u32 = 32u;
+const FLAG_HAIR_DECAL: u32 = 64u;
+const FLAG_RETAIL: u32 = 128u;
 const FLAG_DEBUG_WORLD_NORMAL: u32 = 65536u;
 const FLAG_DEBUG_VERTEX_NORMAL: u32 = 131072u;
 
@@ -207,7 +209,19 @@ fn vertex(vertex_no_morph: Vertex) -> SkinVertexOutput {
     return out;
 }
 
-fn stock_vertex_output(skin_in: SkinVertexOutput) -> VertexOutput {
+// SPEC-1 section 6.3, the hair decal: discard below 4/255, then `sat(1.05 alpha)` is the alpha the
+// alpha test and the blend read.
+fn hair_decal_alpha(alpha: f32) -> f32 {
+    return saturate(1.05 * alpha);
+}
+
+// The retail face blends act on the diffuse texel and the vertex colour multiplies afterwards
+// (SPEC-1 section 9.2), so a retail face or tinted skin takes the vertex RGB after its blend.
+fn tints_before_vertex_colour(flags: u32) -> bool {
+    return (flags & (FLAG_FACEGEN | FLAG_SKIN_TINT)) != 0u;
+}
+
+fn stock_vertex_output(skin_in: SkinVertexOutput, retail_vertex_output: bool) -> VertexOutput {
     var in: VertexOutput;
     in.position = skin_in.position;
     in.world_position = skin_in.world_position;
@@ -223,6 +237,9 @@ fn stock_vertex_output(skin_in: SkinVertexOutput) -> VertexOutput {
 #endif
 #ifdef VERTEX_COLORS
     in.color = skin_in.color;
+    if retail_vertex_output && tints_before_vertex_colour(skin.flags) {
+        in.color = vec4<f32>(1.0, 1.0, 1.0, skin_in.color.a);
+    }
     if (skin.flags & FLAG_HAIR_TINT) != 0u {
         // Hair's vertex colour masks the tint in green and is not a colour; Bevy would multiply
         // all of it into the base colour. Only its alpha scales the alpha, as in Skyrim.
@@ -259,13 +276,21 @@ fn debug_color(value: vec3<f32>) -> vec4<f32> {
 
 @fragment
 fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    let in = stock_vertex_output(skin_in);
+    let in = stock_vertex_output(skin_in, (skin.flags & FLAG_RETAIL) != 0u);
 
 #ifdef VISIBILITY_RANGE_DITHER
     bevy_pbr::pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
 #endif
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+    let retail =
+        (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u;
+    if (skin.flags & FLAG_HAIR_DECAL) != 0u {
+        if pbr_input.material.base_color.a < 4.0 / 255.0 {
+            discard;
+        }
+        pbr_input.material.base_color.a = hair_decal_alpha(pbr_input.material.base_color.a);
+    }
 #ifdef SKYRIM_HAIR_ALPHA_TO_COVERAGE
     // A masked hair card under MSAA (`skin_material.rs`, "Hair card edges"): coverage instead of
     // the alpha test. Full at the authored cutoff, where the prepass and shadows stop, and fading
@@ -329,6 +354,15 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
 #endif
     }
 
+#ifdef VERTEX_COLORS
+    if retail && tints_before_vertex_colour(skin.flags) {
+        pbr_input.material.base_color = vec4<f32>(
+            pbr_input.material.base_color.rgb * skin_in.color.rgb,
+            pbr_input.material.base_color.a,
+        );
+    }
+#endif
+
     if (skin.flags & FLAG_MODEL_SPACE_NORMALS) != 0u {
         // The same UV and bias the base material samples its own textures with.
         let uv = (pbr_input.material.uv_transform * vec3<f32>(in.uv, 1.0)).xy;
@@ -344,8 +378,18 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
             skin_in.normal_from_local_z,
         );
         var world_normal = model_space_world_normal(tbn, normal.xyz);
+#ifndef SKINNED
+        // Retail does not normalise a non-skinned model-space normal (SPEC-1 section 9.2); the
+        // mesh transform's rotation applies and its scale does not.
+        if retail {
+            world_normal = mat3x3<f32>(
+                normalize(tbn[0]), normalize(tbn[1]), normalize(tbn[2]),
+            ) * normal.xyz;
+        }
+#endif
         let double_sided =
-            (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u;
+            (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u
+            && !retail;
         if double_sided && !is_front {
             world_normal = -world_normal;
         }
@@ -363,6 +407,13 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
         // Skyrim scales the specular term by the mask linearly. Bevy's F0 is
         // 0.16 * reflectance^2, so reflectance takes the square root to keep F0 linear in it.
         pbr_input.material.reflectance *= sqrt(glossiness);
+        // The retail path takes the mask as it is: `t2.r`, and 0 without a map (section 9.2).
+        pbr_input.retail_specular_mask = 0.0;
+        if (skin.flags & FLAG_SPECULAR_MAP) != 0u {
+            pbr_input.retail_specular_mask = model_space_glossiness(
+                textureSampleBias(specular_texture, specular_sampler, uv, view.mip_bias)
+            );
+        }
     }
 #endif
 

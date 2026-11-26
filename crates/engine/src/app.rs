@@ -2777,14 +2777,27 @@ fn setup_world(
     commands.insert_resource(DirectionalLightShadowMap {
         size: config.sun_shadow_map_size,
     });
-    // The sun and ambient colours are the clear weather's own (`WTHR` 0x81A, day). Their levels are
-    // the configured input ratio in `crate::lights::AMBIENT_ILLUMINANCE` (a simplified heuristic,
-    // not a rendered-parity calibration).
+    // The sun and ambient colours are the clear weather's own (`WTHR` 0x81A, day). Under
+    // `mudcrab` their levels are the configured input ratio in
+    // `crate::lights::AMBIENT_ILLUMINANCE` (a simplified heuristic, not a rendered-parity
+    // calibration). Under `skyrim` they are retail units until the weather and the cell write
+    // them (`retail_lighting.rs`).
     let weather_lighting = crate::sky::WeatherLighting::default();
+    let units = crate::retail_lighting::LightUnits::of(config.visual_profile);
+    let (sun_illuminance, ambient_brightness) = units.startup_levels();
+    let (sun_colour, ambient_colour) = if units.is_retail() {
+        let mean = weather_lighting.directional_ambient().mean;
+        (
+            crate::retail_lighting::raw_colour(weather_lighting.sunlight),
+            Color::linear_rgb(mean.x, mean.y, mean.z),
+        )
+    } else {
+        (weather_lighting.sunlight, weather_lighting.mean_ambient())
+    };
     commands.spawn((
         DirectionalLight {
-            color: weather_lighting.sunlight,
-            illuminance: crate::lights::SUN_ILLUMINANCE,
+            color: sun_colour,
+            illuminance: sun_illuminance,
             shadow_maps_enabled: true,
             ..default()
         },
@@ -2803,10 +2816,10 @@ fn setup_world(
         crate::sun::SunLight,
     ));
     commands.insert_resource(GlobalAmbientLight {
-        color: weather_lighting.mean_ambient(),
-        // The one definition of the ambient this world path applies: the converted lights are
-        // scaled against it (`crate::lights`).
-        brightness: crate::lights::AMBIENT_ILLUMINANCE,
+        color: ambient_colour,
+        // The one definition of the ambient this world path applies: under `mudcrab` the
+        // converted lights are scaled against it (`crate::lights`).
+        brightness: ambient_brightness,
         ..default()
     });
     info!(

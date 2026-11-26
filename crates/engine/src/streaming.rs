@@ -1812,6 +1812,7 @@ fn spawn_cell(
                         perceptual_roughness: 0.92,
                         cull_mode: None,
                         double_sided: true,
+                        retail_surface: crate::render::retail_terrain_surface(colour_srgb),
                         ..default()
                     },
                     extension,
@@ -2117,10 +2118,13 @@ fn spawn_cell(
             let shadow_flagged = evaluated_light
                 .as_ref()
                 .is_some_and(crate::lights::LightEvaluation::shadow_flagged);
+            let units = crate::retail_lighting::LightUnits::of_colour_space(colour_srgb);
             let dynamics = evaluated_light
                 .as_ref()
-                .map(|evaluation| evaluation.dynamics(reference.form_id));
-            if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
+                .map(|evaluation| evaluation.dynamics_in(units, reference.form_id));
+            if let Some(light) = evaluated_light
+                .and_then(|evaluation| evaluation.point_light_in(units, reference.emittance))
+            {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,

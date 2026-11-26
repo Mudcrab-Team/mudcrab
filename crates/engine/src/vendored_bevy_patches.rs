@@ -7,7 +7,8 @@
 //! - bevyengine/bevy#26504: the morph descriptor is pending until its mesh is ready;
 //! - bevyengine/bevy#26095: stale GPU bin-unpacking jobs and bind groups are cleared every frame;
 //! - bevyengine/bevy#26588: the GPU clustering staging-buffer leak;
-//! - Mudcrab's retail point-light falloff (`RetailPointFalloff`, #955), `1 - saturate(d / r)^2`.
+//! - Mudcrab's retail point-light falloff (`RetailPointFalloff`, #955), `1 - saturate(d / r)^2`;
+//! - Mudcrab's retail Lighting path (`RetailSurface`, `pbr_retail.wgsl`, #1010).
 //!
 //! Code checks run on source with whole-line `//` comments removed and whitespace collapsed, so
 //! code turned into a comment, or re-wrapped by `rustfmt`, is judged by what it really does. Marker
@@ -27,6 +28,82 @@ const MARKER_26504: &str = "mudcrab: bevyengine/bevy#26504";
 const MARKER_26095: &str = "mudcrab: bevyengine/bevy#26095";
 const MARKER_26588: &str = "mudcrab: bevyengine/bevy#26588";
 const MARKER_POWER_RAMP: &str = "mudcrab: ";
+
+/// The links of the retail Lighting path (`RetailSurface`): the file and the code it must hold.
+/// Every link has to hold. A lost link draws the surface with Bevy's light model, whose picture
+/// looks plausible, so only this check fails.
+const RETAIL_SURFACE_LINKS: [(&str, &str); 22] = [
+    ("src/retail_surface.rs", "pub struct RetailSurface {"),
+    ("src/lib.rs", "mod retail_surface;"),
+    ("src/lib.rs", "pub use retail_surface::RetailSurface;"),
+    (
+        "src/lib.rs",
+        "load_shader_library!(app, \"render/pbr_retail.wgsl\");",
+    ),
+    (
+        "src/pbr_material.rs",
+        "pub retail_surface: Option<RetailSurface>,",
+    ),
+    ("src/pbr_material.rs", "retail_surface: None,"),
+    ("src/pbr_material.rs", "const RETAIL_LIGHTING = 1 << 20;"),
+    ("src/pbr_material.rs", "const RETAIL_SPECULAR = 1 << 21;"),
+    (
+        "src/pbr_material.rs",
+        "if let Some(surface) = self.retail_surface { flags |= StandardMaterialFlags::RETAIL_LIGHTING;",
+    ),
+    (
+        "src/pbr_material.rs",
+        "retail_specular = surface.specular_color.extend(surface.glossiness);",
+    ),
+    (
+        "src/render/pbr_types.wgsl",
+        "const STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT: u32 = 1u << 20u;",
+    ),
+    (
+        "src/render/pbr_types.wgsl",
+        "const STANDARD_MATERIAL_FLAGS_RETAIL_SPECULAR_BIT: u32 = 1u << 21u;",
+    ),
+    (
+        "src/render/pbr_types.wgsl",
+        "pbr_input.retail_specular_mask = 1.0;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "pbr_input.material.retail_specular = pbr_bindings::material.retail_specular;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "pbr_input.retail_specular_mask = normal_sample.a;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "&& (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u;",
+    ),
+    (
+        "src/render/pbr_functions.wgsl",
+        "if (in.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u { return retail::retail_lighting(in); }",
+    ),
+    (
+        "src/render/pbr_functions.wgsl",
+        "&& (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "return 1.0 - clamp(distance_squared * inverse_radius_squared, 0.0, 1.0);",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "const RETAIL_OUTPUT_SCALE: f32 = 0.8333333;",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "let sum = diffuse + ambient + in.material.emissive.rgb; let lit = in.material.base_color.rgb * sum;",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "return min(s * q + vec3<f32>(RETAIL_CLAMP_POST_LIT), lit) - t * s * q;",
+    ),
+];
 
 fn vendor(crate_name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -282,6 +359,15 @@ fn check_patches(pbr: &Path, render: &Path) {
         );
     }
 
+    // Mudcrab's retail Lighting path (#1010), not a Bevy change.
+    for (file, needed) in RETAIL_SURFACE_LINKS {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(&code(needed)),
+            "{file} lost the retail lighting path (`{needed}` or its `{MARKER_POWER_RAMP}` marker)"
+        );
+    }
+
     // Mudcrab's directional ambient (#1010), not a Bevy change: the `skyrim` profile lights a
     // surface with the `DALC` cube by normal (mean + slopes . N) instead of one flat colour.
     // Every link has to hold: the resource, its extraction, the uniform fields in both
@@ -458,6 +544,11 @@ fn vendored_copy_with_endings(
         ("bevy_pbr", "src/render/pbr_ambient.wgsl"),
         ("bevy_pbr", "src/directional_ambient_cube.rs"),
         ("bevy_pbr", "src/lib.rs"),
+        ("bevy_pbr", "src/retail_surface.rs"),
+        ("bevy_pbr", "src/pbr_material.rs"),
+        ("bevy_pbr", "src/render/pbr_types.wgsl"),
+        ("bevy_pbr", "src/render/pbr_fragment.wgsl"),
+        ("bevy_pbr", "src/render/pbr_retail.wgsl"),
         ("bevy_render", RENDER_PREPROCESSING),
     ] {
         let destination = copy.path().join(crate_name).join(relative);
@@ -548,6 +639,44 @@ fn a_directional_ambient_that_ignores_the_enabled_flag_fails() {
         text.replace(
             "cube.enabled && maybe_ambient_override.is_none()",
             "maybe_ambient_override.is_none()",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn dropping_the_retail_lighting_branch_fails() {
+    check_copy(&vendored_copy("src/render/pbr_functions.wgsl", |text| {
+        text.replace("return retail::retail_lighting(in);", "")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn dropping_the_retail_specular_copy_fails() {
+    check_copy(&vendored_copy("src/render/pbr_fragment.wgsl", |text| {
+        text.replace(
+            "pbr_input.material.retail_specular = pbr_bindings::material.retail_specular;",
+            "",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn dropping_the_retail_material_flag_fails() {
+    check_copy(&vendored_copy("src/pbr_material.rs", |text| {
+        text.replace("flags |= StandardMaterialFlags::RETAIL_LIGHTING;", "")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn changing_the_retail_attenuation_fails() {
+    check_copy(&vendored_copy("src/render/pbr_retail.wgsl", |text| {
+        text.replace(
+            "1.0 - clamp(distance_squared * inverse_radius_squared, 0.0, 1.0)",
+            "1.0 - distance_squared * inverse_radius_squared",
         )
     }));
 }

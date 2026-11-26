@@ -99,9 +99,22 @@ fn lit_by<M: EmittingMaterial>(material: &M, colour: LinearRgba) -> M {
     } else {
         base.emissive
     };
-    tint.red *= colour.red;
-    tint.green *= colour.green;
-    tint.blue *= colour.blue;
+    match base.retail_surface.filter(|_| !additive) {
+        // Under `skyrim` the source replaces the emissive colour: the emission is the source's
+        // bytes / 255 times the model's multiple, and the file colour is not multiplied in
+        // (SPEC-1 section 2.7). STAND-IN(#362): the source colour is the converter's day colour.
+        Some(surface) => {
+            let source = Color::LinearRgba(colour).to_srgba();
+            tint.red = source.red * surface.emissive_multiple;
+            tint.green = source.green * surface.emissive_multiple;
+            tint.blue = source.blue * surface.emissive_multiple;
+        }
+        None => {
+            tint.red *= colour.red;
+            tint.green *= colour.green;
+            tint.blue *= colour.blue;
+        }
+    }
     if additive {
         base.base_color = Color::LinearRgba(tint);
     } else {

@@ -511,6 +511,9 @@ pub(crate) struct InteriorRender {
     /// The six DALC colours in record order, sRGB bytes.
     pub ambient_faces: [[u8; 3]; 6],
     pub fog: Option<CellFog>,
+    /// The cell's fog fields as stored, for the `skyrim` profile's fog property
+    /// ([`FogFields::retail_params`]).
+    pub fog_fields: FogFields,
     /// The stored light fade begin and end as the cell or the current room template carries them,
     /// before the zero replacement of [`resolve_light_fade`]. `None` when the cell has no lighting
     /// data: then the distance dimmer is 1 for every light (NEEDS 20, skyrim_decomp PR 1073).
@@ -532,6 +535,7 @@ impl InteriorRender {
                 .directional_ambient
                 .map_or([[0; 3]; 6], |dalc| dalc.colors),
             fog: CellFog::from_lighting(lighting),
+            fog_fields: FogFields::from_lighting(lighting),
             light_fade: lighting.light_fade_begin.zip(lighting.light_fade_end),
         }
     }
@@ -550,6 +554,8 @@ impl InteriorRender {
             fog.near_color = lighting.fog_near_color.unwrap_or([0; 3]);
             fog.far_color = lighting.fog_far_color.unwrap_or([0; 3]);
         }
+        self.fog_fields.near_color = lighting.fog_near_color;
+        self.fog_fields.far_color = lighting.fog_far_color;
         // The room template's fade pair comes first (NEEDS 20: "current room lighting template,
         // else interior cell fade pair"). A template without the pair leaves the cell's.
         if let Some(pair) = lighting.light_fade_begin.zip(lighting.light_fade_end) {
@@ -568,6 +574,11 @@ impl InteriorRender {
         Transform::IDENTITY
             .looking_to(Vec3::from_array(self.key_travel), Vec3::Y)
             .rotation
+    }
+
+    /// The `skyrim` key light: the directional colour bytes / 255 (SPEC-1 section 2.3).
+    pub(crate) fn retail_key_light_color(&self) -> Color {
+        crate::retail_lighting::raw_bytes(self.key_color)
     }
 
     /// `GlobalAmbientLight.color`: the mean of the six DALC colours, with the same averaging as
@@ -592,6 +603,67 @@ impl InteriorRender {
             ambient_cube: self.ambient_faces.map(|[r, g, b]| Color::srgb_u8(r, g, b)),
         }
         .directional_ambient()
+    }
+}
+
+/// The interior fog fields as the cell or its template stores them. `None` is a missing field.
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
+pub(crate) struct FogFields {
+    pub near_color: Option<[u8; 3]>,
+    pub far_color: Option<[u8; 3]>,
+    pub near: Option<f32>,
+    pub far: Option<f32>,
+    pub power: Option<f32>,
+    pub max: Option<f32>,
+}
+
+/// The largest fog far distance retail keeps (SPEC-1 section 8.2).
+const RETAIL_MAX_FOG_FAR: f32 = 163_840.0;
+
+/// The share of the far distance that replaces an unusable near distance (SPEC-1 section 8.2).
+const RETAIL_FOG_NEAR_SHARE: f32 = 0.17;
+
+impl FogFields {
+    fn from_lighting(lighting: &Lighting) -> Self {
+        Self {
+            near_color: lighting.fog_near_color,
+            far_color: lighting.fog_far_color,
+            near: lighting.fog_near,
+            far: lighting.fog_far,
+            power: lighting.fog_power,
+            max: lighting.fog_max,
+        }
+    }
+
+    /// The retail fog property of an interior (SPEC-1 section 8.2): the colour bytes / 255, a far
+    /// colour of zero bytes takes the near colour, a far distance at or below 0 or above 163840
+    /// becomes 163840, and a near distance at or below 0 or above far becomes `0.17 far`. A cell
+    /// without lighting data has power 1 and max 1.
+    ///
+    /// STAND-IN(#695): a short `XCLL` or template without the power or max field also takes 1.
+    pub(crate) fn retail_params(&self) -> crate::retail_fog::RetailFogParams {
+        let rgb = |bytes: [u8; 3]| unit_rgb(bytes);
+        let near_color = self.near_color.unwrap_or([0; 3]);
+        let far_color = match self.far_color {
+            Some(colour) if colour != [0; 3] => colour,
+            _ => near_color,
+        };
+        let far = match self.far {
+            Some(far) if far > 0.0 && far <= RETAIL_MAX_FOG_FAR => far,
+            _ => RETAIL_MAX_FOG_FAR,
+        };
+        let near = match self.near {
+            Some(near) if near > 0.0 && near <= far => near,
+            _ => far * RETAIL_FOG_NEAR_SHARE,
+        };
+        crate::retail_fog::RetailFogParams {
+            near,
+            far,
+            power: self.power.unwrap_or(1.0),
+            max: self.max.unwrap_or(1.0),
+            near_rgb: rgb(near_color),
+            far_rgb: rgb(far_color),
+        }
     }
 }
 
@@ -730,6 +802,11 @@ fn interior_sunlight_scale(
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct InteriorFog(pub Option<CellFog>);
 
+/// The `skyrim` fog property of the interior the camera is in, in sky modes 1 and 2. `None`
+/// outside those modes and under `mudcrab`.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct InteriorRetailFog(pub Option<crate::retail_fog::RetailFogParams>);
+
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct EnvironmentSet;
 
@@ -739,9 +816,15 @@ impl Plugin for InteriorEnvironmentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SceneEnvironment>()
             .init_resource::<InteriorFog>()
+            .init_resource::<InteriorRetailFog>()
+            .init_resource::<crate::retail_hdr::RetailImageSpace>()
             .add_systems(
                 PostUpdate,
-                (select_environment, apply_interior_lighting)
+                (
+                    select_environment,
+                    crate::retail_hdr::select_retail_image_space,
+                    apply_interior_lighting,
+                )
                     .chain()
                     .in_set(EnvironmentSet)
                     .after(crate::door_crossing::DoorCrossingSet)
@@ -794,6 +877,10 @@ struct AmbientTargets<'w, 's> {
     profile: Option<Res<'w, crate::visual_profile::VisualProfile>>,
     /// Whether this system wrote the cube for the cell the player is in.
     cube_indoors: Local<'s, bool>,
+    /// The scene's image space, whose `SunlightScale` the `skyrim` key light takes.
+    image_space: Option<Res<'w, crate::retail_hdr::RetailImageSpace>>,
+    /// The `skyrim` fog property of the interior.
+    retail_fog: Option<ResMut<'w, InteriorRetailFog>>,
 }
 
 /// Applies sky modes 1 and 2 to the [`WorldSun`], `GlobalAmbientLight` and [`InteriorFog`]
@@ -837,6 +924,30 @@ fn apply_interior_lighting(
     if *fog != wanted_fog {
         *fog = wanted_fog;
     }
+    let AmbientTargets {
+        ambient,
+        cube,
+        profile,
+        mut cube_indoors,
+        image_space,
+        retail_fog,
+    } = lights;
+    // The retail light values are the `skyrim` profile only (SPEC-1).
+    let skyrim =
+        profile.is_some_and(|profile| *profile == crate::visual_profile::VisualProfile::Skyrim);
+    if let Some(mut retail_fog) = retail_fog {
+        retail_fog.set_if_neq(InteriorRetailFog(
+            wanted
+                .filter(|_| skyrim)
+                .map(|render| render.fog_fields.retail_params()),
+        ));
+    }
+    let sunlight_scale = image_space
+        .as_deref()
+        .copied()
+        .unwrap_or_default()
+        .0
+        .sunlight_scale;
     for (entity, mut light, mut transform, saved) in &mut suns {
         match (wanted, saved) {
             (Some(render), saved) => {
@@ -863,11 +974,19 @@ fn apply_interior_lighting(
                         shadow_maps_enabled: light.shadow_maps_enabled,
                     });
                 }
+                let (colour, illuminance) = if skyrim {
+                    (
+                        render.retail_key_light_color(),
+                        crate::retail_lighting::sun_illuminance(sunlight_scale),
+                    )
+                } else {
+                    (render.key_light_color(), render.key_illuminance)
+                };
                 set_sun(
                     &mut light,
                     &mut transform,
-                    render.key_light_color(),
-                    render.key_illuminance,
+                    colour,
+                    illuminance,
                     false,
                     render.key_rotation(),
                 );
@@ -897,18 +1016,10 @@ fn apply_interior_lighting(
             (None, None) => {}
         }
     }
-    let AmbientTargets {
-        ambient,
-        cube,
-        profile,
-        mut cube_indoors,
-    } = lights;
     // The directional ambient is the `skyrim` profile only (#1010): `mudcrab` keeps its flat
     // ambient. Outside, `crate::sky::drive_exterior_lighting` writes the exterior cube, in the
     // frame this system hands the ambient back, so leaving the cell only switches it off here.
     if let Some(mut cube) = cube {
-        let skyrim =
-            profile.is_some_and(|profile| *profile == crate::visual_profile::VisualProfile::Skyrim);
         match wanted {
             Some(render) if skyrim => {
                 cube.set_if_neq(render.directional_ambient());
@@ -932,7 +1043,14 @@ fn apply_interior_lighting(
                 Some(_) => {}
                 None => *saved_ambient = Some(ambient.color),
             }
-            let color = render.ambient_color();
+            // Under `skyrim` the flat colour is the raw cube mean, for what Bevy's own
+            // shaders draw. The retail surfaces read the cube.
+            let color = if skyrim {
+                let mean = render.directional_ambient().mean;
+                Color::linear_rgb(mean.x, mean.y, mean.z)
+            } else {
+                render.ambient_color()
+            };
             if ambient.color != color {
                 ambient.color = color;
             }
@@ -1803,6 +1921,7 @@ mod tests {
         let mut app = app(rule_catalog());
         let sun = spawn_world_sun(&mut app);
         app.insert_resource(crate::sky::lit_test_source(VisualProfile::Skyrim))
+            .insert_resource(VisualProfile::Skyrim)
             .insert_resource(crate::sun::GameClock {
                 hour: 12.0,
                 timescale: 0.0,
@@ -1812,13 +1931,23 @@ mod tests {
                 crate::sky::drive_exterior_lighting.after(EnvironmentSet),
             );
         app.update();
-        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(200, 190, 180));
+        let raw = crate::retail_lighting::raw_bytes;
+        assert_eq!(sun_light(&app, sun).color, raw([200, 190, 180]));
         let day_ambient = app.world().resource::<GlobalAmbientLight>().color;
         enter(&mut app, Some(ALVOR));
         app.update();
         let key = sun_light(&app, sun).color;
         let ambient = app.world().resource::<GlobalAmbientLight>().color;
-        assert_eq!(key, Color::srgb_u8(65, 70, 80), "the cell key light");
+        assert_eq!(key, raw([65, 70, 80]), "the cell key light");
+        assert_eq!(
+            sun_light(&app, sun).illuminance,
+            crate::retail_lighting::sun_illuminance(
+                app.world()
+                    .resource::<crate::retail_hdr::RetailImageSpace>()
+                    .0
+                    .sunlight_scale
+            )
+        );
         // The hour moves indoors: the driver does not touch the room's light.
         app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 0.0;
         app.update();
@@ -1826,7 +1955,7 @@ mod tests {
         assert_eq!(app.world().resource::<GlobalAmbientLight>().color, ambient);
         // Leaving restores a driven exterior in the same frame, for the new hour.
         enter(&mut app, None);
-        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(10, 20, 40));
+        assert_eq!(sun_light(&app, sun).color, raw([10, 20, 40]));
         assert_ne!(
             app.world().resource::<GlobalAmbientLight>().color,
             day_ambient

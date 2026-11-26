@@ -177,8 +177,9 @@ fn one_source_declares_the_sign_and_the_frame() {
         ("terrain_merged.wgsl", MERGED_SHADER),
     ] {
         assert!(
-            shader
-                .contains("#import engine::terrain_normal::{terrain_tangent_normal, terrain_tbn}"),
+            shader.contains(
+                "#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}"
+            ),
             "{name} imports the shared normal module"
         );
         assert!(
@@ -186,8 +187,9 @@ fn one_source_declares_the_sign_and_the_frame() {
             "{name} must not keep its own copy of the sign or the frame"
         );
         assert!(
-            shader.contains("terrain_tangent_normal(sample.xy)"),
-            "{name} decodes normal samples through the shared function"
+            shader.contains("terrain_tangent_normal(sample.xy)")
+                && shader.contains("retail_terrain_normal(sample.xyz)"),
+            "{name} decodes normal samples through the shared functions"
         );
     }
 }

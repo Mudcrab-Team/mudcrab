@@ -22,8 +22,10 @@
 //! 2. A 4-tap downsample takes the scene to a quarter size. Luminance steps (4 taps first, then 16
 //!    taps) divide each side by 4 until the 2 by 2 adapted pair. The average is linear.
 //! 3. The adapt draw replaces the last step. For each channel and texel,
-//!    `delta = target - previous`, `step = sign(delta) * min(|delta|, max(|delta * rate|, 1/256))`
-//!    and `new = previous + step`. A NaN target keeps the previous value. The rates are
+//!    `delta = target - previous`,
+//!    `step = sign(delta * rate) * min(|delta|, max(|delta * rate|, 1/256))`
+//!    and `new = previous + step`: at rate 0 nothing moves (SPEC-1 section 10). A NaN target keeps
+//!    the previous value. The rates are
 //!    `y = 1 - max(1 - 0.01 S, 0)^E` and `x = 1 - max(1 - 0.01 S / K, 0)^E`, with
 //!    `S = fGlobalEyeAdaptSpeedScale * EyeAdaptSpeed`, `K = fGlobalEyeAdaptStrengthScale *
 //!    EyeAdaptStrength` and `E = 30 T`. `T` is the smoothed real frame time in seconds. On the
@@ -44,22 +46,11 @@
 //! default form when the cell has none, unless a cell flag selects the weather block. An exterior
 //! in a world space with a lighting template follows the interior rule (NEEDS 27).
 //!
-//! ## The input scale: Mudcrab's light units to retail's HDR target
+//! ## The input scale
 //!
-//! STAND-IN(#796): the input scale of the chain, the number of Bevy nits that count as one retail
-//! unit in the HDR target ([`HDR_INPUT_SCALE_NITS`]). It waits for the near-lighting
-//! specification (SPEC-1), which states retail's absolute scale from record byte to tonemap input.
-//!
-//! The value and its reason. Retail shades in raw units
-//! (<https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059>): a surface lit by sun colour `c` at
-//! `SunlightScale` `s` is `albedo * c * s * N.L`, and ambient is `albedo * colour`. Mudcrab shades
-//! in Bevy's physical units and multiplies by the camera exposure `2^-EV100 / 1.2`. `lights.rs`
-//! already treats [`crate::lights::AMBIENT_ILLUMINANCE`] nits as one unit of ambient light, and
-//! sets the sun to `pi * AMBIENT_ILLUMINANCE * SUNLIGHT_SCALE` lux. The stand-in takes that same
-//! number as one unit, so the exposure is `1 / AMBIENT_ILLUMINANCE`
-//! ([`input_scale_ev100`], about 10.15) and no new constant enters. The scale it reuses is
-//! Mudcrab's own (12,000 lux / (pi x 2.8)), not a retail reading. No constant is fitted to a
-//! picture.
+//! There is none. Under `skyrim` the scene is lit in retail's own unitless values
+//! (`retail_lighting.rs`, SPEC-1 section 2.1) and the camera exposure is 1, so the HDR target
+//! holds what retail's holds.
 //!
 //! ## What Mudcrab does differently from retail
 //!
@@ -78,9 +69,8 @@
 //! - **Fog composite saturate (D3).** The fog pass is a blend and cannot clip. A Min-blend draw
 //!   of 1.0 right after it does (`retail_hdr_saturate.wgsl`), before the transmissive and
 //!   transparent passes, so later draws still add above 1. Only views that draw the composite are
-//!   clipped. Retail also runs a composite in interiors, including record 49, which has no `k`
-//!   (see `retail_fog.rs`, <https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059>). Mudcrab has
-//!   no interior composite, so interiors are not clipped.
+//!   clipped. The composite runs outside and inside; without fog it is retail's record 49, which
+//!   clips and applies no `k` (see `retail_fog.rs`).
 //! - **Targets.** The chain targets are `Rgba16Float`, retail's `Ultra` format.
 
 use crate::{
@@ -121,17 +111,6 @@ pub const GAMMA: f32 = 1.0;
 pub const ADAPT_STEP_FLOOR: f32 = 1.0 / 256.0;
 /// The luminance weights of the shipped image-space shaders (NEEDS 18).
 pub const LUMINANCE_WEIGHTS: [f32; 3] = [0.2125, 0.7154, 0.0721];
-
-/// STAND-IN(#796): the input scale of the chain, in nits per retail unit, until SPEC-1 states it.
-/// The value is the ambient light's own scale, `AMBIENT_ILLUMINANCE` = 12,000 / (pi x 2.8), about
-/// 1,364 nits. See the module notes, "The input scale".
-pub const HDR_INPUT_SCALE_NITS: f32 = crate::lights::AMBIENT_ILLUMINANCE;
-
-/// The camera exposure that applies [`HDR_INPUT_SCALE_NITS`]: Bevy's exposure is
-/// `2^-EV100 / 1.2`, so `EV100 = log2(scale / 1.2)`, about 10.15.
-pub fn input_scale_ev100() -> f32 {
-    (HDR_INPUT_SCALE_NITS / 1.2).log2()
-}
 
 /// The INI keys of the chain, in `[Display]`. Every default is the compiled retail value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -359,18 +338,19 @@ pub fn adapt_rates(block: &HdrBlock, config: &RetailHdrConfig, t: f32) -> (f32, 
     (x, y)
 }
 
-/// One adaptation step of one channel (NEEDS 18). A NaN target keeps the previous value.
+/// One adaptation step of one channel: `sign(delta x rate) x min(|delta|, max(|delta x rate|,
+/// 1/256))` (SPEC-1 section 10, correction C1). At rate 0 the channel does not move. A NaN target
+/// keeps the previous value.
 pub fn adapt_step(previous: f32, measured: f32, rate: f32) -> f32 {
     if measured.is_nan() {
         return previous;
     }
     let delta = measured - previous;
-    let step = delta.signum() * delta.abs().min((delta * rate).abs().max(ADAPT_STEP_FLOOR));
-    if delta == 0.0 {
-        previous
-    } else {
-        previous + step
+    let product = delta * rate;
+    if product == 0.0 {
+        return previous;
     }
+    previous + product.signum() * delta.abs().min(product.abs().max(ADAPT_STEP_FLOOR))
 }
 
 /// The white-point coefficient `W2` of the selected curve (NEEDS 18). Reinhard: `1 / (scale White)^2`.
@@ -740,34 +720,44 @@ fn scene_image_space(
     )
 }
 
-/// Writes the blended image space and the adaptation rates into every camera's pass.
+/// The image-space block of the active scene (SPEC-1 section 2.4). The sun's `SunlightScale`,
+/// the sky's `SkyScale` and the HDR chain all read this one block.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RetailImageSpace(pub HdrBlock);
+
+impl Default for RetailImageSpace {
+    fn default() -> Self {
+        Self(HdrBlock::IMGS_CONSTRUCTOR_DEFAULT)
+    }
+}
+
+/// Selects the scene's image-space block under the `skyrim` profile, after the scene is selected
+/// and before the lights and the sky read it.
 #[allow(
     clippy::too_many_arguments,
     reason = "Bevy injects each resource separately"
 )]
-pub(crate) fn drive_retail_hdr(
+pub(crate) fn select_retail_image_space(
     config_resource: Option<Res<EngineConfig>>,
     clock: Option<Res<crate::sun::GameClock>>,
     source: Option<Res<SceneGradeSource>>,
     catalog: Option<Res<EnvironmentCatalog>>,
     scene: Option<Res<interior::SceneEnvironment>>,
-    time: Res<Time<Real>>,
     space: Option<Res<crate::streaming::ActiveSpace>>,
     origin: Option<Res<crate::streaming::RenderOrigin>>,
     eye: Query<&Transform, With<StreamingCamera>>,
-    mut timer: Local<FrameTimer>,
     mut last: Local<Option<ImageSpaceReport>>,
-    mut cameras: Query<&mut RetailHdr>,
+    selected: Option<ResMut<RetailImageSpace>>,
 ) {
-    // The timer records every frame, as retail's does.
-    let seconds = timer.push(time.delta_secs());
-    if cameras.is_empty() {
+    let Some(mut selected) = selected else {
+        return;
+    };
+    if source
+        .as_deref()
+        .is_none_or(|source| source.profile != VisualProfile::Skyrim)
+    {
         return;
     }
-    // A world without the engine's configuration (a test) takes the compiled retail values.
-    let config = config_resource
-        .as_deref()
-        .map_or_else(RetailHdrConfig::default, |config| config.retail_hdr);
     let hour = clock.map_or(crate::sun::RETAIL_GAME_HOUR, |clock| clock.hour);
     let weather = source.as_deref().and_then(|source| source.weather.as_ref());
     let lookup = catalog
@@ -802,6 +792,30 @@ pub(crate) fn drive_retail_hdr(
         );
         *last = Some(report);
     }
+    selected.set_if_neq(RetailImageSpace(block));
+}
+
+/// Writes the scene's image space and the adaptation rates into every camera's pass.
+pub(crate) fn drive_retail_hdr(
+    config_resource: Option<Res<EngineConfig>>,
+    image_space: Option<Res<RetailImageSpace>>,
+    time: Res<Time<Real>>,
+    mut timer: Local<FrameTimer>,
+    mut cameras: Query<&mut RetailHdr>,
+) {
+    // The timer records every frame, as retail's does.
+    let seconds = timer.push(time.delta_secs());
+    if cameras.is_empty() {
+        return;
+    }
+    // A world without the engine's configuration (a test) takes the compiled retail values.
+    let config = config_resource
+        .as_deref()
+        .map_or_else(RetailHdrConfig::default, |config| config.retail_hdr);
+    let block = image_space
+        .map_or_else(RetailImageSpace::default, |selected| *selected)
+        .0;
+    // SPEC-2 amends the output stage: its inputs enter here, with the block.
     let settings = RetailHdr::from_block(&block, &config, seconds);
     for mut camera in &mut cameras {
         camera.set_if_neq(settings);
@@ -820,7 +834,13 @@ impl Plugin for RetailHdrPlugin {
             ExtractComponentPlugin::<RetailHdr>::default(),
             UniformComponentPlugin::<RetailHdr>::default(),
         ))
-        .add_systems(PostUpdate, (attach_retail_hdr, drive_retail_hdr).chain());
+        .init_resource::<RetailImageSpace>()
+        .add_systems(
+            PostUpdate,
+            (attach_retail_hdr, drive_retail_hdr)
+                .chain()
+                .after(interior::EnvironmentSet),
+        );
         crate::retail_hdr_render::build(app);
     }
 }
@@ -1053,42 +1073,31 @@ mod tests {
         assert_eq!(adapt_rates(&block, &config, 0.0), (0.0, 0.0));
     }
 
-    /// The step of NEEDS 18: `sign(delta) * min(|delta|, max(|delta * rate|, 1/256))`, and a NaN
-    /// target keeps the previous value.
+    /// The step of SPEC-1 section 10 (correction C1):
+    /// `sign(delta * rate) * min(|delta|, max(|delta * rate|, 1/256))`, and a NaN target keeps the
+    /// previous value.
     #[test]
     fn the_adaptation_step_has_a_floor_and_a_bound() {
         // A large delta moves by delta times the rate.
         close(adapt_step(0.0, 1.0, 0.25), 0.25, "rate step");
         close(adapt_step(1.0, 0.0, 0.25), 0.75, "downward");
         // A small delta moves by the floor 1/256 at least.
-        close(adapt_step(0.5, 0.5 + 0.1, 0.0), 0.5 + 1.0 / 256.0, "floor");
+        close(
+            adapt_step(0.5, 0.5 + 0.1, 0.001),
+            0.5 + 1.0 / 256.0,
+            "floor",
+        );
+        close(
+            adapt_step(0.5, 0.5 - 0.1, 0.001),
+            0.5 - 1.0 / 256.0,
+            "floor down",
+        );
         // The step never passes the target.
-        close(adapt_step(0.5, 0.5 + 0.001, 0.0), 0.501, "bound");
+        close(adapt_step(0.5, 0.5 + 0.001, 0.001), 0.501, "bound");
+        // At rate 0 nothing moves: the sign comes from `delta * rate`.
+        assert_eq!(adapt_step(0.5, 0.9, 0.0), 0.5);
         assert_eq!(adapt_step(0.5, 0.5, 0.9), 0.5);
         assert_eq!(adapt_step(0.7, f32::NAN, 0.9), 0.7);
-    }
-
-    /// Pins the labelled input scale (STAND-IN(#796): the scale awaits SPEC-1), so a change to
-    /// it is deliberate.
-    #[test]
-    fn the_input_scale_exposure_makes_the_scale_one_linear_unit() {
-        let ev100 = input_scale_ev100();
-        let exposure = (-ev100).exp2() / 1.2;
-        close(
-            exposure * HDR_INPUT_SCALE_NITS,
-            1.0,
-            "the input scale is one linear unit after exposure",
-        );
-        // The sun's illuminance is pi * AMBIENT * SunlightScale lux, so a sun-lit white surface is
-        // SunlightScale in the target (NEEDS 18 Question 3,
-        // https://github.com/Mudcrab-Team/skyrim_decomp/pull/1059).
-        let sun_nits = crate::lights::SUN_ILLUMINANCE / std::f32::consts::PI;
-        close(
-            sun_nits * exposure,
-            crate::lights::SUNLIGHT_SCALE,
-            "sun-lit white at the clear-day scale",
-        );
-        assert!((ev100 - 10.15).abs() < 0.01, "EV100 is {ev100}");
     }
 
     // ----- the IMGS selection ---------------------------------------------------------------
@@ -1346,7 +1355,7 @@ mod tests {
         assert_eq!(VisualProfile::Mudcrab.scene_exposure_ev100(8.5), 8.5);
         assert_eq!(
             VisualProfile::Skyrim.scene_exposure_ev100(8.5),
-            input_scale_ev100()
+            crate::retail_lighting::UNIT_EXPOSURE_EV100
         );
     }
 
