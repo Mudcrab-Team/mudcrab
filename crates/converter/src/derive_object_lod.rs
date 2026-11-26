@@ -88,7 +88,7 @@ pub struct DeriveObjectLodReport {
     pub elapsed_ms: u128,
 }
 
-/// What [`derive_into`] changed.
+/// What [`stage_generation`] changed.
 pub struct CoreReport {
     pub chunks: Vec<(ObjectChunk, String)>,
     pub skipped: Vec<SkippedBlock>,

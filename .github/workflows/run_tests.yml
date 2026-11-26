@@ -147,6 +147,16 @@ jobs:
             base="$(git merge-base FETCH_HEAD HEAD)"
           fi
           python3 -B scripts/check_retail_claims.py --base "$base"
+          echo "COMMENT_BASE=$base" >> "$GITHUB_ENV"
+
+      - name: Test the comment name check
+        run: python3 -B -m unittest discover -s tools/comment_names -p 'test_*.py' -v
+
+      - name: Added comment lines name only symbols that the code has
+        run: |
+          set -euo pipefail
+          # COMMENT_BASE is the base that the retail claim check chose above.
+          python3 -B tools/comment_names/comment_names.py --base "$COMMENT_BASE"
 
       - name: Stand-in count does not rise above the baseline
         run: python3 -B scripts/check_retail_claims.py --audit --baseline scripts/stand_in_baseline.json
