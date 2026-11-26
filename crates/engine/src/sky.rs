@@ -826,12 +826,7 @@ impl RetailSkyInputs<'_> {
     }
 
     fn sky_scale(&self) -> f32 {
-        self.image_space
-            .as_deref()
-            .copied()
-            .unwrap_or_default()
-            .0
-            .sky_scale
+        crate::retail_hdr::scene_block(self.image_space.as_deref()).sky_scale
     }
 
     fn clear_colour(&self, palette: &SkyPalette, space: CameraSpace) -> Color {
@@ -920,12 +915,7 @@ pub(crate) fn drive_exterior_lighting(
     else {
         return;
     };
-    let sunlight_scale = image_space
-        .as_deref()
-        .copied()
-        .unwrap_or_default()
-        .0
-        .sunlight_scale;
+    let sunlight_scale = crate::retail_hdr::scene_block(image_space.as_deref()).sunlight_scale;
     let sun_on = settings.as_deref().is_none_or(|settings| settings.sun);
     let illuminance = if sun_on {
         crate::retail_lighting::sun_illuminance(sunlight_scale)

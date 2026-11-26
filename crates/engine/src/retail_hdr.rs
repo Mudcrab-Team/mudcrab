@@ -736,6 +736,12 @@ impl Default for RetailImageSpace {
     }
 }
 
+/// The selected block. An app without the selection system (a fixture) takes the constructor
+/// block, as a scene with no image-space record does.
+pub(crate) fn scene_block(selected: Option<&RetailImageSpace>) -> HdrBlock {
+    selected.map_or(HdrBlock::IMGS_CONSTRUCTOR_DEFAULT, |selected| selected.0)
+}
+
 /// Selects the scene's image-space block under the `skyrim` profile, after the scene is selected
 /// and before the lights and the sky read it.
 #[allow(
@@ -817,9 +823,7 @@ pub(crate) fn drive_retail_hdr(
     let config = config_resource
         .as_deref()
         .map_or_else(RetailHdrConfig::default, |config| config.retail_hdr);
-    let block = image_space
-        .map_or_else(RetailImageSpace::default, |selected| *selected)
-        .0;
+    let block = scene_block(image_space.as_deref());
     // SPEC-2 amends the output stage: its inputs enter here, with the block.
     let settings = RetailHdr::from_block(&block, &config, seconds);
     for mut camera in &mut cameras {

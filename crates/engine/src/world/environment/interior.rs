@@ -942,12 +942,7 @@ fn apply_interior_lighting(
                 .map(|render| render.fog_fields.retail_params()),
         ));
     }
-    let sunlight_scale = image_space
-        .as_deref()
-        .copied()
-        .unwrap_or_default()
-        .0
-        .sunlight_scale;
+    let sunlight_scale = crate::retail_hdr::scene_block(image_space.as_deref()).sunlight_scale;
     for (entity, mut light, mut transform, saved) in &mut suns {
         match (wanted, saved) {
             (Some(render), saved) => {

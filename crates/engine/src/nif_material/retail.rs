@@ -41,7 +41,9 @@ pub(super) fn hair_decal(
     source: &Material<'_>,
     mut hair: SkyrimSkinMaterial,
 ) -> SkyrimSkinMaterial {
-    let (flags_1, flags_2) = native_depth_flags(source).unwrap_or_default();
+    let Some((flags_1, flags_2)) = native_depth_flags(source) else {
+        return hair;
+    };
     if hair.base.retail_surface.is_some()
         && flags_1 & SLSF1_ANY_DECAL != 0
         && flags_1 & SLSF1_HAIR_BIT_18 != 0
@@ -59,8 +61,8 @@ pub(super) fn is_lighting(material: &Material<'_>) -> bool {
 
 /// The signed emissive colour and multiple the converter kept for values glTF cannot hold.
 fn source_emission(material: &Material<'_>) -> Option<(Vec3, f32)> {
-    // silent-ok: the extras are validated raw JSON; a material without the field has no signed
-    // emission to read.
+    // The extras are validated raw JSON; a material without the field has no signed emission.
+    // silent-ok: an absent field leaves the published glTF emission in use.
     let extras: serde_json::Value = serde_json::from_str(material.extras().as_ref()?.get()).ok()?;
     let source = extras.pointer("/openSkyrim/sourceEmission")?;
     // silent-ok: a malformed field leaves the published glTF emission in use.
@@ -86,6 +88,7 @@ pub(super) fn apply(
     loaded: &StandardMaterial,
     material: &mut StandardMaterial,
 ) {
+    // silent-ok: a lighting material without published flag words has every flag clear.
     let (flags_1, flags_2) = native_depth_flags(source).unwrap_or_default();
     let specular = flags_1 & SLSF1_SPECULAR != 0 || flags_2 & SLSF2_SPECULAR_BIT_41 != 0;
     // The glTF loader stores `specularFactor / 2` as the reflectance.
