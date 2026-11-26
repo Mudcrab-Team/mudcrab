@@ -91,6 +91,7 @@ use crate::{
 };
 use bevy::{
     asset::embedded_asset,
+    camera::Exposure,
     prelude::*,
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin},
@@ -672,15 +673,24 @@ pub(crate) fn select_block(
     }
 }
 
-/// Adds the chain to every scene camera under the `skyrim` profile. `mudcrab` cameras never get
-/// it, so they keep Bevy's tone mapping and exposure.
+/// Adds the chain to every scene camera under the `skyrim` profile, and holds every scene and
+/// reflection camera at an exposure of 1 in every run, interactive or not. Water, effects and
+/// grass scale their light by the exposure, so another value would darken them against the retail
+/// surfaces. `mudcrab` cameras never get either: they keep Bevy's tone mapping and exposure.
 pub(crate) fn attach_retail_hdr(
     mut commands: Commands,
     source: Option<Res<SceneGradeSource>>,
     cameras: Query<(Entity, &SceneGradeTarget), Without<RetailHdr>>,
+    mut exposures: Query<&mut Exposure, With<SceneGradeTarget>>,
 ) {
     if source.is_none_or(|source| source.profile != VisualProfile::Skyrim) {
         return;
+    }
+    let unit = VisualProfile::Skyrim.scene_exposure_ev100(0.0);
+    for mut exposure in &mut exposures {
+        if exposure.ev100 != unit {
+            exposure.ev100 = unit;
+        }
     }
     for (entity, target) in &cameras {
         if *target == SceneGradeTarget::Scene {
@@ -1332,8 +1342,17 @@ mod tests {
             *mudcrab.world().get::<Tonemapping>(camera).unwrap(),
             Tonemapping::TonyMcMapface
         );
+        assert_eq!(
+            mudcrab.world().get::<Exposure>(camera).unwrap().ev100,
+            crate::color_pipeline::DEFAULT_SCENE_EV100
+        );
         let (skyrim, camera) = gate_app(VisualProfile::Skyrim);
         assert!(skyrim.world().get::<RetailHdr>(camera).is_some());
+        // No settings system runs here, as in a shots or benchmark run.
+        assert_eq!(
+            skyrim.world().get::<Exposure>(camera).unwrap().exposure(),
+            1.0
+        );
         assert_eq!(
             *skyrim.world().get::<Tonemapping>(camera).unwrap(),
             Tonemapping::None
@@ -1348,6 +1367,10 @@ mod tests {
         let reflection = app.world_mut().spawn(SceneColorPipeline::reflection()).id();
         app.update();
         assert!(app.world().get::<RetailHdr>(reflection).is_none());
+        assert_eq!(
+            app.world().get::<Exposure>(reflection).unwrap().ev100,
+            crate::retail_lighting::UNIT_EXPOSURE_EV100
+        );
     }
 
     #[test]

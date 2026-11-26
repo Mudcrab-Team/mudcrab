@@ -145,8 +145,11 @@ fn capture_grade_with_overrides(
     // the camera runs no Bevy transform, because retail's tonemap pass is the transform
     // (`retail_hdr.rs`).
     let expected_tonemapping = source.profile.display_tonemapping(resolved.tonemapping);
+    // The `skyrim` camera runs at the retail exposure of 1.
+    let expected_exposure = source.profile.scene_exposure_ev100(exposure.ev100);
     if grading.global.post_saturation != resolved.bevy_saturation
         || *post != resolved.post
+        || exposure.ev100 != expected_exposure
         || *tonemapping != expected_tonemapping
         || *compositing != CompositingSpace::Linear
     {
@@ -796,6 +799,25 @@ mod tests {
         assert!(
             receipt(VisualProfile::Skyrim, Tonemapping::TonyMcMapface).is_none(),
             "a skyrim camera that still runs Tony does not match its source"
+        );
+        let source = SceneGradeSource::default().with_weather(VisualProfile::Skyrim, None);
+        let resolved = tone.resolve(&source, mode, preset).unwrap();
+        let mut grading = ColorGrading::default();
+        grading.global.post_saturation = resolved.bevy_saturation;
+        assert!(
+            capture_grade(
+                Some(&source),
+                Some(&tone),
+                Some(&mode),
+                Some(&preset),
+                Some(&grading),
+                Some(&resolved.post),
+                Some(&Tonemapping::None),
+                Some(&Exposure { ev100: 9.7 }),
+                Some(&CompositingSpace::Linear),
+            )
+            .is_none(),
+            "a skyrim camera at another exposure does not match its source"
         );
         let mudcrab = receipt(VisualProfile::Mudcrab, Tonemapping::TonyMcMapface)
             .expect("a mudcrab camera keeps Tony");
