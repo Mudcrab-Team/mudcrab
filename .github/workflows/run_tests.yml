@@ -358,6 +358,12 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/unwrap-ratchet-base" "$base"
           python3 -B tools/unwrap_ratchet/unwrap_ratchet.py --base-root "$RUNNER_TEMP/unwrap-ratchet-base"
 
+      - name: Production unwrap count on main stays at or below the baseline
+        # The comparison above forgets a rise after one push, because the next push compares with
+        # it. This check stays red until the sites are handled or the baseline records them.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 -B tools/unwrap_ratchet/unwrap_ratchet.py
+
   silent_failure_ratchet:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_silent_failure_ratchet == 'true'
