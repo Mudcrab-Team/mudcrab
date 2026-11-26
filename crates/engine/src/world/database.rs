@@ -77,6 +77,9 @@ pub struct ReferenceRow {
     /// when the reference names no source the converter could resolve, and in a database
     /// converted before the `emittance` table existed.
     pub emittance: Option<[u8; 3]>,
+    /// The same source's colour in all four day parts (sunrise, day, sunset, night), which the
+    /// `skyrim` profile mixes by the game hour (`crate::emittance`).
+    pub emittance_day_parts: Option<[[u8; 3]; 4]>,
     /// The reference's `door_links` row, when the database has the table and the reference is a
     /// load door. `None` for every other reference, and for every reference in a database
     /// converted before door links were exported.
@@ -1610,6 +1613,48 @@ const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
 const EMITTANCE_COLUMNS: &str = "e.day_r,e.day_g,e.day_b";
 const ABSENT_EMITTANCE_COLUMNS: &str = "NULL,NULL,NULL";
 const EMITTANCE_JOIN: &str = " LEFT JOIN emittance e ON e.id=r.emittance_id";
+/// The twelve colour columns of the four day parts, in the order sunrise, day, sunset, night.
+/// They are read by name, so they sit after every positional column.
+const EMITTANCE_DAY_PART_COLUMNS: [&str; 12] = [
+    "sunrise_r",
+    "sunrise_g",
+    "sunrise_b",
+    "day_r",
+    "day_g",
+    "day_b",
+    "sunset_r",
+    "sunset_g",
+    "sunset_b",
+    "night_r",
+    "night_g",
+    "night_b",
+];
+
+/// The select list of [`EMITTANCE_DAY_PART_COLUMNS`], each under an `emit_` alias, or `NULL`s for a
+/// database without the table.
+fn emittance_day_part_columns(present: bool) -> String {
+    EMITTANCE_DAY_PART_COLUMNS
+        .map(|column| {
+            if present {
+                format!("e.{column} AS emit_{column}")
+            } else {
+                format!("NULL AS emit_{column}")
+            }
+        })
+        .join(",")
+}
+
+/// The four day-part colours of a row, `None` when the reference has no emittance row.
+fn map_emittance_day_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<[[u8; 3]; 4]>> {
+    let mut parts = [[0_u8; 3]; 4];
+    for (index, column) in EMITTANCE_DAY_PART_COLUMNS.iter().enumerate() {
+        match row.get::<_, Option<u8>>(format!("emit_{column}").as_str())? {
+            Some(value) => parts[index / 3][index % 3] = value,
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(parts))
+}
 
 /// The base record's header flags, which [`map_reference`] reads for [`MARKER_RECORD_FLAG`].
 /// `NULL` for a reference whose base has no `statics` row.
@@ -1848,11 +1893,12 @@ impl ReferenceQuery {
                 [],
                 |row| row.get(0),
             )?;
+        let day_part_columns = emittance_day_part_columns(has_emittance);
         Ok(Self {
             columns: format!(
                 "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
                  {door_columns},{emittance_columns},{reference_enable_columns},\
-                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column},{flicker_columns}"
+                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column},{flicker_columns},{day_part_columns}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
@@ -2308,6 +2354,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         Some(red) => Some([red, row.get(35)?, row.get(36)?]),
         None => None,
     };
+    let emittance_day_parts = map_emittance_day_parts(row)?;
     let base_flags: Option<u32> = row.get(STATIC_FLAGS_INDEX)?;
     let enable_inputs = map_enable_inputs(row, REFERENCE_ENABLE_START)?;
     Ok((
@@ -2335,6 +2382,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             light_radius_override: row.get(24)?,
             door,
             emittance,
+            emittance_day_parts,
         },
         enable_inputs,
     ))
@@ -4663,6 +4711,14 @@ mod tests {
                 .emittance
         };
         assert_eq!(emittance(30), Some([12, 34, 56]), "the day column only");
+        assert_eq!(
+            payload
+                .references
+                .iter()
+                .find(|reference| reference.form_id == 30)
+                .and_then(|reference| reference.emittance_day_parts),
+            Some([[124, 70, 16], [12, 34, 56], [243, 118, 54], [242, 176, 55]])
+        );
         assert_eq!(
             emittance(40),
             None,

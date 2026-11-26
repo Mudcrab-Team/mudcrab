@@ -76,6 +76,36 @@ impl NifDepthState {
         })
     }
 
+    /// [`Self::from_material`] under the `skyrim` profile: the blend pair is retail's
+    /// ([`retail_blend_factors`]), and a blended surface whose pair is not the plain alpha blend
+    /// takes the authored state even when its depth state alone would not need one.
+    pub fn retail_from_material(
+        flags_1: u32,
+        flags_2: u32,
+        alpha_mode: AlphaMode,
+        blend_factors: Option<[u8; 2]>,
+    ) -> Option<Self> {
+        let blend_factors = blend_factors.map(retail_blend_factors);
+        let state = Self::from_material(flags_1, flags_2, alpha_mode, blend_factors);
+        if state.is_some()
+            || !matches!(alpha_mode, AlphaMode::Blend)
+            || blend_factors.is_none_or(|factors| factors == [6, 7])
+        {
+            return state;
+        }
+        let depth_test = flags_1 & DEPTH_TEST != 0;
+        Some(Self {
+            depth_test,
+            // A sorted blended draw of this path writes no depth, as before.
+            depth_write: false,
+            decal: false,
+            alpha_mask: false,
+            cast_shadows: flags_1 & CAST_SHADOWS != 0,
+            blend_factors,
+            uses_effect_emittance: false,
+        })
+    }
+
     pub fn apply(&self, depth: &mut DepthStencilState) {
         depth.depth_write_enabled = Some(self.depth_write);
         depth.depth_compare = Some(if self.depth_test {
@@ -164,6 +194,27 @@ pub(super) fn specialize_nif_depth_descriptor(
     }
     if color_pass && let Some(depth) = descriptor.depth_stencil.as_mut() {
         state.apply(depth);
+    }
+}
+
+/// The factors retail draws a serialized blend pair with (SPEC-2 section 4.2 and SPEC-1 section
+/// 9.2, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)):
+///
+/// | Authored (source, destination) | Retail mode | Drawn as |
+/// |---|---|---|
+/// | (6, 7) | 1 | SrcAlpha, InvSrcAlpha |
+/// | (6, 0), (0, 0), (6, 9) | 2 | SrcAlpha, One |
+/// | (4, 7) | 3 | DestColor, InvSrcAlpha |
+/// | (1, 2), (4, 1) | 4 | DestColor, Zero |
+///
+/// STAND-IN(#362): for any other pair retail keeps the mode of the previous draw, which has no
+/// equivalent here; it draws with SrcAlpha, InvSrcAlpha.
+pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {
+    match (source, destination) {
+        (6, 0) | (0, 0) | (6, 9) => SOURCE_ALPHA_ADDITIVE,
+        (4, 7) => [4, 7],
+        (1, 2) | (4, 1) => [4, 1],
+        _ => [6, 7],
     }
 }
 
@@ -548,6 +599,61 @@ mod tests {
                 .base
                 .depth_bias,
             0.0
+        );
+    }
+
+    /// SPEC-2 example E4: destination (0.5, 0.4, 0.3), source (0.8, 0.6, 0.2), alpha 0.25 through
+    /// the factors each authored pair is drawn with.
+    #[test]
+    fn retail_blend_pairs_give_the_specification_example() {
+        let (destination, source, alpha) = ([0.5_f32, 0.4, 0.3], [0.8_f32, 0.6, 0.2], 0.25_f32);
+        let drawn = |pair| {
+            let component =
+                blend_component(retail_blend_factors(pair)[0], retail_blend_factors(pair)[1])
+                    .unwrap();
+            let factor = |factor: BlendFactor, channel: usize| match factor {
+                BlendFactor::One => 1.0,
+                BlendFactor::Zero => 0.0,
+                BlendFactor::SrcAlpha => alpha,
+                BlendFactor::OneMinusSrcAlpha => 1.0 - alpha,
+                BlendFactor::Dst => destination[channel],
+                other => panic!("unexpected factor {other:?}"),
+            };
+            [0, 1, 2].map(|channel| {
+                source[channel] * factor(component.src_factor, channel)
+                    + destination[channel] * factor(component.dst_factor, channel)
+            })
+        };
+        for (pairs, expected) in [
+            (&[[6, 7]][..], [0.575, 0.45, 0.275]),
+            (&[[6, 0], [0, 0], [6, 9]][..], [0.70, 0.55, 0.35]),
+            (&[[4, 7]][..], [0.775, 0.54, 0.285]),
+            (&[[1, 2], [4, 1]][..], [0.40, 0.24, 0.06]),
+        ] {
+            for &pair in pairs {
+                for (actual, expected) in drawn(pair).into_iter().zip(expected) {
+                    assert!(
+                        (actual - expected).abs() < 1.0e-6,
+                        "{pair:?}: {actual} {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An additive surface with an ordinary depth state takes the authored blend under `skyrim`
+    /// only; a plain alpha blend keeps its route.
+    #[test]
+    fn retail_blend_state_covers_a_non_decal_additive_surface() {
+        let flags = (DEPTH_TEST, 0);
+        let mode = AlphaMode::Blend;
+        assert!(NifDepthState::from_material(flags.0, flags.1, mode, Some([6, 0])).is_none());
+        let state =
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([0, 0])).unwrap();
+        assert_eq!(state.blend_factors, Some(SOURCE_ALPHA_ADDITIVE));
+        assert!(!state.depth_write && !state.decal);
+        assert!(
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([6, 7])).is_none()
         );
     }
 }

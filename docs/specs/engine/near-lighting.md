@@ -1,4 +1,4 @@
-# Near lighting under the `skyrim` profile
+# Lighting and output under the `skyrim` profile
 
 Status: implemented, checked by unit and offscreen pixel tests. No retail frame capture confirms
 any value, so parity with the game is unverified.
@@ -8,12 +8,15 @@ byte. `mudcrab` keeps Bevy's physical light model.
 
 ## Source
 
-The facts come from SPEC-1, the near-lighting specification of the skyrim-research lane: a static
-reading of the pinned 1.7.104.0 executable and shader package. It is not yet published. It builds
-on these static findings in `skyrim_decomp` pull requests, named here by number: 812, 946, 963,
-979, 1003, 1059, 1073, 1077, 1080, 1121, 1245, 1258, 1268, 1272 and 1273.
+The facts come from two specifications of the skyrim-research lane, static readings of the pinned
+1.7.104.0 executable and shader package: SPEC-1 (near lighting, `skyrim_decomp` pull request 1274,
+with its amendment from SPEC-2) and SPEC-2 (from the lit scene to the displayed byte). Neither is
+reviewed for transfer. They build on these static findings in `skyrim_decomp` pull requests, named
+here by number: 812, 946, 963, 979, 1003, 1052, 1059, 1073, 1077, 1080, 1121, 1245, 1258, 1268,
+1272 and 1273.
 
-Section numbers in the code and below are SPEC-1's.
+Section numbers in the code and below are SPEC-1's unless a row says SPEC-2. Where the two differ,
+SPEC-2 wins for the frame after the first stage.
 
 ## Units
 
@@ -39,7 +42,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 2.4 | `SunlightScale`, `SkyScale` | `retail_hdr::RetailImageSpace` (one block per scene), `shaders/sky.wgsl` |
 | 2.5 | directional ambient | vendored `pbr_ambient.wgsl`, `DirectionalAmbientCube` (#1013) |
 | 2.6 | point lights, flicker, pulse, emittance | `LightEvaluation::point_light_in`, `light_dynamics.rs` |
-| 2.7 | emission, own-emit gate, external emittance | `nif_material/retail.rs`, `emittance.rs` |
+| 2.7 | emission, own-emit gate, external emittance by day part | `nif_material/retail.rs`, `emittance.rs` |
 | 2.8 | specular values, vertex colour | `nif_material/retail.rs`, `RetailSurface` |
 | 3.2 | tangent frame and normals | Bevy's frame; no back-face flip; `terrain_normal.wgsl` (no Z rebuild) |
 | 3.3 | vertex fog | `pbr_retail.wgsl`, evaluated per pixel |
@@ -56,8 +59,22 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 `SunlightScale`) and the ambient cube's mean in the same units. Object LOD takes `SunlightScale`
 and the same output tail.
 
-SPEC-2 (HDR and output) is not written yet. Its inputs enter at `retail_hdr::drive_retail_hdr`
-and `retail_hdr::RetailHdr`.
+## SPEC-2: from the lit scene to the byte
+
+| SPEC-2 | Rule | Code |
+| --- | --- | --- |
+| 1 | frame order: first stage, composite, saturate, blended draws, HDR, output | `retail_fog.rs`, `retail_hdr_render.rs` |
+| 2.1, 2.2 | the image-space block, the base-block rules, a missing weather or form takes `0x167` | `retail_hdr::select_block`, `HdrBlock` |
+| 2.3 | copy and normaliser | with no modifier the tint is the record's colour and amount |
+| 3 | composite, records 53, 51 and 49; its unsigned input | `retail_fog.rs`, `shaders/retail_fog.wgsl` |
+| 4.1, 4.2 | blend modes of sorted draws | `nif_depth::retail_blend_factors` |
+| 4.3 | draws after the composite add above 1 | blended draws run after the saturate |
+| 5.1 | targets | `Rgba16Float` (the Ultra preset) |
+| 5.2 to 5.4 | downsample, luminance, adaptation, bloom | `retail_hdr*.rs`, `shaders/retail_hdr*.wgsl` |
+| 6 | tonemap, cinematic terms, fade | `RetailHdr`, `shaders/retail_hdr_tonemap.wgsl` |
+| 7 | output and gamma | the tonemap writes the surface; temporal anti-aliasing is the identity step |
+| 10 | settings | `skyrim_ini.rs` (`[Display]` HDR keys) |
+| 11 | examples E0 to E4 | `retail_output_examples.rs`, `nif_depth.rs` tests |
 
 ## Tests
 
@@ -67,6 +84,7 @@ and `retail_hdr::RetailHdr`.
   Run with `MUDCRAB_RETAIL_PIXEL=1` and `--ignored retail_pixel --test-threads=1`.
 - `retail_hdr_gpu_tests.rs` (ignored): the HDR chain against its CPU reference. This covers the
   adaptation and tonemap of example C. Example C's SAO factor has no engine input.
+- `retail_output_examples.rs`: SPEC-2 examples E0 to E3. Example E4 is a test in `nif_depth.rs`.
 - `vendored_bevy_patches.rs`: every link of the vendored path.
 
 ## Stand-ins and gaps
@@ -84,14 +102,19 @@ Each row differs from retail, or rests on an inferred or open item of SPEC-1.
 | Additive term `cb1[8]` is 0; the specular distance fade is 1 | STAND-IN(#362): open run-time inputs |
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
 | Specular strength and colour are clamped to `[0, 1]` by the converter, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
-| Emittance uses the converter's day colour; only `XEMI` references take it; a surface without a source follows own-emit | STAND-IN(#362): emittance source and membership |
+| Only `XEMI` references take an emittance source, mixed by day part from the converter's table; a surface without a source follows own-emit | STAND-IN(#362): emittance source and membership |
 | Environment and eye cubemaps are not drawn; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
 | Parallax, projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
 | Landscape specular is not drawn; layer weights stay normalised by their sum | STAND-IN(#547): the LTEX specular exponent per layer |
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
 | Terrain LOD takes the plain near sum | STAND-IN(#946): LOD techniques excluded |
 | A short `XCLL` without fog power or max takes 1 | STAND-IN(#695): short cell data |
-| One exterior weather; no weather transition, flash, IMAD modifier or room image space | STAND-IN(#364): weather and image-space state |
+| One exterior weather; no weather transition, flash, image-space modifier, override or room cross-fade | STAND-IN(#364): weather and image-space state |
+| Temporal anti-aliasing is not run: the tonemap writes the output | STAND-IN(#361): the identity step of SPEC-2 |
+| Depth of field, radial and full-screen blur, double vision, refraction, volumetric lighting, lens flares and screen-space reflection are not drawn | STAND-IN(#364): the other post effects |
+| `ClearAdaptedLight` and the menu pause timer never fire | STAND-IN(#361): the adaptation reset triggers |
+| The composite's unsigned copy keeps only the sign clamp, not its 11/10-bit precision | STAND-IN(#362): the composite input format |
+| A blend pair outside retail's table draws as a plain alpha blend | STAND-IN(#362): inherited blend modes |
 | The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): the player position as origin |
 
 Water and effect shaders are outside SPEC-1. Water keeps its own program and its decoded record

@@ -276,3 +276,7 @@ pub fn sky_pixel(rows: Vec3, sky_scale: f32) -> Vec3 {
 #[cfg(test)]
 #[path = "retail_lighting_examples.rs"]
 mod examples;
+
+#[cfg(test)]
+#[path = "retail_output_examples.rs"]
+mod output_examples;

@@ -135,9 +135,10 @@ impl LightEvaluation {
     /// reference's `XEMI` source: it multiplies the record colour, and the Negative flag is then
     /// not applied again.
     ///
-    /// STAND-IN(#362): the emittance colour is the converter's day colour, and only a reference
-    /// with `XEMI` takes it; retail also lists a light whose model has an external-emittance
-    /// property, and follows the region's weather over the day.
+    /// The caller passes the source's colour for the game hour (`crate::emittance`).
+    ///
+    /// STAND-IN(#362): only a reference with `XEMI` takes a source; retail also lists a light
+    /// whose model has an external-emittance property (inferred from one run).
     pub fn point_light_in(
         &self,
         units: LightUnits,

@@ -2102,6 +2102,10 @@ fn spawn_cell(
             if let Some(rgb) = reference.emittance {
                 entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
             }
+            // Under `skyrim` the source's colour follows the day parts.
+            if !colour_srgb && let Some(parts) = reference.emittance_day_parts {
+                entity.insert(crate::emittance::EmittanceDayParts(parts));
+            }
             if let Some(swaps) = catalog.object_texture_swaps(reference.base_form_id) {
                 entity.insert(swaps);
             }
@@ -9681,6 +9685,7 @@ mod tests {
                     light_radius_override: None,
                     door: None,
                     emittance: None,
+                    emittance_day_parts: None,
                 }],
             },
             Some(terrain),
@@ -10736,6 +10741,7 @@ mod tests {
             light_radius_override: radius_override,
             door: None,
             emittance: None,
+            emittance_day_parts: None,
         }
     }
 

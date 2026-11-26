@@ -509,7 +509,33 @@ impl NativeMaterialHandler {
     /// Whether this profile draws a material through a native one: always the converter-tagged
     /// cases, and under `skyrim` every lighting material, which takes the retail surface.
     fn needs_native(&self, material: &gltf::Material<'_>) -> bool {
-        needs_native_material(material) || (self.raw_colour_texels && retail::is_lighting(material))
+        let alpha_mode = match material.alpha_mode() {
+            GltfAlphaMode::Blend => AlphaMode::Blend,
+            _ => AlphaMode::Opaque,
+        };
+        needs_native_material(material)
+            || (self.raw_colour_texels
+                && (retail::is_lighting(material)
+                    || self.depth_state(material, alpha_mode).is_some()))
+    }
+
+    /// The authored depth and blend state this profile draws a material with. Under `skyrim` the
+    /// blend pair is retail's.
+    fn depth_state(
+        &self,
+        material: &gltf::Material<'_>,
+        alpha_mode: AlphaMode,
+    ) -> Option<NifDepthState> {
+        if !self.raw_colour_texels {
+            return native_depth_state(material, alpha_mode);
+        }
+        let (flags_1, flags_2) = native_depth_flags(material)?;
+        NifDepthState::retail_from_material(
+            flags_1,
+            flags_2,
+            alpha_mode,
+            authored_blend_factors(material),
+        )
     }
 }
 
@@ -775,7 +801,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         if self.raw_colour_texels && retail::is_lighting(source) {
             retail::apply(source, standard, &mut material);
         }
-        let mut depth = native_depth_state(source, material.alpha_mode);
+        let mut depth = self.depth_state(source, material.alpha_mode);
         if palette.is_none()
             && let Some(state) = depth.as_mut()
             && !has_model_space_normals(source)

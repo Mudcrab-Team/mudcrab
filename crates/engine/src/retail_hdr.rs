@@ -666,9 +666,11 @@ pub(crate) fn select_block(
             report.source = "cell";
             (block, report)
         }
+        // A missing current weather gives its weight to the default image space (SPEC-2
+        // section 2.2).
         _ => match weather {
             Some(weather) => weather_block(weather, hour, lookup),
-            None => constructor_default("no weather record for the exterior image space"),
+            None => blend_forms("weather", &[(DEFAULT_IMAGE_SPACE_FORM, 1.0)], lookup),
         },
     }
 }
@@ -1299,9 +1301,13 @@ mod tests {
         );
         assert_eq!(block, defaults);
         assert!(report.reason.is_some());
+        // A missing weather takes the default image space, not the constructor block.
         let (block, report) = select_block(SceneImageSpace::Exterior, None, 12.0, Some(lookup));
-        assert_eq!(block, defaults);
-        assert!(report.reason.is_some());
+        assert_eq!(report.forms, [(DEFAULT_IMAGE_SPACE_FORM, 1.0)]);
+        assert_eq!(
+            block,
+            HdrBlock::from_record(lookup(DEFAULT_IMAGE_SPACE_FORM).as_ref(), &mut Vec::new())
+        );
         let (block, report) = select_block(SceneImageSpace::Exterior, Some(&sky), 12.0, None);
         assert_eq!(block, defaults);
         assert!(report.reason.is_some());

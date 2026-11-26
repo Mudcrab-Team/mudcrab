@@ -504,6 +504,11 @@ fn spawn_cell(
             if let Some(rgb) = reference.emittance {
                 entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
             }
+            if !config.visual_profile.decodes_colour_srgb()
+                && let Some(parts) = reference.emittance_day_parts
+            {
+                entity.insert(crate::emittance::EmittanceDayParts(parts));
+            }
             if let Some(swaps) = catalog.object_texture_swaps(reference.base_form_id) {
                 entity.insert(swaps);
             }
@@ -912,6 +917,7 @@ mod tests {
             light: None,
             light_radius_override: None,
             emittance: None,
+            emittance_day_parts: None,
             door: None,
         }
     }

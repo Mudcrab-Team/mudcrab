@@ -21,6 +21,81 @@ impl Plugin for EmittancePlugin {
     fn build(&self, app: &mut App) {
         register_emittance::<StandardMaterial>(app);
         register_emittance::<NifDepthMaterial>(app);
+        app.add_systems(Update, drive_emittance_by_hour);
+    }
+}
+
+/// The four day-part colours of a reference's `XEMI` source (sunrise, day, sunset, night), on a
+/// reference under the `skyrim` profile only.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct EmittanceDayParts(pub [[u8; 3]; 4]);
+
+impl EmittanceDayParts {
+    /// The source's colour at these day-part weights: the weighted sum of the bytes, rounded to
+    /// a byte. Rounding keeps a running clock from making a new material every frame.
+    pub fn mixed(&self, weights: [f32; 4]) -> [u8; 3] {
+        std::array::from_fn(|channel| {
+            let sum: f32 = self
+                .0
+                .iter()
+                .zip(weights)
+                .map(|(part, weight)| weight * f32::from(part[channel]))
+                .sum();
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a weighted mean of bytes, clamped to 0..=255"
+            )]
+            let byte = sum.round().clamp(0.0, 255.0) as u8;
+            byte
+        })
+    }
+}
+
+/// Follows the game clock under the `skyrim` profile: a source's colour is the mix of its day
+/// parts by the sky's weights (SPEC-1 section 2.6, `docs/specs/engine/near-lighting.md`). It
+/// writes the colour the reference's emitting surfaces take, and the colour of its light, the
+/// record bytes / 255 times the source's. Without a climate timing the day colour stays.
+fn drive_emittance_by_hour(
+    clock: Option<Res<crate::sun::GameClock>>,
+    config: Option<Res<crate::config::EngineConfig>>,
+    catalog: Option<Res<crate::world::environment::EnvironmentCatalog>>,
+    mut references: Query<(
+        &EmittanceDayParts,
+        &mut ReferenceEmittance,
+        Option<&crate::lights::LightEvaluation>,
+        Option<&Children>,
+    )>,
+    mut lights: Query<&mut PointLight, With<crate::lights::SkyrimLight>>,
+) {
+    let (Some(clock), Some(config), Some(catalog)) = (clock, config, catalog) else {
+        return;
+    };
+    let Some(timing) = catalog
+        .worldspace_climate(config.worldspace_id)
+        .and_then(|climate| catalog.sun_timing(climate))
+    else {
+        return;
+    };
+    let weights = crate::weather_sky::slot_weights(clock.hour, timing);
+    for (parts, mut emittance, evaluation, children) in &mut references {
+        let source = parts.mixed(weights);
+        emittance.set_if_neq(ReferenceEmittance::from_srgb(source));
+        let (Some(evaluation), Some(children)) = (evaluation, children) else {
+            continue;
+        };
+        let Some(wanted) =
+            evaluation.point_light_in(crate::retail_lighting::LightUnits::Retail, Some(source))
+        else {
+            continue;
+        };
+        for &child in children {
+            if let Ok(mut light) = lights.get_mut(child)
+                && light.color != wanted.color
+            {
+                light.color = wanted.color;
+            }
+        }
     }
 }
 
@@ -102,7 +177,7 @@ fn lit_by<M: EmittingMaterial>(material: &M, colour: LinearRgba) -> M {
     match base.retail_surface.filter(|_| !additive) {
         // Under `skyrim` the source replaces the emissive colour: the emission is the source's
         // bytes / 255 times the model's multiple, and the file colour is not multiplied in
-        // (SPEC-1 section 2.7). STAND-IN(#362): the source colour is the converter's day colour.
+        // (SPEC-1 section 2.7, docs/specs/engine/near-lighting.md).
         Some(surface) => {
             let source = Color::LinearRgba(colour).to_srgba();
             tint.red = source.red * surface.emissive_multiple;
@@ -147,11 +222,15 @@ type EmittingReferences<'world, 'state, M> = Query<
     'state,
     (
         Entity,
-        &'static ReferenceEmittance,
+        Ref<'static, ReferenceEmittance>,
         Ref<'static, Children>,
         Has<AwaitingEmittanceMaterial<M>>,
     ),
-    Or<(Changed<Children>, With<AwaitingEmittanceMaterial<M>>)>,
+    Or<(
+        Changed<Children>,
+        Changed<ReferenceEmittance>,
+        With<AwaitingEmittanceMaterial<M>>,
+    )>,
 >;
 
 /// Gives every `External_Emittance` surface of a newly instantiated model its reference's colour.
@@ -176,7 +255,7 @@ fn apply_reference_emittance<M: EmittingMaterial>(
         )
     });
     for (reference, emittance, children, awaiting) in &references {
-        if !children.is_changed() && !material_arrived {
+        if !children.is_changed() && !emittance.is_changed() && !material_arrived {
             continue;
         }
         let mut missing = false;
@@ -550,6 +629,83 @@ mod tests {
                 .unwrap()
                 .0,
             material
+        );
+    }
+
+    /// Under `skyrim` the source's colour is the mix of its day parts at the game hour, and the
+    /// reference's light takes the record bytes times it. A reference without day parts (the
+    /// `mudcrab` profile) keeps the day colour.
+    #[test]
+    fn the_day_parts_drive_the_surfaces_and_the_light_by_the_hour() {
+        use crate::retail_lighting::LightUnits;
+        let parts = EmittanceDayParts([[200, 100, 0], [0, 0, 0], [100, 200, 40], [10, 20, 30]]);
+        assert_eq!(parts.mixed([0.0, 1.0, 0.0, 0.0]), [0, 0, 0]);
+        assert_eq!(parts.mixed([0.0, 0.2, 0.8, 0.0]), [80, 160, 32]);
+
+        let mut app = App::new();
+        // Sunrise 5:00 to 7:00, sunset 17:00 to 19:00.
+        let catalog = crate::world::environment::EnvironmentCatalog::with_sun_for_tests(
+            0x3C,
+            0x15F,
+            crate::sun::SunTiming([30, 42, 102, 114]),
+            [None; 5],
+        );
+        app.insert_resource(catalog)
+            .insert_resource(crate::config::EngineConfig {
+                worldspace_id: 0x3C,
+                ..default()
+            })
+            .insert_resource(crate::sun::GameClock {
+                hour: 12.0,
+                timescale: 0.0,
+            })
+            .add_systems(Update, drive_emittance_by_hour);
+        let row = crate::world::database::LightRow {
+            radius: 512.0,
+            color: [255, 255, 255],
+            flags: 0,
+            fade: None,
+            fade_status: None,
+            falloff: None,
+            reference_data: None,
+            radius_status: None,
+            flicker_period: None,
+            flicker_intensity_amplitude: None,
+            flicker_movement_amplitude: None,
+            reference_never_fades: false,
+        };
+        let evaluation = crate::lights::evaluate_light(&row, None);
+        let light = app
+            .world_mut()
+            .spawn((
+                evaluation
+                    .point_light_in(LightUnits::Retail, Some([0, 0, 0]))
+                    .unwrap(),
+                crate::lights::SkyrimLight {
+                    form_id: 1,
+                    cell_id: 1,
+                    shadow_flagged: false,
+                },
+            ))
+            .id();
+        let reference = app
+            .world_mut()
+            .spawn((parts, ReferenceEmittance::from_srgb([0, 0, 0]), evaluation))
+            .add_child(light)
+            .id();
+        app.update();
+        let colour = |app: &App| app.world().get::<PointLight>(light).unwrap().color;
+        assert_eq!(colour(&app), Color::linear_rgb(0.0, 0.0, 0.0), "off by day");
+        // 18:00 with these times: 0.8 sunset and 0.2 day.
+        app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 18.0;
+        app.update();
+        assert_eq!(
+            *app.world().get::<ReferenceEmittance>(reference).unwrap(),
+            ReferenceEmittance::from_srgb([80, 160, 32])
+        );
+        assert_eq!(
+            colour(&app),
+            Color::linear_rgb(80.0 / 255.0, 160.0 / 255.0, 32.0 / 255.0)
         );
     }
 }
