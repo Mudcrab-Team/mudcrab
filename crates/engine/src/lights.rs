@@ -720,6 +720,7 @@ fn budget_lights(
         if shadow_count > 0 {
             shadow_scratch.extend(enabled.iter().filter_map(|&entity| {
                 // Retail shadows only a light whose record carries a shadow flag.
+                // silent-ok: an enabled entity that lost its light has nothing to shadow, and the changed light count makes the budget choose again.
                 if !markers.get(entity).ok()?.shadow_flagged {
                     return None;
                 }
