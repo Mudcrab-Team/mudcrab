@@ -17,7 +17,7 @@ Section numbers in the code and below are SPEC-1's.
 
 ## Units
 
-Retail has no light unit. A colour byte of a light, of the ambient, of the fog or of a vertex is
+Retail has no light unit (unverified in game; see [Source](#source)). A colour byte of a light, of the ambient, of the fog or of a vertex is
 `byte / 255`, with no sRGB decode. The engine writes those numbers into Bevy as follows, so that
 Bevy's own shaders (water, effects) share one scale:
 
@@ -78,21 +78,21 @@ Each row differs from retail, or rests on an inferred or open item of SPEC-1.
 | Ambient occlusion factor `A` is 1 in the composite | STAND-IN(#995): no SAO pass |
 | Every point light of a cluster adds; retail caps a geometry at 7 | STAND-IN(#999): light list order |
 | Vertex fog is evaluated per pixel, with camera planes 15 and 10240 | STAND-IN(#891): vertex fog inputs |
-| Composite uses the true axial depth, not `1.01 d - 0.01` | STAND-IN(#891): composite depth |
+| Composite uses the true axial depth, not `1.01 d - 0.01` | STAND-IN(#891): retail composite depth rescale |
 | Shadow masks are Mudcrab's shadow maps; interiors have no sun shadow | STAND-IN(#362): shadow mask production |
 | Blended decals draw after the composite with the second-stage tail | STAND-IN(#362): decal stage order |
 | Additive term `cb1[8]` is 0; the specular distance fade is 1 | STAND-IN(#362): open run-time inputs |
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
 | Specular strength and colour are clamped to `[0, 1]` by the converter, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
 | Emittance uses the converter's day colour; only `XEMI` references take it; a surface without a source follows own-emit | STAND-IN(#362): emittance source and membership |
-| Environment and eye cubemaps are not drawn; eye ambient uses the surface normal | STAND-IN(#490): cubemaps |
-| Parallax, projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): variants |
-| Landscape specular is not drawn; layer weights stay normalised by their sum | STAND-IN(#547): `LTEX` exponent |
-| Snow rim and snow composite term are not drawn | STAND-IN(#435): snow |
+| Environment and eye cubemaps are not drawn; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
+| Parallax, projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
+| Landscape specular is not drawn; layer weights stay normalised by their sum | STAND-IN(#547): the LTEX specular exponent per layer |
+| Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
 | Terrain LOD takes the plain near sum | STAND-IN(#946): LOD techniques excluded |
 | A short `XCLL` without fog power or max takes 1 | STAND-IN(#695): short cell data |
 | One exterior weather; no weather transition, flash, IMAD modifier or room image space | STAND-IN(#364): weather and image-space state |
-| The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): player position |
+| The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): the player position as origin |
 
 Water and effect shaders are outside SPEC-1. Water keeps its own program and its decoded record
 colours, so its sky reflection does not match the retail sky exactly (unverified how far).
