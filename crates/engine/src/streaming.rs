@@ -7369,7 +7369,7 @@ mod tests {
 
     /// An app with the cell plan, the unload pacer and the lifecycle validator chained as they run
     /// in `StreamingPlugin`. `collect_cells` is left out, so a requested cell stays `Loading` and
-    /// the test drives the resident cells itself through [`spawn_resident_cell`].
+    /// the test drives the resident cells itself through [`spawn_mock_cell`].
     fn streaming_test_app(config: EngineConfig) -> (App, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("world.db");
