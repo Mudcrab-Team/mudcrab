@@ -200,7 +200,13 @@ fn half_to_f32(half: u16) -> f32 {
     let sign = if half & 0x8000 == 0 { 1.0 } else { -1.0 };
     let exponent = i32::from((half >> 10) & 0x1f);
     let mantissa = f32::from(half & 0x03ff);
-    if exponent == 0 {
+    if exponent == 31 {
+        if mantissa == 0.0 {
+            sign * f32::INFINITY
+        } else {
+            f32::NAN
+        }
+    } else if exponent == 0 {
         sign * mantissa * 2.0_f32.powi(-24)
     } else {
         sign * (1.0 + mantissa / 1024.0) * 2.0_f32.powi(exponent - 15)
