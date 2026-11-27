@@ -135,15 +135,12 @@ impl LightEvaluation {
     /// reference's `XEMI` source: it multiplies the record colour, and the Negative flag is then
     /// not applied again.
     ///
-    /// The caller passes the source's colour for the game hour (`crate::emittance`).
+    /// The caller passes the source's colour for the game hour (`crate::emittance`), as its
+    /// bytes / 255 with no rounding.
     ///
     /// STAND-IN(#362): only a reference with `XEMI` takes a source; retail also lists a light
     /// whose model has an external-emittance property (inferred from one run).
-    pub fn point_light_in(
-        &self,
-        units: LightUnits,
-        emittance: Option<[u8; 3]>,
-    ) -> Option<PointLight> {
+    pub fn point_light_in(&self, units: LightUnits, emittance: Option<Vec3>) -> Option<PointLight> {
         if !units.is_retail() {
             return self.point_light();
         }
@@ -152,10 +149,7 @@ impl LightEvaluation {
         }
         let record = Vec3::from_array(self.source.color.map(f32::from)) / 255.0;
         let (colour, sign) = match emittance {
-            Some(source) => (
-                record * Vec3::from_array(source.map(f32::from)) / 255.0,
-                1.0,
-            ),
+            Some(source) => (record * source, 1.0),
             None if self.source.flags & LIGHT_FLAG_NEGATIVE != 0 => (record, -1.0),
             None => (record, 1.0),
         };

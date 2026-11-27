@@ -2127,9 +2127,12 @@ fn spawn_cell(
             let dynamics = evaluated_light
                 .as_ref()
                 .map(|evaluation| evaluation.dynamics_in(units, reference.form_id));
-            if let Some(light) = evaluated_light
-                .and_then(|evaluation| evaluation.point_light_in(units, reference.emittance))
-            {
+            if let Some(light) = evaluated_light.and_then(|evaluation| {
+                let source = reference
+                    .emittance
+                    .map(|bytes| Vec3::from_array(bytes.map(f32::from)) / 255.0);
+                evaluation.point_light_in(units, source)
+            }) {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,

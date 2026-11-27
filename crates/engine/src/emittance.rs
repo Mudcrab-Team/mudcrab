@@ -39,22 +39,29 @@ impl Plugin for EmittancePlugin {
 pub struct EmittanceDayParts(pub [[u8; 3]; 4]);
 
 impl EmittanceDayParts {
-    /// The source's colour at these day-part weights: the weighted sum of the bytes, rounded to
-    /// a byte. Rounding keeps a running clock from making a new material every frame.
+    /// The source's colour at these day-part weights: the weighted sum of the bytes / 255, as a
+    /// point light takes it (SPEC-1 section 2.6,
+    /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+    pub fn colour(&self, weights: [f32; 4]) -> Vec3 {
+        let sum: Vec3 = self
+            .0
+            .iter()
+            .zip(weights)
+            .map(|(part, weight)| weight * Vec3::from_array(part.map(f32::from)))
+            .sum();
+        sum / 255.0
+    }
+
+    /// The same colour rounded to bytes, as an emitting surface takes it. Rounding keeps a running
+    /// clock from making a new material every frame.
     pub fn mixed(&self, weights: [f32; 4]) -> [u8; 3] {
-        std::array::from_fn(|channel| {
-            let sum: f32 = self
-                .0
-                .iter()
-                .zip(weights)
-                .map(|(part, weight)| weight * f32::from(part[channel]))
-                .sum();
+        self.colour(weights).to_array().map(|channel| {
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "a weighted mean of bytes, clamped to 0..=255"
             )]
-            let byte = sum.round().clamp(0.0, 255.0) as u8;
+            let byte = (channel * 255.0).round().clamp(0.0, 255.0) as u8;
             byte
         })
     }
@@ -97,7 +104,8 @@ fn drive_emittance_by_hour(
         let (Some(evaluation), Some(children)) = (evaluation, children) else {
             continue;
         };
-        let Some(wanted) = evaluation.point_light_in(LightUnits::Retail, Some(source)) else {
+        let colour = parts.colour(weights);
+        let Some(wanted) = evaluation.point_light_in(LightUnits::Retail, Some(colour)) else {
             continue;
         };
         for &child in children {
@@ -766,7 +774,8 @@ mod tests {
                 close(lit_by(&glow, colour).base.base_color.to_linear(), base);
                 if units.is_retail() {
                     close(lit_by(&lit_surface, colour).emissive, [multiple; 3]);
-                    let light = white.point_light_in(units, Some(rgb)).unwrap();
+                    let source = Vec3::from_array(rgb.map(f32::from)) / 255.0;
+                    let light = white.point_light_in(units, Some(source)).unwrap();
                     close(light.color.to_linear(), [1.0; 3]);
                 }
             }
@@ -798,6 +807,12 @@ mod tests {
         let parts = EmittanceDayParts([[200, 100, 0], [0, 0, 0], [100, 200, 40], [10, 20, 30]]);
         assert_eq!(parts.mixed([0.0, 1.0, 0.0, 0.0]), [0, 0, 0]);
         assert_eq!(parts.mixed([0.0, 0.2, 0.8, 0.0]), [80, 160, 32]);
+        // A light takes the sum with no rounding.
+        assert!(
+            parts
+                .colour([0.0, 0.999, 0.001, 0.0])
+                .abs_diff_eq(Vec3::new(0.1, 0.2, 0.04) / 255.0, 1.0e-7)
+        );
 
         let mut app = App::new();
         // Sunrise 5:00 to 7:00, sunset 17:00 to 19:00.
@@ -827,7 +842,7 @@ mod tests {
             .world_mut()
             .spawn((
                 evaluation
-                    .point_light_in(LightUnits::Retail, Some([0, 0, 0]))
+                    .point_light_in(LightUnits::Retail, Some(Vec3::ZERO))
                     .unwrap(),
                 crate::lights::SkyrimLight {
                     form_id: 1,
@@ -855,9 +870,11 @@ mod tests {
             *app.world().get::<ReferenceEmittance>(reference).unwrap(),
             ReferenceEmittance::of(LightUnits::Retail, [80, 160, 32])
         );
-        assert_eq!(
-            colour(&app),
-            Color::linear_rgb(80.0 / 255.0, 160.0 / 255.0, 32.0 / 255.0)
+        let lit = colour(&app).to_linear();
+        assert!(
+            Vec3::new(lit.red, lit.green, lit.blue)
+                .abs_diff_eq(Vec3::new(80.0, 160.0, 32.0) / 255.0, 1.0e-5),
+            "{lit:?}"
         );
     }
 }
