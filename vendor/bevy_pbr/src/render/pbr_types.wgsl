@@ -59,6 +59,8 @@ const STANDARD_MATERIAL_FLAGS_SPECULAR_TINT_TEXTURE_BIT: u32         = 1u << 19u
 // mudcrab: the retail Lighting path (`RetailSurface`), and its specular term.
 const STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT: u32               = 1u << 20u;
 const STANDARD_MATERIAL_FLAGS_RETAIL_SPECULAR_BIT: u32               = 1u << 21u;
+// mudcrab: a blended retail surface that also runs the alpha test.
+const STANDARD_MATERIAL_FLAGS_RETAIL_ALPHA_TEST_BIT: u32             = 1u << 22u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS: u32          = 7u << 29u; // (0b111u << 29u)
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE: u32                 = 0u << 29u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK: u32                   = 1u << 29u;

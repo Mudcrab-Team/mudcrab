@@ -145,7 +145,7 @@ open rules of that table, then the rules it gives that the engine does not follo
 | --- |
 | STAND-IN(#362): water, sky and other shader families keep their own passes |
 | STAND-IN(#946): LOD techniques are outside the near rules |
-| STAND-IN(#362): a refraction surface has no Lighting pass and draws as a surface |
+| STAND-IN(#362): a refraction effect surface draws as a surface |
 | STAND-IN(#362): the pass of a surface without a depth test is not specified |
 | STAND-IN(#362): the effect shader's pass is specified only for a plain blended surface |
 | STAND-IN(#362): depth write of an unblended surface follows its flag |
@@ -157,7 +157,6 @@ open rules of that table, then the rules it gives that the engine does not follo
 | STAND-IN(#362): a decal stays out of the depth prepass |
 | STAND-IN(#362): a blended decal draws after the composite and applies it in its shader |
 | STAND-IN(#362): a blended surface with an alpha test and depth write draws as a cutout |
-| STAND-IN(#362): a blended surface with an alpha test and no depth write is not cut |
 
 Water and effect shaders are outside SPEC-1. Water keeps its own program and its decoded record
 colours, so its sky reflection does not match the retail sky exactly (unverified how far).

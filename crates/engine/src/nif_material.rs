@@ -31,6 +31,7 @@ use std::{
 
 /// The retail inputs of a lighting material under `skyrim`.
 mod retail;
+pub(crate) mod technique;
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
 pub struct NifMaterialPlugin;
@@ -947,6 +948,11 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         }
         if has_external_emittance(material) {
             entity.insert(ExternalEmittance);
+        }
+        // A refraction surface has no retail `Lighting` pass (SPEC-1 section 9.2). Its own
+        // frame effect is not drawn.
+        if self.raw_colour_texels && retail::refracts(material) {
+            entity.insert(Visibility::Hidden);
         }
         if palette || self.needs_native(material) {
             let source = entity

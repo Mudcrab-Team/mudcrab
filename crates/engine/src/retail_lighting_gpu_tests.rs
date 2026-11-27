@@ -191,6 +191,7 @@ fn spawn_surface(app: &mut App, specular: bool, alpha_mode: AlphaMode) -> Entity
                 glossiness: 30.0,
                 specular,
                 emissive_multiple: 0.0,
+                alpha_reference: 0.0,
             }),
             ..default()
         });

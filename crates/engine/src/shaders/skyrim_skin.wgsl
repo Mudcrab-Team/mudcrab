@@ -290,6 +290,14 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
             discard;
         }
         pbr_input.material.base_color.a = hair_decal_alpha(pbr_input.material.base_color.a);
+        // The alpha test reads the lifted alpha, also when the card blends or covers samples
+        // (SPEC-1 section 6.3).
+        if retail && (pbr_input.material.flags
+            & pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS)
+            == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK
+            && pbr_input.material.base_color.a < pbr_input.material.alpha_cutoff {
+            discard;
+        }
     }
 #ifdef SKYRIM_HAIR_ALPHA_TO_COVERAGE
     // A masked hair card under MSAA (`skin_material.rs`, "Hair card edges"): coverage instead of

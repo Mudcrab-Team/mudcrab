@@ -60,9 +60,7 @@ impl Open {
                 "STAND-IN(#362): water, sky and other shader families keep their own passes"
             }
             Self::LodTechnique => "STAND-IN(#946): LOD techniques are outside the near rules",
-            Self::Refraction => {
-                "STAND-IN(#362): a refraction surface has no Lighting pass and draws as a surface"
-            }
+            Self::Refraction => "STAND-IN(#362): a refraction effect surface draws as a surface",
             Self::NoDepthTest => {
                 "STAND-IN(#362): the pass of a surface without a depth test is not specified"
             }
@@ -94,7 +92,6 @@ impl Open {
 enum Gap {
     SortedDecal,
     CutoutWithBlend,
-    BlendWithoutCut,
 }
 
 impl Gap {
@@ -105,9 +102,6 @@ impl Gap {
             }
             Self::CutoutWithBlend => {
                 "STAND-IN(#362): a blended surface with an alpha test and depth write draws as a cutout"
-            }
-            Self::BlendWithoutCut => {
-                "STAND-IN(#362): a blended surface with an alpha test and no depth write is not cut"
             }
         }
     }
@@ -129,13 +123,6 @@ fn known_gap(authored: &Authored, retail: &Pass) -> Option<(Gap, Pass)> {
             blend: None,
         };
         return Some((Gap::CutoutWithBlend, pass));
-    }
-    if retail.alpha_test {
-        let pass = Pass {
-            alpha_test: false,
-            ..retail.clone()
-        };
-        return Some((Gap::BlendWithoutCut, pass));
     }
     decal.then(|| {
         let pass = Pass {
@@ -196,7 +183,10 @@ fn rule(authored: &Authored) -> (Option<Pass>, BTreeSet<Open>) {
         return (None, open);
     }
     if flags_1 & (REFRACTION | TEMP_REFRACTION) != 0 {
-        open.insert(Open::Refraction);
+        // A lit refraction surface has no `Lighting` pass, and the loader hides it.
+        if !authored.lighting {
+            open.insert(Open::Refraction);
+        }
         return (None, open);
     }
     if flags_1 & DEPTH_TEST == 0 {
@@ -304,7 +294,10 @@ fn drawn(handler: &NativeMaterialHandler, source: &Material<'_>) -> Pass {
     Pass {
         stage: if sorted { Stage::Sorted } else { Stage::First },
         shade,
-        alpha_test: shade == Shade::Cutout,
+        alpha_test: shade == Shade::Cutout
+            || material
+                .retail_surface
+                .is_some_and(|surface| surface.alpha_reference > 0.0),
         depth_write: state.map_or(shade != Shade::Blend, |state| state.depth_write),
         blend: (shade == Shade::Blend).then(|| {
             state
@@ -497,7 +490,7 @@ fn the_loader_draws_every_flag_combination_in_the_specified_pass() {
             open.label()
         );
     }
-    for gap in [Gap::SortedDecal, Gap::CutoutWithBlend, Gap::BlendWithoutCut] {
+    for gap in [Gap::SortedDecal, Gap::CutoutWithBlend] {
         assert!(gapped.contains(&gap), "{gap:?} is never reached");
         assert!(document.contains(gap.label()), "{}", gap.label());
     }

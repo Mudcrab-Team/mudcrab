@@ -1000,6 +1000,8 @@ bitflags::bitflags! {
         // mudcrab: the retail Lighting path (`RetailSurface`), and its specular term.
         const RETAIL_LIGHTING            = 1 << 20;
         const RETAIL_SPECULAR            = 1 << 21;
+        // mudcrab: a blended retail surface that also runs the alpha test.
+        const RETAIL_ALPHA_TEST          = 1 << 22;
         const ALPHA_MODE_RESERVED_BITS   = Self::ALPHA_MODE_MASK_BITS << Self::ALPHA_MODE_SHIFT_BITS; // ← Bitmask reserving bits for the `AlphaMode`
         const ALPHA_MODE_OPAQUE          = 0 << Self::ALPHA_MODE_SHIFT_BITS;                          // ← Values are just sequential values bitshifted into
         const ALPHA_MODE_MASK            = 1 << Self::ALPHA_MODE_SHIFT_BITS;                          //   the bitmask, and can range from 0 to 7.
@@ -1197,6 +1199,11 @@ impl AsBindGroupShaderType<StandardMaterialUniform> for StandardMaterial {
                 flags |= StandardMaterialFlags::RETAIL_SPECULAR;
             }
             retail_specular = surface.specular_color.extend(surface.glossiness);
+            // mudcrab: the cut of a blended surface travels in the unused mask cutoff.
+            if surface.alpha_reference > 0.0 && !matches!(self.alpha_mode, AlphaMode::Mask(_)) {
+                flags |= StandardMaterialFlags::RETAIL_ALPHA_TEST;
+                alpha_cutoff = surface.alpha_reference;
+            }
         }
 
         let mut emissive = self.emissive.to_vec4();

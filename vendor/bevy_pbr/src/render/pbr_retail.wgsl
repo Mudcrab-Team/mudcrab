@@ -160,6 +160,12 @@ fn retail_lighting(in: pbr_types::PbrInput) -> vec4<f32> {
     let flags = in.material.flags;
     let two_stages = (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_SPECULAR_BIT) != 0u;
     let glossiness = in.material.retail_specular.w;
+    // A blended surface with the alpha test (SPEC-1 section 6.3): the alpha is the texel's
+    // times the property alpha times the vertex alpha.
+    if (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_ALPHA_TEST_BIT) != 0u
+        && in.material.base_color.a < in.material.alpha_cutoff {
+        discard;
+    }
     let receives_shadows = (in.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
     let position = in.world_position.xyz;
     let view_z = dot(vec4<f32>(

@@ -46,7 +46,16 @@ const EXTENSION_ALPHA_LINKS: [(&str, &str); 2] = [
 /// The links of the retail Lighting path (`RetailSurface`): the file and the code it must hold.
 /// Every link has to hold. A lost link draws the surface with Bevy's light model, whose picture
 /// looks plausible, so only this check fails.
-const RETAIL_SURFACE_LINKS: [(&str, &str); 22] = [
+const RETAIL_SURFACE_LINKS: [(&str, &str); 25] = [
+    ("src/pbr_material.rs", "const RETAIL_ALPHA_TEST = 1 << 22;"),
+    (
+        "src/render/pbr_types.wgsl",
+        "const STANDARD_MATERIAL_FLAGS_RETAIL_ALPHA_TEST_BIT: u32 = 1u << 22u;",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "STANDARD_MATERIAL_FLAGS_RETAIL_ALPHA_TEST_BIT) != 0u && in.material.base_color.a < in.material.alpha_cutoff { discard;",
+    ),
     ("src/retail_surface.rs", "pub struct RetailSurface {"),
     ("src/lib.rs", "mod retail_surface;"),
     ("src/lib.rs", "pub use retail_surface::RetailSurface;"),
