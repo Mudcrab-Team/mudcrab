@@ -36053,6 +36053,22 @@
       ],
       "spec": "SPEC-1 2.7-a"
     },
+    "NIF.BSLightingShaderProperty.environment_map_scale": {
+      "disposition": "respected",
+      "owner": "Mudcrab maintainers",
+      "reason": "The converter publishes the environment map scale of an EnvironmentMap lighting shader in the material values, and the skyrim profile scales the technique 1 cubemap reflection by it (SPEC-1 9.2).",
+      "evidence": [
+        {
+          "path": "crates/converter/src/material.rs",
+          "anchor": "LightingShaderTypeData::EnvironmentMap { env_map_scale } => env_map_scale,"
+        },
+        {
+          "path": "crates/engine/src/nif_material/retail.rs",
+          "anchor": ".and_then(|values| values.environment_map_scale)"
+        }
+      ],
+      "spec": "SPEC-1 9.2-d"
+    },
     "NIF.BSLightingShaderProperty.extra_data_list": {
       "disposition": "not-applicable",
       "owner": "Mudcrab maintainers",
@@ -79762,9 +79778,9 @@
     },
     "BSLightingShaderProperty": {
       "disposition": "system-not-implemented",
-      "missing_system": "Shader-type-specific parameters (EnvMap, ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap) are dropped; specialized lighting shaders are not implemented",
+      "missing_system": "Shader-type-specific parameters (ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap) are dropped; specialized lighting shaders are not implemented",
       "owner": "Mudcrab maintainers",
-      "reason": "Shader-type-specific parameters (EnvMap, ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap) are dropped; specialized lighting shaders are not implemented. | NiProperty controller references are skipped; shader float controller animation is not implemented. | Dropped in material.rs and refraction pass is a stand-in in pass_audit.rs (refractive lighting shader pass not implemented).",
+      "reason": "Shader-type-specific parameters (ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap) are dropped; specialized lighting shaders are not implemented. | NiProperty controller references are skipped; shader float controller animation is not implemented. | Dropped in material.rs and refraction pass is a stand-in in pass_audit.rs (refractive lighting shader pass not implemented).",
       "evidence": [
         {
           "path": "vendor/project-wormhole-nif/src/nif_block.rs",
@@ -79776,7 +79792,7 @@
         },
         {
           "path": "crates/engine/src/nif_material/pass_audit.rs",
-          "anchor": "\"STAND-IN(#362): a refraction surface has no Lighting pass and draws as a surface\""
+          "anchor": "Self::Refraction => \"STAND-IN(#362): a refraction effect surface draws as a surface\","
         },
         {
           "path": "crates/engine/src/skin_material.rs",
@@ -79785,7 +79801,6 @@
       ],
       "field_ids": [
         "NIF.BSLightingShaderProperty.controller",
-        "NIF.BSLightingShaderProperty.environment_map_scale",
         "NIF.BSLightingShaderProperty.eye_cubemap_scale",
         "NIF.BSLightingShaderProperty.left_eye_reflection_center_x",
         "NIF.BSLightingShaderProperty.left_eye_reflection_center_y",
