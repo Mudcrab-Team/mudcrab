@@ -2492,6 +2492,7 @@ mod tests {
         ("workspace.py", "--build-plan"),
         ("workspace.py", "--keep"),
         ("workspace.py", "--keep-days"),
+        ("workspace.py", "--normal-priority"),
         ("workspace.py", "--isolated-ttl-hours"),
         ("workspace.py", "--message-format"),
         ("workspace.py", "--no-run"),

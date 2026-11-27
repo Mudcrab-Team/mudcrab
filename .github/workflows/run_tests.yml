@@ -63,7 +63,10 @@ jobs:
             fi
           }
 
-          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.(rs|wgsl)|crates/shared/(converter|world-database)-schema-version\.txt|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*|tools/skyrim-recorder/.*|docs/research/evidence/skyrim-physics-221/.*|scripts/[^/]*skyrim[^/]*\.py)$'
+          # Engine config tests scan every script under scripts/ for engine options
+          # (config::tests::the_scripts_only_pass_options_the_parser_accepts), so a
+          # script-only change must run the Rust tests too (#1024 broke main without them).
+          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.(rs|wgsl)|crates/shared/(converter|world-database)-schema-version\.txt|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*|tools/skyrim-recorder/.*|docs/research/evidence/skyrim-physics-221/.*|scripts/.*\.(py|sh|ps1))$'
           # Anything under vendor/ is compiled into the engine, whatever its extension. GITHUB_OUTPUT
           # keeps the last value written for a name, so this only ever turns check_rust on.
           if LC_ALL=C grep -zqE '^vendor/' "$changed_paths"; then
