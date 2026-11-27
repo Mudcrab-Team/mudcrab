@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Skyrim record field catalog v1",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "signature_or_block",
+      "subrecord",
+      "field",
+      "offset",
+      "type",
+      "meaning",
+      "source",
+      "kind",
+      "occurrences"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "signature_or_block": {
+        "type": "string",
+        "minLength": 1
+      },
+      "subrecord": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "field": {
+        "type": "string",
+        "minLength": 1
+      },
+      "offset": {
+        "type": [
+          "integer",
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "type": "string",
+        "minLength": 1
+      },
+      "meaning": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string",
+        "minLength": 1
+      },
+      "kind": {
+        "enum": [
+          "esm",
+          "nif"
+        ]
+      },
+      "occurrences": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "size_bytes": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "conditional": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    }
+  }
+}

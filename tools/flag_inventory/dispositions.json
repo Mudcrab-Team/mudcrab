@@ -74,7 +74,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored ACHR records still load, override masters, and enter the database."
     },
@@ -98,7 +98,7 @@
           "path": "crates/engine/src/streaming/large_references.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1031",
       "owner": "Mudcrab maintainers",
       "reason": "Visible When Distant (0x8000) on ACHR is ignored by object LOD streaming and large-reference promotion."
     },
@@ -171,7 +171,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1028",
       "owner": "Mudcrab maintainers",
       "reason": "Starts Dead (0x200) on ACHR suppresses idle animation at spawn, but actors remain in bind pose because death poses and ragdolls are not implemented."
     },
@@ -237,7 +237,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored ACTI records still load, override masters, and enter the database."
     },
@@ -617,7 +617,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored ALCH records still load, override masters, and enter the database."
     },
@@ -712,7 +712,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored AMMO records still load, override masters, and enter the database."
     },
@@ -774,7 +774,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored ANIO records still load, override masters, and enter the database."
     },
@@ -897,7 +897,7 @@
           "path": "crates/engine/src/actor_body_weight.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1049",
       "owner": "Mudcrab maintainers",
       "reason": "ARMA/DNAM is decoded in items.json, and engine applies NPC_/NAM7 weight morphs to composed bodies, but actor_outfits and actor_models never read weight-slider flags or build thin (_0.nif) morph targets for worn outfits."
     },
@@ -927,7 +927,7 @@
           "path": "crates/engine/src/actor_body_weight.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1049",
       "owner": "Mudcrab maintainers",
       "reason": "ARMA/DNAM is decoded in items.json, and engine applies NPC_/NAM7 weight morphs to composed bodies, but actor_outfits and actor_models never read weight-slider flags or build thin (_0.nif) morph targets for worn outfits."
     },
@@ -962,7 +962,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored ARMO records still load, override masters, and enter the database."
     },
@@ -986,7 +986,7 @@
           "path": "crates/engine/src/streaming/large_references.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1031",
       "owner": "Mudcrab maintainers",
       "reason": "Visible When Distant (0x8000) on ARMO is ignored by object LOD streaming and large-reference promotion."
     },
@@ -1263,7 +1263,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1048",
       "owner": "Mudcrab maintainers",
       "reason": "Used for non-FaceGen creature body fallback in actor_models and preserved in outfit biped_mask by actor_outfits, but actor_outfit BodyRegion only hides Body/Hands/Feet so wearing a slot-30 helmet does not hide ActorHead; humanoid skin armatures with slot 30 are also rejected."
     },
@@ -1291,7 +1291,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1048",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask for DOFT outfit attachment and race-tier deduplication in actor_outfits, but actor_outfit BodyRegion does not hide hair/ears under hoods/helmets, HDPT headparts are not assembled, and actor_models skips this slot on race skins."
     },
@@ -1413,7 +1413,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask and deduplicated within each ARMO in actor_outfits so DOFT armatures attach in actor_outfit, but cross-item equipment-slot conflict enforcement, BodyRegion hiding, shield blocking/FX mechanics, and race-skin support in actor_models are missing."
     },
@@ -1441,7 +1441,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask and deduplicated within each ARMO in actor_outfits so DOFT armatures attach in actor_outfit, but cross-item equipment-slot conflict enforcement, BodyRegion hiding, shield blocking/FX mechanics, and race-skin support in actor_models are missing."
     },
@@ -1469,7 +1469,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask and deduplicated within each ARMO in actor_outfits so DOFT armatures attach in actor_outfit, but cross-item equipment-slot conflict enforcement, BodyRegion hiding, shield blocking/FX mechanics, and race-skin support in actor_models are missing."
     },
@@ -1544,7 +1544,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask and deduplicated within each ARMO in actor_outfits so DOFT armatures attach in actor_outfit, but cross-item equipment-slot conflict enforcement, BodyRegion hiding, shield blocking/FX mechanics, and race-skin support in actor_models are missing."
     },
@@ -1572,7 +1572,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask and deduplicated within each ARMO in actor_outfits so DOFT armatures attach in actor_outfit, but cross-item equipment-slot conflict enforcement, BodyRegion hiding, shield blocking/FX mechanics, and race-skin support in actor_models are missing."
     },
@@ -1600,7 +1600,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1042",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask for DOFT outfits by actor_outfits, but actor_models::classify_slot masks out bit 10 (slot 40 Tail) and emits UnrecognizedSlot so Khajiit and Argonian race skins spawn without tails."
     },
@@ -1628,7 +1628,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1048",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask for DOFT outfit attachment and race-tier deduplication in actor_outfits, but actor_outfit BodyRegion does not hide hair/ears under hoods/helmets, HDPT headparts are not assembled, and actor_models skips this slot on race skins."
     },
@@ -1656,7 +1656,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask and deduplicated within each ARMO in actor_outfits so DOFT armatures attach in actor_outfit, but cross-item equipment-slot conflict enforcement, BodyRegion hiding, shield blocking/FX mechanics, and race-skin support in actor_models are missing."
     },
@@ -1684,7 +1684,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1048",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask for DOFT outfit attachment and race-tier deduplication in actor_outfits, but actor_outfit BodyRegion does not hide hair/ears under hoods/helmets, HDPT headparts are not assembled, and actor_models skips this slot on race skins."
     },
@@ -1907,7 +1907,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Preserved in OutfitPart.biped_mask and deduplicated within each ARMO in actor_outfits so DOFT armatures attach in actor_outfit, but cross-item equipment-slot conflict enforcement, BodyRegion hiding, shield blocking/FX mechanics, and race-skin support in actor_models are missing."
     },
@@ -2254,7 +2254,7 @@
           "path": "crates/converter/src/archive/bsa.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "KNOWN_ARCHIVE_FLAGS (0x03ff) accepts Xbox 360 BigEndian (bit 6) and XMemCodec (bit 9) instead of rejecting them, while parser reads little-endian zlib/LZ4 only."
     },
@@ -2304,7 +2304,7 @@
           "path": "crates/converter/src/archive/bsa.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "KNOWN_ARCHIVE_FLAGS (0x03ff) accepts bits 0 and 1, but BSA parser unconditionally reads directory names and file name blocks without checking these flags."
     },
@@ -2324,7 +2324,7 @@
           "path": "crates/converter/src/archive/bsa.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "KNOWN_ARCHIVE_FLAGS (0x03ff) accepts bits 0 and 1, but BSA parser unconditionally reads directory names and file name blocks without checking these flags."
     },
@@ -2404,7 +2404,7 @@
           "path": "crates/converter/src/archive/bsa.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "KNOWN_ARCHIVE_FLAGS (0x03ff) accepts Xbox 360 BigEndian (bit 6) and XMemCodec (bit 9) instead of rejecting them, while parser reads little-endian zlib/LZ4 only."
     },
@@ -2728,7 +2728,7 @@
           "path": "crates/engine/src/world/water.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1037",
       "owner": "Mudcrab maintainers",
       "reason": "Exterior flat water spawns whenever XCLW/WRLD default water height is finite and < 1e7 without checking data_flags & 0x2 (has_water), and interior water pools are not spawned."
     },
@@ -2901,7 +2901,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored CELL records still load, override masters, and enter the database."
     },
@@ -2917,7 +2917,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Partial Form (0x4000) is ignored during load-order merging: overriding CELL records replace whole records instead of merging partial subrecords."
     },
@@ -3160,7 +3160,7 @@
           "path": "docs/specs/engine/interior-environment.md"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Bit 0x80 resolves fog_clip_distance into SceneEnvironment only and is never applied to camera far clip."
     },
@@ -3381,7 +3381,7 @@
           "path": "docs/specs/engine/interior-environment.md"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Bit 0x100 resolves fog_power and applies it under skyrim retail fog (InteriorRetailFog); mudcrab profile uses linear DistanceFog without a power exponent."
     },
@@ -3649,7 +3649,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored CLFM records still load, override masters, and enter the database."
     },
@@ -3756,7 +3756,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Bit 0 is respected as ESM on TES4 (load_order.rs:326), destructible/unlocked gameplay systems do not exist, and grass_cache.rs:914 mistakenly checks (flags & 1)=0 on cells.flags (which stores CELL.RecordHeader.flags rather than CELL.DATA)."
     },
@@ -3841,7 +3841,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked in legacy or in-house ESM readers/mergers; records flagged Ignored still load, win overrides, and export."
     },
@@ -3883,7 +3883,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1031",
       "owner": "Mudcrab maintainers",
       "reason": "Visible When Distant / Has Distant LOD (0x8000) is ignored by engine LOD streaming and large-reference promotion (config.rs:188 explicitly notes retail 0x8000 LOD split is unimplemented)."
     },
@@ -3903,7 +3903,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Bit 16 is respected as Never Fades on REFR[LIGH], ignored as Is Full LOD on non-light REFRs, and unimplemented as Random Anim Start on base objects."
     },
@@ -4116,7 +4116,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references stay on PLACED_OBJECT_LAYER."
     },
@@ -4132,7 +4132,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1033",
       "owner": "Mudcrab maintainers",
       "reason": "Don't Havok Settle (0x2000_0000) is ignored for dynamic clutter rigid bodies spawned by streaming.rs:2325; Child Can Use/Medicine/Bleedout are unimplemented."
     },
@@ -4289,7 +4289,7 @@
           "path": "crates/engine/src/lights.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1027",
       "owner": "Mudcrab maintainers",
       "reason": "Signature-aliased bit 8 (0x100) includes Inaccessible on REFR[DOOR] (ignored in doors.rs/door_crossing.rs) and Doesn't Light Water on REFR[LIGH] (ignored in database.rs/lights.rs); Must Update Anims has no object-anim system."
     },
@@ -4317,7 +4317,7 @@
           "path": "crates/engine/src/lights.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1028",
       "owner": "Mudcrab maintainers",
       "reason": "Bit 9 is respected as ESL on TES4, partially respected as Starts Dead on ACHR (skips idle, remains in bind pose), dropped as Cast Shadows on REFR[LIGH] (lights.rs checks LIGH.DATA only), and unimplemented for local map / motion blur."
     },
@@ -4374,7 +4374,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored CONT records still load, override masters, and enter the database."
     },
@@ -4599,7 +4599,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored CSTY records still load, override masters, and enter the database."
     },
@@ -5139,7 +5139,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored DIAL records still load, override masters, and enter the database."
     },
@@ -5155,7 +5155,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Partial Form (0x4000) is ignored during load-order merging: overriding DIAL records replace whole records instead of merging partial subrecords."
     },
@@ -5436,7 +5436,7 @@
           "path": "crates/engine/src/door_crossing.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1039",
       "owner": "Mudcrab maintainers",
       "reason": "Load-door crossing exists (doors.rs, door_crossing.rs), and schema.json:1645 decodes automatic (0x02), but esm/doors.rs never extracts DOOR.FNAM into door_links and door_crossing.rs:739 requires KeyCode::KeyE instead of auto-crossing on touch/approach."
     },
@@ -5486,7 +5486,7 @@
           "path": "crates/engine/src/door_crossing.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1039",
       "owner": "Mudcrab maintainers",
       "reason": "Load-door activation exists (door_crossing.rs:738-756) and schema.json:1646 decodes hidden (0x04), but esm/doors.rs never extracts DOOR.FNAM into door_links so hidden load doors remain directly activatable with KeyCode::KeyE."
     },
@@ -5540,7 +5540,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored DOOR records still load, override masters, and enter the database."
     },
@@ -6415,7 +6415,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored EYES records still load, override masters, and enter the database."
     },
@@ -7491,7 +7491,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored FURN records still load, override masters, and enter the database."
     },
@@ -7759,7 +7759,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored GLOB records still load, override masters, and enter the database."
     },
@@ -7926,7 +7926,7 @@
           "path": "crates/engine/src/shaders/grass.wgsl"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Converter stores GRAS.DATA flags in grass_types.flags and grass_cache.rkyv, and grass_render.rs:614 uploads batch.flags to GrassUniform.absolute_grid.z. grass.wgsl:147 comments vertex lighting=1, but (flags & 1u) is never checked anywhere in grass.wgsl or grass_render.rs; all grass runs the same vertex lighting path unconditionally."
     },
@@ -8117,42 +8117,36 @@
       "reason": "Read from GRAS.DATA offset 8 (schema.json:2752) -> grass_types.water_comparison (exporter.rs:1802) -> grass_cache.rkyv (grass_cache.rs:1299) -> water_allowed() match arm 5 (generation.rs:105) gating grass placement at generation.rs:423-428."
     },
     "GRAS.DATA.water_type.either_at_most_above": {
-      "disposition": "respected",
+      "disposition": "dropped",
       "evidence": [
         {
-          "anchor": "/// Water modes follow the reference, including its no-water sentinel and unconstrained modes 6/7.",
-          "path": "crates/engine/src/grass/generation.rs"
+          "path": "crates/engine/src/grass/generation.rs",
+          "anchor": "pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {"
         },
         {
-          "anchor": "assert!(water_allowed(0.0, None, 20, 6));",
-          "path": "crates/engine/src/grass/selection_tests.rs"
-        },
-        {
-          "anchor": "// yields no grid; water modes above five are unconstrained in spud.",
-          "path": "crates/converter/src/esm/grass_cache.rs"
+          "path": "crates/converter/src/esm/grass_cache.rs",
+          "anchor": "rule.water_comparison = rule.water_comparison.min(7);"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "[CL-OBJ-04 verified] GRAS DATA water modes 6/7 (either_at_most_above / below) intentionally unconstrained per reference. None needed (water_allowed() matches reference unconstrained modes 6/7, pinned by test, and 0 of 33 grass_types use mode 6 or 7)."
+      "reason": "water_allowed() handles grass water modes 0..=5 and falls through `_ => true` for mode 6, and grass_cache clamps values > 7 to 7 (#1061).",
+      "issue": "#1061"
     },
     "GRAS.DATA.water_type.either_at_most_below": {
-      "disposition": "respected",
+      "disposition": "dropped",
       "evidence": [
         {
-          "anchor": "/// Water modes follow the reference, including its no-water sentinel and unconstrained modes 6/7.",
-          "path": "crates/engine/src/grass/generation.rs"
+          "path": "crates/engine/src/grass/generation.rs",
+          "anchor": "pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {"
         },
         {
-          "anchor": "assert!(water_allowed(0.0, None, 20, 6));",
-          "path": "crates/engine/src/grass/selection_tests.rs"
-        },
-        {
-          "anchor": "// yields no grid; water modes above five are unconstrained in spud.",
-          "path": "crates/converter/src/esm/grass_cache.rs"
+          "path": "crates/converter/src/esm/grass_cache.rs",
+          "anchor": "rule.water_comparison = rule.water_comparison.min(7);"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "[CL-OBJ-04 verified] GRAS DATA water modes 6/7 (either_at_most_above / below) intentionally unconstrained per reference. None needed (water_allowed() matches reference unconstrained modes 6/7, pinned by test, and 0 of 33 grass_types use mode 6 or 7)."
+      "reason": "water_allowed() handles grass water modes 0..=5 and falls through `_ => true` for mode 7, and grass_cache clamps values > 7 to 7 (#1061).",
+      "issue": "#1061"
     },
     "HAZD.DATA.affects_player_only": {
       "disposition": "system-not-implemented",
@@ -8414,7 +8408,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored HDPT records still load, override masters, and enter the database."
     },
@@ -8473,7 +8467,8 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Additive animation layer blending does not exist in Mudcrab (actor_animation.rs plays standalone poses only); converter decodes blendHint == 1 and cleanly skips additive clips as non-standalone."
+      "reason": "Additive animation layer blending does not exist in Mudcrab (actor_animation.rs plays standalone poses only); converter decodes blendHint == 1 and cleanly skips additive clips as non-standalone.",
+      "issue": "#1060"
     },
     "HKX.hkaAnimationBinding.blend_hint.normal": {
       "disposition": "respected",
@@ -8510,7 +8505,7 @@
           "path": "crates/converter/src/animation/spline.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Parsed into RotationQuantization enum, then explicitly rejected with bail! rather than decoded; spline.rs notes no retail Skyrim SE clip uses this quantization."
     },
@@ -8526,7 +8521,7 @@
           "path": "crates/converter/src/animation/spline.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Parsed into RotationQuantization enum, then explicitly rejected with bail! rather than decoded; spline.rs notes no retail Skyrim SE clip uses this quantization."
     },
@@ -8542,7 +8537,7 @@
           "path": "crates/converter/src/animation/spline.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Parsed into RotationQuantization enum, then explicitly rejected with bail! rather than decoded; spline.rs notes no retail Skyrim SE clip uses this quantization."
     },
@@ -8573,7 +8568,7 @@
           "path": "crates/converter/src/animation/spline.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Parsed into RotationQuantization enum, then explicitly rejected with bail! rather than decoded; spline.rs notes no retail Skyrim SE clip uses this quantization."
     },
@@ -8589,7 +8584,7 @@
           "path": "crates/converter/src/animation/spline.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Parsed into RotationQuantization enum, then explicitly rejected with bail! rather than decoded; spline.rs notes no retail Skyrim SE clip uses this quantization."
     },
@@ -8968,7 +8963,7 @@
           "path": "crates/converter/src/animation/authoring.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Converter parses hkbStateMachineStateInfo.enabled from HKX, but collect_idle_nodes iterates all states without checking state.enabled."
     },
@@ -9114,7 +9109,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored IDLM records still load, override masters, and enter the database."
     },
@@ -10052,7 +10047,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored INFO records still load, override masters, and enter the database."
     },
@@ -10453,7 +10448,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored KEYM records still load, override masters, and enter the database."
     },
@@ -10588,7 +10583,7 @@
           "path": "crates/converter/src/esm/cell_cache.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads BTXT/ATXT/VTXT layer subrecords directly without checking LAND DATA bit 0x4."
     },
@@ -10604,7 +10599,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads VCLR subrecords directly without checking LAND DATA bit 0x2."
     },
@@ -10620,7 +10615,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads VHGT and VNML subrecords directly without checking LAND DATA bit 0x1."
     },
@@ -10655,7 +10650,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored LAND records still load, override masters, and enter the database."
     },
@@ -10893,7 +10888,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored LCTN records still load, override masters, and enter the database."
     },
@@ -11050,7 +11045,7 @@
           "path": "docs/specs/engine/point-lights.md"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Modulates intensity and checks fFlickeringLightDistance in both profiles; flicker positional offset applies under skyrim profile and is zeroed under mudcrab."
     },
@@ -11105,7 +11100,7 @@
           "path": "docs/specs/engine/point-lights.md"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Applied as negative linear RGB under LightUnits::Retail (skyrim profile), but suppressed to None under mudcrab profile because clustered PBR cannot subtract light."
     },
@@ -11322,7 +11317,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored LIGH records still load, override masters, and enter the database."
     },
@@ -11426,7 +11421,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored LSCR records still load, override masters, and enter the database."
     },
@@ -12868,7 +12863,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored MISC records still load, override masters, and enter the database."
     },
@@ -13035,7 +13030,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored MSTT records still load, override masters, and enter the database."
     },
@@ -13794,7 +13789,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored NAVM records still load, override masters, and enter the database."
     },
@@ -14126,7 +14121,7 @@
           "path": "crates/shared/src/nif_alpha.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "No Sorter (bit 13) is omitted from NifAlphaProperty::from_nif (which only decodes bits 0..12) and never alters sorted transparent pass ordering."
     },
@@ -14174,7 +14169,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "test_function (bits 10..12) is parsed into NifAlphaProperty::test_function at nif_alpha.rs:25 but never read by converter or engine; Bevy AlphaMode::Mask always uses >= cutoff."
     },
@@ -14550,7 +14545,7 @@
           "path": "crates/converter/src/mesh/room_bounds.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "culling_mode (2: CULL_ALLFAIL) is parsed onto BSMultiBoundNode but never read during room-bound extraction, conversion, or engine frustum culling."
     },
@@ -14566,7 +14561,7 @@
           "path": "crates/converter/src/mesh/room_bounds.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "culling_mode (1: CULL_ALLPASS) is parsed onto BSMultiBoundNode but never read during room-bound extraction, conversion, or engine frustum culling."
     },
@@ -14582,7 +14577,7 @@
           "path": "crates/converter/src/mesh/room_bounds.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "culling_mode (4: CULL_FORCEMULTIBOUNDSNOUPDATE) is parsed onto BSMultiBoundNode but never read during room-bound extraction, conversion, or engine frustum culling."
     },
@@ -14598,7 +14593,7 @@
           "path": "crates/converter/src/mesh/room_bounds.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "culling_mode (3: CULL_IGNOREMULTIBOUNDS) is parsed onto BSMultiBoundNode but never read during room-bound extraction, conversion, or engine frustum culling."
     },
@@ -14614,7 +14609,7 @@
           "path": "crates/converter/src/mesh/room_bounds.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "culling_mode (0: CULL_NORMAL) is parsed onto BSMultiBoundNode but never read during room-bound extraction, conversion, or engine frustum culling."
     },
@@ -15355,7 +15350,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "BSXFlags bit 7 (kArticulated) is parsed into integer_data and ignored; collision and scene conversion inspect bhk/node blocks directly without checking BSXFlags."
     },
@@ -15390,7 +15385,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "BSXFlags bit 3 (kComplex) is parsed into integer_data and ignored; collision and scene conversion inspect bhk/node blocks directly without checking BSXFlags."
     },
@@ -15410,7 +15405,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "BSXFlags bit 6 (kDynamic) is parsed into integer_data and ignored; collision and scene conversion inspect bhk/node blocks directly without checking BSXFlags."
     },
@@ -15441,7 +15436,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "BSXFlags bit 9 (kExternalEmit) is ignored; ExternalEmittance is driven solely by SLSF1 bit 29 (External_Emittance) at nif_material.rs:577."
     },
@@ -15461,7 +15456,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "BSXFlags bit 1 (kHavok) is parsed into integer_data and ignored; collision and scene conversion inspect bhk/node blocks directly without checking BSXFlags."
     },
@@ -15526,7 +15521,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "BSXFlags bit 2 (kRagdoll) is parsed into integer_data and ignored; collision and scene conversion inspect bhk/node blocks directly without checking BSXFlags."
     },
@@ -17214,7 +17209,7 @@
           "path": "crates/converter/src/lod/retail/bto.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "NiAVObject flag bit 11 (kAlwaysDraw) is parsed into NiAVObjectFlags(u32) (and copied to ObjectLodShape.flags in bto.rs:177) but never read by converter or engine."
     },
@@ -17249,7 +17244,7 @@
           "path": "crates/converter/src/lod/retail/bto.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "NiAVObject flag bit 13 (kFixedBound) is parsed into NiAVObjectFlags(u32) (and copied to ObjectLodShape.flags in bto.rs:177) but never read by converter or engine."
     },
@@ -17374,7 +17369,7 @@
           "path": "crates/converter/src/lod/retail/bto.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "NiAVObject flag bit 20 (kNotVisible) is parsed into NiAVObjectFlags(u32) (and copied to ObjectLodShape.flags in bto.rs:177) but never read by converter or engine."
     },
@@ -17424,7 +17419,7 @@
           "path": "crates/converter/src/lod/retail/bto.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "NiAVObject flag bit 23 (kShadowReceiver) is parsed into NiAVObjectFlags(u32) (and copied to ObjectLodShape.flags in bto.rs:177) but never read by converter or engine."
     },
@@ -17515,7 +17510,7 @@
           "path": "crates/converter/src/lod/retail/bto.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "NiAVObject flag bit 29 (kShadowCaster) is parsed into NiAVObjectFlags(u32) (and copied to ObjectLodShape.flags in bto.rs:177) but never read by converter or engine."
     },
@@ -17602,7 +17597,7 @@
           "path": "crates/converter/src/lod/retail/bto.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "NiAVObject flag bit 6 (kDisableSorting) is parsed into NiAVObjectFlags(u32) (and copied to ObjectLodShape.flags in bto.rs:177) but never read by converter or engine."
     },
@@ -17889,7 +17884,7 @@
           "path": "vendor/project-wormhole-nif/src/legacy.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "NiTriShapeData reads uv_set_count = data_flags & 0x003f to parse the buffer stride, but takes only the first UV set."
     },
@@ -18078,7 +18073,7 @@
           "path": "crates/converter/src/mesh/room_bounds.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Bit 0 (UpdateOnlyActiveChild) is checked in room_bounds.rs:76 when computing world bounds, but runtime switch-node update filtering is not implemented."
     },
@@ -18687,7 +18682,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1 bit 1 (Skinned) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
     },
@@ -18707,7 +18702,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1 bit 10 (Facegen_Detail_Map) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
     },
@@ -18784,7 +18779,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1 bit 14 (Landscape) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
     },
@@ -18845,7 +18840,7 @@
           "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1036",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1_Hair_Soft_Lighting (bit 18) triggers SkyrimSkinFlags::HAIR_DECAL alpha handling when paired with Decal and ZBuffer_Write under skyrim profile, while hair soft-lighting BRDF shading is not implemented."
     },
@@ -18918,7 +18913,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1 bit 21 (FaceGen_RGB_Tint) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
     },
@@ -18938,7 +18933,7 @@
           "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1_Own_Emit (bit 22) gates emission in retail::apply (skyrim profile) and diffuse-modulated emission in nif_material.rs:614, but converter material.rs:654 exports emissiveFactor unconditionally so mudcrab profile still emits without bit 22."
     },
@@ -18973,7 +18968,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1 bit 24 (Multiple_Textures) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
     },
@@ -18993,7 +18988,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1 bit 25 (Remappable_Textures) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
     },
@@ -19224,7 +19219,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1035",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF1_Recieve_Shadows (bit 8) is exported into shaderFlags1, but engine never disables shadow receiving per material."
     },
@@ -19295,7 +19290,7 @@
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF2 bit 1 (LOD_Landscape) is preserved in shaderFlags2 metadata (and bits 1/2 only checked in pass_audit.rs test diagnostic) without altering conversion or runtime rendering."
     },
@@ -19334,7 +19329,7 @@
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF2 bit 11 (Uniform_Scale) is preserved in shaderFlags2 metadata (and bits 1/2 only checked in pass_audit.rs test diagnostic) without altering conversion or runtime rendering."
     },
@@ -19463,7 +19458,7 @@
           "path": "crates/engine/src/nif_depth.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF2_Premult_Alpha (bit 19) is exported into OPEN_SKYRIM_material.premultipliedAlpha at material.rs:761, but engine never reads it or uses premultiplied blend factors."
     },
@@ -19487,7 +19482,7 @@
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF2 bit 2 (LOD_Objects) is preserved in shaderFlags2 metadata (and bits 1/2 only checked in pass_audit.rs test diagnostic) without altering conversion or runtime rendering."
     },
@@ -19541,7 +19536,7 @@
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF2 bit 22 (No_Transparency_Multisampling) is preserved in shaderFlags2 metadata (and bits 1/2 only checked in pass_audit.rs test diagnostic) without altering conversion or runtime rendering."
     },
@@ -19792,7 +19787,7 @@
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "SLSF2 bit 8 (Packed_Tangent) is preserved in shaderFlags2 metadata (and bits 1/2 only checked in pass_audit.rs test diagnostic) without altering conversion or runtime rendering."
     },
@@ -21749,7 +21744,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -21773,7 +21768,8 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Actor/biped ragdoll collision system does not exist in crates/engine (streaming.rs:2067)."
+      "reason": "Actor/biped ragdoll collision system does not exist in crates/engine (streaming.rs:2067).",
+      "issue": "#1054"
     },
     "NIF.SkyrimLayer.skyl_biped_no_cc": {
       "disposition": "system-not-implemented",
@@ -21866,7 +21862,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine assigns GROUP_CLUTTER by base record type; missing: engine ignores havok.collision_layer for layer filtering and water buoyancy."
     },
@@ -21894,7 +21890,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -21918,7 +21914,8 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Critter collision system does not exist in crates/engine."
+      "reason": "Critter collision system does not exist in crates/engine.",
+      "issue": "#1054"
     },
     "NIF.SkyrimLayer.skyl_custompick1": {
       "disposition": "system-not-implemented",
@@ -21976,7 +21973,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1054",
       "owner": "Mudcrab maintainers",
       "reason": "from_nif_bytes rejects SKYL_DEBRIS (20) as unsupported layer and skips the body/shapes, dropping collision for debris-layered NIF rigid bodies."
     },
@@ -21992,7 +21989,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1054",
       "owner": "Mudcrab maintainers",
       "reason": "from_nif_bytes rejects SKYL_DEBRIS (19) as unsupported layer and skips the body/shapes, dropping collision for debris-layered NIF rigid bodies."
     },
@@ -22064,7 +22061,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -22092,7 +22089,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -22202,7 +22199,8 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Projectile collision system does not exist in crates/engine."
+      "reason": "Projectile collision system does not exist in crates/engine.",
+      "issue": "#1054"
     },
     "NIF.SkyrimLayer.skyl_projectilezone": {
       "disposition": "system-not-implemented",
@@ -22239,7 +22237,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -22285,7 +22283,8 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Spell trigger volume system does not exist in crates/engine."
+      "reason": "Spell trigger volume system does not exist in crates/engine.",
+      "issue": "#1054"
     },
     "NIF.SkyrimLayer.skyl_stairhelper": {
       "disposition": "partial",
@@ -22311,7 +22310,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -22366,7 +22365,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -22398,7 +22397,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1056",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts transparent layer and engine creates solid GROUP_WORLD collider; missing: engine ignores collision_layer, so transparent meshes block activation/LOS raycasts."
     },
@@ -22430,7 +22429,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1056",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts transparent layer and engine creates solid GROUP_WORLD collider; missing: engine ignores collision_layer, so transparent meshes block activation/LOS raycasts."
     },
@@ -22462,7 +22461,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1056",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts transparent layer and engine creates solid GROUP_WORLD collider; missing: engine ignores collision_layer, so transparent meshes block activation/LOS raycasts."
     },
@@ -22475,7 +22474,8 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Trap physics/trigger system does not exist in crates/engine."
+      "reason": "Trap physics/trigger system does not exist in crates/engine.",
+      "issue": "#1054"
     },
     "NIF.SkyrimLayer.skyl_trap_trigger": {
       "disposition": "system-not-implemented",
@@ -22512,7 +22512,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -22528,7 +22528,7 @@
           "path": "crates/engine/src/papyrus_plugin.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1055",
       "owner": "Mudcrab maintainers",
       "reason": "Converter rejects layer 12 as non-physical so triggers do not block movement; missing: trigger volume overlap detection and OnTriggerEnter script dispatch."
     },
@@ -22567,7 +22567,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine spawns solid GROUP_WORLD collider; missing: engine never reads havok.collision_layer outside VerifiedContainer, losing per-layer raycast/sound/filter distinctions."
     },
@@ -22580,7 +22580,8 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Magic ward collision system does not exist in crates/engine."
+      "reason": "Magic ward collision system does not exist in crates/engine.",
+      "issue": "#1054"
     },
     "NIF.SkyrimLayer.skyl_water": {
       "disposition": "system-not-implemented",
@@ -22629,7 +22630,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter accepts layer and engine assigns GROUP_CLUTTER by base record type; missing: engine ignores havok.collision_layer for layer filtering and water buoyancy."
     },
@@ -22968,7 +22969,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 0 (TEST_ALWAYS) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -22988,7 +22989,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 2 (TEST_EQUAL) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -23008,7 +23009,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 4 (TEST_GREATER) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -23028,7 +23029,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 6 (TEST_GREATER_EQUAL) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -23048,7 +23049,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 1 (TEST_LESS) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -23068,7 +23069,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 3 (TEST_LESS_EQUAL) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -23088,7 +23089,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 7 (TEST_NEVER) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -23108,7 +23109,7 @@
           "path": "crates/converter/src/material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "TestFunction 5 (TEST_NOT_EQUAL) is parsed into NifAlphaProperty::test_function but never read (NiZBufferProperty is NifBlock::Unhandled); Bevy AlphaMode::Mask always keeps pixels with alpha >= cutoff."
     },
@@ -23597,7 +23598,7 @@
           "path": "vendor/project-wormhole-nif/src/bs/vertex.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "VertexAttributes has no method for bit 2 (UVs_2) and BSVertexData::parse_with_flags never parses a second UV set."
     },
@@ -23994,7 +23995,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1053",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads target (@0) and body (@6) from bhkCollisionObject and ignores Flags (@4..6); inactive collision objects without ACTIVE still spawn colliders."
     },
@@ -24080,7 +24081,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1053",
       "owner": "Mudcrab maintainers",
       "reason": "Converter ignores bhkNiCollisionObject Flags (@4..6); static node transforms are baked at load time and dynamic bodies attach to the root entity."
     },
@@ -24100,7 +24101,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1053",
       "owner": "Mudcrab maintainers",
       "reason": "Converter ignores bhkNiCollisionObject Flags (@4..6); static node transforms are baked at load time and dynamic bodies attach to the root entity."
     },
@@ -24120,7 +24121,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1053",
       "owner": "Mudcrab maintainers",
       "reason": "Converter ignores bhkNiCollisionObject Flags (@4..6); static node transforms are baked at load time and dynamic bodies attach to the root entity."
     },
@@ -24169,7 +24170,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads bhkRigidBodyCInfo2010 dynamics but ignores ResponseModifierFlags, so Havok surface/mass/impulse modifiers are not applied in physics.rs."
     },
@@ -24185,7 +24186,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads bhkRigidBodyCInfo2010 dynamics but ignores ResponseModifierFlags, so Havok surface/mass/impulse modifiers are not applied in physics.rs."
     },
@@ -24201,7 +24202,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads bhkRigidBodyCInfo2010 dynamics but ignores ResponseModifierFlags, so Havok surface/mass/impulse modifiers are not applied in physics.rs."
     },
@@ -24217,7 +24218,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads bhkRigidBodyCInfo2010 dynamics but ignores ResponseModifierFlags, so Havok surface/mass/impulse modifiers are not applied in physics.rs."
     },
@@ -24233,7 +24234,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads bhkRigidBodyCInfo2010 dynamics but ignores ResponseModifierFlags, so Havok surface/mass/impulse modifiers are not applied in physics.rs."
     },
@@ -24253,7 +24254,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter skips welding mode and per-triangle welding angles in decode_compressed_mesh; Rapier trimesh colliders receive no edge-welding angles."
     },
@@ -24273,7 +24274,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter skips welding mode and per-triangle welding angles in decode_compressed_mesh; Rapier trimesh colliders receive no edge-welding angles."
     },
@@ -24293,7 +24294,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter skips welding mode and per-triangle welding angles in decode_compressed_mesh; Rapier trimesh colliders receive no edge-welding angles."
     },
@@ -24488,7 +24489,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter stores deactivator_type in HavokBodyInfo, but physics.rs explicitly leaves it unmapped and applies Rapier default sleeping to all dynamic bodies."
     },
@@ -24520,7 +24521,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter stores deactivator_type in HavokBodyInfo, but physics.rs explicitly leaves it unmapped and applies Rapier default sleeping to all dynamic bodies."
     },
@@ -24585,7 +24586,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1057",
       "owner": "Mudcrab maintainers",
       "reason": "Converter classifies simulated motion systems as BodyKind::Dynamic and engine simulates dynamic clutter with authored inertia; missing: ACTI/CONT/FLOR/MSTT/DOOR/FURN dynamic bodies stay fixed/unsimulated and Rapier ignores Havok inertia/stabilization variants."
     },
@@ -24617,7 +24618,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1057",
       "owner": "Mudcrab maintainers",
       "reason": "Converter classifies simulated motion systems as BodyKind::Dynamic and engine simulates dynamic clutter with authored inertia; missing: ACTI/CONT/FLOR/MSTT/DOOR/FURN dynamic bodies stay fixed/unsimulated and Rapier ignores Havok inertia/stabilization variants."
     },
@@ -24664,7 +24665,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1057",
       "owner": "Mudcrab maintainers",
       "reason": "Converter classifies simulated motion systems as BodyKind::Dynamic and engine simulates dynamic clutter with authored inertia; missing: ACTI/CONT/FLOR/MSTT/DOOR/FURN dynamic bodies stay fixed/unsimulated and Rapier ignores Havok inertia/stabilization variants."
     },
@@ -24738,7 +24739,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter classifies MO_SYS_KEYFRAMED with mass 0 as BodyKind::Keyframed and Full/AuthoredOnly keep it solid; missing: engine spawns RigidBody::Fixed with no kinematic animation and ignores it on clutter/VerifiedContainer."
     },
@@ -24770,7 +24771,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1057",
       "owner": "Mudcrab maintainers",
       "reason": "Converter classifies simulated motion systems as BodyKind::Dynamic and engine simulates dynamic clutter with authored inertia; missing: ACTI/CONT/FLOR/MSTT/DOOR/FURN dynamic bodies stay fixed/unsimulated and Rapier ignores Havok inertia/stabilization variants."
     },
@@ -24802,7 +24803,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1057",
       "owner": "Mudcrab maintainers",
       "reason": "Converter classifies simulated motion systems as BodyKind::Dynamic and engine simulates dynamic clutter with authored inertia; missing: ACTI/CONT/FLOR/MSTT/DOOR/FURN dynamic bodies stay fixed/unsimulated and Rapier ignores Havok inertia/stabilization variants."
     },
@@ -24834,7 +24835,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1057",
       "owner": "Mudcrab maintainers",
       "reason": "Converter classifies simulated motion systems as BodyKind::Dynamic and engine simulates dynamic clutter with authored inertia; missing: ACTI/CONT/FLOR/MSTT/DOOR/FURN dynamic bodies stay fixed/unsimulated and Rapier ignores Havok inertia/stabilization variants."
     },
@@ -24938,7 +24939,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter uses quality 3..6 to classify BodyKind::Dynamic and engine enables Ccd::enabled() on dynamic clutter; missing: havok.quality_type is unread in physics.rs so debris/moving/critical/bullet CCD/TOI tiers are identical."
     },
@@ -24977,7 +24978,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter uses quality 3..6 to classify BodyKind::Dynamic and engine enables Ccd::enabled() on dynamic clutter; missing: havok.quality_type is unread in physics.rs so debris/moving/critical/bullet CCD/TOI tiers are identical."
     },
@@ -25005,7 +25006,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter uses quality 3..6 to classify BodyKind::Dynamic and engine enables Ccd::enabled() on dynamic clutter; missing: havok.quality_type is unread in physics.rs so debris/moving/critical/bullet CCD/TOI tiers are identical."
     },
@@ -25083,7 +25084,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter stores quality_type and classifies MO_SYS_KEYFRAMED + mass 0 as Keyframed; missing: engine never animates keyframed bodies and does not implement TOI contact reporting."
     },
@@ -25107,7 +25108,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter stores quality_type and classifies MO_SYS_KEYFRAMED + mass 0 as Keyframed; missing: engine never animates keyframed bodies and does not implement TOI contact reporting."
     },
@@ -25135,7 +25136,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter uses quality 3..6 to classify BodyKind::Dynamic and engine enables Ccd::enabled() on dynamic clutter; missing: havok.quality_type is unread in physics.rs so debris/moving/critical/bullet CCD/TOI tiers are identical."
     },
@@ -25162,7 +25163,7 @@
           "path": "crates/converter/src/collision.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "ensure_body_collides only rejects 2 | 3, so RESPONSE_INVALID (0) is treated as colliding instead of invalid/ignored."
     },
@@ -25225,7 +25226,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "ensure_body_collides rejects RESPONSE_REPORTING (2) so no physical contact resolution occurs; missing: Havok contact listener callbacks are not implemented."
     },
@@ -25288,7 +25289,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter leaves byte 226 (SolverDeactivation) unread in bhkRigidBodyCInfo2010, and physics.rs uses Rapier default sleeping."
     },
@@ -25319,7 +25320,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter leaves byte 226 (SolverDeactivation) unread in bhkRigidBodyCInfo2010, and physics.rs uses Rapier default sleeping."
     },
@@ -25339,7 +25340,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter leaves byte 226 (SolverDeactivation) unread in bhkRigidBodyCInfo2010, and physics.rs uses Rapier default sleeping."
     },
@@ -25359,7 +25360,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter leaves byte 226 (SolverDeactivation) unread in bhkRigidBodyCInfo2010, and physics.rs uses Rapier default sleeping."
     },
@@ -25379,7 +25380,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter leaves byte 226 (SolverDeactivation) unread in bhkRigidBodyCInfo2010, and physics.rs uses Rapier default sleeping."
     },
@@ -25642,7 +25643,7 @@
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1043",
       "owner": "Mudcrab maintainers",
       "reason": "NPC_/ACBS bytes 0..4 are read for sex and Mudcrab selects gender-specific gait/idle animations from actor_models.sex, but ACBS bit 19 (0x80000 Opposite Gender Anims) is ignored so affected NPCs play their own sex's animations."
     },
@@ -25813,7 +25814,7 @@
           "path": "crates/engine/src/actor_outfit.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1046",
       "owner": "Mudcrab maintainers",
       "reason": "actor_outfits reads ACBS bytes 18..20 bit 8 (0x0100 USE_INVENTORY) to inherit DOFT default outfits across NPC_ TPLT chains for actor-outfits.json; missing: own DOFT short-circuits USE_INVENTORY (actor_outfits.rs:82-88), LVLN templates are not resolved, CNTO inventory items/SOFT sleeping outfits are unsupported, and actor-outfits.json is only built by derive-outfits."
     },
@@ -25844,7 +25845,7 @@
           "path": "crates/converter/src/records/families/actors.json"
         }
       ],
-      "issue": "",
+      "issue": "#1045",
       "owner": "Mudcrab maintainers",
       "reason": "NPC_/ACBS template_flags are read by actor_models and Mudcrab resolves NPC skin/model/animation, but bit 6 (0x0040 Model/Animation) is ignored so NPCs with Use Model/Animation without Use Traits do not inherit skin/model/animation from TPLT."
     },
@@ -25897,7 +25898,7 @@
           "path": "crates/engine/src/physics.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1044",
       "owner": "Mudcrab maintainers",
       "reason": "actor_models reads ACBS bytes 18..20 bit 0 (0x0001) and follows NPC_ TPLT chains for sex, RNAM race, WNAM skin, and FaceGen head, and physics.rs checks USE_TRAITS on player NPC_; missing QNAM skin tone and NAM7 body weight inheritance (suppressed/own-record in actor_models.rs:266-270) and LVLN leveled-template resolution (skipped as LeveledTraitsTemplate)."
     },
@@ -26482,7 +26483,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored NPC_ records still load, override masters, and enter the database."
     },
@@ -27506,7 +27507,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PARW records still load, override masters, and enter the database."
     },
@@ -27526,7 +27527,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -27664,7 +27665,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PBAR records still load, override masters, and enter the database."
     },
@@ -27684,7 +27685,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -27822,7 +27823,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PBEA records still load, override masters, and enter the database."
     },
@@ -27842,7 +27843,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -27980,7 +27981,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PCON records still load, override masters, and enter the database."
     },
@@ -28000,7 +28001,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -28348,7 +28349,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PERK records still load, override masters, and enter the database."
     },
@@ -28406,7 +28407,7 @@
           "path": "crates/shared/src/papyrus_runtime.luau"
         }
       ],
-      "issue": "",
+      "issue": "#1058",
       "owner": "Mudcrab maintainers",
       "reason": "Converter reads Function.flags (bit 0 = Global) but never checks bit 0; all functions take self and call_static passes a class-backed context without enforcing Global."
     },
@@ -28580,7 +28581,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PFLA records still load, override masters, and enter the database."
     },
@@ -28600,7 +28601,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -28738,7 +28739,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PGRE records still load, override masters, and enter the database."
     },
@@ -28758,7 +28759,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -28896,7 +28897,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PHZD records still load, override masters, and enter the database."
     },
@@ -28916,7 +28917,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -29054,7 +29055,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored PMIS records still load, override masters, and enter the database."
     },
@@ -29074,7 +29075,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -30889,7 +30890,7 @@
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1047",
       "owner": "Mudcrab maintainers",
       "reason": "RACE/DATA is read by actor_models (bytes 32..36) and physics (bytes 16..24), and Mudcrab renders shadows for actor meshes unless NotShadowCaster is added, but RACE/DATA bit 5 (0x20 No Shadow) is ignored so No-Shadow races cast shadows."
     },
@@ -32453,7 +32454,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored RACE records still load, override masters, and enter the database."
     },
@@ -32712,7 +32713,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -32732,7 +32733,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -32774,7 +32775,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -32947,7 +32948,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -32967,7 +32968,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -32987,7 +32988,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -33149,7 +33150,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -33169,7 +33170,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -33200,7 +33201,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -33220,7 +33221,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1033",
       "owner": "Mudcrab maintainers",
       "reason": "Don't Havok Settle (0x2000_0000) is ignored when streaming.rs:2325 spawns dynamic Rapier rigid bodies for movable clutter items."
     },
@@ -33371,7 +33372,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -33391,7 +33392,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -33444,7 +33445,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -33606,7 +33607,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -33641,7 +33642,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Never Fades (0x0001_0000) is respected for REFR[LIGH], while Is Full LOD is ignored for non-light placed references."
     },
@@ -33661,7 +33662,7 @@
           "path": "crates/engine/src/render.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1032",
       "owner": "Mudcrab maintainers",
       "reason": "REFR[LIGH] kDoesntLightLandscape (bit 17) is ignored: database.rs only extracts Never Fades from light header_flags and lights.rs checks only LIGH.DATA shadow flags."
     },
@@ -33736,7 +33737,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -33756,7 +33757,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1033",
       "owner": "Mudcrab maintainers",
       "reason": "Don't Havok Settle (0x2000_0000) is ignored when streaming.rs:2325 spawns dynamic Rapier rigid bodies for movable clutter items."
     },
@@ -33822,7 +33823,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "CollisionsDisabled (0x10) on REFR is never checked when streaming.rs spawns fixed or dynamic Rapier colliders."
     },
@@ -33895,7 +33896,7 @@
           "path": "crates/engine/src/lights.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1027",
       "owner": "Mudcrab maintainers",
       "reason": "REFR bit 8 (0x100) is ignored for Inaccessible doors and Doesn't Light Water lights; pre-baked .bto LOD also ignores enable state."
     },
@@ -33984,7 +33985,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -34004,7 +34005,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -34024,7 +34025,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -34143,7 +34144,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1027",
       "owner": "Mudcrab maintainers",
       "reason": "REFR[DOOR] Inaccessible (0x100) is ignored by door_links extraction and door_crossing activation, allowing player crossing of inaccessible load doors."
     },
@@ -34278,7 +34279,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -34317,7 +34318,7 @@
           "path": "crates/engine/src/render.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1032",
       "owner": "Mudcrab maintainers",
       "reason": "REFR[LIGH] Doesn't Light Landscape (bit 17) is ignored: database.rs only extracts Never Fades from light header_flags and lights.rs checks only LIGH.DATA shadow flags."
     },
@@ -34348,7 +34349,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -34452,7 +34453,7 @@
           "path": "crates/engine/src/render.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1032",
       "owner": "Mudcrab maintainers",
       "reason": "REFR[LIGH] Doesn't Light Water (bit 8) is ignored: database.rs only extracts Never Fades from light header_flags and lights.rs checks only LIGH.DATA shadow flags."
     },
@@ -34472,7 +34473,7 @@
           "path": "crates/engine/src/render.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1032",
       "owner": "Mudcrab maintainers",
       "reason": "REFR[LIGH] Cast Shadows (bit 9) is ignored: database.rs only extracts Never Fades from light header_flags and lights.rs checks only LIGH.DATA shadow flags."
     },
@@ -34550,7 +34551,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -34570,7 +34571,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -34612,7 +34613,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -34785,7 +34786,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -34809,7 +34810,7 @@
           "path": "crates/engine/src/streaming/large_references.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1031",
       "owner": "Mudcrab maintainers",
       "reason": "Visible When Distant (0x8000) on REFR is ignored by object LOD streaming and large-reference promotion."
     },
@@ -34829,7 +34830,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -34871,7 +34872,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -35033,7 +35034,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -35068,7 +35069,7 @@
           "path": "crates/engine/src/streaming/large_references.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1031",
       "owner": "Mudcrab maintainers",
       "reason": "Visible When Distant (0x8000) on REFR is ignored by object LOD streaming and large-reference promotion."
     },
@@ -35088,7 +35089,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -35130,7 +35131,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -35303,7 +35304,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -35327,7 +35328,7 @@
           "path": "crates/engine/src/streaming/large_references.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1031",
       "owner": "Mudcrab maintainers",
       "reason": "Visible When Distant (0x8000) on REFR is ignored by object LOD streaming and large-reference promotion."
     },
@@ -35347,7 +35348,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1030",
       "owner": "Mudcrab maintainers",
       "reason": "Is Full LOD (0x0001_0000) is ignored by distant reference promotion (large_references uses WRLD.RNAM only) and object LOD streaming."
     },
@@ -35367,7 +35368,7 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1029",
       "owner": "Mudcrab maintainers",
       "reason": "Reflected By Auto Water (0x1000_0000) is ignored: WaterReflectionCamera renders WORLD_LAYER only while all placed references receive PLACED_OBJECT_LAYER."
     },
@@ -36112,7 +36113,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REFR records still load, override masters, and enter the database."
     },
@@ -36421,7 +36422,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored REGN records still load, override masters, and enter the database."
     },
@@ -36635,7 +36636,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored RELA records still load, override masters, and enter the database."
     },
@@ -37202,7 +37203,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored SCOL records still load, override masters, and enter the database."
     },
@@ -37487,7 +37488,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored SHOU records still load, override masters, and enter the database."
     },
@@ -37549,7 +37550,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored SLGM records still load, override masters, and enter the database."
     },
@@ -38331,7 +38332,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored STAT records still load, override masters, and enter the database."
     },
@@ -38556,7 +38557,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored TACT records still load, override masters, and enter the database."
     },
@@ -39036,7 +39037,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored TREE records still load, override masters, and enter the database."
     },
@@ -39140,7 +39141,7 @@
           "path": "crates/engine/src/object_materials.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1040",
       "owner": "Mudcrab maintainers",
       "reason": "Converter decodes TXST.DNAM (schema.json:830) but exporter.rs:284-288,1374-1391 projects texture_sets without DNAM. object_materials.rs:533-548 always binds swapped TX01 as a tangent-space normal_map_texture, and material.rs:1208-1245 checks only the NIF's SLSF1_MODEL_SPACE_NORMALS flag."
     },
@@ -39176,7 +39177,7 @@
           "path": "crates/engine/src/object_materials.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1040",
       "owner": "Mudcrab maintainers",
       "reason": "Converter decodes TXST.DNAM (schema.json:828) but exporter.rs:284-288,1374-1391 projects texture_sets without DNAM. Both apply_skin_texture_set (material.rs:1208-1245) and ObjectTextureCatalog/apply_swaps (object_materials.rs:95-104,542-547) consume texture_sets without honoring no_specular_map."
     },
@@ -39295,7 +39296,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1052",
       "owner": "Mudcrab maintainers",
       "reason": "inhouse_script_properties stores script_properties.status, but papyrus_host SELECT omits status, so Edited (1) is ignored (Removed properties still overwrite defaults with nil)."
     },
@@ -39319,7 +39320,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1052",
       "owner": "Mudcrab maintainers",
       "reason": "inhouse_script_properties stores script_properties.status, but papyrus_host SELECT omits status, so Removed (3) is ignored (Removed properties still overwrite defaults with nil)."
     },
@@ -39462,7 +39463,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1051",
       "owner": "Mudcrab maintainers",
       "reason": "Converter exports and papyrus_host resolves scalar/array Object FormIDs into Luau proxies; missing: alias-bound object properties (alias != 0xFFFF) log a warning and remain None."
     },
@@ -39629,7 +39630,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1051",
       "owner": "Mudcrab maintainers",
       "reason": "Converter exports and papyrus_host resolves scalar/array Object FormIDs into Luau proxies; missing: alias-bound object properties (alias != 0xFFFF) log a warning and remain None."
     },
@@ -39756,7 +39757,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1050",
       "owner": "Mudcrab maintainers",
       "reason": "vmad.rs parses ScriptEntry.status, but exporter.rs writes every script without checking or storing status (Inherited), so papyrus_host attaches even Removed scripts."
     },
@@ -39780,7 +39781,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1050",
       "owner": "Mudcrab maintainers",
       "reason": "vmad.rs parses ScriptEntry.status, but exporter.rs writes every script without checking or storing status (Inherited and Removed), so papyrus_host attaches even Removed scripts."
     },
@@ -39804,7 +39805,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1050",
       "owner": "Mudcrab maintainers",
       "reason": "vmad.rs parses ScriptEntry.status, but exporter.rs writes every script without checking or storing status (Local), so papyrus_host attaches even Removed scripts."
     },
@@ -39828,7 +39829,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1050",
       "owner": "Mudcrab maintainers",
       "reason": "vmad.rs parses ScriptEntry.status, but exporter.rs writes every script without checking or storing status (Removed), so papyrus_host attaches even Removed scripts."
     },
@@ -39890,7 +39891,7 @@
           "path": "crates/engine/src/shaders/water.wgsl"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "WaterColors::blends_normals parses FNAM bit 0x10 and is covered by unit tests, but no caller in streaming, render, or water.wgsl reads it."
     },
@@ -40405,7 +40406,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored WEAP records still load, override masters, and enter the database."
     },
@@ -40533,7 +40534,7 @@
           "path": "crates/converter/src/records/schema.json"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Converter stores data_flags into worldspace_environment, but terrain extraction and streaming build terrain from LAND records without checking bit 0x10."
     },
@@ -40584,7 +40585,7 @@
           "path": "crates/converter/src/records/schema.json"
         }
       ],
-      "issue": "",
+      "issue": "#1041",
       "owner": "Mudcrab maintainers",
       "reason": "Converter stores WRLD DATA into worldspace_environment.data_flags, but neither streaming nor LOD/map code reads bit 0x1."
     },
@@ -40634,7 +40635,7 @@
           "path": "crates/engine/src/world/environment.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1038",
       "owner": "Mudcrab maintainers",
       "reason": "parent_flags is exported in worldspace_environment, yet engine and cell_cache only traverse parent_worlds for climate (0x10), ignoring parent land defaults (0x1)."
     },
@@ -40654,7 +40655,7 @@
           "path": "crates/engine/src/world/environment.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1038",
       "owner": "Mudcrab maintainers",
       "reason": "LOD stages query worldspaces directly without resolving parent_worlds inheritance via PNAM bit 0x2."
     },
@@ -40696,7 +40697,7 @@
           "path": "crates/engine/src/world/environment.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1038",
       "owner": "Mudcrab maintainers",
       "reason": "parent_flags bit 0x8 is ignored when resolving cell water height/type defaults; cell_cache reads only the cell's own WRLD water height/type."
     },
@@ -40720,7 +40721,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Ignored (0x1000) is never checked by legacy or in-house ESM readers/mergers; Ignored WRLD records still load, override masters, and enter the database."
     },
@@ -40736,7 +40737,7 @@
           "path": "crates/converter/src/records/mod.rs"
         }
       ],
-      "issue": "",
+      "issue": "#1034",
       "owner": "Mudcrab maintainers",
       "reason": "Partial Form (0x4000) is ignored during load-order merging: overriding WRLD records replace whole records instead of merging partial subrecords."
     },
