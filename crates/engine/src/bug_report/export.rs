@@ -13,7 +13,11 @@ use std::{
 };
 
 use bevy::prelude::Image;
-use image::{ImageEncoder, codecs::png::PngEncoder};
+use image::{
+    ImageEncoder,
+    codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder},
+    imageops::FilterType as ResizeFilterType,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -302,10 +306,10 @@ fn publish_inner(
         let screenshot = input.screenshot.take();
         if let Some(image) = screenshot {
             match encode_screenshot(image, &temporary_directory.join("screenshot.png"), &control) {
-                Ok(()) => record_file(
+                Ok(reason) => record_file(
                     &temporary_directory,
                     "screenshot.png",
-                    None,
+                    reason,
                     &mut components,
                     &control,
                 )?,
@@ -679,7 +683,55 @@ fn verify_components(
     Ok(())
 }
 
-fn encode_screenshot(image: Image, path: &Path, control: &Control) -> io::Result<()> {
+fn remove_partial_screenshot(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn encode_png_bounded(
+    rgb: &image::RgbImage,
+    path: &Path,
+    compression: CompressionType,
+    control: &Control,
+) -> io::Result<bool> {
+    control.check()?;
+    remove_partial_screenshot(path)?;
+    let file = private_file(path)?;
+    let mut writer = LimitedWriter::new(file, MAX_PNG_BYTES, Some(control.clone()));
+    let encoded = PngEncoder::new_with_quality(&mut writer, compression, PngFilterType::Adaptive)
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        );
+    let limit_exceeded = writer.limit_exceeded;
+    let file = writer.inner;
+    match encoded {
+        Ok(()) => {
+            file.sync_all()?;
+            control.check()?;
+            Ok(true)
+        }
+        Err(error) => {
+            drop(file);
+            remove_partial_screenshot(path)?;
+            control.check()?;
+            if limit_exceeded {
+                Ok(false)
+            } else {
+                Err(io::Error::other(format!(
+                    "Screenshot PNG encoding failed: {error}"
+                )))
+            }
+        }
+    }
+}
+
+fn encode_screenshot(image: Image, path: &Path, control: &Control) -> io::Result<Option<String>> {
     let size = image.texture_descriptor.size;
     let pixels = u64::from(size.width) * u64::from(size.height);
     if size.depth_or_array_layers != 1 || pixels == 0 || pixels > MAX_SCREENSHOT_PIXELS {
@@ -693,25 +745,44 @@ fn encode_screenshot(image: Image, path: &Path, control: &Control) -> io::Result
     // As in Bevy's screenshot writer, discard alpha: HDR captures can store
     // brightness there rather than display transparency.
     let rgb = dynamic.into_rgb8();
-    control.check()?;
-    let file = private_file(path)?;
-    let mut writer = LimitedWriter::new(file, MAX_PNG_BYTES, Some(control.clone()));
-    PngEncoder::new(&mut writer)
-        .write_image(
-            rgb.as_raw(),
-            rgb.width(),
-            rgb.height(),
-            image::ExtendedColorType::Rgb8,
-        )
-        .map_err(|error| {
-            if let Err(interrupted) = control.check() {
-                interrupted
-            } else {
-                io::Error::other(format!("Screenshot PNG encoding failed: {error}"))
-            }
-        })?;
-    writer.inner.sync_all()?;
-    control.check()
+    let orig_width = rgb.width();
+    let orig_height = rgb.height();
+
+    // Fast DEFLATE handles normal 1080p/1440p scenes quickly; retry with Best
+    // compression at full resolution when a high-resolution frame exceeds the cap.
+    for compression in [CompressionType::Fast, CompressionType::Best] {
+        if encode_png_bounded(&rgb, path, compression, control)? {
+            return Ok(None);
+        }
+    }
+
+    // Incompressible high-resolution frames (such as 4K/5K noise) still exceed
+    // MAX_PNG_BYTES losslessly; downscale the exported copy and record it in manifest.json.
+    let mut prev_width = orig_width;
+    let mut prev_height = orig_height;
+    for (num, den) in [(3_u64, 4_u64), (1, 2), (3, 8), (1, 4), (1, 8)] {
+        let new_width =
+            u32::try_from(((u64::from(orig_width) * num) / den).max(1)).unwrap_or(orig_width);
+        let new_height =
+            u32::try_from(((u64::from(orig_height) * num) / den).max(1)).unwrap_or(orig_height);
+        if new_width >= prev_width && new_height >= prev_height {
+            continue;
+        }
+        control.check()?;
+        let resized =
+            image::imageops::resize(&rgb, new_width, new_height, ResizeFilterType::Triangle);
+        if encode_png_bounded(&resized, path, CompressionType::Default, control)? {
+            return Ok(Some(format!(
+                "Screenshot downscaled from {orig_width}x{orig_height} to {new_width}x{new_height} to fit the 16 MiB PNG limit"
+            )));
+        }
+        prev_width = new_width;
+        prev_height = new_height;
+    }
+
+    Err(io::Error::other(
+        "Screenshot PNG encoding failed: Bug-report file size limit exceeded",
+    ))
 }
 
 struct LimitedWriter<W> {
@@ -719,6 +790,7 @@ struct LimitedWriter<W> {
     position: u64,
     limit: u64,
     control: Option<Control>,
+    limit_exceeded: bool,
 }
 
 impl<W> LimitedWriter<W> {
@@ -728,6 +800,7 @@ impl<W> LimitedWriter<W> {
             position: 0,
             limit,
             control,
+            limit_exceeded: false,
         }
     }
     fn check(&self) -> io::Result<()> {
@@ -742,6 +815,7 @@ impl<W: Write> Write for LimitedWriter<W> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         self.check()?;
         if buffer.len() as u64 > self.limit.saturating_sub(self.position) {
+            self.limit_exceeded = true;
             return Err(io::Error::other("Bug-report file size limit exceeded"));
         }
         let count = self.inner.write(buffer)?;
@@ -761,6 +835,7 @@ impl<W: Seek> Seek for LimitedWriter<W> {
         if position > self.limit {
             // A failed seek must not leave the underlying file beyond its cap.
             self.inner.seek(SeekFrom::Start(self.position))?;
+            self.limit_exceeded = true;
             return Err(io::Error::other("Bug-report file size limit exceeded"));
         }
         self.position = position;
@@ -1477,5 +1552,153 @@ mod tests {
             assert_eq!(publish(value).unwrap_err().message, "Invalid bug-report ID");
         }
         assert!(!root.path().join("reports").exists());
+    }
+
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    fn synthetic_uhd_frame(width: u32, height: u32) -> Image {
+        // Build a 3840x2160 scene with a smooth sky/terrain gradient plus a repeating
+        // 64-byte-period high-frequency tile so Fast PNG compression exceeds 16 MiB
+        // while Best DEFLATE compresses it losslessly below 16 MiB.
+        let mut tile = [0u8; 64 * 3];
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        for chunk in tile.as_chunks_mut::<8>().0 {
+            *chunk = splitmix64(&mut seed).to_le_bytes();
+        }
+        let mut data = vec![0u8; (width as usize) * (height as usize) * 4];
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let idx = (y * (width as usize) + x) * 4;
+                let tx = ((x + y * 3) % 64) * 3;
+                data[idx] = tile[tx] ^ ((x >> 5) as u8);
+                data[idx + 1] = tile[tx + 1] ^ ((y >> 4) as u8);
+                data[idx + 2] = tile[tx + 2] ^ (((x + y) >> 6) as u8);
+                data[idx + 3] = 0xff;
+            }
+        }
+        Image::new(
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            data,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::MAIN_WORLD,
+        )
+    }
+
+    fn noise_uhd_frame(width: u32, height: u32) -> Image {
+        let mut data = vec![0u8; (width as usize) * (height as usize) * 4];
+        let mut seed = 0xdead_beef_cafe_babe_u64;
+        for chunk in data.as_chunks_mut::<8>().0 {
+            *chunk = splitmix64(&mut seed).to_le_bytes();
+        }
+        Image::new(
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            data,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::MAIN_WORLD,
+        )
+    }
+
+    #[test]
+    fn uhd_4k_synthetic_and_high_entropy_noise_frames_ship_screenshot_in_bundle() {
+        // 1) Synthetic 3840x2160 frame: fails Fast compression on the old cap, ships
+        //    losslessly at full 3840x2160 with Best compression.
+        let root = TempDir::new().unwrap();
+        let synthetic = synthetic_uhd_frame(3840, 2160);
+        let fast_rgb = synthetic.clone().try_into_dynamic().unwrap().into_rgb8();
+        let mut fast_limited = LimitedWriter::new(io::sink(), MAX_PNG_BYTES, None);
+        let fast_result = PngEncoder::new_with_quality(
+            &mut fast_limited,
+            CompressionType::Fast,
+            PngFilterType::Adaptive,
+        )
+        .write_image(
+            fast_rgb.as_raw(),
+            fast_rgb.width(),
+            fast_rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        );
+        assert!(
+            fast_result.is_err() && fast_limited.limit_exceeded,
+            "synthetic 4K frame must exceed 16 MiB under old Fast encoder"
+        );
+
+        let mut value = input(&root);
+        value.screenshot = Some(synthetic);
+        let outcome = publish(value).unwrap();
+        assert!(!outcome.partial);
+        assert!(outcome.missing.is_empty());
+        let png = fs::read(outcome.directory.join("screenshot.png")).unwrap();
+        assert!(png.len() as u64 <= MAX_PNG_BYTES);
+        assert!(fs::metadata(&outcome.archive).unwrap().len() <= MAX_ZIP_BYTES);
+        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (3840, 2160));
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(outcome.directory.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest["components"]["screenshot.png"]["status"],
+            "complete"
+        );
+        assert!(manifest["components"]["screenshot.png"]["omission_reason"].is_null());
+
+        // 2) High-entropy 3840x2160 noise frame: incompressible losslessly, so it
+        //    downscales to fit MAX_PNG_BYTES and records the reduction in manifest.json.
+        let noise_root = TempDir::new().unwrap();
+        let mut noise_value = input(&noise_root);
+        noise_value.screenshot = Some(noise_uhd_frame(3840, 2160));
+        let noise_outcome = publish(noise_value).unwrap();
+        assert!(noise_outcome.partial);
+        assert!(
+            noise_outcome
+                .missing
+                .iter()
+                .any(|item| item.starts_with("screenshot.png: Screenshot downscaled"))
+        );
+        let noise_png = fs::read(noise_outcome.directory.join("screenshot.png")).unwrap();
+        assert!(noise_png.len() as u64 <= MAX_PNG_BYTES);
+        assert!(fs::metadata(&noise_outcome.archive).unwrap().len() <= MAX_ZIP_BYTES);
+        let decoded_noise =
+            image::load_from_memory_with_format(&noise_png, image::ImageFormat::Png).unwrap();
+        assert_eq!(
+            (decoded_noise.width(), decoded_noise.height()),
+            (2880, 1620)
+        );
+        let noise_manifest: Value = serde_json::from_slice(
+            &fs::read(noise_outcome.directory.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            noise_manifest["components"]["screenshot.png"]["status"],
+            "partial"
+        );
+        let reason = noise_manifest["components"]["screenshot.png"]["omission_reason"]
+            .as_str()
+            .unwrap();
+        assert!(reason.contains("3840x2160"), "{reason}");
+        assert!(reason.contains("2880x1620"), "{reason}");
+        let mut archive =
+            zip::ZipArchive::new(File::open(&noise_outcome.archive).unwrap()).unwrap();
+        assert_eq!(archive.len(), 6);
+        assert!(
+            archive
+                .by_name("20261013T120000Z-test/screenshot.png")
+                .is_ok()
+        );
     }
 }

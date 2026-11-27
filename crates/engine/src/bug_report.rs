@@ -40,7 +40,8 @@ const READBACK_TIMEOUT: Duration = Duration::from_secs(10);
 const COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CAPTURE_PIXELS: u64 = 16_000_000;
-const MAX_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
+// 16 million pixels at up to 8 bytes per pixel (e.g. 5120x2880 HDR/16-bpc readback).
+const MAX_CAPTURE_BYTES: usize = 128 * 1024 * 1024;
 
 pub struct BugReportPlugin;
 
@@ -261,6 +262,16 @@ fn capture_unavailable(world: &mut World) -> Option<String> {
     None
 }
 
+fn check_readback_bounds(image: &Image) -> Result<(), String> {
+    let pixels = u64::from(image.width()) * u64::from(image.height());
+    let bytes = image.data.as_ref().map_or(0, Vec::len);
+    if pixels > MAX_CAPTURE_PIXELS || bytes > MAX_CAPTURE_BYTES {
+        Err("captured image exceeds readback limits".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn begin_report(world: &mut World, open_browser: bool) -> ActiveReport {
     let started = Instant::now();
     let stamp = time::OffsetDateTime::now_utc()
@@ -315,11 +326,9 @@ fn begin_report(world: &mut World, open_browser: bool) -> ActiveReport {
                     if let Some(console) = console.as_mut() { console.capture_suppressed = false; }
                     return;
                 }
-                let pixels = u64::from(event.image.width()) * u64::from(event.image.height());
-                let bytes = event.image.data.as_ref().map_or(0, Vec::len);
-                active.image = Some(if pixels > MAX_CAPTURE_PIXELS || bytes > MAX_CAPTURE_BYTES {
-                    Err("captured image exceeds readback limits".into())
-                } else { Ok(event.image.clone()) });
+                active.image = Some(
+                    check_readback_bounds(&event.image).map(|()| event.image.clone()),
+                );
                 active.snapshot["capture_callback"] = json!({"unix_ms":epoch_ms(), "rendered_frame":null,
                     "note":"callback time is not the rendered frame time"});
                 if let Some(console) = console.as_mut() { console.capture_suppressed = false; }
@@ -1104,5 +1113,40 @@ mod tests {
             .unwrap_err()
             .contains("canceled")
         );
+    }
+
+    #[test]
+    fn readback_bounds_allow_4k_and_5k_hdr_frames_within_pixel_cap() {
+        use bevy::{
+            asset::RenderAssetUsages,
+            render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+        };
+
+        let mut uhd_4k = Image::new(
+            Extent3d {
+                width: 3840,
+                height: 2160,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![0; 3840 * 2160 * 4],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::MAIN_WORLD,
+        );
+        assert!(check_readback_bounds(&uhd_4k).is_ok());
+
+        // 5K (2560x1440 at 2x Retina) in 8-byte/pixel HDR format fits under 128 MiB.
+        uhd_4k.texture_descriptor.size.width = 5120;
+        uhd_4k.texture_descriptor.size.height = 2880;
+        uhd_4k.data = Some(vec![0; 5120 * 2880 * 8]);
+        assert!(check_readback_bounds(&uhd_4k).is_ok());
+
+        uhd_4k.data = Some(vec![0; MAX_CAPTURE_BYTES + 1]);
+        assert!(check_readback_bounds(&uhd_4k).is_err());
+
+        uhd_4k.texture_descriptor.size.width = 16_000_001;
+        uhd_4k.texture_descriptor.size.height = 1;
+        uhd_4k.data = Some(Vec::new());
+        assert!(check_readback_bounds(&uhd_4k).is_err());
     }
 }
