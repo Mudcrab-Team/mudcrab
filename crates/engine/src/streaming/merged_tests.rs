@@ -218,7 +218,7 @@ fn the_merged_mesh_reproduces_todays_four_quadrant_meshes_vertex_for_vertex() {
     );
     let snapshot = cached_snapshot(&record);
     let cell = merged_cell(&record);
-    let merged = build_merged_mesh(&cell, &classes.ids_by_form_id).unwrap();
+    let merged = build_merged_mesh(&cell, &classes.ids_by_form_id, 0).unwrap();
 
     let merged_indices = u32_indices(&merged);
     assert_eq!(merged_indices.len(), 4 * 16 * 16 * 6);
@@ -287,7 +287,7 @@ fn a_cell_without_vertex_colours_is_white_like_today() {
     let classes = TerrainClasses::from_table(vanilla_table(9)).unwrap();
     let record = land(CELL, rolling, [0x100; 4], &[], false);
     let snapshot = cached_snapshot(&record);
-    let merged = build_merged_mesh(&merged_cell(&record), &classes.ids_by_form_id).unwrap();
+    let merged = build_merged_mesh(&merged_cell(&record), &classes.ids_by_form_id, 0).unwrap();
     let today = build_terrain_quadrant_mesh(&snapshot, 1).unwrap();
     assert_eq!(
         float4(&merged, Mesh::ATTRIBUTE_COLOR)[QUADRANT_VERTICES],
@@ -347,8 +347,8 @@ fn slot_attributes_expand_to_exact_values_at_stride_16() {
 #[test]
 fn the_mesh_carries_two_attribute_groups_at_stride_8_and_four_at_stride_16() {
     let ids = vanilla_table(9).ids_by_form_id();
-    let narrow = build_merged_mesh(&mesh_with_slots(8), &ids).unwrap();
-    let wide = build_merged_mesh(&mesh_with_slots(16), &ids).unwrap();
+    let narrow = build_merged_mesh(&mesh_with_slots(8), &ids, 0).unwrap();
+    let wide = build_merged_mesh(&mesh_with_slots(16), &ids, 0).unwrap();
     for group in 0..4 {
         assert_eq!(
             narrow.attribute(TERRAIN_SLOT_IDS[group].id).is_some(),
@@ -586,7 +586,7 @@ fn one_collider_per_merged_cell_is_the_render_mesh() {
         &atxt_layers(),
         true,
     );
-    let mesh = build_merged_mesh(&merged_cell(&record), &classes.ids_by_form_id).unwrap();
+    let mesh = build_merged_mesh(&merged_cell(&record), &classes.ids_by_form_id, 0).unwrap();
     let collider = terrain_collider_from_mesh(&mesh).unwrap();
     let trimesh = collider.as_trimesh().expect("terrain trimesh");
     assert_eq!(trimesh.vertices().len(), CELL_MESH_VERTICES);
@@ -738,6 +738,7 @@ fn spawn_merged_cell(
             key: key(0),
             cell_id: CELL,
             references: Vec::new(),
+            land_hide_flags: 0,
         },
         Some(snapshot),
         Some(MergedSpawn {
@@ -1016,6 +1017,7 @@ fn payload_for(key: CellKey, cell_id: u32) -> Result<CellPayload, String> {
         key,
         cell_id,
         references: Vec::new(),
+        land_hide_flags: 0,
     })
 }
 
@@ -1104,4 +1106,156 @@ fn chunk_files_written_by_the_converter_are_read_through_the_store() {
         merge.lookup(exterior(40, 40), 0x10),
         CellLookup::NoData
     ));
+}
+
+#[test]
+fn merged_mesh_and_collider_omit_hidden_quadrants_for_0x04_and_0x0f() {
+    let classes = TerrainClasses::from_table(vanilla_table(9)).unwrap();
+    let record = land(
+        CELL,
+        rolling,
+        [0x100, 0x101, 0x102, 0x103],
+        &atxt_layers(),
+        true,
+    );
+    let cell = merged_cell(&record);
+    let partial = build_merged_mesh(&cell, &classes.ids_by_form_id, 0x04).unwrap();
+    let partial_indices = u32_indices(&partial);
+    assert_eq!(partial_indices.len(), 3 * 16 * 16 * 6);
+    let q2_start = u32::try_from(2 * QUADRANT_VERTICES).unwrap();
+    let q2_end = u32::try_from(3 * QUADRANT_VERTICES).unwrap();
+    assert!(
+        partial_indices
+            .iter()
+            .all(|&index| !(q2_start..q2_end).contains(&index)),
+        "hidden quadrant 2 must emit no triangles"
+    );
+    for visible_quadrant in [0u32, 1, 3] {
+        let start = visible_quadrant * u32::try_from(QUADRANT_VERTICES).unwrap();
+        let end = start + u32::try_from(QUADRANT_VERTICES).unwrap();
+        assert!(
+            partial_indices
+                .iter()
+                .any(|&index| (start..end).contains(&index)),
+            "visible quadrant {visible_quadrant} must retain triangles"
+        );
+    }
+
+    let empty = build_merged_mesh(&cell, &classes.ids_by_form_id, 0x0F).unwrap();
+    assert!(u32_indices(&empty).is_empty());
+
+    let spawn_with_flags = |flags: u8| {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<lod::LodStreaming>()
+            .init_resource::<ProfilingState>()
+            .insert_resource(WaterReflectionTexture(Handle::default()));
+        let mut snapshot = plain_snapshot(&record);
+        snapshot.land_hide_flags = flags;
+        let classes = Arc::new(TerrainClasses::from_table(vanilla_table(9)).unwrap());
+        let mut pending = Some((snapshot, cell.clone(), classes));
+        app.add_systems(
+            Update,
+            move |mut commands: Commands,
+                  asset_server: Res<AssetServer>,
+                  catalog: Res<AssetCatalog>,
+                  actor_catalog: Res<ActorCatalog>,
+                  reflection: Res<WaterReflectionTexture>,
+                  mut meshes: ResMut<Assets<Mesh>>,
+                  mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
+                  mut water_materials: ResMut<Assets<WaterMaterial>>,
+                  mut profiler: ResMut<ProfilingState>| {
+                let Some((snapshot, cell, classes)) = pending.take() else {
+                    return;
+                };
+                spawn_cell(
+                    &mut commands,
+                    &asset_server,
+                    &catalog,
+                    &actor_catalog,
+                    &reflection,
+                    &mut meshes,
+                    &mut terrain_materials,
+                    &mut water_materials,
+                    IVec2::ZERO,
+                    false,
+                    true,
+                    false,
+                    false,
+                    CellPayload {
+                        generation: 1,
+                        key: key(0),
+                        cell_id: CELL,
+                        references: Vec::new(),
+                        land_hide_flags: flags,
+                    },
+                    Some(snapshot),
+                    Some(MergedSpawn {
+                        cell: Box::new(cell),
+                        classes,
+                        material: Handle::default(),
+                        images: Arc::from([]),
+                    }),
+                    &mut 0,
+                    &mut profiler,
+                    true,
+                )
+                .expect("spawn cell");
+            },
+        );
+        app.update();
+        app
+    };
+
+    let mut app_04 = spawn_with_flags(0x04);
+    let world_04 = app_04.world_mut();
+    assert_eq!(
+        world_04
+            .query_filtered::<Entity, With<MergedTerrainCell>>()
+            .iter(world_04)
+            .count(),
+        1
+    );
+    let collider_04 = world_04
+        .query_filtered::<&Collider, With<TerrainCollider>>()
+        .single(world_04)
+        .unwrap();
+    let trimesh_04 = collider_04.as_trimesh().expect("merged terrain trimesh");
+    assert_eq!(trimesh_04.indices().len(), 3 * 16 * 16 * 2);
+    assert!(
+        trimesh_04
+            .indices()
+            .iter()
+            .flatten()
+            .all(|&index| !(q2_start..q2_end).contains(&index))
+    );
+
+    let mut app_0f = spawn_with_flags(0x0F);
+    let world_0f = app_0f.world_mut();
+    assert_eq!(
+        world_0f
+            .query_filtered::<Entity, With<TerrainPatch>>()
+            .iter(world_0f)
+            .count(),
+        0
+    );
+    assert_eq!(
+        world_0f
+            .query_filtered::<Entity, With<TerrainCollider>>()
+            .iter(world_0f)
+            .count(),
+        0
+    );
+    let hidden = world_0f
+        .query::<&HiddenTerrainQuadrants>()
+        .single(world_0f)
+        .unwrap();
+    assert_eq!(hidden.mask, 0x0F);
 }

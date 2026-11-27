@@ -190,6 +190,7 @@ mod tests {
                 .collect(),
             water_height: Some(0.0),
             water_type_form_id: Some(20),
+            land_hide_flags: 0,
         }
     }
 

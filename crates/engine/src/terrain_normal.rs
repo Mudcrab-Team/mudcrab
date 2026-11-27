@@ -149,6 +149,7 @@ fn terrain(height: impl Fn(f32, f32) -> f32) -> TerrainSnapshot {
             .collect(),
         water_height: None,
         water_type_form_id: None,
+        land_hide_flags: 0,
     }
 }
 

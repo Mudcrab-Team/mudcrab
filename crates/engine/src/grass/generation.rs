@@ -206,6 +206,7 @@ pub fn generate(cache: &GrassCache, cell_id: u32, config: &EngineConfig) -> Gene
         cell.heights.len(),
         |i| cell.heights[i].into(),
         cell.water_height.as_ref().map(|h| (*h).into()),
+        0,
         None,
         &mut |_| {},
     )
@@ -244,6 +245,7 @@ pub fn generate_observed(
         cell.heights.len(),
         |i| cell.heights[i].into(),
         cell.water_height.as_ref().map(|h| (*h).into()),
+        0,
         None,
         &mut observe,
     )
@@ -265,6 +267,7 @@ pub(super) fn generate_on_terrain(
         terrain.heights().len(),
         |i| terrain.heights()[i],
         terrain.0.water_height,
+        terrain.0.land_hide_flags,
         Some(terrain.luminance().unwrap_or(&white)),
         &mut |_| {},
     );
@@ -302,7 +305,7 @@ fn empty() -> GeneratedGrass {
 /// Roll entries in quadrant / odd-X / odd-Y / entry / grid-X / grid-Y order.
 #[expect(
     clippy::too_many_arguments,
-    reason = "observer extends the existing surface sampling inputs without changing their behavior"
+    reason = "observer and land_hide_flags extend the existing surface sampling inputs without changing their behavior"
 )]
 fn generate_field<const OBSERVE: bool>(
     cache: &GrassCache,
@@ -311,6 +314,7 @@ fn generate_field<const OBSERVE: bool>(
     height_count: usize,
     height_at: impl Fn(usize) -> f32,
     water: Option<f32>,
+    land_hide_flags: u8,
     luminance: Option<&[f32]>,
     observe: &mut impl FnMut(Placement),
 ) -> GeneratedGrass {
@@ -360,6 +364,12 @@ fn generate_field<const OBSERVE: bool>(
     let mut ordinal = 0u32;
     for quadrant in cell.quadrants.iter() {
         let q = usize::from(quadrant.quadrant);
+        // Skip hidden quadrants for grass as well as terrain rendering: inferred from retail
+        // behaviour (in retail, grass does not grow through streets/buildings placed over
+        // hidden LAND; exact retail rule is unverified).
+        if (land_hide_flags & (1 << q)) != 0 {
+            continue;
+        }
         for x in (1..16).step_by(2) {
             for y in (1..16).step_by(2) {
                 let origin = [

@@ -163,9 +163,93 @@ impl Bounds3 {
     }
 }
 
+/// Result of inspecting a `CELL` `XCLC` subrecord for SSE land-hide flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XclcLandHide {
+    /// Low nibble (`bit q` hides quadrant `q` in `0..4`). Zero when absent or shorter than 9 bytes.
+    pub flags: u8,
+    /// Present when `XCLC` is shorter than 9 bytes, not 12 bytes, or has upper-nibble bits set.
+    pub issue: Option<XclcIssue>,
+}
+
+/// Non-standard `XCLC` layout observed while reading land-hide flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum XclcIssue {
+    Truncated(usize),
+    LegacyNoFlags,
+    UnexpectedLength(usize),
+    UpperNibbleBits(u8),
+}
+
+/// Parse the low-nibble quadrant-hide bitmask from a `CELL` `XCLC` payload.
+///
+/// An SSE `XCLC` is 12 bytes with land-hide flags at byte 8 (`bit q` hides quadrant `q`, `0..4`).
+/// Legacy 8-byte `XCLC` fields carry only `(grid_x, grid_y)` and hide nothing.
+pub fn xclc_land_hide_flags(xclc: &[u8]) -> XclcLandHide {
+    if xclc.len() < 8 {
+        return XclcLandHide {
+            flags: 0,
+            issue: Some(XclcIssue::Truncated(xclc.len())),
+        };
+    }
+    if xclc.len() == 8 {
+        return XclcLandHide {
+            flags: 0,
+            issue: Some(XclcIssue::LegacyNoFlags),
+        };
+    }
+    let raw = xclc[8];
+    let flags = raw & 0x0F;
+    let issue = if xclc.len() != 12 {
+        Some(XclcIssue::UnexpectedLength(xclc.len()))
+    } else if (raw & 0xF0) != 0 {
+        Some(XclcIssue::UpperNibbleBits(raw & 0xF0))
+    } else {
+        None
+    };
+    XclcLandHide { flags, issue }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xclc_land_hide_flags_parses_sse_and_rejects_short_payloads() {
+        let mut sse = [0u8; 12];
+        sse[8] = 0x04;
+        assert_eq!(
+            xclc_land_hide_flags(&sse),
+            XclcLandHide {
+                flags: 0x04,
+                issue: None
+            }
+        );
+
+        sse[8] = 0xF4;
+        assert_eq!(
+            xclc_land_hide_flags(&sse),
+            XclcLandHide {
+                flags: 0x04,
+                issue: Some(XclcIssue::UpperNibbleBits(0xF0))
+            }
+        );
+
+        assert_eq!(
+            xclc_land_hide_flags(&[0u8; 8]),
+            XclcLandHide {
+                flags: 0,
+                issue: Some(XclcIssue::LegacyNoFlags)
+            }
+        );
+        assert_eq!(
+            xclc_land_hide_flags(&[0u8; 4]),
+            XclcLandHide {
+                flags: 0,
+                issue: Some(XclcIssue::Truncated(4))
+            }
+        );
+    }
 
     #[test]
     fn version_line_and_flags_are_stable() {

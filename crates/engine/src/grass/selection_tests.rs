@@ -799,3 +799,47 @@ fn modelless_species_preserves_following_reference_positions() {
         }
     }
 }
+
+#[test]
+fn hidden_quadrants_omit_grass_placement_and_keep_visible_quadrants() {
+    let source = cell(vec![layer(vec![7], 1.0, true)]);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let config = EngineConfig::default();
+
+    let all_visible = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![0.0; 1089], None, 0),
+    );
+    let total_visible: usize = all_visible.batches.iter().map(|b| b.instances.len()).sum();
+    assert!(total_visible > 0);
+
+    let q2_hidden = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![0.0; 1089], None, 0x04),
+    );
+    let q2_instances: Vec<_> = q2_hidden
+        .batches
+        .iter()
+        .flat_map(|b| b.instances.iter())
+        .collect();
+    assert!(!q2_instances.is_empty());
+    assert!(q2_instances.len() < total_visible);
+    for instance in q2_instances {
+        let x = f32::from(instance.position[0]) * GRASS_CELL_SIZE / 65535.0;
+        let y = f32::from(instance.position[1]) * GRASS_CELL_SIZE / 65535.0;
+        let q = usize::from(x >= 2048.0) + usize::from(y >= 2048.0) * 2;
+        assert_ne!(q, 2, "hidden quadrant 2 must not receive grass instances");
+    }
+
+    let all_hidden = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![0.0; 1089], None, 0x0F),
+    );
+    assert!(all_hidden.batches.is_empty());
+}
