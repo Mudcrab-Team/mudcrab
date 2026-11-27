@@ -10,7 +10,7 @@ use crate::{
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
 use bevy::{
-    asset::{AssetPath, LoadContext, embedded_asset},
+    asset::{AssetPath, LoadContext, RenderAssetUsages, embedded_asset},
     gltf::{
         DefaultGltfImageSampler, GltfMaterial,
         extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
@@ -20,7 +20,7 @@ use bevy::{
     light::NotShadowCaster,
     pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
-    render::render_resource::{AsBindGroup, ShaderType},
+    render::render_resource::{AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat},
     shader::{ShaderRef, load_shader_library},
 };
 use shared::material_values::{MATERIAL_VALUES_FILE, MaterialValuesFile};
@@ -35,6 +35,7 @@ use std::{
 mod retail;
 mod retail_environment;
 pub(crate) mod technique;
+use technique::{Technique, technique};
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
 pub struct NifMaterialPlugin;
@@ -422,6 +423,8 @@ struct NativeMaterialHandler {
     raw_colour_texels: bool,
     /// The pack's material values sidecar, read once under `skyrim`.
     material_values: Option<Arc<MaterialValuesFile>>,
+    /// The image of an empty base map slot, added to this load when a surface first needs it.
+    empty_base: Option<Handle<Image>>,
 }
 
 /// The sidecar at the root of the pack in `assets`, when the pack has one.
@@ -480,6 +483,38 @@ impl NativeMaterialHandler {
         load_linear_twin(context, self.textures.get(index)?, sampler)
     }
 
+    /// Whether the surface can take the inputs of technique `wanted`. Under `skyrim` one
+    /// technique draws a surface, selected by its property flags and not by the shader type the
+    /// NIF names (SPEC-1 section 9.1, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+    /// `mudcrab` and a pack without flag words follow the shader type alone.
+    fn technique_allows(&self, material: &gltf::Material<'_>, wanted: Technique) -> bool {
+        !self.raw_colour_texels
+            || native_depth_flags(material)
+                .is_none_or(|(flags_1, flags_2)| technique(flags_1, flags_2) == wanted)
+    }
+
+    /// The one-texel image of [`retail::EMPTY_BASE_TEXEL`], stored bytes with no decode.
+    fn empty_base(&mut self, context: &mut LoadContext<'_>) -> Handle<Image> {
+        self.empty_base
+            .get_or_insert_with(|| {
+                context.add_labeled_asset(
+                    "mudcrab/empty_base".to_owned(),
+                    Image::new_fill(
+                        Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        TextureDimension::D2,
+                        &retail::EMPTY_BASE_TEXEL,
+                        TextureFormat::Rgba8Unorm,
+                        RenderAssetUsages::default(),
+                    ),
+                )
+            })
+            .clone()
+    }
+
     fn palette(&self, material: &gltf::Material<'_>) -> Option<(PaletteLookup, Handle<Image>)> {
         let lookup = palette_lookup(material)?;
         Some((lookup, self.textures.get(lookup.texture)?.clone()))
@@ -503,13 +538,15 @@ impl NativeMaterialHandler {
             .unwrap_or_else(ImageSamplerDescriptor::linear);
         let shader_flags_1 = native_depth_flags(source).map_or(0, |(flags_1, _)| flags_1);
         let holder = format!("{label}/skin_images");
+        let face = self.technique_allows(source, Technique::Face);
         let mut specular = None;
         let mut facegen = None;
         let Ok(_) = context.labeled_asset_scope(holder.clone(), |scope| {
             specular = specular_srgb
                 .as_ref()
                 .and_then(|srgb| load_linear_twin(scope, srgb, sampler));
-            facegen = facegen_texture_indices(source).and_then(|(tint, detail)| {
+            let maps = facegen_texture_indices(source).filter(|_| face);
+            facegen = maps.and_then(|(tint, detail)| {
                 Some(FacegenMaps {
                     tint: self.linear_texture(scope, tint)?,
                     detail: self.linear_texture(scope, detail)?,
@@ -852,6 +889,9 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 &context.path().path().to_string_lossy(),
             );
             retail::apply(source, standard, values, &self.textures, &mut material);
+            if retail::empty_base_slot(source, &material) {
+                material.base_color_texture = Some(self.empty_base(context));
+            }
         }
         let mut depth = self.depth_state(source, material.alpha_mode);
         if palette.is_none()
@@ -920,7 +960,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 });
             }
             None => {
-                let hair_tint = nif_hair_tint(source).filter(|_| !has_model_space_normals(source));
+                let hair_tint = nif_hair_tint(source).filter(|_| {
+                    !has_model_space_normals(source)
+                        && self.technique_allows(source, Technique::Hair)
+                });
                 if let Some(state) = depth {
                     if let Some(tint) = hair_tint {
                         // Retail brows and hairlines are authored decals.
@@ -1035,7 +1078,9 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                             "{label}/skin-depth"
                         )),
                     ));
-                    if is_skin_tint(material) {
+                    if is_skin_tint(material)
+                        && self.technique_allows(material, Technique::FaceTint)
+                    {
                         entity.insert(SkinTintSurface);
                     }
                 } else {
@@ -1055,7 +1100,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         context.get_label_handle::<SkyrimSkinMaterial>(format!("{label}/skin")),
                     ),
                 ));
-                if is_skin_tint(material) {
+                if is_skin_tint(material) && self.technique_allows(material, Technique::FaceTint) {
                     entity.insert(SkinTintSurface);
                 }
             } else {
@@ -1824,6 +1869,44 @@ mod tests {
             .as_bytes(),
         )
         .unwrap()
+    }
+
+    /// SPEC-1 section 9.1: the property flags select the technique, whatever shader type the NIF
+    /// names. Hair is flag 18, face tint flag 21 and face flag 10; hair is the highest of them.
+    #[test]
+    fn the_skyrim_profile_selects_the_skin_inputs_by_property_flags() {
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        let mudcrab = NativeMaterialHandler::default();
+        let allowed = |handler: &NativeMaterialHandler, flags: u32, wanted| {
+            let document = first_material(serde_json::json!({"extras":{"openSkyrim":{
+                "shaderFamily":"lighting", "shaderFlags1": flags, "shaderFlags2": 0
+            }}}));
+            handler.technique_allows(&document.materials().next().unwrap(), wanted)
+        };
+        let (face, hair, tint) = (1 << 10, 1 << 18, 1 << 21);
+        for (flags, selected) in [
+            (face, Technique::Face),
+            (hair, Technique::Hair),
+            (tint, Technique::FaceTint),
+            (hair | tint, Technique::Hair),
+            (tint | face, Technique::FaceTint),
+        ] {
+            for wanted in [Technique::Face, Technique::Hair, Technique::FaceTint] {
+                assert_eq!(
+                    allowed(&skyrim, flags, wanted),
+                    wanted == selected,
+                    "flags {flags:#x}, {wanted:?}"
+                );
+                assert!(allowed(&mudcrab, flags, wanted));
+            }
+        }
+        // A pack without flag words follows the shader type.
+        let document = first_material(serde_json::json!({}));
+        let bare = document.materials().next().unwrap();
+        assert!(skyrim.technique_allows(&bare, Technique::Hair));
     }
 
     #[test]

@@ -281,6 +281,22 @@ fn snows(flags_1: u32, flags_2: u32) -> bool {
     flags_2 & excluded == 0 && (snow || flags_1 & SLSF1_SOFT_EFFECT != 0)
 }
 
+/// The texel retail binds to an empty base map slot, the default of the normal map: (128, 128,
+/// 255, 255) as stored (section 5).
+pub(super) const EMPTY_BASE_TEXEL: [u8; 4] = [128, 128, 255, 255];
+
+/// Whether a lit surface's base map slot is empty, so it samples [`EMPTY_BASE_TEXEL`]. Property
+/// flag 20 forces black instead. A skin or face tint surface takes its maps from its actor at run
+/// time, so its slot is not empty.
+pub(super) fn empty_base_slot(source: &Material<'_>, material: &StandardMaterial) -> bool {
+    // silent-ok: a lighting material without published flag words has every flag clear.
+    let (flags_1, _) = native_depth_flags(source).unwrap_or_default();
+    material.base_color_texture.is_none()
+        && flags_1 & SLSF1_BLACK_BASE == 0
+        && !native_tag(source, "lightingShaderType", "skin_tint")
+        && !native_tag(source, "lightingShaderType", "face_tint")
+}
+
 /// Whether a lit material has a refraction flag (flag 2 or 15): retail draws no `Lighting` pass
 /// for it.
 pub(super) fn refracts(source: &Material<'_>) -> bool {
@@ -369,6 +385,28 @@ mod tests {
     fn handles() -> Vec<Handle<Image>> {
         let mut images = Assets::<Image>::default();
         (0..3).map(|_| images.add(Image::default())).collect()
+    }
+
+    /// SPEC-1 section 5: an empty base slot samples (128, 128, 255, 255), except under flag 20
+    /// and on the surfaces an actor supplies.
+    #[test]
+    fn only_a_plain_surface_without_a_base_map_takes_the_empty_slot_texel() {
+        let empty = StandardMaterial::default();
+        let textured = StandardMaterial {
+            base_color_texture: Some(Handle::default()),
+            ..default()
+        };
+        let check = |flags_1, extra: &str, material: &StandardMaterial| {
+            let json = document(flags_1, 0, extra, 1.0);
+            empty_base_slot(&json.materials().next().unwrap(), material)
+        };
+        assert!(check(0, "", &empty));
+        assert!(!check(0, "", &textured));
+        assert!(!check(SLSF1_BLACK_BASE, "", &empty));
+        for kind in ["skin_tint", "face_tint"] {
+            let extra = format!(r#","lightingShaderType":"{kind}""#);
+            assert!(!check(0, &extra, &empty), "{kind}");
+        }
     }
 
     /// SPEC-1 section 2.8: the NIF floats load unscaled, with the term of flag bit 41 too.
