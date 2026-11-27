@@ -303,6 +303,7 @@ impl LightDynamics {
 }
 
 /// Applies the dimmer, the flicker and the pulse to every spawned light. See the module doc.
+#[allow(clippy::too_many_arguments, reason = "a Bevy system")]
 pub(crate) fn update_light_dynamics(
     time: Res<Time>,
     real: Option<Res<Time<Real>>>,
