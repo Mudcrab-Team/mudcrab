@@ -45,6 +45,16 @@ When missing retail data really has a verified retail default or a tracked tempo
 
 Do not use `// retail-default:` with no reference, and do not use a malformed `STAND-IN` marker.
 
+## Known heuristic limits
+
+This tool uses regex and brace-depth heuristics rather than a full Rust or git-tree AST parser. The following cases are known heuristic limits:
+
+1. **Labels above multiline statements with nested calls**: `// retail-default: SPEC-1` above `consume(\n    value.unwrap_or(0)\n);` stops statement-start lookup at `(`, so the label does not exempt the nested `.unwrap_or(0)`. Put the label on the line of `.unwrap_or(0)` or the line directly above it.
+2. **Last function name near associated items**: `fn default_row() {}\nconst X: i32 = params![0];` inherits the preceding function name (`default_row`) because function-body spans are not indexed.
+3. **Fallback context across nested blocks**: `None => { log(); if enabled { let _ = params![0]; } }` inspects only one enclosing block level, so nested blocks inside a fallback arm lose the arm's fallback context.
+4. **Cross-file identical-line cancellation**: Deleting `v.unwrap_or(0)` in an unscoped file while adding the identical line in a scoped file cancels the line in `net_new_lines`, although any net increase in a scoped crate still fails `baseline.json`.
+5. **Diff findings whose diagnostic line did not change**: Deleting a label line above `v.unwrap_or(0)` or editing only the fallback argument line of a multiline `.unwrap_or(\n    0\n)` does not change the reported expression line in the diff; the per-crate baseline check still catches the resulting count rise.
+
 ## Commands
 
 ```sh

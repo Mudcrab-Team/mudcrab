@@ -54,16 +54,17 @@ RETAIL_DEFAULT_RE = re.compile(r"//[!/]?\s*retail-default:\s*(?P<ref>\S.*)")
 
 # Rule (a): SQLite boundary patterns.
 SQL_NOT_NULL_DEFAULT_RE = re.compile(
-    r"\bNOT\s+NULL\s+DEFAULT\s+(?!NULL\b)"
-    r"(?:'[^']*'|\"[^\"]*\"|-?\d[\d_]*(?:\.\d[\d_]*)?|[A-Za-z_][A-Za-z0-9_]*)",
+    r"\bNOT\s+NULL\s+DEFAULT\s+(?!\(?\s*NULL\s*\)?\b)"
+    r"(?:\(\s*(?:'(?:''|[^'])*'|\"[^\"]*\"|[-+]?(?:\d[\d_]*(?:\.\d[\d_]*)?|\.\d[\d_]*)|[A-Za-z_][A-Za-z0-9_]*)\s*\)"
+    r"|'(?:''|[^'])*'|\"[^\"]*\"|[-+]?(?:\d[\d_]*(?:\.\d[\d_]*)?|\.\d[\d_]*)|[A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
 SQL_COALESCE_RE = re.compile(r"\bCOALESCE\s*\(", re.IGNORECASE)
 SQL_AGGREGATE_FIRST_ARG_RE = re.compile(
-    r"^\s*(?:MAX|MIN|SUM|COUNT|TOTAL)\s*\(", re.IGNORECASE
+    r"^\s*(?P<fn>MAX|MIN|SUM|COUNT|TOTAL)\s*\(", re.IGNORECASE
 )
 SQL_LITERAL_RE = re.compile(
-    r"^(?:-?\d+(?:\.\d+)?|'(?:''|[^'])*'|TRUE|FALSE)$", re.IGNORECASE
+    r"^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|'(?:''|[^'])*'|TRUE|FALSE)$", re.IGNORECASE
 )
 
 # Rule (a): fallback struct writes with 0 / "" / "male" / "female".
@@ -133,8 +134,10 @@ FALLBACK_CONST_RE = re.compile(
 CLOSURE_EMPTY_ARGS_RE = re.compile(r"^\|\s*\|\s*(?P<body>[\s\S]+)$")
 
 NUMERIC_LIT_RE = re.compile(
-    r"^-?(?:\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?(?:[ui](?:8|16|32|64|128|size)|f(?:32|64))?"
-    r"|0x[0-9a-fA-F_]+(?:[ui](?:8|16|32|64|128|size))?)$"
+    r"^-?(?:0b[01_]+(?:[ui](?:8|16|32|64|128|size))?"
+    r"|0o[0-7_]+(?:[ui](?:8|16|32|64|128|size))?"
+    r"|0x[0-9a-fA-F_]+(?:[ui](?:8|16|32|64|128|size))?"
+    r"|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?(?:[ui](?:8|16|32|64|128|size)|f(?:32|64))?)$"
 )
 BOOL_LIT_RE = re.compile(r"^(?:true|false)$")
 STRING_OR_CHAR_LIT_RE = re.compile(
@@ -483,6 +486,20 @@ def _split_rust_top_level(text: str) -> list[str]:
     return parts
 
 
+def _first_top_level_comma(code: str, start: int, end: int) -> int:
+    """Return index of the first depth-0 `,` in `code[start:end]`, or -1."""
+    depth = 0
+    for i in range(start, end):
+        ch = code[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return i
+    return -1
+
+
 def _use_statement_spans(code: str) -> list[tuple[int, int]]:
     """Character spans of `use ...;` items in masked `code`."""
     spans = []
@@ -519,6 +536,23 @@ def _enclosing_fn_name(code: str, pos: int) -> str:
     return best
 
 
+def _last_arm_or_stmt_boundary(code: str, start: int, end: int) -> int:
+    """Return index of the last depth-0 `,`, `;`, or `}` in `code[start:end]`, or `start - 1`."""
+    boundary = start - 1
+    depth = 0
+    for i in range(start, end):
+        ch = code[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0 and ch == "}":
+                boundary = i
+            depth = max(0, depth - 1)
+        elif ch in ",;" and depth == 0:
+            boundary = i
+    return boundary
+
+
 def _in_fallback_branch_context(code: str, open_brace: int) -> bool:
     """True when `open_brace` lies inside an active `None =>`, `Err(..) =>`, `else {`, or `unwrap_or_else(`."""
     depth = 0
@@ -532,33 +566,26 @@ def _in_fallback_branch_context(code: str, open_brace: int) -> bool:
                 enclosing = i
                 break
             depth -= 1
-    # Only inspect the current statement/arm since the last `;` or `}` at the enclosing brace level,
-    # so a closed early-return `let ... else { return; };` never leaks into subsequent statements.
-    last_boundary = enclosing
-    depth = 0
-    for i in range(open_brace - 1, enclosing, -1):
-        ch = code[i]
-        if ch in ")]}":
-            depth += 1
-        elif ch in "([{":
-            depth -= 1
-        elif ch == ";" and depth == 0:
-            last_boundary = i
-            break
-        elif ch == "}" and depth == 1:
-            last_boundary = i
-            break
+    # Bound the prefix to the active match arm or statement inside `enclosing`, so a closed
+    # `let ... else { return; };` or an earlier `None => recover(),` arm never leaks forward.
+    last_boundary = _last_arm_or_stmt_boundary(code, enclosing + 1, open_brace)
     prefix = code[last_boundary + 1 : open_brace]
     if FALLBACK_BRANCH_RE.search(prefix):
         return True
     if enclosing > 0:
-        header_start = max(
-            0,
-            code.rfind(";", 0, enclosing) + 1,
-            code.rfind("}", 0, enclosing) + 1,
-            code.rfind("{", 0, enclosing) + 1,
-            enclosing - 200,
-        )
+        outer_depth = 0
+        outer_enclosing = -1
+        for i in range(enclosing - 1, -1, -1):
+            ch = code[i]
+            if ch == "}":
+                outer_depth += 1
+            elif ch == "{":
+                if outer_depth == 0:
+                    outer_enclosing = i
+                    break
+                outer_depth -= 1
+        header_start = _last_arm_or_stmt_boundary(code, outer_enclosing + 1, enclosing) + 1
+        header_start = max(header_start, enclosing - 200)
         if FALLBACK_BRANCH_RE.search(code[header_start : enclosing + 1]):
             return True
     return False
@@ -604,8 +631,17 @@ def _scan_db_rules(
         args = _split_sql_arguments(prod_raw[open_paren + 1 : close_paren])
         if len(args) < 2:
             continue
-        if SQL_AGGREGATE_FIRST_ARG_RE.match(args[0]):
-            continue
+        agg_match = SQL_AGGREGATE_FIRST_ARG_RE.match(args[0])
+        if agg_match:
+            fn_name = agg_match.group("fn").upper()
+            if fn_name in ("MAX", "MIN"):
+                inner_open = args[0].index("(")
+                inner_close = _matching_sql_paren(args[0], inner_open)
+                inner_args = _split_sql_arguments(args[0][inner_open + 1 : inner_close])
+                if len(inner_args) == 1:
+                    continue
+            else:
+                continue
         if any(SQL_LITERAL_RE.match(arg) for arg in args[1:]):
             emit(match.start(), "sql-coalesce-literal")
 
@@ -661,7 +697,7 @@ def _scan_db_rules(
         for fmatch in STRUCT_FIELD_RE.finditer(top_raw):
             field_name = fmatch.group(1)
             field_val = fmatch.group(2).strip()
-            if field_name in COUNTER_FIELDS and not (is_row_struct or has_unresolved_field or in_fallback_branch):
+            if field_name in COUNTER_FIELDS:
                 continue
             if FALLBACK_LITERAL_VALUE_RE.match(field_val):
                 emit(open_brace + 1 + fmatch.start(), "fallback-struct-write")
@@ -720,8 +756,8 @@ def _scan_retail_data_rules(
             continue
         open_paren = match.end() - 1
         close_paren = matching_bracket(code, open_paren)
-        raw_arg = prod_raw[open_paren + 1 : close_paren].strip()
-        if is_literal_or_const(raw_arg):
+        args = _split_rust_top_level(prod_raw[open_paren + 1 : close_paren])
+        if len(args) == 1 and is_literal_or_const(args[0]):
             covered_const_spans.append((open_paren, close_paren))
             emit(match.start(), "unwrap-or-literal")
 
@@ -731,8 +767,8 @@ def _scan_retail_data_rules(
             continue
         open_paren = match.end() - 1
         close_paren = matching_bracket(code, open_paren)
-        raw_arg = prod_raw[open_paren + 1 : close_paren].strip()
-        cm = CLOSURE_EMPTY_ARGS_RE.match(raw_arg)
+        args = _split_rust_top_level(prod_raw[open_paren + 1 : close_paren])
+        cm = CLOSURE_EMPTY_ARGS_RE.match(args[0]) if len(args) == 1 else None
         if cm and is_literal_or_const(cm.group("body").strip()):
             covered_const_spans.append((open_paren, close_paren))
             emit(match.start(), "unwrap-or-literal")
@@ -746,7 +782,10 @@ def _scan_retail_data_rules(
         raw_inner = prod_raw[open_paren + 1 : close_paren]
         args = _split_rust_top_level(raw_inner)
         if args and is_literal_or_const(args[0]):
-            covered_const_spans.append((open_paren, close_paren))
+            first_comma = _first_top_level_comma(code, open_paren + 1, close_paren)
+            covered_const_spans.append(
+                (open_paren, first_comma if first_comma >= 0 else close_paren)
+            )
             emit(match.start(), "map-or-literal")
 
     # 4. Fallback returns/uses of `SKYRIM_CLEAR_*` / `DEFAULT_*` / `FALLBACK_*` constants.
@@ -967,6 +1006,8 @@ def read_base_baseline(root: Path, merge_base: str, baseline_rel: str) -> dict[s
         data = json.loads(res.stdout)
     except ValueError as exc:
         raise RatchetError(f"invalid base {baseline_rel} at {merge_base}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RatchetError(f"base {baseline_rel} at {merge_base} must be a JSON object")
     counts = data.get("counts")
     if not isinstance(counts, dict):
         raise RatchetError(f"base {baseline_rel} at {merge_base} has non-object 'counts'")
@@ -995,10 +1036,12 @@ def scan_diff(root: Path, base: str, config: dict) -> tuple[str, list[Finding]]:
 
     findings: list[Finding] = []
     for rel_path, line_numbers in sorted(new_by_file.items()):
-        target = root / rel_path
-        if not target.is_file():
+        if not (
+            matches_module_scope(rel_path, config["db_write_modules"])
+            or matches_module_scope(rel_path, config["retail_data_modules"])
+        ):
             continue
-        raw_text = target.read_text(encoding="utf-8", errors="replace")
+        raw_text = git(root, "show", f"HEAD:{rel_path}")
         for hit in scan_file(rel_path, raw_text, config):
             if hit.line in line_numbers:
                 findings.append(hit)

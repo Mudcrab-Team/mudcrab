@@ -521,7 +521,7 @@ jobs:
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
             # No usable push base (for example the first push of a branch): scan against
             # the default branch so added invented defaults are still checked.
-            git fetch --no-tags --depth=350 origin main
+            git fetch --no-tags origin main
             python3 -B tools/defaults_ratchet/defaults_ratchet.py --check --base origin/main
           else
             python3 -B tools/defaults_ratchet/defaults_ratchet.py --check --base "$base"

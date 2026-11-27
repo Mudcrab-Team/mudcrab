@@ -198,13 +198,17 @@ class DefaultsRatchetTests(unittest.TestCase):
                 root,
                 "crates/converter/src/esm/exporter.rs",
                 "pub fn schema() -> &'static str {\n"
-                "    \"CREATE TABLE statics (id INTEGER PRIMARY KEY, bounds_min_x REAL NOT NULL DEFAULT -64, tag TEXT NOT NULL DEFAULT '');\"\n"
+                "    \"CREATE TABLE statics (id INTEGER PRIMARY KEY, bounds_min_x REAL NOT NULL DEFAULT -64, "
+                "tag TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL DEFAULT (0), "
+                "empty_ok TEXT DEFAULT (NULL));\"\n"
                 "}\n",
             )
             self._commit_change(
                 root,
                 "crates/engine/src/world/database.rs",
-                "pub const SQL: &str = \"SELECT COALESCE(opacity, 50), COALESCE(a.x, b.x), COALESCE(MAX(id), 0) FROM waters\";\n",
+                "pub const SQL: &str = \"SELECT COALESCE(opacity, 50), COALESCE(alpha, .5), "
+                "COALESCE(bias, -.25), COALESCE(MAX(low, high), 0), COALESCE(MIN(a, b), 1), "
+                "COALESCE(a.x, b.x), COALESCE(MAX(id), 0) FROM waters\";\n",
             )
             cfg = defaults_ratchet.load_config(root / "tools/defaults_ratchet/config.json")
             _, hits = defaults_ratchet.scan_diff(root, "HEAD~2", cfg)
@@ -213,6 +217,11 @@ class DefaultsRatchetTests(unittest.TestCase):
                 [
                     ("exporter.rs", "sql-not-null-default"),
                     ("exporter.rs", "sql-not-null-default"),
+                    ("exporter.rs", "sql-not-null-default"),
+                    ("database.rs", "sql-coalesce-literal"),
+                    ("database.rs", "sql-coalesce-literal"),
+                    ("database.rs", "sql-coalesce-literal"),
+                    ("database.rs", "sql-coalesce-literal"),
                     ("database.rs", "sql-coalesce-literal"),
                 ],
             )
@@ -225,22 +234,45 @@ class DefaultsRatchetTests(unittest.TestCase):
                 "crates/converter/src/actor_models.rs",
                 "pub struct RawRecord { pub flags: u32, pub load_order: u32 }\n"
                 "pub struct WalkState { pub elapsed: f32 }\n"
+                "pub struct ActorRow { pub count: u32, pub race_id: u32 }\n"
                 "pub fn ok_cases(opt: Option<u32>) -> WalkState {\n"
                 "    let Some(v) = opt else { return WalkState { elapsed: 1.0 }; };\n"
                 "    let _raw = RawRecord { flags: 0, load_order: 0 };\n"
                 "    let _ = v;\n"
                 "    WalkState { elapsed: 0.0 }\n"
                 "}\n"
-                "pub fn bad_params(opt: Option<u32>) -> i32 {\n"
+                "pub fn match_arm_isolation(opt: Option<u32>) -> i32 {\n"
+                "    match opt {\n"
+                "        None => 1,\n"
+                "        Some(n) => { let _p = params![n, 0]; 0 }\n"
+                "    }\n"
+                "}\n"
+                "pub fn match_arm_inline_isolation(opt: Option<u32>) -> i32 {\n"
+                "    match opt {\n"
+                "        None => recover(),\n"
+                "        Some(n) => params![n, 0],\n"
+                "    }\n"
+                "}\n"
+                "pub fn bad_params_and_counter(opt: Option<u32>) -> i32 {\n"
                 "    match opt {\n"
                 "        Some(v) => v as i32,\n"
-                "        None => { let _p = params![0, \"male\"]; 0 }\n"
+                "        None => {\n"
+                "            let _row = ActorRow { count: 0, race_id: 0 };\n"
+                "            let _p = params![0, \"male\"];\n"
+                "            0\n"
+                "        }\n"
                 "    }\n"
                 "}\n",
             )
             cfg = defaults_ratchet.load_config(root / "tools/defaults_ratchet/config.json")
             _, hits = defaults_ratchet.scan_diff(root, "HEAD~1", cfg)
-            self.assertEqual([(h.category, h.line) for h in hits], [("fallback-db-params", 12)])
+            self.assertEqual(
+                [(h.category, h.line) for h in hits],
+                [
+                    ("fallback-struct-write", 26),
+                    ("fallback-db-params", 27),
+                ],
+            )
 
     def test_map_or_unwrap_or_else_and_fallback_const_exclusions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,12 +284,19 @@ class DefaultsRatchetTests(unittest.TestCase):
                 "    DEFAULT_FOO,\n"
                 "};\n"
                 "pub const DEFAULT_BAR: f32 = 1.0;\n"
-                "pub fn check(id: u32, a: Option<f32>, b: Option<f32>, c: Option<f32>, fallback: f32) -> f32 {\n"
+                "pub fn check(id: u32, a: Option<f32>, b: Option<f32>, c: Option<f32>, d: Option<u32>, fallback: f32) -> f32 {\n"
                 "    if id == DEFAULT_FOO { return 0.0; }\n"
                 "    let x = a.map_or(DEFAULT_BAR, |v| v);\n"
-                "    let y = b.unwrap_or_else(|| 2.0);\n"
+                "    let y = b.unwrap_or_else(|| 2.0,);\n"
+                "    let t = c.unwrap_or(0.0,);\n"
+                "    let bin = d.unwrap_or(0b0) + d.unwrap_or(0o0);\n"
+                "    // retail-default: SPEC-1 section 2.6 zero is valid first arg\n"
+                "    let m = a.map_or(\n"
+                "        0.0,\n"
+                "        |_| FALLBACK_CALLBACK,\n"
+                "    );\n"
                 "    let z = c.unwrap_or(fallback);\n"
-                "    x + y + z + FALLBACK_EXTRA\n"
+                "    x + y + t + (bin as f32) + m + z + FALLBACK_EXTRA\n"
                 "}\n",
             )
             cfg = defaults_ratchet.load_config(root / "tools/defaults_ratchet/config.json")
@@ -267,7 +306,11 @@ class DefaultsRatchetTests(unittest.TestCase):
                 [
                     ("map-or-literal", 7),
                     ("unwrap-or-literal", 8),
-                    ("fallback-constant", 10),
+                    ("unwrap-or-literal", 9),
+                    ("unwrap-or-literal", 10),
+                    ("unwrap-or-literal", 10),
+                    ("fallback-constant", 14),
+                    ("fallback-constant", 17),
                 ],
             )
 
@@ -326,12 +369,19 @@ class DefaultsRatchetTests(unittest.TestCase):
                 "    if has { 1.0 } else { v.unwrap_or(4.0) }\n"
                 "}\n",
             )
-            # Move identical line and touch out-of-scope file.
+            # Delete the line from color_pipeline.rs and add the exact same line to another scoped file.
             self._commit_change(
                 root,
                 "crates/engine/src/color_pipeline.rs",
-                "// shifted\n"
-                "pub fn sky(has: bool, v: Option<f32>) -> f32 {\n"
+                "pub fn sky(has: bool) -> f32 {\n"
+                "    if has { 1.0 } else { 2.0 }\n"
+                "}\n",
+            )
+            self._commit_change(
+                root,
+                "crates/engine/src/world/database.rs",
+                "pub const SQL: &str = \"SELECT id, opacity FROM waters\";\n"
+                "pub fn moved_sky(has: bool, v: Option<f32>) -> f32 {\n"
                 "    if has { 1.0 } else { v.unwrap_or(4.0) }\n"
                 "}\n",
             )
@@ -341,8 +391,51 @@ class DefaultsRatchetTests(unittest.TestCase):
                 "pub fn ui_pad(v: Option<u32>) -> u32 {\n    v.unwrap_or(16)\n}\n",
             )
             cfg = defaults_ratchet.load_config(root / "tools/defaults_ratchet/config.json")
-            _, hits = defaults_ratchet.scan_diff(root, "HEAD~2", cfg)
+            _, hits = defaults_ratchet.scan_diff(root, "HEAD~3", cfg)
             self.assertEqual(hits, [])
+
+    def test_dirty_working_tree_does_not_shift_head_diff_coordinates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_repo(Path(tmp))
+            self._commit_change(
+                root,
+                "crates/engine/src/color_pipeline.rs",
+                "pub fn f(a: Option<f32>) -> f32 {\n"
+                "    a.unwrap_or(1.0)\n"
+                "}\n",
+            )
+            # Insert an uncommitted blank line above the committed finding in the working tree.
+            (root / "crates/engine/src/color_pipeline.rs").write_text(
+                "\n"
+                "pub fn f(a: Option<f32>) -> f32 {\n"
+                "    a.unwrap_or(1.0)\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            cfg = defaults_ratchet.load_config(root / "tools/defaults_ratchet/config.json")
+            _, hits = defaults_ratchet.scan_diff(root, "HEAD~1", cfg)
+            self.assertEqual([(h.line, h.category) for h in hits], [(2, "unwrap-or-literal")])
+
+    def test_non_object_base_baseline_returns_exit_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_repo(Path(tmp))
+            (root / "tools/defaults_ratchet/baseline.json").write_text("[]\n", encoding="utf-8")
+            run_git(root, "add", "tools/defaults_ratchet/baseline.json")
+            run_git(root, "commit", "-m", "bad base baseline")
+            (root / "tools/defaults_ratchet/baseline.json").write_text(
+                json.dumps(
+                    {"format_version": 1, "counts": {"converter": 0, "engine": 0}, "revision": 1},
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            run_git(root, "add", "tools/defaults_ratchet/baseline.json")
+            run_git(root, "commit", "-m", "restore baseline")
+            self.assertEqual(
+                defaults_ratchet.main(["--root", str(root), "--check", "--base", "HEAD~1"]),
+                2,
+            )
 
     def test_ratchet_baseline_may_only_go_down(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -370,7 +463,7 @@ class DefaultsRatchetTests(unittest.TestCase):
             )
             self.assertEqual(defaults_ratchet.main(["--root", str(root), "--check"]), 1)
 
-            # Trying to raise baseline.json above --base fails too.
+            # Trying to raise baseline.json above --base fails even with no Rust diff (HEAD~1).
             self.assertEqual(
                 defaults_ratchet.main(["--root", str(root), "--update-baseline"]),
                 0,
@@ -378,7 +471,7 @@ class DefaultsRatchetTests(unittest.TestCase):
             run_git(root, "add", "tools/defaults_ratchet/baseline.json")
             run_git(root, "commit", "-m", "try raise baseline")
             self.assertEqual(
-                defaults_ratchet.main(["--root", str(root), "--check", "--base", "HEAD~2"]),
+                defaults_ratchet.main(["--root", str(root), "--check", "--base", "HEAD~1"]),
                 1,
             )
 
