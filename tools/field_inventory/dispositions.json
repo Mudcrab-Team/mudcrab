@@ -69931,7 +69931,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "derived.base_color_texture = new_diffuse;"
+          "anchor": "standard.base_color_texture = textures.diffuse;"
         }
       ],
       "spec": "SPEC-1 2.1-b, 9.2-d, 9.2-f"
@@ -69967,7 +69967,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "derived.base_color_texture = new_diffuse;"
+          "anchor": "standard.base_color_texture = textures.diffuse;"
         }
       ],
       "spec": "SPEC-1 2.1-b, 9.2-d, 9.2-f"
