@@ -446,15 +446,11 @@ mod tests {
         let model = || (b"MODL", b"meshes/a.nif\0".to_vec());
         let list = |texture| entries(&[("A:0", texture, 0)]);
         let mut records = vec![txst(0x101), txst(0x102)];
-        for (position, tag) in MODEL_BASES.into_iter().enumerate() {
+        for (id, tag) in (0x200u32..).zip(MODEL_BASES) {
             if tag == b"ARMO" {
                 continue;
             }
-            records.push(raw(
-                0x200 + position as u32,
-                tag,
-                &[model(), (b"MODS", list(0x101))],
-            ));
+            records.push(raw(id, tag, &[model(), (b"MODS", list(0x101))]));
         }
         let world = |path: &str| format!("{path}\0").into_bytes();
         records.push(raw(
@@ -492,14 +488,9 @@ mod tests {
             .map(Result::unwrap)
             .collect()
         };
-        for (position, tag) in MODEL_BASES.into_iter().enumerate() {
+        for (id, tag) in (0x200u32..).zip(MODEL_BASES) {
             if tag != b"ARMO" {
-                assert_eq!(
-                    sets(0x200 + position as u32),
-                    [0x101],
-                    "{}",
-                    tag.escape_ascii()
-                );
+                assert_eq!(sets(id), [0x101], "{}", tag.escape_ascii());
             }
         }
         assert_eq!(sets(0x300), [0x101]);
