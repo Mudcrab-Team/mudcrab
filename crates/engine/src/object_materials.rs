@@ -64,7 +64,7 @@ enum SwapKind {
 }
 
 /// The texture set slots the `skyrim` profile applies beside the diffuse and normal maps.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RetailSlots<T> {
     glow: Option<T>,
     environment: Option<T>,

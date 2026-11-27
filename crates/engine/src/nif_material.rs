@@ -875,12 +875,14 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             return;
         }
         // Reuse Bevy's fully constructed standard material instead of duplicating
-        // its field conversion. This handler registers after the stock PBR handler.
+        // its field conversion. This handler registers after the stock PBR handler. A copy, so
+        // the load context is free for the assets this handler adds.
         let standard = context
             .get_labeled(format!("{label}/std"))
             .and_then(|asset| asset.get::<StandardMaterial>())
-            .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
-        let mut material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+            .expect("NifMaterialPlugin requires the stock PBR glTF handler before it")
+            .clone();
+        let mut material = native_material(source, &standard).unwrap_or_else(|| standard.clone());
         // The raw colour space belongs to the `skyrim` profile, and so does the retail surface.
         if self.raw_colour_texels && retail::is_lighting(source) {
             let values = retail::material_values(
@@ -888,7 +890,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 self.material_values.as_deref(),
                 &context.path().path().to_string_lossy(),
             );
-            retail::apply(source, standard, values, &self.textures, &mut material);
+            retail::apply(source, &standard, values, &self.textures, &mut material);
             if retail::empty_base_slot(source, &material) {
                 material.base_color_texture = Some(self.empty_base(context));
             }
