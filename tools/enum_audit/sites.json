@@ -321,10 +321,10 @@
     },
     {
       "file": "crates/engine/src/nif_depth.rs",
-      "anchor": "match (source, destination) {",
+      "anchor": "fn sorted_blend_mode(pair: [u8; 2]) -> u8 {",
       "enum_id": "NIF.NiAlphaProperty.BlendFunction",
       "status": "catch-all-allowed",
-      "reason": "Maps 6 specialized retail blend pairs and falls back to [6, 7] (SrcAlpha, InvSrcAlpha) standard alpha blending; `pass_audit.rs` records unexpected pairs.",
+      "reason": "Maps known sorted blend pairs to the blend table. An unmapped pair uses standard alpha blending because Bevy pipelines have no inherited blend state.",
       "reference": "crates/engine/src/nif_material/pass_audit.rs:216; nifxml@970a623/src/nif.xml (NiAlphaProperty BlendFunction)"
     },
     {

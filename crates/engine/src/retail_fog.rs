@@ -7,8 +7,7 @@
 //! STAND-IN(#995): use a neutral occlusion factor until there is a screen-space AO producer.
 //! STAND-IN(#362): unsupported adapters and multisampled views use the blend path. It raises
 //! negative input to zero and clips the output with a Min blend before transparent geometry.
-//! STAND-IN(#362): unproject colour-stage reverse-Z depth to axial view depth. The prepass
-//! depth copy and forward-Z remap from SPEC-2 need a matching prepass and projection contract.
+//! STAND-IN(#362): use colour-stage depth for samples the depth prepass did not cover.
 //!
 //! The pass runs after the opaque phase and before transmissive and transparent geometry.
 
@@ -18,8 +17,10 @@ use bevy::{
     core_pipeline::{
         FullscreenShader,
         core_3d::{CORE_3D_DEPTH_FORMAT, main_opaque_pass_3d, main_transparent_pass_3d},
+        prepass::ViewPrepassTextures,
         schedule::{Core3d, Core3dSystems},
     },
+    ecs::query::QueryItem,
     pbr::main_transmissive_pass_3d,
     prelude::*,
     render::{
@@ -41,6 +42,7 @@ use bevy::{
             },
         },
         renderer::{RenderContext, RenderDevice, ViewQuery},
+        sync_component::SyncComponent,
         texture::{CachedTexture, TextureCache},
         view::{
             ExtractedView, Msaa, ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset,
@@ -144,7 +146,7 @@ impl RetailFogParams {
 /// The pass settings of one camera, written by `sky::apply_fog` while the camera is outside, fog is
 /// on, the camera is above water and the profile is `skyrim`. The component exists only then, so
 /// the pass costs nothing otherwise.
-#[derive(Component, Clone, Copy, Debug, PartialEq, ExtractComponent, ShaderType)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct RetailFogPass {
     /// x = near, y = far, z = power, w = max.
     range: Vec4,
@@ -152,6 +154,31 @@ pub struct RetailFogPass {
     near_colour: Vec4,
     /// rgb = the far fog colour (linear), w = the SAO factor `A`.
     far_colour: Vec4,
+    /// x = projection near, y = projection far. Zero for other projection types.
+    camera_range: Vec2,
+}
+
+impl SyncComponent for RetailFogPass {
+    type Target = Self;
+}
+
+impl ExtractComponent for RetailFogPass {
+    type QueryData = (&'static Self, Option<&'static Projection>);
+    type QueryFilter = ();
+    type Out = Self;
+
+    fn extract_component((pass, projection): QueryItem<'_, '_, Self::QueryData>) -> Option<Self> {
+        let mut pass = *pass;
+        if let Some(Projection::Perspective(camera)) = projection
+            && camera.near.is_finite()
+            && camera.far.is_finite()
+            && camera.near > 0.0
+            && camera.far > camera.near
+        {
+            pass.camera_range = Vec2::new(camera.near, camera.far);
+        }
+        Some(pass)
+    }
 }
 
 impl RetailFogPass {
@@ -166,6 +193,7 @@ impl RetailFogPass {
             range: Vec4::new(0.0, 1.0, 1.0, 0.0),
             near_colour: Vec3::ZERO.extend(1.0),
             far_colour: Vec3::ZERO.extend(Self::SAO_FACTOR),
+            camera_range: Vec2::ZERO,
         }
     }
 
@@ -189,6 +217,7 @@ impl RetailFogPass {
             near_colour: Vec3::from_array(params.near_rgb)
                 .extend(crate::output_scale::framebuffer_output_scale(true)),
             far_colour: Vec3::from_array(params.far_rgb).extend(Self::SAO_FACTOR),
+            camera_range: Vec2::ZERO,
         }
     }
 
@@ -287,19 +316,20 @@ fn init_retail_fog_pipeline(
 }
 
 fn retail_fog_layout(samples: u32) -> BindGroupLayoutDescriptor {
-    let depth = if samples > 1 {
+    let depth = || if samples > 1 {
         texture_depth_2d_multisampled()
     } else {
         texture_depth_2d()
     };
     BindGroupLayoutDescriptor::new(
         "retail_fog_layout",
-        &BindGroupLayoutEntries::sequential(
+        &BindGroupLayoutEntries::with_indices(
             ShaderStages::FRAGMENT,
             (
-                uniform_buffer::<RetailFogPass>(true),
-                uniform_buffer::<ViewUniform>(true),
-                depth,
+                (0, uniform_buffer::<RetailFogPass>(true)),
+                (1, uniform_buffer::<ViewUniform>(true)),
+                (2, depth()),
+                (4, depth()),
             ),
         ),
     )
@@ -328,6 +358,7 @@ fn packed_fog_layout() -> BindGroupLayoutDescriptor {
                 uniform_buffer::<ViewUniform>(true),
                 texture_depth_2d(),
                 texture_2d(TextureSampleType::Float { filterable: false }),
+                texture_depth_2d(),
             ),
         ),
     )
@@ -548,6 +579,7 @@ type RetailFogDrawView<'w, 's> = ViewQuery<
     (
         &'static ViewTarget,
         &'static ViewDepthTexture,
+        Option<&'static ViewPrepassTextures>,
         &'static DynamicUniformIndex<RetailFogPass>,
         &'static ViewUniformOffset,
         &'static RetailFogPipelineId,
@@ -567,7 +599,7 @@ pub(crate) fn run_retail_fog_pass(
     pipeline_cache: Res<PipelineCache>,
     mut ctx: RenderContext,
 ) {
-    let (target, depth, index, view_offset, id, packed) = view.into_inner();
+    let (target, depth, prepass, index, view_offset, id, packed) = view.into_inner();
     let (Some(pipeline), Some(unsigned_input)) = (
         pipeline_cache.get_render_pipeline(id.id),
         pipeline_cache.get_render_pipeline(id.unsigned_input),
@@ -583,6 +615,9 @@ pub(crate) fn run_retail_fog_pass(
     {
         return;
     }
+    let depth_view = prepass
+        .and_then(ViewPrepassTextures::depth_view)
+        .unwrap_or_else(|| depth.view());
     let (Some(settings), Some(view_binding)) = (
         uniforms.uniforms().binding(),
         view_uniforms.uniforms.binding(),
@@ -614,8 +649,9 @@ pub(crate) fn run_retail_fog_pass(
             &BindGroupEntries::sequential((
                 settings,
                 view_binding,
-                depth.view(),
+                depth_view,
                 &packed.scene.default_view,
+                depth.view(),
             )),
         );
         let mut destination = target.get_color_attachment();
@@ -655,10 +691,11 @@ pub(crate) fn run_retail_fog_pass(
     let bind_group = ctx.render_device().create_bind_group(
         "retail_fog_composite",
         &pipeline_cache.get_bind_group_layout(&retail_fog_layout(id.samples)),
-        &bevy::render::render_resource::BindGroupEntries::sequential((
-            settings,
-            view_binding,
-            depth.view(),
+        &BindGroupEntries::with_indices((
+            (0, settings),
+            (1, view_binding),
+            (2, depth_view),
+            (4, depth.view()),
         )),
     );
     let mut color_attachment = target.get_color_attachment();
@@ -908,6 +945,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn perspective_fog_depth_matches_the_forward_depth_remap() {
+        for far in [200.0_f64, 10_240.0, 76_800.0] {
+            let near = 15.0;
+            for depth in [near, 0.1 * far, 0.5 * far, 0.99 * far, far] {
+                let d = far * (depth - near) / ((far - near) * depth);
+                let remapped = 1.01 * d - 0.01;
+                let expected = 2.0 * near * far /
+                    ((near + far) - (2.0 * remapped - 1.0) * (far - near));
+                let stable = depth / (1.01 - 0.01 * depth / far);
+                assert!((stable - expected).abs() < expected * 1.0e-11);
+                let sky_edge = near * far / (near + (far - near) * 0.000001);
+                assert_eq!(depth < sky_edge, d < 0.999999);
+            }
+        }
+    }
+
     /// The water reflection camera clips obliquely at the water plane (`reflection_lens`), so its
     /// depth also depends on the pixel. `near / depth` is wrong there; the unprojection is not.
     #[test]
@@ -953,13 +1007,15 @@ mod tests {
             "let cfc = fog.near_colour.rgb + fc * (fog.far_colour.rgb - fog.near_colour.rgb);",
             // The blend: src.rgb = k * Fc * Cfc, src.a = k * (1 - Fc) * A.
             "return vec4<f32>(k * fc * cfc, k * (1.0 - fc) * fog.far_colour.w);",
-            // k is the uniform's, never a literal. The sky (depth 0) is the blend's identity.
+            // Sky skips fog and output scale but keeps the ambient occlusion term.
             "let k = fog.near_colour.w;",
             "if ndc <= 0.0 {",
-            "return vec4<f32>(0.0, 0.0, 0.0, 1.0);",
+            "return vec4<f32>(0.0, 0.0, 0.0, fog.far_colour.w);",
             // The axial depth, unprojected through the full inverse projection.
             "view.view_from_clip,",
-            "let z = -view_position.z;",
+            "var z = -view_position.z;",
+            "z /= 1.01 - 0.01 * (z / camera_far);",
+            "select(colour_z, copied_z, copied_z > 0.0)",
         ] {
             assert!(code.contains(term), "retail_fog.wgsl lost `{term}`");
         }

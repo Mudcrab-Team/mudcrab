@@ -4,6 +4,7 @@ use crate::retail_hdr::HdrBlock;
 use bevy::prelude::*;
 
 /// A sampled modifier instance. The producer resolves the instance's animation curves.
+/// The engine does not yet decode or sample IMAD animation curves or effect flags.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ImageSpaceModifier {
     pub weight: f32,

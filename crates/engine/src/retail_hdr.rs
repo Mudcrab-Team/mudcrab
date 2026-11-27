@@ -7,8 +7,9 @@
 //!
 //! STAND-IN(#361): Bevy presents through an sRGB view. The presentation shader decodes the
 //! stored display bytes to linear values so the sRGB write reproduces them on screen.
-//! STAND-IN(#361): the scene uses Bevy's wide HDR format. Adapters without packed HDR
-//! render-attachment support also use wide formats for the intermediate targets.
+//! STAND-IN(#361): Bevy shares the main attachment with presentation and UI. Keep it wide
+//! to preserve the display bytes through the sRGB transfer. Adapters without packed HDR
+//! render-attachment support also use wide intermediate targets.
 
 use crate::{
     color_pipeline::{SceneGradeSource, SceneGradeTarget},

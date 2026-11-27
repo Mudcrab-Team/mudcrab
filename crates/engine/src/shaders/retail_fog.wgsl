@@ -20,14 +20,18 @@ struct RetailFog {
     near_colour: vec4<f32>,
     // rgb = the far fog colour (linear), w = A.
     far_colour: vec4<f32>,
+    // x = perspective near, y = perspective far, or zero for another projection.
+    camera_range: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> fog: RetailFog;
 @group(0) @binding(1) var<uniform> view: View;
 #ifdef MULTISAMPLED
-@group(0) @binding(2) var scene_depth: texture_depth_multisampled_2d;
+@group(0) @binding(2) var copied_depth: texture_depth_multisampled_2d;
+@group(0) @binding(4) var colour_depth: texture_depth_multisampled_2d;
 #else
-@group(0) @binding(2) var scene_depth: texture_depth_2d;
+@group(0) @binding(2) var copied_depth: texture_depth_2d;
+@group(0) @binding(4) var colour_depth: texture_depth_2d;
 #endif
 @group(0) @binding(3) var scene_colour: texture_2d<f32>;
 
@@ -42,13 +46,17 @@ fn unsigned_input() -> @location(0) vec4<f32> {
 fn composite_terms(in: FullscreenVertexOutput, sample_index: u32) -> vec4<f32> {
     let coord = vec2<i32>(in.position.xy);
 #ifdef MULTISAMPLED
-    let ndc = textureLoad(scene_depth, coord, sample_index);
+    let copied_z = textureLoad(copied_depth, coord, sample_index);
+    let colour_z = textureLoad(colour_depth, coord, sample_index);
 #else
-    let ndc = textureLoad(scene_depth, coord, 0);
+    let copied_z = textureLoad(copied_depth, coord, 0);
+    let colour_z = textureLoad(colour_depth, coord, 0);
 #endif
-    // The identity of the blend: src.rgb = 0 and src.a = 1.
+    // STAND-IN(#362): some Mudcrab materials draw depth only in the colour pass.
+    let ndc = select(colour_z, copied_z, copied_z > 0.0);
+    // Uncovered depth skips fog and output scale. Occlusion still applies.
     if ndc <= 0.0 {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return vec4<f32>(0.0, 0.0, 0.0, fog.far_colour.w);
     }
     // Axial linear view depth. The depth is unprojected through the full inverse projection, not
     // `near / depth`: the water reflection camera has an oblique near plane, so its depth is not a
@@ -59,7 +67,19 @@ fn composite_terms(in: FullscreenVertexOutput, sample_index: u32) -> vec4<f32> {
         vec3<f32>(uv_to_ndc(uv), ndc),
         view.view_from_clip,
     );
-    let z = -view_position.z;
+    var z = -view_position.z;
+    let camera_near = fog.camera_range.x;
+    let camera_far = fog.camera_range.y;
+    if camera_far > 0.0 {
+        // SPEC-2 section 3. Re-express the finite forward-Z depth and 1.01d - 0.01
+        // remap in view units to retain precision at the far end of the fog ramp.
+        let sky_edge = camera_far * camera_near /
+            (camera_near + (camera_far - camera_near) * 0.000001);
+        if z >= sky_edge {
+            return vec4<f32>(0.0, 0.0, 0.0, fog.far_colour.w);
+        }
+        z /= 1.01 - 0.01 * (z / camera_far);
+    }
     let near = fog.range.x;
     let r = 1.0 / (fog.range.y - fog.range.x);
     let s = clamp(z * r - near * r, 0.0, 1.0);

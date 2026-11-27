@@ -789,7 +789,7 @@ mod tests {
         }
     }
 
-    /// Authored sorted blends with an ordinary depth state use the retail blend table in Skyrim.
+    /// Checks the mapping of authored sorted blends for the Skyrim profile.
     #[test]
     fn retail_blend_state_covers_a_non_decal_additive_surface() {
         let flags = (DEPTH_TEST, 0);
