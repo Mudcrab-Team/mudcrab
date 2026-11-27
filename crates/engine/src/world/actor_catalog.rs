@@ -16,6 +16,7 @@ use crate::actors::{
     Actor, ActorHead, ActorHeadSource, ActorOutfit, ActorPart, ActorParts, ActorResolution,
     ActorSex, ActorSlot, ActorSpawnDiagnostic, ActorSpawnSkip, composed_body_scene,
 };
+use crate::movement_speeds::{ActorMovementCatalog, ActorMovementSpeeds};
 use bevy::prelude::*;
 use retail_rules::scale::NpcHeights;
 use rusqlite::{Connection, OpenFlags};
@@ -97,6 +98,9 @@ pub struct ActorSpawnPlan {
     /// The worn default outfit. Only an actor drawn with the shared composed humanoid body has
     /// one: its parts are skinned to that skeleton and hide its body regions by name.
     pub outfit: Option<ActorOutfit>,
+    /// Walk and run speed from the actor's race movement types and `NPC_.ACBS` speed
+    /// multiplier. `None` when the records do not resolve (#1065, #1066).
+    pub movement: Option<ActorMovementSpeeds>,
 }
 
 impl ActorSpawnPlan {
@@ -113,6 +117,7 @@ pub struct ActorCatalog {
     assets_root: Option<PathBuf>,
     idle_catalog: shared::actor_idle_catalog::ActorIdleCatalog,
     outfits: shared::actor_outfits::ActorOutfitCatalog,
+    movement: ActorMovementCatalog,
 }
 
 impl ActorCatalog {
@@ -316,6 +321,7 @@ impl ActorCatalog {
                         assets_root,
                         idle_catalog,
                         outfits,
+                        movement: ActorMovementCatalog::default(),
                     };
                 }
             },
@@ -326,6 +332,7 @@ impl ActorCatalog {
                     assets_root,
                     idle_catalog,
                     outfits,
+                    movement: ActorMovementCatalog::default(),
                 };
             }
         }
@@ -348,12 +355,19 @@ impl ActorCatalog {
                 model.heights = *heights;
             }
         }
+        let movement = ActorMovementCatalog::read(
+            connection,
+            models
+                .values()
+                .map(|model| (model.base_form_id, model.race_id)),
+        );
 
         Self {
             models,
             assets_root,
             idle_catalog,
             outfits,
+            movement,
         }
     }
 
@@ -507,6 +521,7 @@ impl ActorCatalog {
             weight: model.weight,
             scene_path,
             outfit: None,
+            movement: self.movement.get(model.base_form_id).copied(),
         };
         if plan.uses_composed_body() {
             plan.outfit = self
@@ -576,6 +591,56 @@ mod tests {
                 params![npc, slot, path],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn spawn_plan_carries_the_actors_record_movement_speeds() {
+        use shared::records::{ArchivedRecordData, ArchivedSubRecord};
+        let connection = connection();
+        connection
+            .execute_batch(
+                "CREATE TABLE records (form_id INTEGER PRIMARY KEY, record_type TEXT NOT NULL,
+                    cell_id INTEGER, worldspace_id INTEGER, load_order INTEGER NOT NULL, data BLOB NOT NULL);
+                 CREATE TABLE plugins (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                    priority INTEGER NOT NULL, checksum BLOB NOT NULL);
+                 CREATE TABLE movement_types (id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
+                    left_walk REAL NOT NULL, left_run REAL NOT NULL, right_walk REAL NOT NULL,
+                    right_run REAL NOT NULL, forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
+                    back_walk REAL NOT NULL, back_run REAL NOT NULL, load_order INTEGER NOT NULL);
+                 CREATE TABLE race_movement_links (id INTEGER PRIMARY KEY, walk_movt_id INTEGER,
+                    run_movt_id INTEGER, load_order INTEGER NOT NULL);
+                 CREATE TABLE default_objects (key TEXT PRIMARY KEY, form_id INTEGER NOT NULL);
+                 INSERT INTO movement_types VALUES (500,'Test_MT',10,20,10,20,40,200,10,20,0);
+                 INSERT INTO race_movement_links VALUES (13, 500, 500, 0);",
+            )
+            .unwrap();
+        let mut acbs = vec![0_u8; 24];
+        acbs[14..16].copy_from_slice(&150_u16.to_le_bytes());
+        let record = ArchivedRecordData {
+            subrecords: vec![ArchivedSubRecord {
+                tag: *b"ACBS",
+                data: acbs,
+            }],
+        };
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&record).unwrap();
+        connection
+            .execute(
+                "INSERT INTO records VALUES (77,'NPC_',NULL,NULL,0,?1)",
+                [bytes.as_slice()],
+            )
+            .unwrap();
+        insert_actor(&connection, 77, 13, "male", "body", None, None);
+        insert_actor(&connection, 78, 13, "male", "body", None, None);
+        insert_part(&connection, 77, "body", "Actors/Custom/body.nif");
+        insert_part(&connection, 78, "body", "Actors/Custom/body.nif");
+        let catalog = ActorCatalog::from_connection(&connection);
+        let plan = catalog.spawn_plan(catalog.get(77).unwrap()).unwrap();
+        let speeds = plan.movement.expect("record speeds");
+        assert_eq!((speeds.walk, speeds.run), (60.0, 300.0));
+        assert_eq!(speeds.multiplier.percent(), 150);
+        // An actor with no NPC_ record keeps no speeds and still spawns.
+        let other = catalog.spawn_plan(catalog.get(78).unwrap()).unwrap();
+        assert!(other.movement.is_none());
     }
 
     #[test]

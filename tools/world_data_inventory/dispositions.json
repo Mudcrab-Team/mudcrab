@@ -420,7 +420,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "run_speed: run.profile.values[5]",
+          "anchor": "run_speed: run.profile.values[FORWARD_RUN]",
           "path": "crates/engine/src/physics.rs"
         }
       ],

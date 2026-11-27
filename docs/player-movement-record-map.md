@@ -53,6 +53,18 @@ Not established: which callers use the getter, whether actor state (combat, weap
 
 Tests: `both_record_readers_publish_the_same_default_movement_types` (converter), `default_object_overrides_merge_by_key`, and `a_race_without_links_takes_the_default_movement_types` (engine). The opt-in test `default_movement_types_of_the_real_masters_survive_overrides` reads the retail masters.
 
+## Actor speeds and the `ACBS` speed multiplier
+
+Issues #1065 and #1066. Code: `crates/engine/src/movement_speeds.rs`, `MovementTuning::target_speed`, and `crates/engine/src/actor_drive.rs`.
+
+- `NPC_.ACBS` bytes 14..16 are a `u16` percentage (UESP NPC_ ACBS table; xEdit NPC_ ACBS "Speed Multiplier"). The factor is `percent / 100`. The player's own value scales every gait that `target_speed` returns, including the sprint latch. Each actor base's value scales that actor's walk and run speed.
+- An actor's walk speed is the forward walk column of its race's walk slot (`WKMV`, or `DMWL` when unset). Its run speed is the forward run column of the run slot (`RNMV`, or `DMRN` when unset). This is the same split that the player uses.
+- The run clip starts at the actor's own run speed. Before this change it started at a fixed 300 for every actor.
+- STAND-IN(#1065): a templated `NPC_` uses its own `ACBS` value, because no `TPLT` is followed (`npc_speed_multiplier`).
+- Not established, so not changed: which `MOVT` column applies in each actor state, the sprint equation (#1067, #264), the order of the actor modifiers, and sneak, swim and fly speeds. The engine has no sneak, swim or fly movement.
+- Data the engine needs: `NPC_` records (`records.data`), `race_movement_links`, `movement_types`, and `default_objects`. A package whose `movement_types` table lacks a race's movement type leaves that race's actors on the labelled stand-in gait thresholds, and the engine logs one warning at startup. `movement-profile-annotate` or a metadata rebuild (`--reuse-assets`) publishes the full table. No new converter field is needed.
+- Guard: `engine_movement_speeds_have_no_unlabelled_literal` fails on a bare walk, run, sprint, sneak, swim or fly speed literal in non-test engine source unless a stand-in label with an open issue number covers it.
+
 ## Sprint follow-up for the in-house reader
 
 See [sprint evidence and implementation boundary](player-sprint-research.md). The in-house actors schema already remaps sprint links; legacy conversion needs the matching fixed layout. Neither reader establishes the player sprint equation. Future evaluation should use the typed fields and provenance supplied by the in-house reader.

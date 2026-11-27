@@ -25,6 +25,8 @@
     "crates/engine/src/bug_report/snapshot.rs::query_row::667ba4591645c6ae::1": "cc57cd51c416bd34",
     "crates/engine/src/cell_commands.rs::query_row::c275c54bf961263d::1": null,
     "crates/engine/src/cell_commands.rs::query_row::d380da8bd4274c2f::1": "4d927eb5424df201",
+    "crates/engine/src/movement_speeds.rs::query_row::0117638460bd2ff7::1": "7d47d5c6bf784799",
+    "crates/engine/src/movement_speeds.rs::query_row::0c8387bdf614135e::1": "c1568a33237b3cfc",
     "crates/engine/src/object_materials.rs::prepare::1fbb03c179b6e4da::1": "842c2da0a552f151",
     "crates/engine/src/object_materials.rs::prepare::c74d4d43affb6228::1": "8c58625ec07dbbc9",
     "crates/engine/src/object_materials.rs::query_row::0117638460bd2ff7::1": "7d47d5c6bf784799",

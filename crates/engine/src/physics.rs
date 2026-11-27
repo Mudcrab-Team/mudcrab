@@ -1,6 +1,7 @@
 //! Player movement physics: one controller for Riverwood and the regression fixture.
 //! All units are Creation units.
 
+use crate::movement_speeds::{ACBS_SIZE, SpeedMultiplier};
 use bevy::{
     ecs::system::{SystemId, SystemParam},
     input::mouse::MouseMotion,
@@ -72,8 +73,12 @@ pub const MAX_LIVE_DYNAMIC_CLUTTER: usize = 256;
 /// Movement tuning with one source-attributed effective character jump height.
 #[derive(Debug, Clone, Resource)]
 pub struct MovementTuning {
+    /// Forward walk speed of the walk slot's `MOVT`, before [`Self::speed_multiplier`].
     pub walk_speed: f32,
+    /// Forward run speed of the run slot's `MOVT`, before [`Self::speed_multiplier`].
     pub run_speed: f32,
+    /// Player `NPC_.ACBS` speed multiplier. [`Self::target_speed`] applies it to every gait.
+    pub speed_multiplier: SpeedMultiplier,
     /// Provisional sprint factor applied to the selected directional run speed.
     pub sprint_multiplier: f32,
     pub horizontal_acceleration: f32,
@@ -103,8 +108,13 @@ pub struct DirectionalMovementSpeeds {
 impl Default for MovementTuning {
     fn default() -> Self {
         Self {
+            // STAND-IN(#1066): a package without movement_types holds no record speeds, so the
+            // earlier project walk and run constants stay for that package only.
             walk_speed: 160.0,
             run_speed: 300.0,
+            speed_multiplier: SpeedMultiplier::NEUTRAL,
+            // STAND-IN(#264): no retail sprint equation is established, so the earlier
+            // project factor stays (docs/player-sprint-research.md).
             sprint_multiplier: 1.5,
             horizontal_acceleration: 1800.0,
             jump_height: JumpHeight::synthetic(
@@ -122,12 +132,20 @@ impl Default for MovementTuning {
 }
 
 /// One `MOVT` row: its eight directional speeds and where it came from.
-struct MovementProfile {
-    editor_id: String,
-    /// Left/right/forward/back, each as walk then run.
-    values: [f32; 8],
-    plugin: String,
+pub(crate) struct MovementProfile {
+    pub(crate) editor_id: String,
+    /// Left/right/forward/back, each as walk then run. Index with [`FORWARD_WALK`] and
+    /// [`FORWARD_RUN`] for the forward column.
+    pub(crate) values: [f32; 8],
+    pub(crate) plugin: String,
 }
+
+/// Index of `MOVT.SPED` forward walk in [`MovementProfile::values`]. `SPED` order is left, right,
+/// forward, back, each as walk then run (xEdit `wbDefinitionsTES5.pas` MOVT SPED; CommonLibSSE-NG
+/// `Movement::MaxSpeeds`).
+pub(crate) const FORWARD_WALK: usize = 4;
+/// Index of `MOVT.SPED` forward run in [`MovementProfile::values`].
+pub(crate) const FORWARD_RUN: usize = 5;
 
 impl MovementProfile {
     fn directions(&self) -> [[f32; 2]; 4] {
@@ -138,7 +156,7 @@ impl MovementProfile {
 }
 
 /// The `DOBJ` default movement types that the converter exported.
-enum DefaultObjects {
+pub(crate) enum DefaultObjects {
     /// The package has no `default_objects` table, so it was converted before the table existed.
     /// It is the only case that keeps the earlier `NPC_Default_MT` rule, and it is flagged.
     Absent,
@@ -148,7 +166,7 @@ enum DefaultObjects {
 }
 
 impl DefaultObjects {
-    fn read(conn: &Connection) -> Result<Self> {
+    pub(crate) fn read(conn: &Connection) -> Result<Self> {
         let has_table: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='default_objects')",
             [],
@@ -233,14 +251,14 @@ fn load_movement_profile(conn: &Connection, form_id: u32, via: &str) -> Result<M
 }
 
 /// A movement type that a race slot selected.
-struct SelectedMovementType {
+pub(crate) struct SelectedMovementType {
     /// How the slot chose it, for the source report.
-    via: String,
-    profile: MovementProfile,
+    pub(crate) via: String,
+    pub(crate) profile: MovementProfile,
     /// The package has no `default_objects` table, so the earlier rule chose it.
-    legacy_rule: bool,
+    pub(crate) legacy_rule: bool,
     /// Flagged conditions, for the startup log.
-    warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
 /// The `MOVT` for one race movement slot, with a label for the source report.
@@ -251,7 +269,7 @@ struct SelectedMovementType {
 /// slot-to-default mapping is at `0x140393860`. A default object that is missing is an
 /// error. No movement type is chosen for it. The one exception is a package without the
 /// `default_objects` table, which keeps the earlier rule and is flagged.
-fn load_race_movement_type(
+pub(crate) fn load_race_movement_type(
     conn: &Connection,
     link: Option<u32>,
     slot: &str,
@@ -280,7 +298,7 @@ fn load_race_movement_type(
         warnings.push(format!(
             "{slot} movement type {} ({id:08X}) has forward {} speed 0, so the player cannot move forward at that gait",
             profile.editor_id,
-            if forward == 4 { "walk" } else { "run" }
+            if forward == FORWARD_WALK { "walk" } else { "run" }
         ));
     }
     Ok(SelectedMovementType {
@@ -339,8 +357,8 @@ impl MovementTuning {
                 format!("RACE {race_id:08X} movement links missing; run a metadata rebuild (--reuse-assets)")
             })?;
         let defaults = DefaultObjects::read(&conn)?;
-        let walk = load_race_movement_type(&conn, walk_link, "WKMV", &defaults, 4)?;
-        let run = load_race_movement_type(&conn, run_link, "RNMV", &defaults, 5)?;
+        let walk = load_race_movement_type(&conn, walk_link, "WKMV", &defaults, FORWARD_WALK)?;
+        let run = load_race_movement_type(&conn, run_link, "RNMV", &defaults, FORWARD_RUN)?;
         let mut warnings = Vec::new();
         if walk.legacy_rule || run.legacy_rule {
             warnings.push(
@@ -351,10 +369,13 @@ impl MovementTuning {
         warnings.extend(walk.warnings.iter().chain(&run.warnings).cloned());
         let jump_height = load_player_jump_height(&conn, race_id)
             .wrap_err("record-backed jump inputs are incomplete or unsupported")?;
+        let speed_multiplier = player_speed_multiplier(&conn)
+            .wrap_err("Player NPC_ 00000007 ACBS speed multiplier is unreadable")?;
         Ok(Self {
             jump_height,
-            walk_speed: walk.profile.values[4],
-            run_speed: run.profile.values[5],
+            walk_speed: walk.profile.values[FORWARD_WALK],
+            run_speed: run.profile.values[FORWARD_RUN],
+            speed_multiplier,
             record_speeds: Some(DirectionalMovementSpeeds {
                 walk_directions: walk.profile.directions(),
                 run_directions: run.profile.directions(),
@@ -373,7 +394,13 @@ impl MovementTuning {
         })
     }
 
+    /// The wish speed for one input. `NPC_.ACBS` speed multiplier scales the result, whichever
+    /// gait and source (record speeds or the stand-in constants) chose the base speed.
     fn target_speed(&self, strafe: Vec2, slow: bool, sprint: bool) -> f32 {
+        self.unscaled_target_speed(strafe, slow, sprint) * self.speed_multiplier.factor()
+    }
+
+    fn unscaled_target_speed(&self, strafe: Vec2, slow: bool, sprint: bool) -> f32 {
         let gait = if slow && !sprint { 0 } else { 1 };
         let Some(speeds) = &self.record_speeds else {
             let base = if gait == 0 {
@@ -405,7 +432,9 @@ impl MovementTuning {
     }
 }
 
-struct JumpInputRecord {
+/// One canonical winning record, decoded from `records.data`. Jump height and the speed
+/// multiplier read it, and so does [`crate::movement_speeds`].
+pub(crate) struct JumpInputRecord {
     id: u32,
     data: ArchivedRecordData,
     source: String,
@@ -426,7 +455,11 @@ fn winning_plugin(conn: &Connection, priority: u32) -> Result<String> {
         .unwrap_or_else(|| "<unknown plugin>".into()))
 }
 
-fn jump_input_record(conn: &Connection, id: u32, expected: &str) -> Result<JumpInputRecord> {
+pub(crate) fn jump_input_record(
+    conn: &Connection,
+    id: u32,
+    expected: &str,
+) -> Result<JumpInputRecord> {
     let (kind, priority, bytes): (String, u32, Vec<u8>) = conn
         .query_row(
             "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
@@ -453,7 +486,7 @@ fn jump_input_record(conn: &Connection, id: u32, expected: &str) -> Result<JumpI
 }
 
 impl JumpInputRecord {
-    fn field(&self, tag: &[u8; 4]) -> Result<Option<&[u8]>> {
+    pub(crate) fn field(&self, tag: &[u8; 4]) -> Result<Option<&[u8]>> {
         let mut matches = self
             .data
             .subrecords
@@ -469,7 +502,7 @@ impl JumpInputRecord {
         Ok(field)
     }
 
-    fn required(&self, tag: &[u8; 4], size: usize) -> Result<&[u8]> {
+    pub(crate) fn required(&self, tag: &[u8; 4], size: usize) -> Result<&[u8]> {
         let bytes = self.field(tag)?.ok_or_else(|| {
             color_eyre::eyre::eyre!(
                 "record {:08X} lacks {}",
@@ -486,6 +519,13 @@ impl JumpInputRecord {
         );
         Ok(bytes)
     }
+}
+
+/// The player's own `NPC_.ACBS` speed multiplier. The player record is read as authored, as the
+/// jump height does; a template that supplies speed for the player is not followed.
+fn player_speed_multiplier(conn: &Connection) -> Result<SpeedMultiplier> {
+    let player = jump_input_record(conn, 7, "NPC_")?;
+    SpeedMultiplier::from_acbs(player.required(b"ACBS", ACBS_SIZE)?)
 }
 
 fn load_player_jump_height(conn: &Connection, race_id: u32) -> Result<JumpHeight> {
@@ -850,9 +890,10 @@ fn report_movement_tuning(tuning: Res<MovementTuning>) {
         .as_ref()
         .map_or("legacy provisional constants", |s| s.source.as_str());
     info!(
-        "WALK speeds: forward walk={} run={} Creation units/s (first-pass factor 1); provisional sprint={} ({}x directional run); source={source}; effective jump height={} Creation; jump source={}; character gravity=9.81 Havok; rigid-body gravity=900 Creation",
+        "WALK speeds: forward walk={} run={} Creation units/s (first-pass factor 1); speed multiplier={}%; provisional sprint={} ({}x directional run); source={source}; effective jump height={} Creation; jump source={}; character gravity=9.81 Havok; rigid-body gravity=900 Creation",
         tuning.walk_speed,
         tuning.run_speed,
+        tuning.speed_multiplier.percent(),
         tuning.target_speed(Vec2::new(0.0, -1.0), false, true),
         tuning.sprint_multiplier,
         tuning.jump_height.creation(),
@@ -1284,6 +1325,8 @@ mod tests {
         let mut patch = header;
         let mut acbs = vec![0; 24];
         acbs[..4].copy_from_slice(&1_u32.to_le_bytes());
+        // Retail players author a speed multiplier of 100 percent.
+        acbs[14..16].copy_from_slice(&100_u16.to_le_bytes());
         patch.extend(fixture_record(
             b"NPC_",
             7,
@@ -1411,6 +1454,83 @@ mod tests {
                 setting * (0.8_f32 * 1.2_f32)
             );
         }
+    }
+
+    #[test]
+    fn player_speed_multiplier_scales_every_gait_from_acbs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        let gaits = [
+            (Vec2::new(0.0, -1.0), true, false),
+            (Vec2::new(0.0, -1.0), false, false),
+            (Vec2::new(0.0, 1.0), false, false),
+            (Vec2::new(-1.0, 0.0), true, false),
+            (Vec2::new(1.0, -1.0), false, false),
+            (Vec2::new(0.0, -1.0), false, true),
+        ];
+        let base = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(base.speed_multiplier.percent(), 100);
+        for percent in [50_u16, 150, 200] {
+            rewrite_jump_record(&conn, 7, |record| {
+                record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"ACBS")
+                    .unwrap()
+                    .data[14..16]
+                    .copy_from_slice(&percent.to_le_bytes());
+            });
+            let scaled = MovementTuning::from_world_database(&path).unwrap();
+            assert_eq!(scaled.speed_multiplier.percent(), percent);
+            // Raw record speeds stay as authored; only the wish speed scales.
+            assert_eq!((scaled.walk_speed, scaled.run_speed), (80.1, 370.0));
+            for (strafe, slow, sprint) in gaits {
+                let expected = base.target_speed(strafe, slow, sprint) * f32::from(percent) / 100.0;
+                let actual = scaled.target_speed(strafe, slow, sprint);
+                assert!(
+                    (actual - expected).abs() < 1e-3,
+                    "{percent}% {strafe:?} slow={slow} sprint={sprint}: {actual} != {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn player_speed_multiplier_scales_the_stand_in_speeds_too() {
+        let tuning = MovementTuning {
+            speed_multiplier: SpeedMultiplier::new(200),
+            ..MovementTuning::default()
+        };
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), true, false),
+            320.0
+        );
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), false, false),
+            600.0
+        );
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), false, true),
+            900.0
+        );
+    }
+
+    #[test]
+    fn a_player_acbs_of_the_wrong_size_is_an_error_not_a_guess() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        rewrite_jump_record(&conn, 7, |record| {
+            record
+                .subrecords
+                .iter_mut()
+                .find(|field| field.tag == *b"ACBS")
+                .unwrap()
+                .data
+                .truncate(16);
+        });
+        assert!(MovementTuning::from_world_database(&path).is_err());
     }
 
     #[test]

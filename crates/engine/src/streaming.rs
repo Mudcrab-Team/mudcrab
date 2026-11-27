@@ -2083,6 +2083,9 @@ fn spawn_cell(
                         crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
                         crate::actor_drive::ActorDrive::default(),
                     ));
+                    if let Some(speeds) = plan.movement {
+                        entity.insert(speeds);
+                    }
                 } else if reference.starts_dead {
                     // No death pose or ragdoll exists yet. A placed corpse keeps its bind
                     // pose; a standing idle loop would make it look alive.
