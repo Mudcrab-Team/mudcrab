@@ -29,10 +29,18 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    cell has XCLL"; all 786 shipped interiors have 92 bytes.
 4. **Room templates** (RF-LIGHT-CPU-013). When the camera is inside a room marker box
    (`room_bounds`, first match in `ref_id` order) whose LNAM template exists, that template
-   supplies the colour source: directional, DALC and fog colours. The rotation and the fog
-   distances stay the cell's. Retail follows the current room through the portal system and
-   blends. Mudcrab uses the camera position and switches at once. The record-to-extra-0x77 link
-   is a medium-confidence name lead.
+   supplies the colour source (directional, DALC, fog colours) and the whole fog: near, far,
+   power and max (RF-LIGHT-CPU-023). The cell's inherit bits do not apply to a room, so a
+   template without a fog ramp gives a room without fog. Only the rotation stays the cell's.
+   Retail follows the current room through the portal system; Mudcrab uses the camera position
+   (RF-LIGHT-CPU-026), staying in the room it is in while the point is still inside it. A room
+   change blends over `fRoomLightingTransitionDuration` = 3.0 s with `w = (3 - 2t) t^2`
+   (RF-LIGHT-CPU-024): directional colour, the six DALC colours, both fog colours and fog near,
+   far, power and max (RF-LIGHT-CPU-025). A room change while a blend runs waits for it to end. A
+   cell change (a door) applies the new cell at once. A side with no fog ramp stands for retail's
+   far clamp of 163,840, so fog fades in or out. Not blended: the key-light rotation (the cell's),
+   the light fade (reported only) and the room image space (`room_bounds` has no image-space
+   column yet). The record-to-extra-0x77 link is a medium-confidence name lead.
 5. **Key light**: the same `DirectionalLight` entity as the exterior sun (retail uses one light
    node, RF-LIGHT-CPU-011).
    - Colour `Color::srgb_u8(directional)`, the same conversion as the exterior sun.
@@ -60,8 +68,11 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    at `near + max * (far - near)`, which gives `min(ramp, max)`. Max 0 draws no fog.
    Retail scene fog is `min(saturate((d - near)/(far - near))^power, max)` with a near-to-far
    colour lerp (RF-WATER-011). Bevy has no power term and one colour, so power and the far
-   colour are reported only. `far <= near` draws no fog. The near/far clamps and the clip
-   distance are not applied.
+   colour are reported only. A near that is not usable (<= 0 or beyond far) becomes 0.17 of
+   far, as in retail (RF-FOG-001, RF-LIGHT-CPU-023): near 0, far 5000 starts at 850. Near equal to
+   far draws no fog (RF-LIGHT-CPU-021). `far <= 0`
+   draws no fog (retail's far clamp would put the fog's start at 27,853 units, so the picture is
+   the same). The far clamp above 163,840 and the clip distance are not applied.
    A short XCLL (72 to 91 bytes) has no fog max field. Retail behaviour for a short block is
    unverified (RF-LIGHT-CPU-014 covers a cell without XCLL only). Mudcrab keeps the authored fog
    distances and applies no cap. No shipped interior has a short XCLL, but six take fog

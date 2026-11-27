@@ -37,7 +37,7 @@ use crate::{
     world::{
         components::StreamingCamera,
         environment::interior::{
-            LightFade, SceneEnvironment, point_light_fade_factor, resolve_light_fade,
+            LightFade, RoomBlend, SceneEnvironment, point_light_fade_factor, resolve_light_fade,
         },
     },
 };
@@ -310,6 +310,7 @@ pub(crate) fn update_light_dynamics(
     mut retail_timer: Local<FrameTimer>,
     config: Option<Res<EngineConfig>>,
     scene: Option<Res<SceneEnvironment>>,
+    room_blend: Option<Res<RoomBlend>>,
     camera: Query<&GlobalTransform, With<StreamingCamera>>,
     player: Query<&GlobalTransform, With<PlayerBody>>,
     mut lights: Query<
@@ -337,12 +338,13 @@ pub(crate) fn update_light_dynamics(
     let config = config.as_deref().unwrap_or(&defaults);
     let (start, range) = (config.light_lod_start_fade, config.light_lod_range);
     // The current room's pair, else the cell's, else the exterior's. A cell without lighting data
-    // has no pair: its lights are not dimmed. Unverified: `active_render` is also `None` for an
+    // has no pair: its lights are not dimmed. The room blend does not cover the pair, so it is
+    // the current side's. Unverified: `current_render` is also `None` for an
     // interior in sky mode 3 and for a pack without the lighting table, and those scenes get the
     // exterior pair here. The findings say nothing about them.
     let fade = match scene
         .as_deref()
-        .and_then(|scene| scene.active_render(Some(camera)))
+        .and_then(|scene| scene.current_render(room_blend.as_deref(), Some(camera)))
     {
         Some(render) => render
             .light_fade

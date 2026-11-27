@@ -1610,15 +1610,21 @@ mod tests {
                  INSERT INTO cell_lighting(cell_id,xcll_size,inherit_flags,fog_near_r,
                     fog_near_g,fog_near_b,fog_near,fog_far,fog_max)
                  VALUES(77,92,0,31,52,46,100.0,4000.0,1.0);
-                 INSERT INTO lighting_templates(id,fog_near_r,fog_near_g,fog_near_b)
-                 VALUES(88,7,8,9);
+                 INSERT INTO lighting_templates(id,fog_near_r,fog_near_g,fog_near_b,fog_near,fog_far)
+                 VALUES(88,7,8,9,200.0,3000.0);
                  INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,
                     half_x,half_y,half_z,lighting_template_id)
                  VALUES(99,77,1000,0,0,0,0,0,100,100,100,88);",
             )
             .unwrap();
         let mut app = App::new();
-        app.init_resource::<Assets<Mesh>>()
+        // The room blend reads the real clock; one update is longer than its three seconds, so a
+        // room crossing completes in the frame it happens in.
+        app.add_plugins(bevy::time::TimePlugin)
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs(4),
+            ))
+            .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<SkyMaterial>>()
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
@@ -1677,8 +1683,9 @@ mod tests {
         app.update();
         assert_eq!(
             linear(&app),
-            Some((Color::srgb_u8(7, 8, 9), 100.0, 4000.0)),
-            "room fog colour in the crossing frame"
+            // The room template supplies the fog distances too (RF-LIGHT-CPU-023).
+            Some((Color::srgb_u8(7, 8, 9), 200.0, 3000.0)),
+            "room fog colour and distances in the crossing frame"
         );
     }
 
