@@ -75,6 +75,13 @@ fn mo2_profile_and_reader_bind_metadata_without_changing_asset_settings() {
         "[General]\ngameName=Skyrim Special Edition\n",
     )
     .unwrap();
+    for profile in ["Default", "Second"] {
+        fs::write(
+            instance.join("profiles").join(profile).join("modlist.txt"),
+            "",
+        )
+        .unwrap();
+    }
     let mut original = PipelineConfig::new(&data, root.path().join("output"));
     original.record_reader = RecordReader::Legacy;
     let mut mo2_config = original.clone();

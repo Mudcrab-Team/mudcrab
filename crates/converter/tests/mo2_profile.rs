@@ -367,6 +367,11 @@ async fn irrelevant_profile_changes_reuse_assets() {
     assert_eq!(second.converted, 0);
     assert_eq!(second.cache_hits, first.converted);
     fs::create_dir_all(instance.join("profiles/Other")).unwrap();
+    write(
+        &instance,
+        "profiles/Other/modlist.txt",
+        "+High\n-Disabled\n+Low\n",
+    );
     let mut other = config;
     other.mo2.as_mut().unwrap().profile = "Other".into();
     assert_ne!(hash, configuration_hash(&other).unwrap());
@@ -436,6 +441,46 @@ async fn winning_skeleton_changes_invalidate_dependent_mesh() {
         unchanged.entries[body].source_hash,
         manifest.entries[body].source_hash
     );
+}
+
+/// A winning PEX content edit rebuilds its script output without changing MO2 identity.
+#[tokio::test]
+async fn script_content_change_rebuilds_output_without_changing_mo2_identity() {
+    let (_dir, config, instance) = fixture();
+    let relative = "scripts/hash-source.pex";
+    let source = instance.join("overwrite").join(relative);
+    write(
+        &instance,
+        "overwrite/scripts/hash-source.pex",
+        dummy_content::pex::minimal("FirstSource").unwrap(),
+    );
+
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete, "{first:?}");
+    let manifest_path = config.output_dir.join("conversion-manifest.json");
+    let before = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+    let original_source_hash = before.entries[relative].source_hash.clone();
+    let original_configuration_hash = configuration_hash(&config).unwrap();
+
+    fs::write(
+        &source,
+        dummy_content::pex::minimal("ChangedSource").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        configuration_hash(&config).unwrap(),
+        original_configuration_hash
+    );
+
+    let second = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(second.complete, "{second:?}");
+    assert!(second.converted >= 1, "{second:?}");
+    let after = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+    assert_ne!(
+        after.entries[relative].source_hash, original_source_hash,
+        "the source proof must include the winning PEX bytes"
+    );
+    assert!(config.output_dir.join("scripts/hash-source.luau").is_file());
 }
 
 /// Verifies conversion reads winning MO2 sources directly without copying them into staging.
@@ -1376,7 +1421,7 @@ async fn resume_rebuilds_input_and_vfs_after_profile_change() {
     write(&staging, "scripts/stale.luau", "stale converted script");
     write(&staging, "textures/stale.ktx2", "stale converted texture");
     write(&instance, "profiles/Default/modlist.txt", "-High\n+Low\n");
-    assert_eq!(original_hash, configuration_hash(&config).unwrap());
+    assert_ne!(original_hash, configuration_hash(&config).unwrap());
     config.resume_staging = Some(staging.clone());
     let report = run(config.clone(), Cancellation::new()).await.unwrap();
     assert!(report.complete && report.skipped == 0, "{report:?}");
@@ -1420,4 +1465,115 @@ async fn refuses_source_overlap_and_conflicting_plugin_selection() {
     let roundtrip: PipelineConfig =
         serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
     assert_eq!(roundtrip.mo2.unwrap().profile, "Default");
+}
+
+/// Case-insensitive profile selection hashes the canonical profile name.
+#[test]
+fn profile_name_case_preserves_configuration_hash() {
+    let (_dir, mut config, _) = fixture();
+    let default_hash = configuration_hash(&config).unwrap();
+    config.mo2.as_mut().unwrap().profile = "default".into();
+    assert_eq!(default_hash, configuration_hash(&config).unwrap());
+}
+
+/// Moving an MO2 instance preserves its path-independent configuration identity.
+#[test]
+fn moving_mo2_instance_preserves_configuration_hash() {
+    let (_dir, mut config, instance) = fixture();
+    let before = configuration_hash(&config).unwrap();
+
+    let moved_root = tempfile::tempdir().unwrap();
+    let moved_data = moved_root.path().join("MovedData");
+    let moved_instance = moved_root.path().join("MovedMO2");
+    fs::rename(&config.data_dir, &moved_data).unwrap();
+    fs::rename(&instance, &moved_instance).unwrap();
+
+    config.data_dir = moved_data;
+    config.mo2.as_mut().unwrap().instance_path = moved_instance.clone();
+
+    let after_move = configuration_hash(&config).unwrap();
+    assert_eq!(before, after_move);
+
+    // Changing enabled mods invalidates the hash.
+    write(
+        &moved_instance,
+        "profiles/Default/modlist.txt",
+        "+Low\n-Disabled\n+High\n",
+    );
+    assert_ne!(after_move, configuration_hash(&config).unwrap());
+}
+
+/// Legacy MO2 manifests with an obsolete combined hash notify before cached assets are rebuilt.
+#[tokio::test]
+async fn legacy_mo2_manifest_mismatch_notifies_before_rebuilding_cached_assets() {
+    let (_dir, config, _) = fixture();
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete, "{first:?}");
+
+    let manifest_path = config.output_dir.join("conversion-manifest.json");
+    let mut legacy = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+    legacy.asset_configuration_hashes.clear();
+    legacy.configuration_hash = "legacy-path-based-mo2-hash".into();
+    legacy.save(&manifest_path).unwrap();
+
+    let resumed = run(config, Cancellation::new()).await.unwrap();
+    assert!(resumed.complete, "{resumed:?}");
+    assert!(resumed.converted > 0, "{resumed:?}");
+    assert!(
+        resumed.notices.iter().any(|notice| {
+            notice.contains("legacy combined configuration hash")
+                && notice.contains("will be rebuilt")
+        }),
+        "{:?}",
+        resumed.notices
+    );
+}
+
+/// Repair explains that an MO2 hash mismatch may stem from an older MO2 identity or enabled-mod change.
+#[tokio::test]
+async fn repair_explains_mo2_hash_mismatch_for_legacy_or_changed_modlist() {
+    let (_dir, config, instance) = fixture();
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete, "{first:?}");
+
+    let manifest_path = config.output_dir.join("conversion-manifest.json");
+    let original = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+
+    let mut legacy = original.clone();
+    legacy.failures.insert(
+        "meshes/synthetic-failure.nif".into(),
+        "synthetic failure for repair configuration check".into(),
+    );
+    legacy.complete = false;
+    legacy.configuration_hash = "legacy-path-based-mo2-hash".into();
+    legacy.save(&manifest_path).unwrap();
+
+    let legacy_error = converter::repair::repair_failed(&config, false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        legacy_error.contains("old MO2 identity")
+            && legacy_error.contains("enabled-mod list")
+            && legacy_error.contains("normal conversion"),
+        "{legacy_error}"
+    );
+
+    let mut current = original;
+    current.failures.insert(
+        "meshes/synthetic-failure.nif".into(),
+        "synthetic failure for repair configuration check".into(),
+    );
+    current.complete = false;
+    current.save(&manifest_path).unwrap();
+
+    write(&instance, "profiles/Default/modlist.txt", "+Low\n+High\n");
+    let modlist_error = converter::repair::repair_failed(&config, false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        modlist_error.contains("old MO2 identity")
+            && modlist_error.contains("enabled-mod list")
+            && modlist_error.contains("normal conversion"),
+        "{modlist_error}"
+    );
 }
