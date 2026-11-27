@@ -36,8 +36,11 @@ impl TimeOfDay {
     }
 }
 
-/// A directional ambient block (`DALC`): colours along X+, X-, Y+, Y-, Z+, and Z-.
-/// Specular colour and scale are optional. Colours are 8-bit sRGB.
+/// A directional ambient block (`DALC`): six colours in file order, F0 to F5. The field names in
+/// the converter schema (`x_pos`, `x_neg`, ...) follow the editor's labels and are unverified. The
+/// retail shader applies them as F0 on -X, F1 on +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z,
+/// in Creation axes (NEEDS 41, reviewed). Specular colour and scale are optional. Colours are
+/// 8-bit sRGB.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
 pub struct DirectionalAmbient {
     pub colors: [[u8; 3]; 6],
@@ -205,6 +208,9 @@ pub struct EnvironmentCatalog {
     /// `cell_environment.image_space_id` (XCIM) by cell. A cell is absent when the table or the
     /// column is missing. A present entry may hold `None` (the cell has no XCIM).
     cell_image_spaces: HashMap<u32, Option<u32>>,
+    /// The XCIM link of each exterior cell, by world space and grid square, for the world spaces
+    /// whose record names a lighting template.
+    exterior_cell_image_spaces: HashMap<(u32, i32, i32), Option<u32>>,
     worldspaces: HashMap<u32, WorldspaceEnvironment>,
     templates: HashMap<u32, LightingTemplate>,
     weathers: HashMap<u32, Weather>,
@@ -360,6 +366,17 @@ impl EnvironmentCatalog {
             "cell_environment.image_space_id",
             |row| Ok((row.get(0)?, row.get(1)?)),
         );
+        let exterior_cell_image_spaces = read_rows(
+            connection,
+            "SELECT c.worldspace_id, c.grid_x, c.grid_y, e.image_space_id FROM cells c \
+             JOIN worldspace_environment w ON w.worldspace_id = c.worldspace_id \
+             LEFT JOIN cell_environment e ON e.cell_id = c.id \
+             WHERE w.lighting_template_id <> 0 AND c.grid_x IS NOT NULL AND c.grid_y IS NOT NULL",
+            "exterior cell image spaces",
+            |row| Ok(((row.get(0)?, row.get(1)?, row.get(2)?), row.get(3)?)),
+        )
+        .into_iter()
+        .collect();
         let worldspaces = read(
             connection,
             "SELECT worldspace_id, data_flags, parent_flags, climate_id, water_id, \
@@ -496,6 +513,7 @@ impl EnvironmentCatalog {
             cells,
             cell_flags,
             cell_image_spaces,
+            exterior_cell_image_spaces,
             worldspaces,
             templates,
             weathers,
@@ -558,6 +576,27 @@ impl EnvironmentCatalog {
 
     pub fn image_space(&self, id: u32) -> Option<&ImageSpace> {
         self.image_spaces.get(&id)
+    }
+
+    /// Whether the world space's record names a lighting template.
+    pub fn worldspace_has_lighting_template(&self, worldspace_id: u32) -> bool {
+        self.worldspaces
+            .get(&worldspace_id)
+            .and_then(|world| world.lighting_template)
+            .is_some_and(|template| template != 0)
+    }
+
+    /// The XCIM link of an exterior cell of a world space with a lighting template. `None` when
+    /// the database has no such cell, `Some(None)` when the cell names no image space.
+    pub fn exterior_cell_image_space(
+        &self,
+        worldspace_id: u32,
+        grid_x: i32,
+        grid_y: i32,
+    ) -> Option<Option<u32>> {
+        self.exterior_cell_image_spaces
+            .get(&(worldspace_id, grid_x, grid_y))
+            .copied()
     }
 
     /// Resolve WRLD PNAM bit 0x10 (use parent's climate). Missing parents or cycles return None.

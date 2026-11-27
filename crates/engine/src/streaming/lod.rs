@@ -744,7 +744,7 @@ pub(super) fn track_lod_readiness(
     names: (Query<&Name>, Query<&GltfMaterialName>),
     mesh_handles: Query<&Mesh3d>,
     materials: Query<&MeshMaterial3d<StandardMaterial>>,
-    material_assets: Res<Assets<StandardMaterial>>,
+    mut material_assets: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut noise: LandNoiseMaterials,
     profile: Res<VisualProfile>,
@@ -855,6 +855,9 @@ pub(super) fn track_lod_readiness(
                  uploads a second time",
                 pending.metadata.payload_path
             );
+        }
+        if !profile.decodes_colour_srgb() {
+            mark_retail_lod_materials(&patches, &children, &materials, &mut material_assets);
         }
         let mut chunk_materials = HashMap::new();
         let mut overlay = None;
@@ -1562,6 +1565,35 @@ fn fail_chunk(
         );
     }
     commands.entity(entity).try_despawn();
+}
+
+/// Marks a chunk's terrain materials as retail surfaces under the `skyrim` profile, so distant
+/// land takes the same unitless light sum as near land.
+///
+/// STAND-IN(#946): the specification excludes the LOD techniques. Distant land takes the plain
+/// near sum with no specular.
+fn mark_retail_lod_materials(
+    patches: &[(Entity, TerrainCoverage)],
+    children: &Query<&Children>,
+    materials: &Query<&MeshMaterial3d<StandardMaterial>>,
+    material_assets: &mut Assets<StandardMaterial>,
+) {
+    for (patch, _) in patches {
+        let Ok(primitives) = children.get(*patch) else {
+            continue;
+        };
+        for primitive in primitives.iter() {
+            let Ok(material) = materials.get(primitive) else {
+                continue;
+            };
+            let unmarked = material_assets
+                .get(&material.0)
+                .is_some_and(|asset| asset.retail_surface.is_none());
+            if unmarked && let Some(mut asset) = material_assets.get_mut(&material.0) {
+                asset.retail_surface = Some(bevy::pbr::RetailSurface::MATTE);
+            }
+        }
+    }
 }
 
 /// Retags any albedo of a spawned chunk that is still sRGB, returning how many it changed.

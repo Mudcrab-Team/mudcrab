@@ -1812,6 +1812,7 @@ fn spawn_cell(
                         perceptual_roughness: 0.92,
                         cull_mode: None,
                         double_sided: true,
+                        retail_surface: crate::render::retail_terrain_surface(colour_srgb),
                         ..default()
                     },
                     extension,
@@ -2099,7 +2100,12 @@ fn spawn_cell(
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
             // surfaces once they are instantiated below it; see `crate::emittance`.
             if let Some(rgb) = reference.emittance {
-                entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
+                let units = crate::retail_lighting::LightUnits::of_colour_space(colour_srgb);
+                entity.insert(crate::emittance::ReferenceEmittance::of(units, rgb));
+            }
+            // Under `skyrim` the source's colour follows the day parts.
+            if !colour_srgb && let Some(parts) = reference.emittance_day_parts {
+                entity.insert(crate::emittance::EmittanceDayParts(parts));
             }
             if let Some(swaps) = catalog.object_texture_swaps(reference.base_form_id) {
                 entity.insert(swaps);
@@ -2117,10 +2123,13 @@ fn spawn_cell(
             let shadow_flagged = evaluated_light
                 .as_ref()
                 .is_some_and(crate::lights::LightEvaluation::shadow_flagged);
+            let units = crate::retail_lighting::LightUnits::of_colour_space(colour_srgb);
             let dynamics = evaluated_light
                 .as_ref()
-                .map(|evaluation| evaluation.dynamics(reference.form_id));
-            if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
+                .map(|evaluation| evaluation.dynamics_in(units, reference.form_id));
+            if let Some(light) = evaluated_light
+                .and_then(|evaluation| evaluation.point_light_in(units, reference.emittance))
+            {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
@@ -9680,6 +9689,7 @@ mod tests {
                     light_radius_override: None,
                     door: None,
                     emittance: None,
+                    emittance_day_parts: None,
                 }],
             },
             Some(terrain),
@@ -10735,6 +10745,7 @@ mod tests {
             light_radius_override: radius_override,
             door: None,
             emittance: None,
+            emittance_day_parts: None,
         }
     }
 

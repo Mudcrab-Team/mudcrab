@@ -1,5 +1,5 @@
 #import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
-#import engine::terrain_normal::{terrain_tangent_normal, terrain_tbn}
+#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}
 
 // The shared terrain shader of merged cells (#215): one material for every cell.
 //
@@ -19,7 +19,7 @@
     forward_io::{VertexOutput, FragmentOutput},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
+    pbr_types::{STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
     view_transformations::position_world_to_clip,
 }
 
@@ -344,7 +344,11 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
 #ifdef TERRAIN_HAS_NORMAL_CLASSES
         if entry.y != NO_NORMAL_WORD {
             let sample = sample_normal(entry.y >> 16u, uv, entry.y & 0xFFFFu, ddx, ddy);
-            tangent_normal += terrain_tangent_normal(sample.xy) * weight;
+            if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u {
+                tangent_normal += retail_terrain_normal(sample.xyz) * weight;
+            } else {
+                tangent_normal += terrain_tangent_normal(sample.xy) * weight;
+            }
             specular_mask += sample.a * weight;
             any_normal = true;
         } else {

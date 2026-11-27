@@ -1,11 +1,12 @@
 #import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
-#import engine::terrain_normal::{terrain_tangent_normal, terrain_tbn}
+#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{Vertex, VertexOutput, FragmentOutput},
     mesh_functions,
+    pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT,
     view_transformations::position_world_to_clip,
 }
 
@@ -114,11 +115,14 @@ fn vertex(in: Vertex) -> TerrainVertexOutput {
 // alpha, independently of diffuse alpha and the LTEX exponent: Community Shaders (GPL-3.0),
 // Lighting.hlsl at e53c0a1ffaa01199490c6097a7dabb559932a88e, lines 1192-1357 and 1968-1976.
 // Rebuild z as before; a missing map keeps the geometric normal and contributes no specular mask.
-fn layer_surface(map: texture_2d<f32>, uv: vec2<f32>, present: f32) -> vec4<f32> {
+fn layer_surface(map: texture_2d<f32>, uv: vec2<f32>, present: f32, retail: bool) -> vec4<f32> {
     if present < 0.5 {
         return vec4<f32>(0.0, 0.0, 1.0, 0.0);
     }
     let sample = textureSample(map, layer_sampler, uv);
+    if retail {
+        return vec4<f32>(retail_terrain_normal(sample.xyz), sample.a);
+    }
     return vec4<f32>(terrain_tangent_normal(sample.xy), sample.a);
 }
 
@@ -252,13 +256,15 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.
     var specular_mask = 0.0;
+    let retail =
+        (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u;
     if dot(terrain.normal_layers_0, vec4<f32>(1.0)) + terrain.normal_layers_1.x + terrain.normal_layers_1.y > 0.5 {
-        var surface = layer_surface(normal_0, uv, terrain.normal_layers_0.x) * weights[0];
-        surface += layer_surface(normal_1, uv, terrain.normal_layers_0.y) * weights[1];
-        surface += layer_surface(normal_2, uv, terrain.normal_layers_0.z) * weights[2];
-        surface += layer_surface(normal_3, uv, terrain.normal_layers_0.w) * weights[3];
-        surface += layer_surface(normal_4, uv, terrain.normal_layers_1.x) * weights[4];
-        surface += layer_surface(normal_5, uv, terrain.normal_layers_1.y) * weights[5];
+        var surface = layer_surface(normal_0, uv, terrain.normal_layers_0.x, retail) * weights[0];
+        surface += layer_surface(normal_1, uv, terrain.normal_layers_0.y, retail) * weights[1];
+        surface += layer_surface(normal_2, uv, terrain.normal_layers_0.z, retail) * weights[2];
+        surface += layer_surface(normal_3, uv, terrain.normal_layers_0.w, retail) * weights[3];
+        surface += layer_surface(normal_4, uv, terrain.normal_layers_1.x, retail) * weights[4];
+        surface += layer_surface(normal_5, uv, terrain.normal_layers_1.y, retail) * weights[5];
         specular_mask = surface.w;
         let geometric = normalize(pbr_input.world_normal);
         pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(surface.xyz / total, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));

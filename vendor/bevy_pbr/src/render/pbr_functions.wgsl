@@ -19,6 +19,11 @@
 #import bevy_pbr::view_transformations::{position_world_to_ndc}
 #import bevy_render::maths::{E, powsafe}
 
+// mudcrab: retail's Lighting path.
+#ifndef PREPASS_FRAGMENT
+#import bevy_pbr::retail
+#endif
+
 #ifdef STANDARD_MATERIAL_SPECULAR_TRANSMISSION
 #import bevy_pbr::transmission
 #endif
@@ -336,6 +341,12 @@ fn calculate_contact_shadow(
 fn apply_pbr_lighting(
     in: pbr_types::PbrInput,
 ) -> vec4<f32> {
+    // mudcrab: a retail surface (`RetailSurface`) takes retail's light sum and output tail in place
+    // of everything below (`pbr_retail.wgsl`).
+    if (in.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u {
+        return retail::retail_lighting(in);
+    }
+
     var output_color: vec4<f32> = in.material.base_color;
 
     let emissive = in.material.emissive;
@@ -1015,7 +1026,9 @@ fn main_pass_post_lighting_processing(
 #ifdef DISTANCE_FOG
     // fog
     // mudcrab: opaque-pass draws skip the shader fog under `FOG_MODE_POWER_RAMP_BLENDED` (#891).
+    // A retail surface takes its fog inside retail's output tail (`pbr_retail.wgsl`).
     if ((pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT) != 0u
+        && (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u
         && !(view_bindings::fog.mode == mesh_view_types::FOG_MODE_POWER_RAMP_BLENDED
             && fogged_by_opaque_composite(pbr_input.material))) {
         output_color = apply_fog(

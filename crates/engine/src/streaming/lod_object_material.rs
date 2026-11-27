@@ -478,9 +478,13 @@ fn object_lighting(
             lighting.sun_rgb +=
                 (Vec3::from_array(sunlight.map(f32::from)) * (weight / 255.0)).extend(0.0);
         }
+        // A day part with no form takes the default image space (SPEC-1 section 2.4).
+        let form = weather.image_spaces[index]
+            .filter(|id| *id != 0)
+            .unwrap_or(crate::retail_hdr::DEFAULT_IMAGE_SPACE_FORM);
         sunlight_scale += weight
-            * weather.image_spaces[index]
-                .and_then(|id| catalog.image_space(id))
+            * catalog
+                .image_space(form)
                 .and_then(|image_space| image_space.sunlight_scale)
                 .unwrap_or(DEFAULT_SUNLIGHT_SCALE);
     }

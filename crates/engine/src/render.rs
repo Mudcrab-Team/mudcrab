@@ -44,6 +44,17 @@ use std::sync::{
 };
 
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
+
+/// The retail surface of near landscape under the `skyrim` profile, whose colour textures decode
+/// raw (SPEC-1 sections 6.1 and 9.2).
+///
+/// STAND-IN(#547): retail's landscape specular is not drawn. The converter publishes no `LTEX`
+/// specular exponent and the specification gives no land specular colour.
+pub(crate) fn retail_terrain_surface(
+    decodes_colour_srgb: bool,
+) -> Option<bevy::pbr::RetailSurface> {
+    (!decodes_colour_srgb).then_some(bevy::pbr::RetailSurface::MATTE)
+}
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
 /// The previous procedural waves' tilt, kept only as the neutral point of the user's "Water wave
@@ -440,6 +451,7 @@ impl Plugin for VercidiumRendererPlugin {
             crate::water_depth::WaterDepthPlugin,
             crate::underwater_pass::UnderwaterPassPlugin,
             crate::retail_fog::RetailFogPlugin,
+            crate::retail_hdr::RetailHdrPlugin,
             ExtractComponentPlugin::<crate::world::components::StreamingCamera>::default(),
         ))
         .init_resource::<RendererMetrics>()

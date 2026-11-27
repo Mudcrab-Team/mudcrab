@@ -5,8 +5,8 @@
 //! open. [point-lights.md](../../../docs/specs/engine/point-lights.md) section 4 states each rule.
 //!
 //! Each frame [`update_light_dynamics`] sets the light's `PointLight::intensity` to
-//! [`retail_intensity`] of `base fade x flicker or pulse factor x distance dimmer`, and the pulse's
-//! movement into the light's local translation. The colour, the radius and the base fade stay as
+//! [`LightUnits::point_intensity`] of `base fade x flicker or pulse factor x distance dimmer`, and
+//! the pulse's movement into the light's local translation. The colour, the radius and the base fade stay as
 //! [`crate::lights::evaluate_light`] resolved them.
 //!
 //! - **Distance dimmer** (per light unless its reference carries "Never Fades"): with the camera
@@ -26,7 +26,8 @@
 
 use crate::{
     config::EngineConfig,
-    lights::{LightEvaluation, SkyrimLight, retail_intensity},
+    lights::{LightEvaluation, SkyrimLight},
+    retail_lighting::LightUnits,
     world::{
         components::StreamingCamera,
         environment::interior::{
@@ -100,6 +101,21 @@ pub fn pulse_offset(phase: f32, movement_amplitude: f32) -> Vec3 {
     movement_amplitude * Vec3::new(cos, sin, sin * cos)
 }
 
+/// The compiled attenuation setting of a flicker's start phase: `C = 16 / radius^2`.
+pub const FLICKER_START_ATTENUATION: f32 = 16.0;
+
+/// The flicker's local translation in Creation axes (SPEC-1 section 2.6): `(M s1, M s2, M s3)`
+/// with `s1 = sin(A + 1.7)`, `s2 = sin(B + 0.5)`, `s3 = sin(C + 0.3)` and
+/// `M = 0.5 x movement x s1 x s2`, taken as 0 when `movement + M <= 0`.
+pub fn flicker_offset(a: f32, b: f32, c: f32, movement_amplitude: f32) -> Vec3 {
+    let (s1, s2, s3) = (table_sin(a + 1.7), table_sin(b + 0.5), table_sin(c + 0.3));
+    let mut m = 0.5 * movement_amplitude * s1 * s2;
+    if movement_amplitude + m <= 0.0 {
+        m = 0.0;
+    }
+    Vec3::new(m * s1, m * s2, m * s3)
+}
+
 /// Wraps a phase once at 2 pi, as the per-frame code does (one subtraction, not a modulo).
 pub fn wrap_once(phase: f32) -> f32 {
     if phase > TAU { phase - TAU } else { phase }
@@ -135,6 +151,8 @@ pub struct LightDynamics {
     pub movement_amplitude: f32,
     /// The distance dimmer applies (the reference does not carry "Never Fades").
     pub distance_fade: bool,
+    /// Which light units the intensity is written in. Retail units also move a flickering light.
+    units: LightUnits,
     /// Phases A, B, C of a flicker, or the pulse phase in slot 0.
     phase: [f32; 3],
     rng: u32,
@@ -164,6 +182,7 @@ impl LightDynamics {
             intensity_amplitude: intensity.unwrap_or(0.0),
             movement_amplitude: movement.unwrap_or(0.0),
             distance_fade: !source.reference_never_fades,
+            units: LightUnits::Mudcrab,
             // Unverified: the findings do not give the initial phases (NEEDS 25), so every light
             // starts at 0 and the pulsing lights of one cell start in step.
             phase: [0.0; 3],
@@ -171,6 +190,22 @@ impl LightDynamics {
             factor: 1.0,
             offset: Vec3::ZERO,
         }
+    }
+
+    /// [`Self::new`] for the `skyrim` profile (SPEC-1 section 2.6,
+    /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): the base fade is the size of
+    /// the unclamped authored fade (its sign sits on the colour), the intensity is in retail
+    /// units, a flicker's third phase starts at `16 / radius^2` and a flicker moves its light.
+    pub fn retail(evaluation: &LightEvaluation, seed: u32) -> Self {
+        let mut dynamics = Self::new(evaluation, seed);
+        dynamics.units = LightUnits::Retail;
+        dynamics.base_fade = evaluation.retail_fade().abs();
+        if dynamics.motion == LightMotion::Flicker
+            && let Some(radius) = evaluation.backend_range
+        {
+            dynamics.phase[2] = FLICKER_START_ATTENUATION / (radius * radius);
+        }
+        dynamics
     }
 
     fn uniform(&mut self, low: f32, high: f32) -> f32 {
@@ -199,8 +234,13 @@ impl LightDynamics {
                 let [a, b, c] = self.phase;
                 self.factor = flicker_factor(flicker_noise(a, b, c), self.intensity_amplitude);
                 // STAND-IN(#1000): the answer gives the flicker movement as M = 0.5 x movement x
-                // s1 x s2 but not the axes it moves along, so a flickering light does not move.
-                self.offset = Vec3::ZERO;
+                // s1 x s2 but not the axes it moves along, so a `mudcrab` flickering light does
+                // not move. SPEC-1 section 2.6 gives the axes, and the retail units take them.
+                self.offset = if self.units.is_retail() {
+                    flicker_offset(a, b, c, self.movement_amplitude)
+                } else {
+                    Vec3::ZERO
+                };
             }
             LightMotion::Pulse => {
                 self.phase[0] = wrap_once(self.phase[0] + dt * self.period);
@@ -278,7 +318,7 @@ pub(crate) fn update_light_dynamics(
             fade.as_ref(),
             dynamics.distance_fade,
         );
-        let intensity = retail_intensity(dynamics.fade() * dimmer);
+        let intensity = dynamics.units.point_intensity(dynamics.fade() * dimmer);
         if light.intensity != intensity {
             light.intensity = intensity;
         }

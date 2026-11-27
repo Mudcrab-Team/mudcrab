@@ -137,7 +137,7 @@
       ],
       "sink": [
         {
-          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::of(units, rgb));",
           "path": "crates/engine/src/streaming.rs"
         },
         {
@@ -183,7 +183,7 @@
       ],
       "sink": [
         {
-          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::of(units, rgb));",
           "path": "crates/engine/src/streaming.rs"
         },
         {
@@ -229,7 +229,7 @@
       ],
       "sink": [
         {
-          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::of(units, rgb));",
           "path": "crates/engine/src/streaming.rs"
         },
         {

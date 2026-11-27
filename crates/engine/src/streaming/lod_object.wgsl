@@ -4,6 +4,7 @@
     mesh_view_bindings as view_bindings,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
+    retail::retail_output,
     view_transformations::position_world_to_clip,
 }
 
@@ -196,6 +197,11 @@ fn fragment(in: ObjectFragment, @builtin(front_facing) is_front: bool) -> Fragme
         vertex_rgb = in.color.rgb;
 #endif
         color = object_lit(sun, ambient, diffuse.rgb, vertex_rgb);
+        // The same first-stage output tail as near surfaces (SPEC-1 section 7). It only limits
+        // a colour above `B / k`; the composite adds the fog.
+        color = retail_output(
+            input.material.flags, in.world_position.xyz, color, vec3(0.0), false,
+        );
     } else {
         // `mudcrab` profile, unchanged: the engine light scale and the view exposure. The rows are
         // already scaled by the ambient illuminance on the CPU.

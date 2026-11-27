@@ -30,6 +30,14 @@ struct RetailFog {
 @group(0) @binding(2) var scene_depth: texture_depth_2d;
 #endif
 
+// Retail's composite reads a copy of the scene in an unsigned format, so a negative scene value
+// reads as 0 (SPEC-2 section 3, docs/specs/engine/near-lighting.md). This draw, with a Max blend,
+// raises the negative values of the target to 0 before the composite.
+@fragment
+fn unsigned_input() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
+}
+
 @fragment
 fn fragment(in: FullscreenVertexOutput, @builtin(sample_index) sample_index: u32) -> @location(0) vec4<f32> {
     let coord = vec2<i32>(in.position.xy);

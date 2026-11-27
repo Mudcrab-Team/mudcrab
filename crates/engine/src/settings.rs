@@ -1601,9 +1601,13 @@ pub(crate) fn apply_render_settings(
     for (entity, mut exposure, mut tone_map, mut msaa, mut projection, camera) in
         &mut targets.cameras
     {
-        exposure.ev100 = settings.exposure_ev100;
+        exposure.ev100 = config
+            .visual_profile
+            .scene_exposure_ev100(settings.exposure_ev100);
         if tone.mode == crate::tone_mapping::SceneToneMapMode::Tony {
-            *tone_map = TONE_MAPS[settings.tone_map];
+            *tone_map = config
+                .visual_profile
+                .display_tonemapping(TONE_MAPS[settings.tone_map]);
         }
         *msaa = MSAA_MODES[settings.msaa];
         // A shots or matched-route run frames each pose itself, from that pose's own angle.
@@ -1616,17 +1620,29 @@ pub(crate) fn apply_render_settings(
         commands.entity(entity).insert(MSAA_MODES[settings.msaa]);
         apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
+    // Under `skyrim` the weather and the cell own the sun and ambient levels and colours, in
+    // retail units (`retail_lighting.rs`, #1006): the menu's values are `mudcrab`'s lux. Its sun
+    // switch still applies.
+    let retail = crate::retail_lighting::LightUnits::of(config.visual_profile).is_retail();
     for (mut light, mut cascades) in &mut targets.sun.p0() {
-        light.illuminance = if settings.sun {
-            settings.sun_illuminance
-        } else {
-            0.0
-        };
-        light.color = Color::srgb(
-            settings.sun_color[0],
-            settings.sun_color[1],
-            settings.sun_color[2],
-        );
+        if !retail {
+            light.illuminance = if settings.sun {
+                settings.sun_illuminance
+            } else {
+                0.0
+            };
+            light.color = Color::srgb(
+                settings.sun_color[0],
+                settings.sun_color[1],
+                settings.sun_color[2],
+            );
+        } else if !settings.sun {
+            light.illuminance = 0.0;
+        } else if light.illuminance == 0.0 {
+            light.illuminance = crate::retail_lighting::LightUnits::Retail
+                .startup_levels()
+                .0;
+        }
         light.shadow_maps_enabled = settings.sun && settings.shadows;
         *cascades = crate::app::sun_shadow_cascades_for(
             &config,
@@ -1634,7 +1650,7 @@ pub(crate) fn apply_render_settings(
             settings.shadow_distance_scale,
         );
     }
-    if let Some(ambient) = targets.ambient.as_deref_mut() {
+    if !retail && let Some(ambient) = targets.ambient.as_deref_mut() {
         ambient.brightness = settings.ambient_brightness;
         ambient.color = Color::srgb(
             settings.ambient_color[0],

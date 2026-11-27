@@ -304,12 +304,17 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is cb2[16].w, the
     // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004). Only grass applies it
     // today; terrain, sky and water do not (open question: does retail apply it there too?).
-    // Exposure and 1/pi: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
-    // illuminance). Bevy's own ambient has no 1/pi, and retail has no such factor. The CPU side
-    // (`grass_render.rs`, `grass_ambient`) multiplies the ambient by pi, so the 1/pi cancels and
-    // the ambient equals a Bevy PBR surface's. It also divides the sun by SunlightScale
-    // (`grass_sun_colour`): retail grass takes the raw sun, the Lighting techniques take
-    // sun * SunlightScale, and the scene sun stands for the second one.
+    // The units of `grass.ambient` and of the sun in `input.light` come from the CPU side,
+    // `GrassLightUnits::ambient` and `GrassLightUnits::sun` (`grass_render.rs`). The shader
+    // multiplies the sum by `view.exposure / pi`.
+    // Under `skyrim` (docs/specs/engine/near-lighting.md) the exposure is 1 and both uniforms
+    // carry a factor pi that cancels the 1/pi. The grass then adds the raw sun colour, without
+    // SunlightScale (RF-GRASS-004; a static reading, unverified at run time), and the mean of the
+    // raw directional ambient cube. Near surfaces add the same cube by normal, unscaled, and take
+    // the sun times SunlightScale.
+    // Under `mudcrab` both uniforms are the scene's own sun and ambient. The 1/pi equals Bevy's
+    // Lambert diffuse for the sun. It does not match a Bevy surface's ambient, which Bevy scales
+    // by `EnvBRDFApprox` (about 0.4524 at roughness 1), not by 1/pi.
     let shadow = directional_shadow(input);
     let light = tuning_illumination(grass.ambient.rgb,input.light,shadow,view.exposure,grass.tuning_light,grass.tuning_surface,grass.tuning_specular);
     let visibility = grass.tuning_surface.z + (1.0-grass.tuning_surface.z)*mix(1.0,shadow,grass.tuning_surface.y);

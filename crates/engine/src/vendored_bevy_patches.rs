@@ -7,7 +7,8 @@
 //! - bevyengine/bevy#26504: the morph descriptor is pending until its mesh is ready;
 //! - bevyengine/bevy#26095: stale GPU bin-unpacking jobs and bind groups are cleared every frame;
 //! - bevyengine/bevy#26588: the GPU clustering staging-buffer leak;
-//! - Mudcrab's retail point-light falloff (`RetailPointFalloff`, #955), `1 - saturate(d / r)^2`.
+//! - Mudcrab's retail point-light falloff (`RetailPointFalloff`, #955), `1 - saturate(d / r)^2`;
+//! - Mudcrab's retail Lighting path (`RetailSurface`, `pbr_retail.wgsl`, #1010).
 //!
 //! Code checks run on source with whole-line `//` comments removed and whitespace collapsed, so
 //! code turned into a comment, or re-wrapped by `rustfmt`, is judged by what it really does. Marker
@@ -27,6 +28,96 @@ const MARKER_26504: &str = "mudcrab: bevyengine/bevy#26504";
 const MARKER_26095: &str = "mudcrab: bevyengine/bevy#26095";
 const MARKER_26588: &str = "mudcrab: bevyengine/bevy#26588";
 const MARKER_POWER_RAMP: &str = "mudcrab: ";
+
+/// The links of the per-material alpha mode of a material extension: the file and the code it must
+/// hold. A lost link draws a retail first-stage decal after the fog composite again, which still
+/// draws, only without fog (SPEC-1 section 9.3).
+const EXTENSION_ALPHA_LINKS: [(&str, &str); 2] = [
+    (
+        "src/extended_material.rs",
+        "fn instance_alpha_mode(&self) -> Option<AlphaMode> { Self::alpha_mode() }",
+    ),
+    (
+        "src/extended_material.rs",
+        "match E::instance_alpha_mode(&self.extension) {",
+    ),
+];
+
+/// The links of the retail Lighting path (`RetailSurface`): the file and the code it must hold.
+/// Every link has to hold. A lost link draws the surface with Bevy's light model, whose picture
+/// looks plausible, so only this check fails.
+const RETAIL_SURFACE_LINKS: [(&str, &str); 22] = [
+    ("src/retail_surface.rs", "pub struct RetailSurface {"),
+    ("src/lib.rs", "mod retail_surface;"),
+    ("src/lib.rs", "pub use retail_surface::RetailSurface;"),
+    (
+        "src/lib.rs",
+        "load_shader_library!(app, \"render/pbr_retail.wgsl\");",
+    ),
+    (
+        "src/pbr_material.rs",
+        "pub retail_surface: Option<RetailSurface>,",
+    ),
+    ("src/pbr_material.rs", "retail_surface: None,"),
+    ("src/pbr_material.rs", "const RETAIL_LIGHTING = 1 << 20;"),
+    ("src/pbr_material.rs", "const RETAIL_SPECULAR = 1 << 21;"),
+    (
+        "src/pbr_material.rs",
+        "if let Some(surface) = self.retail_surface { flags |= StandardMaterialFlags::RETAIL_LIGHTING;",
+    ),
+    (
+        "src/pbr_material.rs",
+        "retail_specular = surface.specular_color.extend(surface.glossiness);",
+    ),
+    (
+        "src/render/pbr_types.wgsl",
+        "const STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT: u32 = 1u << 20u;",
+    ),
+    (
+        "src/render/pbr_types.wgsl",
+        "const STANDARD_MATERIAL_FLAGS_RETAIL_SPECULAR_BIT: u32 = 1u << 21u;",
+    ),
+    (
+        "src/render/pbr_types.wgsl",
+        "pbr_input.retail_specular_mask = 1.0;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "pbr_input.material.retail_specular = pbr_bindings::material.retail_specular;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "pbr_input.retail_specular_mask = normal_sample.a;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "&& (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u;",
+    ),
+    (
+        "src/render/pbr_functions.wgsl",
+        "if (in.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u { return retail::retail_lighting(in); }",
+    ),
+    (
+        "src/render/pbr_functions.wgsl",
+        "&& (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "return 1.0 - clamp(distance_squared * inverse_radius_squared, 0.0, 1.0);",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "const RETAIL_OUTPUT_SCALE: f32 = 0.8333333;",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "let sum = diffuse + ambient + in.material.emissive.rgb; let lit = in.material.base_color.rgb * sum;",
+    ),
+    (
+        "src/render/pbr_retail.wgsl",
+        "return min(s * q + vec3<f32>(RETAIL_CLAMP_POST_LIT), lit) - t * s * q;",
+    ),
+];
 
 fn vendor(crate_name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -281,6 +372,105 @@ fn check_patches(pbr: &Path, render: &Path) {
             "pbr_lighting.wgsl lost `{needed}` (retail point-light falloff)"
         );
     }
+
+    // Mudcrab's per-material extension alpha mode (#1010), not a Bevy change.
+    for (file, needed) in EXTENSION_ALPHA_LINKS {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(&code(needed)),
+            "{file} lost the per-material extension alpha mode (`{needed}` or its marker)"
+        );
+    }
+
+    // Mudcrab's retail Lighting path (#1010), not a Bevy change.
+    for (file, needed) in RETAIL_SURFACE_LINKS {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(&code(needed)),
+            "{file} lost the retail lighting path (`{needed}` or its `{MARKER_POWER_RAMP}` marker)"
+        );
+    }
+
+    // Mudcrab's directional ambient (#1010), not a Bevy change: the `skyrim` profile lights a
+    // surface with the `DALC` cube by normal (mean + slopes . N) instead of one flat colour.
+    // Every link has to hold: the resource, its extraction, the uniform fields in both
+    // languages and the shader gate. A lost link leaves the flat ambient, which draws and looks
+    // plausible, so nothing but this check fails. The `mudcrab` profile never enables the
+    // resource, so its output must stay the flat colour: the shader returns `ambient_color` when
+    // the flag is 0, and the Rust side writes the original expression when disabled.
+    for (file, needed) in [
+        (
+            "src/directional_ambient_cube.rs",
+            "pub struct DirectionalAmbientCube {",
+        ),
+        (
+            "src/directional_ambient_cube.rs",
+            "let creation = Vec3::new(normal.x, -normal.z, normal.y);",
+        ),
+        ("src/lib.rs", "mod directional_ambient_cube;"),
+        (
+            "src/lib.rs",
+            "pub use directional_ambient_cube::DirectionalAmbientCube;",
+        ),
+        (
+            "src/lib.rs",
+            ".init_resource::<DirectionalAmbientCube>() .add_plugins(ExtractResourcePlugin::<DirectionalAmbientCube>::default())",
+        ),
+        (
+            PBR_LIGHT,
+            "ambient_slope_x: Vec4, ambient_slope_y: Vec4, ambient_slope_z: Vec4,",
+        ),
+        (PBR_LIGHT, "ambient_directional: u32,"),
+        (PBR_LIGHT, "Option<Res<DirectionalAmbientCube>>"),
+        (
+            PBR_LIGHT,
+            ".filter(|cube| cube.enabled && maybe_ambient_override.is_none());",
+        ),
+        (
+            PBR_LIGHT,
+            "None => { Vec4::from_slice(&LinearRgba::from(ambient_light.color).to_f32_array()) * ambient_light.brightness }",
+        ),
+        (
+            PBR_LIGHT,
+            "ambient_directional: u32::from(directional_ambient.is_some()),",
+        ),
+        (
+            "src/render/mesh_view_types.wgsl",
+            "ambient_color: vec4<f32>, ambient_slope_x: vec4<f32>, ambient_slope_y: vec4<f32>, ambient_slope_z: vec4<f32>,",
+        ),
+        (
+            "src/render/mesh_view_types.wgsl",
+            "n_rect_lights: u32, ambient_directional: u32, rect_lights:",
+        ),
+        (
+            "src/render/pbr_ambient.wgsl",
+            "let creation_normal = vec3<f32>(world_normal.x, -world_normal.z, world_normal.y);",
+        ),
+        (
+            "src/render/pbr_ambient.wgsl",
+            "return lights.ambient_color.rgb + creation_normal.x * lights.ambient_slope_x.rgb + creation_normal.y * lights.ambient_slope_y.rgb + creation_normal.z * lights.ambient_slope_z.rgb;",
+        ),
+        // The gate, and the raw diffuse part: no `EnvBRDFApprox` factor on the diffuse colour.
+        (
+            "src/render/pbr_ambient.wgsl",
+            "if (lights.ambient_directional != 0u) { return (diffuse_color + specular_ambient * specular_occlusion) * directional_ambient_for_normal(world_normal) * occlusion; }",
+        ),
+        // The flat path is the original expression, so `mudcrab` is unchanged.
+        (
+            "src/render/pbr_ambient.wgsl",
+            "let diffuse_ambient = EnvBRDFApprox(diffuse_color, F_AB(1.0, NdotV));",
+        ),
+        (
+            "src/render/pbr_ambient.wgsl",
+            "return (diffuse_ambient + specular_ambient * specular_occlusion) * lights.ambient_color.rgb * occlusion;",
+        ),
+    ] {
+        let source = required_source(pbr, file);
+        assert!(
+            source.contains(MARKER_POWER_RAMP) && code(&source).contains(&code(needed)),
+            "{file} lost the directional ambient (`{needed}` or its `{MARKER_POWER_RAMP}` marker):              the skyrim profile falls back to one flat ambient colour"
+        );
+    }
 }
 
 #[test]
@@ -374,6 +564,15 @@ fn vendored_copy_with_endings(
         ("bevy_pbr", "src/render/pbr_functions.wgsl"),
         ("bevy_pbr", PBR_LIGHT),
         ("bevy_pbr", "src/render/pbr_lighting.wgsl"),
+        ("bevy_pbr", "src/render/pbr_ambient.wgsl"),
+        ("bevy_pbr", "src/directional_ambient_cube.rs"),
+        ("bevy_pbr", "src/lib.rs"),
+        ("bevy_pbr", "src/retail_surface.rs"),
+        ("bevy_pbr", "src/extended_material.rs"),
+        ("bevy_pbr", "src/pbr_material.rs"),
+        ("bevy_pbr", "src/render/pbr_types.wgsl"),
+        ("bevy_pbr", "src/render/pbr_fragment.wgsl"),
+        ("bevy_pbr", "src/render/pbr_retail.wgsl"),
         ("bevy_render", RENDER_PREPROCESSING),
     ] {
         let destination = copy.path().join(crate_name).join(relative);
@@ -425,6 +624,133 @@ fn dropping_the_retail_falloff_flag_fails() {
     check_copy(&vendored_copy(PBR_LIGHT, |text| {
         text.replace("flags |= PointLightFlags::RETAIL_FALLOFF;", "")
     }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn dropping_the_directional_ambient_gate_fails() {
+    check_copy(&vendored_copy("src/render/pbr_ambient.wgsl", |text| {
+        text.replace("if (lights.ambient_directional != 0u) {", "if (false) {")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn changing_the_directional_ambient_axis_map_fails() {
+    check_copy(&vendored_copy("src/render/pbr_ambient.wgsl", |text| {
+        text.replace(
+            "-world_normal.z, world_normal.y)",
+            "world_normal.z, world_normal.y)",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn dropping_the_directional_ambient_uniform_write_fails() {
+    check_copy(&vendored_copy(PBR_LIGHT, |text| {
+        text.replace(
+            "ambient_directional: u32::from(directional_ambient.is_some()),",
+            "ambient_directional: 0,",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the directional ambient")]
+fn a_directional_ambient_that_ignores_the_enabled_flag_fails() {
+    check_copy(&vendored_copy(PBR_LIGHT, |text| {
+        text.replace(
+            "cube.enabled && maybe_ambient_override.is_none()",
+            "maybe_ambient_override.is_none()",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn dropping_the_retail_lighting_branch_fails() {
+    check_copy(&vendored_copy("src/render/pbr_functions.wgsl", |text| {
+        text.replace("return retail::retail_lighting(in);", "")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn dropping_the_retail_specular_copy_fails() {
+    check_copy(&vendored_copy("src/render/pbr_fragment.wgsl", |text| {
+        text.replace(
+            "pbr_input.material.retail_specular = pbr_bindings::material.retail_specular;",
+            "",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn dropping_the_retail_material_flag_fails() {
+    check_copy(&vendored_copy("src/pbr_material.rs", |text| {
+        text.replace("flags |= StandardMaterialFlags::RETAIL_LIGHTING;", "")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the retail lighting path")]
+fn changing_the_retail_attenuation_fails() {
+    check_copy(&vendored_copy("src/render/pbr_retail.wgsl", |text| {
+        text.replace(
+            "1.0 - clamp(distance_squared * inverse_radius_squared, 0.0, 1.0)",
+            "1.0 - distance_squared * inverse_radius_squared",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "lost the per-material extension alpha mode")]
+fn reading_the_type_level_extension_alpha_mode_again_fails() {
+    check_copy(&vendored_copy("src/extended_material.rs", |text| {
+        text.replace(
+            "match E::instance_alpha_mode(&self.extension) {",
+            "match E::alpha_mode() {",
+        )
+    }));
+}
+
+/// The near shader and the object LOD shader read the `DALC` cube with one axis map, and the
+/// CPU twin agrees: a stored face order or axis change on one path must change them all.
+#[test]
+fn the_near_and_object_lod_ambient_share_one_axis_map() {
+    let near = code(&required_source(
+        &vendor("bevy_pbr"),
+        "src/render/pbr_ambient.wgsl",
+    ));
+    let lod = code(&required_source(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/streaming"),
+        "lod_object.wgsl",
+    ));
+    assert!(
+        near.contains("vec3<f32>(world_normal.x, -world_normal.z, world_normal.y)"),
+        "the near ambient lost the Creation axis map"
+    );
+    // Object LOD under `skyrim` (#953): the Creation-axis slopes become runtime axes (X, Z, -Y), so
+    // the dot with the runtime normal is `n.x * sx + n.y * sz - n.z * sy`, the near path's
+    // `(n.x, -n.z, n.y) . (sx, sy, sz)`. NEEDS 41 (reviewed) gives the same axes.
+    assert!(
+        lod.contains("vec3(lighting.x.r, lighting.z.r, -lighting.y.r)"),
+        "the object LOD rows changed their Creation-to-runtime axis map: change the near ambient \
+         with it (NEEDS 41, reviewed)"
+    );
+    // Object LOD under `mudcrab` keeps the older form of the same map.
+    assert!(
+        lod.contains("let creation_normal = vec3(normal.x, -normal.z, normal.y);"),
+        "the object LOD shader changed its Creation axis map: change the near ambient with it"
+    );
+    assert!(
+        near.contains("creation_normal.x *")
+            && near.contains("creation_normal.y *")
+            && near.contains("creation_normal.z *"),
+        "the near shader no longer dots the slopes with the Creation normal"
+    );
 }
 
 #[test]

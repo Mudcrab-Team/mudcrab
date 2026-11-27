@@ -120,6 +120,12 @@ impl SkyrimSkinFlags {
     /// channel; the vertex colour's red and blue are not applied: the hair tint of a `hair_tint`
     /// surface.
     pub const HAIR_TINT: u32 = 1 << 5;
+    /// A retail hair decal (`skyrim` only): discard below 4/255, then scale the alpha by 1.05
+    /// before the alpha test.
+    pub const HAIR_DECAL: u32 = 1 << 6;
+    /// The base material carries a retail surface (`skyrim` only). The vertex stage output needs
+    /// it before the material flags are read.
+    pub const RETAIL: u32 = 1 << 7;
     /// Debug: output the shading normal as colour (`N * 0.5 + 0.5`) instead of lighting.
     pub const DEBUG_WORLD_NORMAL: u32 = 1 << 16;
     /// Debug: output the interpolated vertex normal as colour, for comparison.
@@ -378,6 +384,9 @@ pub fn skin_material(
     }
     let (facegen_tint, facegen_detail) =
         facegen.map_or((None, None), |maps| (Some(maps.tint), Some(maps.detail)));
+    if base.retail_surface.is_some() {
+        flags |= SkyrimSkinFlags::RETAIL;
+    }
     let mut settings = SkyrimSkinSettings { flags, ..default() };
     if let Some(tone) = skin_tint {
         settings.set_skin_tint(tone);
@@ -405,6 +414,9 @@ pub fn hair_material(
 ) -> SkyrimSkinMaterial {
     let mut settings = SkyrimSkinSettings::default();
     settings.set_hair_tint(tint);
+    if base.retail_surface.is_some() {
+        settings.flags |= SkyrimSkinFlags::RETAIL;
+    }
     SkyrimSkinMaterial {
         base,
         extension: SkyrimSkinExtension {

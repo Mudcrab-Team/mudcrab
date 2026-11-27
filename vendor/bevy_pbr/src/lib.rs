@@ -44,6 +44,9 @@ pub use contact_shadows::{
 pub mod decal;
 pub mod deferred;
 pub mod diagnostic;
+mod directional_ambient_cube;
+// mudcrab: `RetailSurface`, see `retail_surface.rs`.
+mod retail_surface;
 mod extended_material;
 mod fog;
 mod light_probe;
@@ -70,6 +73,8 @@ use bevy_light::{
 use bevy_shader::{load_shader_library, ShaderRef};
 pub use cluster::*;
 pub use decal::clustered::ClusteredDecalPlugin;
+pub use directional_ambient_cube::DirectionalAmbientCube;
+pub use retail_surface::RetailSurface;
 pub use extended_material::*;
 pub use fog::*;
 pub use light_probe::*;
@@ -200,6 +205,8 @@ impl Plugin for PbrPlugin {
         load_shader_library!(app, "render/pbr_functions.wgsl");
         load_shader_library!(app, "render/rgb9e5.wgsl");
         load_shader_library!(app, "render/pbr_ambient.wgsl");
+        // mudcrab: retail's Lighting path.
+        load_shader_library!(app, "render/pbr_retail.wgsl");
         load_shader_library!(app, "render/pbr_fragment.wgsl");
         load_shader_library!(app, "render/pbr.wgsl");
         load_shader_library!(app, "render/pbr_prepass_functions.wgsl");
@@ -212,6 +219,10 @@ impl Plugin for PbrPlugin {
 
         app.register_asset_reflect::<StandardMaterial>()
             .init_resource::<DefaultOpaqueRendererMethod>()
+            // mudcrab: retail's directional ambient. Disabled by default, so every other caller
+            // keeps Bevy's flat ambient.
+            .init_resource::<DirectionalAmbientCube>()
+            .add_plugins(ExtractResourcePlugin::<DirectionalAmbientCube>::default())
             .add_plugins((
                 MeshRenderPlugin {
                     use_gpu_instance_buffer_builder: self.use_gpu_instance_buffer_builder,

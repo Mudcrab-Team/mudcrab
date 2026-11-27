@@ -5,6 +5,8 @@ pub mod actor_head;
 pub mod actor_outfit;
 pub mod actor_skin_tone;
 pub mod actors;
+#[cfg(test)]
+mod ambient_pixel_tests;
 pub mod app;
 mod background_window;
 #[cfg(test)]
@@ -23,6 +25,7 @@ pub mod extensions;
 pub mod fingerprint;
 mod focus_pause;
 pub mod frame_budget;
+pub mod frame_sequence;
 pub mod grass;
 pub mod grass_render;
 pub mod grass_tuning;
@@ -43,6 +46,8 @@ pub mod papyrus_host;
 pub mod papyrus_plugin;
 pub mod papyrus_runtime;
 pub mod physics;
+#[cfg(test)]
+mod post_process_order;
 pub mod prepass_vertex_alpha;
 pub mod profiling;
 pub mod raw_texel;
@@ -51,6 +56,14 @@ mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
 pub mod retail_fog;
+pub mod retail_hdr;
+pub mod retail_hdr_chain;
+#[cfg(test)]
+mod retail_hdr_gpu_tests;
+mod retail_hdr_render;
+pub mod retail_lighting;
+#[cfg(test)]
+mod retail_lighting_gpu_tests;
 pub mod room_culling;
 pub mod route;
 mod scene_evidence;

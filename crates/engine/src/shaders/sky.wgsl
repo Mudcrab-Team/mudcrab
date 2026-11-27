@@ -2,6 +2,10 @@
 // elevation of the view ray, with the dome's alpha fading the lowest degrees out. The colour
 // table is built on the CPU (`SkyUniform` in sky.rs) from the measured dome weights; this shader
 // only interpolates it. The sky is not fogged and not lit.
+//
+// Under the `skyrim` profile the pixel is retail's dome pixel (SPEC-1 section 2.4): `v + y` with
+// `v = k x rows` and `y = k x SkyScale`, on the record bytes with no sRGB decode. The result is
+// clipped, as the retail composite clips its sky pixels (section 8.4). The dither is not drawn.
 
 #import bevy_pbr::{
     mesh_functions::{get_world_from_local, mesh_position_local_to_world},
@@ -18,6 +22,8 @@ struct SkyUniform {
     colours: array<vec4<f32>, 16>,
     // x: linear brightness scale.
     brightness: vec4<f32>,
+    // The `skyrim` sky pixel: x = 1 to draw it, y = `k`, z = `SkyScale`.
+    retail: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> sky: SkyUniform;
@@ -71,6 +77,11 @@ fn dome_colour(elevation: f32) -> vec4<f32> {
     return sky.colours[ROW_COUNT - 1u];
 }
 
+// SPEC-1 section 2.4: `k x rows + k x SkyScale`, clipped.
+fn retail_sky(rows: vec3<f32>, k: f32, sky_scale: f32) -> vec3<f32> {
+    return clamp(k * rows + vec3<f32>(k * sky_scale), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fragment(in: SkyVertexOutput) -> @location(0) vec4<f32> {
     // The elevation of the ray from the viewing camera, so a mirrored reflection camera sees the
@@ -78,6 +89,9 @@ fn fragment(in: SkyVertexOutput) -> @location(0) vec4<f32> {
     let direction = normalize(in.world_position - view.world_position);
     let elevation = degrees(asin(clamp(direction.y, -1.0, 1.0)));
     let colour = dome_colour(elevation);
+    if sky.retail.x > 0.5 {
+        return vec4<f32>(retail_sky(colour.rgb * sky.brightness.x, sky.retail.y, sky.retail.z), colour.a);
+    }
     // Vanilla mixes the 8-bit weather colours as they are; the mix is done in sRGB and the
     // result converted for the linear render target.
     return vec4<f32>(srgb_to_linear(colour.rgb) * sky.brightness.x, colour.a);

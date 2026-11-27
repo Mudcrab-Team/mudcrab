@@ -155,14 +155,15 @@ question, so grass may be 0.8333 of terrain strength relative to retail.
 The engine adds exposure and 1/pi. The 1/pi is exact for the sun (it equals Bevy's Lambert for
 the sun illuminance). Retail applies the ambient as `albedo * ambient`, with no 1/pi.
 Under the `skyrim` profile the CPU side (`GrassLightUnits` in `grass_render.rs`) gives grass
-retail's units: it divides the scene sun by `SUNLIGHT_SCALE` (retail grass takes the raw sun,
-the Lighting techniques take `diffuse * SunlightScale`; the scene sun stands for the second) and
-multiplies the ambient by pi, which cancels the shader's 1/pi (RF-GRASS-004; skyrim-research
-NEEDS 18 question 3; static reading, unverified at run time). The `mudcrab` profile keeps the
-scene's own values. A Bevy standard material gets about 0.4524 of the raw ambient
-(`EnvBRDFApprox` at full roughness), so near meshes are darker in shade than retail and than
-grass; that is a defect of the near path (#1010). Authored blade normals and normal maps do not
-enter the lighting sum.
+retail's units: the scene sun's raw colour without its illuminance (retail grass takes the raw
+sun; the Lighting techniques take `diffuse * SunlightScale`, which the illuminance carries) and
+the ambient, both times pi, which cancels the shader's 1/pi (RF-GRASS-004; skyrim-research
+NEEDS 18 question 3; static reading, unverified at run time;
+[near-lighting.md](near-lighting.md)). The `mudcrab` profile keeps the
+scene's own values. Under `skyrim` grass takes the mean of the directional ambient cube that the
+near meshes read by normal (`visual-profiles.md`, #1010), at the same brightness, with no
+`EnvBRDFApprox` scale on either side. Authored blade normals and normal maps do not enter the
+lighting sum.
 Flag masks are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
 the audited official grasses use `0x06`. Retail lights every vertex on the instance normal,
 so the Vertex Lighting flag does not change the lighting path.
@@ -409,7 +410,7 @@ captured frames; callbacks never reread the file.
 
 The retail defaults are RF-GRASS-004 and RF-GRASS-005. Retail passes the sun direction, sun
 diffuse colour and sun ambient colour to the grass shader unscaled (the engine's scene sun
-carries `SunlightScale`, so `GrassLightUnits` divides it under `skyrim`), so brightness,
+carries `SunlightScale` in its illuminance, which `GrassLightUnits` leaves out under `skyrim`), so brightness,
 ambient strength, sun strength, shadow strength and saturation default to 1 and the sun
 angle weight to 1. The only retail number is the shadow floor `fShadowClampValue` 0.3.
 The optional `mode` is `flat` (default), `d` or `e`. D equals the default. E sets the sun

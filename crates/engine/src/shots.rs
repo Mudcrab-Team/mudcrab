@@ -190,6 +190,10 @@ pub struct Shot {
     /// `<out>/<name>.stages.json`.
     #[serde(default)]
     pub probes: Vec<crate::hdr_probe::ProbePoint>,
+    /// Consecutive frames to capture after the image. The run writes `<out>/<name>.frames.csv`
+    /// and fails on a solid or flashing frame ([`crate::frame_sequence`]).
+    #[serde(default)]
+    pub sequence: u32,
 }
 
 /// Preserve grass for existing shot files regardless of their names.
@@ -213,6 +217,13 @@ impl Shot {
     }
 
     fn validate(&self) -> Result<(), ShotsError> {
+        if self.sequence > crate::frame_sequence::MAX_FRAMES {
+            return Err(ShotsError(format!(
+                "shot \"{}\": a sequence takes at most {} frames",
+                self.name,
+                crate::frame_sequence::MAX_FRAMES
+            )));
+        }
         let name = &self.name;
         if name.is_empty() {
             return Err(ShotsError(
@@ -725,6 +736,8 @@ pub struct ShotsRun {
     probes: Option<crate::hdr_probe::ProbeTicket>,
     /// Stage 4 per probe and the profile, taken from the captured image by its observer.
     stage_output: Option<StageOutput>,
+    /// The consecutive frames of the current shot.
+    sequence: crate::frame_sequence::Sequence,
     directory_made: bool,
     /// The render target's size when the last screenshot was requested.
     window_size: Option<(u32, u32)>,
@@ -748,6 +761,8 @@ enum Phase {
     Settle,
     /// The screenshot has been asked for; wait for it on disk.
     Capture,
+    /// Capture the shot's consecutive frames, one request each frame.
+    Sequence,
     /// Write the log and exit.
     Done,
 }
@@ -776,6 +791,7 @@ impl ShotsRun {
             capture: None,
             probes: None,
             stage_output: None,
+            sequence: Default::default(),
             directory_made: false,
             window_size: None,
             log_started: false,
@@ -1248,10 +1264,14 @@ fn run_shots(
                 }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
+                let sequence = shot.sequence;
                 run.note(line);
                 if run.transition_capture {
                     run.transition_capture = false;
                     run.start_settle();
+                } else if sequence > 0 {
+                    run.sequence = Default::default();
+                    run.enter(Phase::Sequence);
                 } else {
                     run.advance();
                 }
@@ -1265,8 +1285,69 @@ fn run_shots(
                 run.advance();
             }
         }
+        Phase::Sequence => {
+            place_camera(
+                shot,
+                run.file.aspect(),
+                origin.0,
+                &mut transform,
+                &mut projection,
+            );
+            run.timer += time.delta_secs();
+            let wanted = shot.sequence;
+            if run.sequence.asked < wanted {
+                run.sequence.asked += 1;
+                request_sequence_frame(&mut commands, &run.sequence, &output.0);
+            } else if let Some(result) = run.sequence.finished(wanted) {
+                let path = run.output_dir.join(format!("{}.frames.csv", shot.name));
+                let name = shot.name.clone();
+                match result.and_then(|frames| {
+                    std::fs::write(&path, crate::frame_sequence::csv(&frames))
+                        .map_err(|error| format!("{}: {error}", path.display()))?;
+                    Ok(crate::frame_sequence::faults(&frames))
+                }) {
+                    Ok(faults) if faults.is_empty() => run.note(format!(
+                        "{name} sequence frames={wanted} faults=0 csv={}",
+                        path.display()
+                    )),
+                    Ok(faults) => run.fail(format!(
+                        "shot \"{name}\": {} of {wanted} frames are wrong, first: {}",
+                        faults.len(),
+                        faults[0]
+                    )),
+                    Err(reason) => run.fail(format!("shot \"{name}\": {reason}")),
+                }
+                run.advance();
+            } else if run.timer >= CAPTURE_TIMEOUT_SECONDS + wanted as f32 {
+                let message = format!(
+                    "shot \"{}\": the {wanted} sequence frames did not all arrive",
+                    shot.name
+                );
+                run.fail(message);
+                run.advance();
+            }
+        }
         Phase::Done => {}
     }
+}
+
+/// Asks for one frame of the running sequence; its observer keeps only the statistics.
+fn request_sequence_frame(
+    commands: &mut Commands,
+    sequence: &crate::frame_sequence::Sequence,
+    output: &Handle<Image>,
+) {
+    let frame = sequence.asked;
+    let received = sequence.received.clone();
+    commands.spawn(Screenshot::image(output.clone())).observe(
+        move |trigger: On<ScreenshotCaptured>| {
+            let stats = decode_shot(trigger.image.clone())
+                .map(|image| crate::frame_sequence::FrameStats::of(frame, &image));
+            if let Ok(mut received) = received.lock() {
+                received.push(stats);
+            }
+        },
+    );
 }
 
 /// A serialized runner has one image-target request in flight. Keep the ticket on that

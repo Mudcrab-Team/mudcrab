@@ -569,6 +569,10 @@ pub struct EngineConfig {
     /// `[General] fFlickeringLightDistance`: lights farther than this from the player keep their
     /// last flicker or pulse fade (#955). Default [`RETAIL_FLICKERING_LIGHT_DISTANCE`].
     pub flickering_light_distance: f32,
+    /// The `[Display]` keys of retail's HDR tonemap chain under the `skyrim` profile (#796, #361):
+    /// `bUseFilmicCurve`, the white scales, the eye adaptation scales, `fGamma` and the global
+    /// boosts. Every default is the compiled retail value (`retail_hdr.rs`).
+    pub retail_hdr: crate::retail_hdr::RetailHdrConfig,
     /// Whether converted Papyrus scripts run (`--papyrus-scripts`): the first slice attaches a
     /// small vetted set to the references that carry them. Off by default.
     pub papyrus_scripts: bool,
@@ -803,6 +807,7 @@ impl Default for EngineConfig {
             light_lod_start_fade: RETAIL_LIGHT_LOD_START_FADE,
             light_lod_range: RETAIL_LIGHT_LOD_RANGE,
             flickering_light_distance: RETAIL_FLICKERING_LIGHT_DISTANCE,
+            retail_hdr: crate::retail_hdr::RetailHdrConfig::default(),
             papyrus_scripts: false,
             physics_fixture: false,
         }

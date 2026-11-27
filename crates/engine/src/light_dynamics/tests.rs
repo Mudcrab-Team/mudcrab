@@ -265,6 +265,7 @@ fn a_record_without_its_flicker_floats_or_with_slow_flicker_alone_does_not_move(
 mod system {
     use super::*;
     use crate::lights::SkyrimLight;
+    use crate::lights::retail_intensity;
 
     fn app_with(config: EngineConfig, camera: Vec3) -> App {
         let mut app = App::new();

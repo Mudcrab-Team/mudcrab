@@ -41,11 +41,16 @@
 //!   (`min(L * cb2[10].y, max(0, ssr.rgb * ssr.a * cb2[10].x))`) when the SSR flag is on. Mudcrab's
 //!   water reflection is a separate, planar pass (`render.rs`, `water.wgsl`) that
 //!   draws after this pass, so nothing is added here.
-//! - **Omitted: the outer `saturate`.** The `skyrim` profile still tone maps an HDR frame with
-//!   Mudcrab's pipeline (`visual-profiles.md`, until P1c), so the colours here are not LDR and the
-//!   pass cannot clip them to 1 without flattening highlights that the tone curve expects. The pure
-//!   function [`composite_saturated`] is retail's form; the pass draws [`composite`]. Both are equal
-//!   whenever the result is at most 1. The clip lands with the retail tone curve.
+//! - **The unsigned input is a separate draw.** Retail composites a copy of the scene in an
+//!   unsigned format, so a negative value reads as 0 (SPEC-2 section 3,
+//!   [near-lighting.md](../../../docs/specs/engine/near-lighting.md)). A Max blend of 0 raises
+//!   negative values before the composite. STAND-IN(#362): the copy's 11/10-bit precision is not
+//!   reproduced.
+//! - **The outer `saturate` is a separate draw.** This pass is a blend and cannot clip, so
+//!   [`composite`] has no clip and the pass leaves values above 1 in the HDR target. The clip of
+//!   retail's formula ([`composite_saturated`]) is drawn right after this pass by
+//!   `retail_hdr.rs` (a Min blend of 1.0), before the blended stages, so draws after the
+//!   composite still add above 1, as in retail (NEEDS 18 D3 and NEEDS 27, reviewed). The tonemap pass that follows is `retail_hdr.rs`, not Bevy's.
 //! - **The pass blends instead of reading the frame.** `out = src.rgb + dst.rgb * src.a` with
 //!   `src.rgb = k * Fc * Cfc` and `src.a = k * (1 - Fc) * A`, which is the formula above without
 //!   the clip. Doing it with blending keeps the pass valid under MSAA, where the colour target
@@ -70,6 +75,12 @@
 //!   that skips draws this pass covers). Retail's blended draws apply `min(k * M, B)` inside the
 //!   shader (`T = 1`); Mudcrab's apply the plain mix. That is a follow-up.
 //! - **Interiors** keep the cell's own Bevy fog (`interior-environment.md`).
+//! - **The no-fog composite (record 49) is not drawn.** Retail's composite records differ in `k`
+//!   (NEEDS 26 re-verification): the fog records 51 and 53 multiply by `k` even at `Fc = 0`, and
+//!   the no-fog record 49 does not (in the worked example it stores 0.895495 where 51 and 53 store
+//!   0.746246). Specular lies outside `L`, so `min(1, k * L)` does not describe a specular pixel.
+//!   This pass runs only where retail draws a fog record. Do not add `k` to an interior or no-fog
+//!   path from it.
 //! - **Grass** is drawn before this pass and applies its own output scale `k` in its shader
 //!   (`output_scale.rs`), so under this pass a grass pixel gets `k` squared at `Fc = 0`. Retail
 //!   does the same: grass draws before the composite and most grass pixel records already multiply
@@ -117,7 +128,7 @@ use bevy::{
 
 /// One RGB channel of the retail fog composite, without the outer clip: `k * ((1 - fc) * a * l + fc * cfc)`.
 ///
-/// This is what the pass draws (see the module notes on the omitted `saturate`). `l` is the opaque
+/// This is what the pass draws (the clip is a separate draw, see the module notes). `l` is the opaque
 /// colour, `a` the SAO factor (1 in Mudcrab), `fc` the fog factor, `cfc` the fog colour and `k`
 /// the output scale `1 / FramebufferRange`.
 pub fn composite(l: f32, a: f32, fc: f32, cfc: f32, k: f32) -> f32 {
@@ -222,6 +233,17 @@ pub struct RetailFogPass {
 impl RetailFogPass {
     /// `A` while Mudcrab has no SAO pass. STAND-IN(#995): factor one replaces the retail SAO texture.
     pub const SAO_FACTOR: f32 = 1.0;
+
+    /// Retail's no-fog composite (record 49): the clip alone, with no fog and no `k`
+    /// (SPEC-1 section 8.3). With `Fc = 0` and a `k` of 1 the blend leaves the colour as it is,
+    /// and the saturate draw after it clips.
+    pub fn without_fog() -> Self {
+        Self {
+            range: Vec4::new(0.0, 1.0, 1.0, 0.0),
+            near_colour: Vec3::ZERO.extend(1.0),
+            far_colour: Vec3::ZERO.extend(Self::SAO_FACTOR),
+        }
+    }
 
     /// The pass for `params`. A ramp that draws nothing (`far <= near`, a max that is not positive,
     /// or a power that is not positive and finite) takes retail's fallback: its composite still
@@ -359,12 +381,29 @@ fn retail_fog_layout(samples: u32) -> BindGroupLayoutDescriptor {
     )
 }
 
-/// The attachment format and sample count a pipeline is built for.
+/// The attachment format, sample count and draw a pipeline is built for.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct RetailFogKey {
     format: TextureFormat,
     samples: u32,
+    /// The draw before the composite that raises negative scene values to 0.
+    unsigned_input: bool,
 }
+
+/// `max(dst, 0)` on the colour channels: retail's composite reads an unsigned copy of the scene
+/// (SPEC-2 section 3, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+pub(crate) const UNSIGNED_INPUT_BLEND: BlendState = BlendState {
+    color: BlendComponent {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::One,
+        operation: BlendOperation::Max,
+    },
+    alpha: BlendComponent {
+        src_factor: BlendFactor::Zero,
+        dst_factor: BlendFactor::One,
+        operation: BlendOperation::Add,
+    },
+};
 
 /// The blend that makes the pass `src.rgb + dst.rgb * src.a`. The alpha channel is left as it is,
 /// so the water reflection's "no geometry" alpha survives.
@@ -389,6 +428,11 @@ impl SpecializedRenderPipeline for RetailFogPipeline {
         if key.samples > 1 {
             shader_defs.push("MULTISAMPLED".into());
         }
+        let (entry_point, blend) = if key.unsigned_input {
+            ("unsigned_input", UNSIGNED_INPUT_BLEND)
+        } else {
+            ("fragment", COMPOSITE_BLEND)
+        };
         RenderPipelineDescriptor {
             label: Some("retail_fog_composite".into()),
             layout: vec![retail_fog_layout(key.samples)],
@@ -405,10 +449,10 @@ impl SpecializedRenderPipeline for RetailFogPipeline {
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 shader_defs,
-                entry_point: Some("fragment".into()),
+                entry_point: Some(entry_point.into()),
                 targets: vec![Some(ColorTargetState {
                     format: key.format,
-                    blend: Some(COMPOSITE_BLEND),
+                    blend: Some(blend),
                     write_mask: ColorWrites::ALL,
                 })],
             }),
@@ -418,8 +462,9 @@ impl SpecializedRenderPipeline for RetailFogPipeline {
 }
 
 #[derive(Component, Clone, Copy)]
-struct RetailFogPipelineId {
+pub(crate) struct RetailFogPipelineId {
     id: CachedRenderPipelineId,
+    unsigned_input: CachedRenderPipelineId,
     samples: u32,
 }
 
@@ -452,17 +497,23 @@ fn prepare_retail_fog_pipelines(
 ) {
     for (entity, view, msaa) in &views {
         let samples = msaa.samples();
-        let id = pipelines.specialize(
-            &pipeline_cache,
-            &pipeline,
-            RetailFogKey {
-                format: view.target_format,
-                samples,
-            },
-        );
-        commands
-            .entity(entity)
-            .insert(RetailFogPipelineId { id, samples });
+        let mut specialize = |unsigned_input| {
+            pipelines.specialize(
+                &pipeline_cache,
+                &pipeline,
+                RetailFogKey {
+                    format: view.target_format,
+                    samples,
+                    unsigned_input,
+                },
+            )
+        };
+        let (id, unsigned_input) = (specialize(false), specialize(true));
+        commands.entity(entity).insert(RetailFogPipelineId {
+            id,
+            unsigned_input,
+            samples,
+        });
     }
 }
 
@@ -484,7 +535,7 @@ type RetailFogDrawView<'w, 's> = ViewQuery<
 ///
 /// A view whose pipeline is still compiling, or whose depth texture cannot be bound or has another
 /// sample count, is left unfogged for that frame.
-fn run_retail_fog_pass(
+pub(crate) fn run_retail_fog_pass(
     view: RetailFogDrawView,
     uniforms: Res<ComponentUniforms<RetailFogPass>>,
     view_uniforms: Res<ViewUniforms>,
@@ -492,7 +543,10 @@ fn run_retail_fog_pass(
     mut ctx: RenderContext,
 ) {
     let (target, depth, index, view_offset, id) = view.into_inner();
-    let Some(pipeline) = pipeline_cache.get_render_pipeline(id.id) else {
+    let (Some(pipeline), Some(unsigned_input)) = (
+        pipeline_cache.get_render_pipeline(id.id),
+        pipeline_cache.get_render_pipeline(id.unsigned_input),
+    ) else {
         return;
     };
     if depth.texture.sample_count() != id.samples
@@ -534,8 +588,11 @@ fn run_retail_fog_pass(
         multiview_mask: None,
     };
     let mut pass = ctx.command_encoder().begin_render_pass(&descriptor);
-    pass.set_pipeline(pipeline);
     pass.set_bind_group(0, &bind_group, &[index.index(), view_offset.offset]);
+    // First the unsigned input, then the composite.
+    pass.set_pipeline(unsigned_input);
+    pass.draw(0..3, 0..1);
+    pass.set_pipeline(pipeline);
     pass.draw(0..3, 0..1);
 }
 
