@@ -72,7 +72,7 @@ jobs:
           if LC_ALL=C grep -zqE '^vendor/' "$changed_paths"; then
             echo "check_rust=true" >> "$GITHUB_OUTPUT"
           fi
-          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^tools/flag_inventory/|^tools/enum_audit/|^docs/data-inventory/|^crates/(converter|shared|retail-rules)/|^crates/engine/src/|^vendor/project-wormhole-nif/|^docs/research/lod-acceptance-20261005/|^scripts/stand_in_baseline\.json$|^\.github/workflows/(run_tests|pr_size|milestone)\.yml$)'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^tools/flag_inventory/|^tools/enum_audit/|^tools/colour_space/|^docs/data-inventory/|^crates/(converter|shared|retail-rules)/|^crates/engine/src/|^vendor/project-wormhole-nif/|^docs/research/lod-acceptance-20261005/|^scripts/stand_in_baseline\.json$|^\.github/workflows/(run_tests|pr_size|milestone)\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_flag_inventory" '^(tools/flag_inventory/|crates/(converter|shared|retail-rules)/|crates/engine/src/|vendor/project-wormhole-nif/|docs/specs/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
@@ -226,6 +226,15 @@ jobs:
 
       - name: Test the retail enum audit gate
         run: python3 -B -m unittest discover -s tools/enum_audit -p 'test_*.py' -v
+
+      - name: Test the colour-space gate
+        run: python3 -B -m unittest discover -s tools/colour_space -p 'test_*.py' -v
+
+      - name: Added lines in retail colour scope do not decode sRGB unmarked
+        run: |
+          set -euo pipefail
+          # COMMENT_BASE is the base that the retail claim check chose above.
+          python3 -B tools/colour_space/colour_space.py --base "$COMMENT_BASE" --ratchet
 
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
