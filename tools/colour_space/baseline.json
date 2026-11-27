@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "unmarked_total": 44,
+  "counts": {
+    "crates/engine/src/emittance.rs": 4,
+    "crates/engine/src/grass_render.rs": 2,
+    "crates/engine/src/lights.rs": 1,
+    "crates/engine/src/render.rs": 4,
+    "crates/engine/src/retail_lighting.rs": 1,
+    "crates/engine/src/shaders/cinematic_post.wgsl": 1,
+    "crates/engine/src/shaders/retail_hdr_tonemap.wgsl": 1,
+    "crates/engine/src/shaders/sky.wgsl": 1,
+    "crates/engine/src/shaders/water.wgsl": 1,
+    "crates/engine/src/sky.rs": 20,
+    "crates/engine/src/underwater.rs": 2,
+    "crates/engine/src/weather_sky.rs": 2,
+    "crates/engine/src/world/environment/interior.rs": 4
+  }
+}
