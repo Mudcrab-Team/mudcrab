@@ -14,7 +14,7 @@ use bevy::{
         fullscreen_material::{FullscreenMaterial, fullscreen_material_system},
         tonemapping::tonemapping,
     },
-    ecs::schedule::{NodeId, Schedule},
+    ecs::schedule::{NodeId, Schedule, ScheduleBuildSettings},
     prelude::*,
 };
 use std::collections::{HashMap, HashSet};
@@ -26,14 +26,10 @@ const SWAPPING_FILES: [&str; 3] = [
     "underwater_pass.rs",
 ];
 
-/// The systems of `schedule` that must run after each system, by name.
-fn ordered_pairs(schedule: &mut Schedule) -> (Vec<String>, HashSet<(usize, usize)>) {
-    schedule.initialize(&mut World::new()).unwrap();
-    let systems: Vec<_> = schedule
-        .systems()
-        .unwrap()
-        .map(|(key, system)| (NodeId::System(key), system.name().to_string()))
-        .collect();
+/// The number of systems of `schedule`, and each pair of them of which the first runs before the
+/// second, through any chain of orderings and sets. The orderings are read as configured, before
+/// the schedule is built.
+fn ordered_pairs(schedule: &mut Schedule) -> (usize, HashSet<(usize, usize)>) {
     let graph = schedule.graph();
     // The systems a node stands for: itself, or every system below a set.
     let members = |node: NodeId| {
@@ -41,27 +37,36 @@ fn ordered_pairs(schedule: &mut Schedule) -> (Vec<String>, HashSet<(usize, usize
         let mut open = vec![node];
         while let Some(node) = open.pop() {
             match node {
-                NodeId::System(_) => found.push(node),
+                NodeId::System(key) => found.push(key),
                 NodeId::Set(_) => open.extend(graph.hierarchy().graph().neighbors(node)),
             }
         }
         found
     };
-    let index: HashMap<NodeId, usize> = systems
-        .iter()
-        .enumerate()
-        .map(|(index, (node, _))| (*node, index))
+    let edges: Vec<_> = graph
+        .dependency()
+        .graph()
+        .all_edges()
+        .flat_map(|(before, later)| {
+            let later = members(later);
+            members(before)
+                .into_iter()
+                .flat_map(move |from| later.clone().into_iter().map(move |to| (from, to)))
+        })
         .collect();
-    let mut after = vec![Vec::new(); systems.len()];
-    for (before, later) in graph.dependency().graph().all_edges() {
-        for from in members(before) {
-            for to in members(later) {
-                after[index[&from]].push(index[&to]);
-            }
-        }
+    schedule.initialize(&mut World::new()).unwrap();
+    let index: HashMap<_, _> = schedule
+        .systems()
+        .unwrap()
+        .enumerate()
+        .map(|(index, (key, _))| (key, index))
+        .collect();
+    let mut after = vec![Vec::new(); index.len()];
+    for (from, to) in edges {
+        after[index[&from]].push(index[&to]);
     }
     let mut pairs = HashSet::new();
-    for start in 0..systems.len() {
+    for start in 0..index.len() {
         let mut open = after[start].clone();
         while let Some(next) = open.pop() {
             if pairs.insert((start, next)) {
@@ -69,12 +74,17 @@ fn ordered_pairs(schedule: &mut Schedule) -> (Vec<String>, HashSet<(usize, usize
             }
         }
     }
-    (systems.into_iter().map(|(_, name)| name).collect(), pairs)
+    (index.len(), pairs)
 }
 
 /// The production configurations of every system that swaps the post-process texture.
 fn post_process_schedule() -> Schedule {
     let mut schedule = Schedule::new(Core3d);
+    // The inserted command-flush systems swap no texture, so they are left out.
+    schedule.set_build_settings(ScheduleBuildSettings {
+        auto_insert_apply_deferred: false,
+        ..default()
+    });
     schedule.add_systems((
         tonemapping,
         crate::retail_hdr_render::post_process_systems(),
@@ -86,23 +96,25 @@ fn post_process_schedule() -> Schedule {
     schedule
 }
 
-fn unordered(schedule: &mut Schedule) -> Vec<(String, String)> {
-    let (names, pairs) = ordered_pairs(schedule);
-    let mut found = Vec::new();
-    for first in 0..names.len() {
-        for second in first + 1..names.len() {
-            if !pairs.contains(&(first, second)) && !pairs.contains(&(second, first)) {
-                found.push((names[first].clone(), names[second].clone()));
-            }
-        }
-    }
-    found
+/// How many pairs of systems have no order between them.
+fn unordered(schedule: &mut Schedule) -> usize {
+    let (count, pairs) = ordered_pairs(schedule);
+    (0..count)
+        .flat_map(|first| (first + 1..count).map(move |second| (first, second)))
+        .filter(|&(first, second)| {
+            !pairs.contains(&(first, second)) && !pairs.contains(&(second, first))
+        })
+        .count()
 }
 
 #[test]
 fn every_pass_that_swaps_the_post_process_texture_is_ordered() {
     let mut schedule = post_process_schedule();
-    assert_eq!(unordered(&mut schedule), Vec::new());
+    assert_eq!(
+        unordered(&mut schedule),
+        0,
+        "two passes that swap the post-process texture have no order between them"
+    );
 }
 
 /// The check sees the fault that flickered: two passes that only share a predecessor.
@@ -113,7 +125,7 @@ fn two_passes_after_the_same_system_count_as_unordered() {
     fn third() {}
     let mut schedule = Schedule::new(Core3d);
     schedule.add_systems((first, second.after(first), third.after(first)));
-    assert_eq!(unordered(&mut schedule).len(), 1);
+    assert_eq!(unordered(&mut schedule), 1);
 }
 
 /// A new pass that swaps the texture must join the order above, so it is named here.

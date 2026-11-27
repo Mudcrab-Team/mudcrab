@@ -1264,11 +1264,12 @@ fn run_shots(
                 }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
+                let sequence = shot.sequence;
                 run.note(line);
                 if run.transition_capture {
                     run.transition_capture = false;
                     run.start_settle();
-                } else if shot.sequence > 0 {
+                } else if sequence > 0 {
                     run.sequence = Default::default();
                     run.enter(Phase::Sequence);
                 } else {
