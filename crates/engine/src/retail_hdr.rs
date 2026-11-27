@@ -596,6 +596,7 @@ fn weather_transition_block(
     });
     let weights = current
         .or(previous)
+        // retail-default: SPEC-2 §2.2 row 5 gives all weight to form 0x167 without weather.
         .map_or([1.0, 0.0, 0.0, 0.0], |weather| {
             weather.slot_weights_at(hour)
         });
@@ -779,6 +780,7 @@ impl Default for RetailImageSpace {
 /// The selected block. An app without the selection system (a fixture) takes the constructor
 /// block, as a scene with no image-space record does.
 pub(crate) fn scene_block(selected: Option<&RetailImageSpace>) -> HdrBlock {
+    // retail-default: SPEC-2 §2.1 defines the constructor block.
     selected.map_or(HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT, |selected| {
         selected.block
     })
@@ -853,6 +855,7 @@ pub(crate) fn select_retail_image_space(
     let forms = room.forms(
         cell,
         room_form,
+        // STAND-IN(#362): fixtures without a Bevy clock leave room time unchanged.
         time.as_deref().map_or(0.0, Time::delta_secs),
     );
     if let Some(lookup) = lookup.as_ref()
@@ -935,6 +938,7 @@ pub(crate) fn drive_retail_hdr(
         .map_or_else(RetailHdrConfig::default, |config| config.retail_hdr);
     let seconds = timer.adaptation_time(
         time.delta_secs(),
+        // STAND-IN(#362): fixtures without virtual time run at normal speed.
         virtual_time.as_deref().map_or(1.0, Time::relative_speed),
         virtual_time.as_deref().is_some_and(Time::is_paused),
         &config,

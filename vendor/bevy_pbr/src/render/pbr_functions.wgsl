@@ -124,8 +124,10 @@ fn alpha_discard(material: pbr_types::StandardMaterial, output_color: vec4<f32>)
     else if alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK ||
             alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_ALPHA_TO_COVERAGE {
         if color.a >= material.alpha_cutoff {
-            // NOTE: If rendering as masked alpha and >= the cutoff, render as fully opaque
+#ifndef SKYRIM_SORTED_ALPHA
+            // The Skyrim sorted blend uses fragment alpha even when the draw tests alpha.
             color.a = 1.0;
+#endif
         } else {
             // NOTE: output_color.a < in.material.alpha_cutoff should not be rendered
             discard;

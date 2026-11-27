@@ -530,10 +530,15 @@ impl NativeMaterialHandler {
             return native_depth_state(material, alpha_mode);
         }
         let (flags_1, flags_2) = native_depth_flags(material)?;
+        // SPEC-2 §4.2: with blending disabled, fractional property alpha selects mode 1.
+        // Older packs without alpha metadata use glTF BLEND as their fallback.
+        let unpaired_blend = material.pbr_metallic_roughness().base_color_factor()[3] < 1.0
+            || (matches!(alpha_mode, AlphaMode::Blend) && alpha_property_extra(material).is_none());
         let state = NifDepthState::retail_from_material(
             flags_1,
             flags_2,
             alpha_mode,
+            unpaired_blend,
             authored_blend_factors(material),
         )?;
         Some(if retail::is_lighting(material) {
@@ -807,6 +812,14 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             retail::apply(source, standard, &mut material);
         }
         let mut depth = self.depth_state(source, material.alpha_mode);
+        if let Some(state) = depth
+            && !state.first_stage
+            && state.retail_blend_mode == Some(1)
+            && material.alpha_mode == AlphaMode::Opaque
+        {
+            // The sorted pass already owns the pipeline mode. Keep the fragment alpha available.
+            material.alpha_mode = AlphaMode::Blend;
+        }
         if palette.is_none()
             && let Some(state) = depth.as_mut()
             && !has_model_space_normals(source)
@@ -1661,6 +1674,44 @@ mod tests {
         let effect = document("effect");
         let source = effect.materials().next().unwrap();
         assert!(!skyrim.depth_state(&source, mode).unwrap().first_stage);
+    }
+
+    #[test]
+    fn skyrim_sorted_material_uses_property_alpha_when_blending_is_disabled() {
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        let mudcrab = NativeMaterialHandler::default();
+        for (alpha, expected) in [(0.0, 1), (0.5, 1), (0.999, 1), (1.0, 0)] {
+            for (gltf_mode, mode) in [
+                ("OPAQUE", AlphaMode::Opaque),
+                ("MASK", AlphaMode::Mask(0.5)),
+                ("BLEND", AlphaMode::Blend),
+            ] {
+                let doc = first_material(serde_json::json!({
+                    "alphaMode": gltf_mode,
+                    "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, alpha]},
+                    "extras": {"openSkyrim": {
+                        "shaderFamily": "lighting",
+                        "shaderFlags1": 0,
+                        "shaderFlags2": 0,
+                        "alphaProperty": shared::nif_alpha::NifAlphaProperty::from_nif(0, 0)
+                    }}
+                }));
+                let material = doc.materials().next().unwrap();
+                let state = skyrim.depth_state(&material, mode).unwrap();
+                assert!(!state.first_stage);
+                assert_eq!(state.retail_blend_mode, Some(expected));
+                assert_eq!(
+                    mudcrab
+                        .depth_state(&material, mode)
+                        .unwrap()
+                        .retail_blend_mode,
+                    None
+                );
+            }
+        }
     }
 
     #[test]

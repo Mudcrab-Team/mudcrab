@@ -434,7 +434,7 @@ mod tests {
             alpha_mask: false,
             cast_shadows: false,
             blend_factors: None,
-            retail_blend: false,
+            retail_blend_mode: None,
             uses_effect_emittance: false,
             first_stage: false,
         };

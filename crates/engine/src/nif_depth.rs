@@ -40,7 +40,8 @@ pub struct NifDepthState {
     pub alpha_mask: bool,
     pub cast_shadows: bool,
     pub blend_factors: Option<[u8; 2]>,
-    pub(crate) retail_blend: bool,
+    /// The Skyrim blend table entry for a sorted draw. Other draw paths use their existing state.
+    pub retail_blend_mode: Option<u8>,
     pub uses_effect_emittance: bool,
     /// Drawn in the opaque or cutout phase, with the base material's alpha mode, so that the fog
     /// composite runs after it ([`Self::retail_first_stage`]).
@@ -77,7 +78,7 @@ impl NifDepthState {
             } else {
                 blend_factors
             },
-            retail_blend: false,
+            retail_blend_mode: None,
             uses_effect_emittance: false,
             first_stage: false,
         })
@@ -98,20 +99,23 @@ impl NifDepthState {
     }
 
     /// [`Self::from_material`] under the `skyrim` profile: the blend pair is retail's
-    /// ([`retail_blend_factors`]). Sorted surfaces with an authored pair use its blend equation
-    /// even when their depth state alone would not need a specialization.
+    /// ([`retail_blend_factors`]). Sorted surfaces use the retail blend equation even when
+    /// their depth state alone would not need a specialization.
     pub fn retail_from_material(
         flags_1: u32,
         flags_2: u32,
         alpha_mode: AlphaMode,
+        unpaired_blend: bool,
         blend_factors: Option<[u8; 2]>,
     ) -> Option<Self> {
+        let retail_blend_mode =
+            Some(blend_factors.map_or_else(|| u8::from(unpaired_blend), sorted_blend_mode));
         let blend_factors = blend_factors.map(retail_blend_factors);
         if let Some(mut state) = Self::from_material(flags_1, flags_2, alpha_mode, blend_factors) {
-            state.retail_blend = true;
+            state.retail_blend_mode = retail_blend_mode;
             return Some(state);
         }
-        if !matches!(alpha_mode, AlphaMode::Blend) || blend_factors.is_none() {
+        if !matches!(alpha_mode, AlphaMode::Blend) {
             return None;
         }
         let depth_test = flags_1 & DEPTH_TEST != 0;
@@ -123,7 +127,7 @@ impl NifDepthState {
             alpha_mask: false,
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
             blend_factors,
-            retail_blend: true,
+            retail_blend_mode,
             uses_effect_emittance: false,
             first_stage: false,
         })
@@ -215,14 +219,19 @@ pub(super) fn specialize_nif_depth_descriptor(
         }
     }
     if let Some(fragment) = descriptor.fragment.as_mut() {
-        if state.retail_blend && !state.first_stage {
-            let mode = state.blend_factors.map_or(1, sorted_blend_mode);
+        if let Some(mode) = state.retail_blend_mode
+            && !state.first_stage
+        {
+            if color_pass && state.alpha_mask && mode != 0 {
+                fragment.shader_defs.push("SKYRIM_SORTED_ALPHA".into());
+            }
             // The sorted list uses mask 11 when auxiliary outputs are absent (SPEC-2 §4.3).
             apply_retail_colour_state(&mut fragment.targets, mode, 11, false);
         } else if let Some([source, destination]) = state.blend_factors
             && let Some(color) = blend_component(source, destination)
         {
             for target in fragment.targets.iter_mut().flatten() {
+                // STAND-IN(#362): keep Bevy's alpha factors on the non-Skyrim path.
                 let alpha = target.blend.unwrap_or(BlendState::ALPHA_BLENDING).alpha;
                 target.blend = Some(BlendState { color, alpha });
             }
@@ -796,12 +805,14 @@ mod tests {
         let mode = AlphaMode::Blend;
         assert!(NifDepthState::from_material(flags.0, flags.1, mode, Some([6, 0])).is_none());
         let state =
-            NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([0, 0])).unwrap();
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, false, Some([0, 0]))
+                .unwrap();
         assert_eq!(state.blend_factors, Some(SOURCE_ALPHA_ADDITIVE));
         assert!(!state.depth_write && !state.decal);
         assert!(NifDepthState::from_material(flags.0, flags.1, mode, Some([6, 7])).is_none());
-        let alpha = NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([6, 7]))
-            .expect("retail source-alpha draw state");
+        let alpha =
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, false, Some([6, 7]))
+                .expect("retail source-alpha draw state");
         let mut pipeline = descriptor(vec![color_target(), color_target()]);
         specialize_nif_depth_descriptor(&mut pipeline, alpha);
         let mut targets = pipeline.fragment.unwrap().targets.into_iter().flatten();
@@ -809,6 +820,30 @@ mod tests {
         let auxiliary = targets.next().unwrap();
         assert_eq!(auxiliary.blend, None);
         assert_eq!(auxiliary.write_mask, ColorWrites::empty());
+    }
+
+    #[test]
+    fn skyrim_sorted_cutout_preserves_fragment_alpha_only_when_blending() {
+        for (mode, uses_fragment_alpha) in [(None, false), (Some(0), false), (Some(1), true)] {
+            let mut state = NifDepthState::from_flags(0, 0, AlphaMode::Mask(0.5)).unwrap();
+            state.retail_blend_mode = mode;
+            let mut pipeline = descriptor(vec![color_target()]);
+            specialize_nif_depth_descriptor(&mut pipeline, state);
+            let fragment = pipeline.fragment.unwrap();
+            assert!(
+                fragment
+                    .shader_defs
+                    .iter()
+                    .any(|def| shader_def_name(def) == "MAY_DISCARD")
+            );
+            assert_eq!(
+                fragment
+                    .shader_defs
+                    .iter()
+                    .any(|def| shader_def_name(def) == "SKYRIM_SORTED_ALPHA"),
+                uses_fragment_alpha
+            );
+        }
     }
 
     #[test]

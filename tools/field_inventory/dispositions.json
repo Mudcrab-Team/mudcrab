@@ -23286,7 +23286,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23318,7 +23318,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23350,7 +23350,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23382,7 +23382,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/underwater_pass.rs",
@@ -23410,7 +23410,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/underwater_pass.rs",
@@ -23438,7 +23438,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/underwater_pass.rs",
@@ -23466,7 +23466,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/underwater_pass.rs",
@@ -23782,7 +23782,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23810,7 +23810,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23838,7 +23838,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23866,7 +23866,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23894,7 +23894,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23922,7 +23922,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23950,7 +23950,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -23986,7 +23986,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -24022,7 +24022,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -24054,7 +24054,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -24094,7 +24094,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -24134,7 +24134,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -24174,7 +24174,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "let image_spaces = read("
+          "anchor": "let mut image_spaces = read("
         },
         {
           "path": "crates/engine/src/retail_hdr.rs",
@@ -61808,7 +61808,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "half_z, lighting_template_id FROM room_bounds \\"
+          "anchor": "half_z, lighting_template_id, {room_image_space_column} FROM room_bounds"
         }
       ],
       "spec": "SPEC-1 10-b; SPEC-2 2.2-f"
@@ -61828,7 +61828,7 @@
         },
         {
           "path": "crates/engine/src/world/environment.rs",
-          "anchor": "half_z, lighting_template_id FROM room_bounds \\"
+          "anchor": "half_z, lighting_template_id, {room_image_space_column} FROM room_bounds"
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
