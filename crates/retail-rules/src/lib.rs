@@ -1,10 +1,9 @@
 //! Pure retail Skyrim rules that Mudcrab must reproduce exactly.
 //!
 //! Each function here states one rule from the Mudcrab retail-rule registry in our own words and
-//! cites the rule's ID (for example `RF-NPC-004`). The engine does not call this crate yet. The
-//! actor scale change (#663) wires the engine to [`scale::placed_reference_scale`] and
-//! [`placement::placed_reference_rotation`]. Only then is the code that the proofs cover the code
-//! that runs.
+//! cites the rule's ID (for example `RF-NPC-004`). The engine calls
+//! [`scale::placed_reference_scale`] and [`placement::placed_reference_rotation`] for placed actor
+//! references (#663), so the code that the proofs cover is the code that runs.
 //!
 //! The crate has three limits on purpose:
 //!

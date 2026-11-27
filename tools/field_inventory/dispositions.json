@@ -46874,7 +46874,7 @@
       "evidence": [
         {
           "path": "crates/engine/src/world/actor_scale.rs",
-          "anchor": "b\"NAM6\" if height.is_none() && data.len() == 4 => {"
+          "anchor": "b\"NAM6\" if nam6.is_none() => nam6 = Some(data),"
         },
         {
           "path": "crates/engine/src/world/actor_scale.rs",
@@ -59078,9 +59078,9 @@
       "issue": "#1080"
     },
     "RACE.DATA.female_height": {
-      "disposition": "respected",
+      "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Read at bytes 20..24 of RACE/DATA in actor_scale.rs, multiplied via retail_rules::scale::placed_reference_scale for female NPCs in streaming.rs, and read in physics.rs for player jump height.",
+      "reason": "Read in actor_scale.rs for placed NPC scale (streaming.rs) and in physics.rs for player jump height, while player standing capsule height (100.8) and camera eye height (89.6) in physics.rs still ignore race height (#1099).",
       "evidence": [
         {
           "path": "crates/engine/src/world/actor_scale.rs",
@@ -59092,7 +59092,7 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let data = race"
+          "anchor": "capsule_standing_height: 100.8,"
         },
         {
           "path": "crates/retail-rules/src/scale.rs",
@@ -59102,7 +59102,8 @@
           "path": "crates/retail-rules/src/scale.rs",
           "anchor": "pub fn race_height(race: Option<RaceHeights>, sex_index: i32) -> f32 {"
         }
-      ]
+      ],
+      "issue": "#1099"
     },
     "RACE.DATA.flags": {
       "disposition": "covered-by-flag-audit",
@@ -59127,9 +59128,9 @@
       ]
     },
     "RACE.DATA.male_height": {
-      "disposition": "respected",
+      "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Read at bytes 16..20 of RACE/DATA in actor_scale.rs, multiplied via retail_rules::scale::placed_reference_scale for male NPCs in streaming.rs, and read in physics.rs for player jump height.",
+      "reason": "Read in actor_scale.rs for placed NPC scale (streaming.rs) and in physics.rs for player jump height, while player standing capsule height (100.8) and camera eye height (89.6) in physics.rs still ignore race height (#1099).",
       "evidence": [
         {
           "path": "crates/engine/src/world/actor_scale.rs",
@@ -59141,7 +59142,7 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let data = race"
+          "anchor": "capsule_standing_height: 100.8,"
         },
         {
           "path": "crates/retail-rules/src/scale.rs",
@@ -59151,7 +59152,8 @@
           "path": "crates/retail-rules/src/scale.rs",
           "anchor": "pub fn race_height(race: Option<RaceHeights>, sex_index: i32) -> f32 {"
         }
-      ]
+      ],
+      "issue": "#1099"
     },
     "RACE.DATA.unknown": {
       "disposition": "not-applicable",
