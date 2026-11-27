@@ -91,7 +91,10 @@ impl NifDepthState {
     /// STAND-IN(#362): a blended decal draws after the composite and applies it in its shader.
     #[must_use]
     pub fn retail_first_stage(mut self, alpha_mode: AlphaMode) -> Self {
-        if self.depth_test && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+        if self.depth_test
+            && self.retail_blend_mode.is_none_or(|mode| mode == 0)
+            && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_))
+        {
             self.first_stage = true;
             self.depth_write |= self.decal;
         }
@@ -108,14 +111,13 @@ impl NifDepthState {
         unpaired_blend: bool,
         blend_factors: Option<[u8; 2]>,
     ) -> Option<Self> {
-        let retail_blend_mode =
-            Some(blend_factors.map_or_else(|| u8::from(unpaired_blend), sorted_blend_mode));
+        let mode = blend_factors.map_or_else(|| u8::from(unpaired_blend), sorted_blend_mode);
         let blend_factors = blend_factors.map(retail_blend_factors);
         if let Some(mut state) = Self::from_material(flags_1, flags_2, alpha_mode, blend_factors) {
-            state.retail_blend_mode = retail_blend_mode;
+            state.retail_blend_mode = Some(mode);
             return Some(state);
         }
-        if !matches!(alpha_mode, AlphaMode::Blend) {
+        if mode == 0 && !matches!(alpha_mode, AlphaMode::Blend) {
             return None;
         }
         let depth_test = flags_1 & DEPTH_TEST != 0;
@@ -124,10 +126,10 @@ impl NifDepthState {
             // A sorted blended draw of this path writes no depth, as before.
             depth_write: false,
             decal: false,
-            alpha_mask: false,
+            alpha_mask: matches!(alpha_mode, AlphaMode::Mask(_)),
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
             blend_factors,
-            retail_blend_mode,
+            retail_blend_mode: Some(mode),
             uses_effect_emittance: false,
             first_stage: false,
         })
@@ -222,7 +224,7 @@ pub(super) fn specialize_nif_depth_descriptor(
         if let Some(mode) = state.retail_blend_mode
             && !state.first_stage
         {
-            if color_pass && state.alpha_mask && mode != 0 {
+            if color_pass && mode != 0 {
                 fragment.shader_defs.push("SKYRIM_SORTED_ALPHA".into());
             }
             // The sorted list uses mask 11 when auxiliary outputs are absent (SPEC-2 §4.3).
@@ -823,26 +825,23 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_sorted_cutout_preserves_fragment_alpha_only_when_blending() {
-        for (mode, uses_fragment_alpha) in [(None, false), (Some(0), false), (Some(1), true)] {
-            let mut state = NifDepthState::from_flags(0, 0, AlphaMode::Mask(0.5)).unwrap();
-            state.retail_blend_mode = mode;
-            let mut pipeline = descriptor(vec![color_target()]);
-            specialize_nif_depth_descriptor(&mut pipeline, state);
-            let fragment = pipeline.fragment.unwrap();
-            assert!(
-                fragment
-                    .shader_defs
-                    .iter()
-                    .any(|def| shader_def_name(def) == "MAY_DISCARD")
-            );
-            assert_eq!(
-                fragment
-                    .shader_defs
-                    .iter()
-                    .any(|def| shader_def_name(def) == "SKYRIM_SORTED_ALPHA"),
-                uses_fragment_alpha
-            );
+    fn skyrim_sorted_draw_preserves_fragment_alpha_only_when_blending() {
+        for alpha in [AlphaMode::Opaque, AlphaMode::Mask(0.5), AlphaMode::Blend] {
+            for (mode, preserve_alpha) in [(None, false), (Some(0), false), (Some(1), true)] {
+                let mut state = NifDepthState::from_flags(0, 0, alpha).unwrap();
+                state.retail_blend_mode = mode;
+                let mut pipeline = descriptor(vec![color_target()]);
+                specialize_nif_depth_descriptor(&mut pipeline, state);
+                let fragment = pipeline.fragment.unwrap();
+                let defines = |name| {
+                    fragment
+                        .shader_defs
+                        .iter()
+                        .any(|def| shader_def_name(def) == name)
+                };
+                assert_eq!(defines("MAY_DISCARD"), matches!(alpha, AlphaMode::Mask(_)));
+                assert_eq!(defines("SKYRIM_SORTED_ALPHA"), preserve_alpha);
+            }
         }
     }
 

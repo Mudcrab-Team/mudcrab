@@ -1715,6 +1715,39 @@ mod tests {
     }
 
     #[test]
+    fn skyrim_depth_writing_non_decals_with_blend_stay_sorted() {
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        for (gltf_mode, mode, alpha, flags) in [
+            ("OPAQUE", AlphaMode::Opaque, 0.5, 0),
+            (
+                "MASK",
+                AlphaMode::Mask(0.5),
+                1.0,
+                1 | (6 << 1) | (7 << 5) | (1 << 9),
+            ),
+        ] {
+            let doc = first_material(serde_json::json!({
+                "alphaMode": gltf_mode,
+                "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, alpha]},
+                "extras": {"openSkyrim": {
+                    "shaderFamily": "lighting",
+                    "shaderFlags1": DEPTH_TEST,
+                    "shaderFlags2": DEPTH_WRITE,
+                    "alphaProperty": shared::nif_alpha::NifAlphaProperty::from_nif(flags, 128)
+                }}
+            }));
+            let material = doc.materials().next().unwrap();
+            let state = skyrim.depth_state(&material, mode).unwrap();
+            assert_eq!(state.retail_blend_mode, Some(1));
+            assert!(!state.first_stage);
+            assert_eq!(state.alpha_mask, matches!(mode, AlphaMode::Mask(_)));
+        }
+    }
+
+    #[test]
     fn depth_wrapped_palette_scene_clone_retains_the_palette_source() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))

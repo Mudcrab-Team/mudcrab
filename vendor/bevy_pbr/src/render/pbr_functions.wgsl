@@ -113,8 +113,11 @@ fn alpha_discard(material: pbr_types::StandardMaterial, output_color: vec4<f32>)
     var color = output_color;
     let alpha_mode = material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS;
     if alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE {
+#ifndef SKYRIM_SORTED_ALPHA
+        // mudcrab: SPEC-2 §4.2 can enable blending from fractional property alpha.
         // NOTE: If rendering as opaque, alpha should be ignored so set to 1.0
         color.a = 1.0;
+#endif
     }
 
 #ifdef MAY_DISCARD
@@ -125,7 +128,7 @@ fn alpha_discard(material: pbr_types::StandardMaterial, output_color: vec4<f32>)
             alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_ALPHA_TO_COVERAGE {
         if color.a >= material.alpha_cutoff {
 #ifndef SKYRIM_SORTED_ALPHA
-            // The Skyrim sorted blend uses fragment alpha even when the draw tests alpha.
+            // mudcrab: Keep the Skyrim sorted blend's alpha when the sample passes the test.
             color.a = 1.0;
 #endif
         } else {
