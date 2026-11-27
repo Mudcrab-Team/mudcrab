@@ -74,6 +74,8 @@ fields before admission, so an unusable later candidate preserves its usable
 predecessor without crossing an admitted deletion.
 Version 12 keeps zero-FormID GMST settings distinct and prevents a rejected
 identity collision from blocking a later usable definition.
+Version 16, with legacy projection 7, adds the `base_texture_swaps` rows of every base with a world
+model. It changes no asset bytes.
 In-house identity includes the
 authored schema SHA-256, adapter version, string-table language and encodings, and
 `inhouse-reader-diagnostics.json` records bounded decoder and adapter issues.

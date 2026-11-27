@@ -663,12 +663,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// These compatibility pairs are limited to metadata adapters 11 to 15; a future
+/// These compatibility pairs are limited to metadata adapters 11 to 16; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=15) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=16) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -679,12 +679,12 @@ pub(crate) fn inhouse_adapter10_reader_identity(
     Some(identity)
 }
 
-/// Adapters 12 to 15 retain adapter-11 asset bytes. Adapter 14 rebuilds NIF output through its
+/// Adapters 12 to 16 retain adapter-11 asset bytes. Adapter 14 rebuilds NIF output through its
 /// own mesh contract, so retained DDS and PEX candidates stay reusable.
 pub(crate) fn inhouse_adapter11_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12..=15) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12..=16) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -696,12 +696,12 @@ pub(crate) fn inhouse_adapter11_reader_identity(
 }
 
 /// Adapter 13 adds placed database rows without changing converted asset bytes. Adapter 14
-/// retains that proof for DDS and PEX candidates, as does metadata-only adapter 15.
+/// retains that proof for DDS and PEX candidates, as do metadata-only adapters 15 and 16.
 pub(crate) fn inhouse_adapter12_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 13..=15) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 13..=16) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
@@ -719,7 +719,7 @@ pub(crate) fn inhouse_adapter13_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 14 | 15) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 14..=16) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
@@ -736,7 +736,7 @@ pub(crate) fn inhouse_adapter14_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 15 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 15 | 16) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
@@ -748,9 +748,27 @@ pub(crate) fn inhouse_adapter14_reader_identity(
     Some(identity)
 }
 
-/// Legacy projections 5 and 6 change database coverage, not the version-4 asset proof.
+/// Adapter 16 adds the alternate-texture rows of every model base without changing converted
+/// asset bytes.
+pub(crate) fn inhouse_adapter15_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+    language: &str,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 16 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+        language,
+    );
+    identity["adapter_version"] = serde_json::json!(15);
+    Some(identity)
+}
+
+/// Legacy projections 5 to 7 change database coverage, not the version-4 asset proof.
 pub(crate) fn legacy_projection4_reader_identity(language: &str) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::LEGACY_PROJECTION_VERSION, 5 | 6) {
+    if !matches!(crate::esm::inhouse::LEGACY_PROJECTION_VERSION, 5..=7) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_in_language(
@@ -763,7 +781,7 @@ pub(crate) fn legacy_projection4_reader_identity(language: &str) -> Option<serde
 
 /// Legacy projection 6 adds STAT MODS diffuse rows, not the projection-5 asset proof.
 pub(crate) fn legacy_projection5_reader_identity(language: &str) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::LEGACY_PROJECTION_VERSION != 6 {
+    if !matches!(crate::esm::inhouse::LEGACY_PROJECTION_VERSION, 6 | 7) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_in_language(
@@ -771,6 +789,20 @@ pub(crate) fn legacy_projection5_reader_identity(language: &str) -> Option<serde
         language,
     );
     identity["projection_version"] = serde_json::json!(5);
+    Some(identity)
+}
+
+/// Legacy projection 7 adds the alternate-texture rows of every model base without changing
+/// converted asset bytes.
+pub(crate) fn legacy_projection6_reader_identity(language: &str) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::LEGACY_PROJECTION_VERSION != 7 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_in_language(
+        crate::config::RecordReader::Legacy,
+        language,
+    );
+    identity["projection_version"] = serde_json::json!(6);
     Some(identity)
 }
 
@@ -1452,6 +1484,7 @@ pub(crate) fn retained_configuration_matches_for_reader(
             inhouse_adapter12_reader_identity(config.schemas()?.as_ref(), &config.language),
             inhouse_adapter13_reader_identity(config.schemas()?.as_ref(), &config.language),
             inhouse_adapter14_reader_identity(config.schemas()?.as_ref(), &config.language),
+            inhouse_adapter15_reader_identity(config.schemas()?.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(identity))
@@ -1462,6 +1495,7 @@ pub(crate) fn retained_configuration_matches_for_reader(
         && [
             legacy_projection4_reader_identity(&config.language),
             legacy_projection5_reader_identity(&config.language),
+            legacy_projection6_reader_identity(&config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(identity))
@@ -1507,6 +1541,7 @@ pub(crate) fn retained_configuration_matches_for_lineage_reader(
             inhouse_adapter11_reader_identity(schemas.as_ref()),
             inhouse_adapter12_reader_identity(schemas.as_ref(), &config.language),
             inhouse_adapter14_reader_identity(schemas.as_ref(), &config.language),
+            inhouse_adapter15_reader_identity(schemas.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(&normalized));
@@ -2320,7 +2355,7 @@ mod tests {
             .unwrap()
         );
         let mut unknown = original;
-        unknown["projection_version"] = serde_json::json!(7);
+        unknown["projection_version"] = serde_json::json!(8);
         assert!(
             !retained_configuration_matches_for_reader(
                 &config,
@@ -2486,6 +2521,55 @@ mod tests {
         );
         assert_eq!(original["adapter_version"], 13);
         assert_ne!(recorded, configuration_hash(&config).unwrap());
+    }
+
+    #[test]
+    fn adapter15_and_projection6_asset_proofs_survive_the_swap_row_update() {
+        for (reader, original, key, version) in [
+            (
+                crate::config::RecordReader::Inhouse,
+                inhouse_adapter15_reader_identity(
+                    crate::config::PipelineConfig::new("Data", "output")
+                        .schemas()
+                        .unwrap()
+                        .as_ref(),
+                    "french",
+                ),
+                "adapter_version",
+                15,
+            ),
+            (
+                crate::config::RecordReader::Legacy,
+                legacy_projection6_reader_identity("french"),
+                "projection_version",
+                6,
+            ),
+        ] {
+            let mut config = crate::config::PipelineConfig::new("Data", "output");
+            config.record_reader = reader;
+            config.language = "french".into();
+            let original = original.unwrap();
+            assert_eq!(original[key], version);
+            let recorded = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&original),
+            )
+            .unwrap();
+            let matches = |config: &crate::config::PipelineConfig| {
+                retained_configuration_matches_for_reader(
+                    config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original,
+                )
+                .unwrap()
+            };
+            assert!(matches(&config), "{reader:?}");
+            assert_ne!(recorded, configuration_hash(&config).unwrap());
+            config.texture_fallback_quality += 1;
+            assert!(!matches(&config), "{reader:?}");
+        }
     }
 
     #[test]

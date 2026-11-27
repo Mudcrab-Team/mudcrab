@@ -1524,10 +1524,11 @@ fn remap_record_form_ids(
     }
     let mut malformed_subrecords = Vec::new();
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
-        if record.record_type == *b"STAT" && tag.as_slice() == b"MODS" {
+        if object_materials::is_world_swap(&record_type, tag) {
+            let owner = format!("{} {source_id:08X}", record_type.escape_ascii());
+            let field = tag.escape_ascii().to_string();
             let Some(offsets) = object_materials::form_offsets(data) else {
-                warnings
-                    .skipped_optional(plugin_name, format!("STAT {source_id:08X}: malformed MODS"));
+                warnings.skipped_optional(plugin_name, format!("{owner}: malformed {field}"));
                 malformed_subrecords.push(index);
                 continue;
             };
@@ -1536,7 +1537,7 @@ fn remap_record_form_ids(
                 let resolved = remap_link(value).unwrap_or_else(|error| {
                     warnings.skipped_optional(
                         plugin_name,
-                        format!("STAT {source_id:08X} MODS reference {value:08X}: {error}"),
+                        format!("{owner} {field} reference {value:08X}: {error}"),
                     );
                     0
                 });

@@ -52,8 +52,48 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
     )
 }
 
+/// The base record types whose world model `export_to_db` publishes in `statics`, so a placed
+/// reference can draw one.
+const MODEL_BASES: [&[u8; 4]; 25] = [
+    b"STAT", b"MSTT", b"FURN", b"TREE", b"FLOR", b"CONT", b"DOOR", b"ACTI", b"TACT", b"WEAP",
+    b"MISC", b"BOOK", b"AMMO", b"ALCH", b"INGR", b"SLGM", b"KEYM", b"SCRL", b"ARMO", b"APPA",
+    b"ADDN", b"ARTO", b"PROJ", b"HAZD", b"LIGH",
+];
+
+/// Whether a record of `record_type` can name alternate textures for its world model.
+pub(super) fn is_model_base(record_type: &[u8; 4]) -> bool {
+    MODEL_BASES.contains(&record_type)
+}
+
+/// Whether `tag` holds alternate textures of a world model of `record_type`. `ARMO` has no
+/// `MODL` path: its world models are the male `MOD2` with `MO2S` and the female `MOD4` with
+/// `MO4S`. Every other base pairs `MODL` with `MODS`.
+pub(super) fn is_world_swap(record_type: &[u8; 4], tag: &[u8]) -> bool {
+    if record_type == b"ARMO" {
+        tag == b"MO2S" || tag == b"MO4S"
+    } else {
+        is_model_base(record_type) && tag == b"MODS"
+    }
+}
+
+/// The alternate textures of the world model the record publishes: for `ARMO` the male slot
+/// first and the female slot as its fallback, as the exporter picks the model.
+fn world_swap_tag(record_type: &[u8; 4], view: &SubrecordView<'_>) -> &'static [u8; 4] {
+    if record_type != b"ARMO" {
+        return b"MODS";
+    }
+    if view
+        .get_string(b"MOD2")
+        .is_some_and(|path| !path.is_empty())
+    {
+        b"MO2S"
+    } else {
+        b"MO4S"
+    }
+}
+
 /// Receives winning records after reader-specific FormID remapping. Clear owner rows on every
-/// subset update, including removal of MODS, so an old swap cannot survive an override.
+/// subset update, including removal of the swaps, so an old swap cannot survive an override.
 ///
 /// `disposition` is `texture_set` (the target is a live TXST; the engine reads its slots from
 /// `texture_sets`), `null_texture_set` (RF-TEX-005) or `missing_texture_set` (the target is
@@ -71,18 +111,24 @@ pub(super) fn insert(
         "DELETE FROM base_texture_swaps WHERE base_id=?1",
         [record.form_id],
     )?;
-    if record.is_deleted() || record.record_type != *b"STAT" {
+    if record.is_deleted() || !is_model_base(&record.record_type) {
         return Ok(());
     }
+    let tag = world_swap_tag(&record.record_type, view);
     if view
-        .find(b"MODS")
+        .find(tag)
         .is_some_and(|data| form_offsets(data).is_none())
-        || view.find_all(b"MODS").count() > 1
+        || view.find_all(tag).count() > 1
     {
-        log::warn!("STAT {:08X}: malformed MODS omitted", record.form_id);
+        log::warn!(
+            "{} {:08X}: malformed {} omitted",
+            record.record_type.escape_ascii(),
+            record.form_id,
+            tag.escape_ascii()
+        );
         return Ok(());
     }
-    for (position, swap) in view.get_alternate_textures(b"MODS").iter().enumerate() {
+    for (position, swap) in view.get_alternate_textures(tag).iter().enumerate() {
         let target = master
             .get(&swap.texture_form_id)
             .filter(|target| !target.is_deleted() && target.record_type == *b"TXST");
@@ -388,6 +434,77 @@ mod tests {
                 (5, "F:5".into(), 3, 0xFFF, "missing_texture_set".into()),
             ]
         );
+    }
+
+    /// SPEC-1 section 2.1: every base with a world model keeps its alternate textures, `ARMO`
+    /// from the slot of the model it publishes, and a record without a world model keeps none.
+    #[test]
+    fn object_texture_projection_covers_every_model_base() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::esm::exporter::create_tables(&conn).unwrap();
+        let txst = |id| raw(id, b"TXST", &[(b"TX00", b"textures/a.dds\0".to_vec())]);
+        let model = || (b"MODL", b"meshes/a.nif\0".to_vec());
+        let list = |texture| entries(&[("A:0", texture, 0)]);
+        let mut records = vec![txst(0x101), txst(0x102)];
+        for (position, tag) in MODEL_BASES.into_iter().enumerate() {
+            if tag == b"ARMO" {
+                continue;
+            }
+            records.push(raw(
+                0x200 + position as u32,
+                tag,
+                &[model(), (b"MODS", list(0x101))],
+            ));
+        }
+        let world = |path: &str| format!("{path}\0").into_bytes();
+        records.push(raw(
+            0x300,
+            b"ARMO",
+            &[
+                (b"MOD2", world("meshes/male.nif")),
+                (b"MO2S", list(0x101)),
+                (b"MOD4", world("meshes/female.nif")),
+                (b"MO4S", list(0x102)),
+            ],
+        ));
+        records.push(raw(
+            0x301,
+            b"ARMO",
+            &[
+                (b"MOD4", world("meshes/female.nif")),
+                (b"MO4S", list(0x102)),
+            ],
+        ));
+        // A head part has no world model of its own.
+        records.push(raw(0x302, b"HDPT", &[model(), (b"MODS", list(0x101))]));
+        let records: HashMap<u32, RawRecord> = records
+            .into_iter()
+            .map(|record| (record.form_id, record))
+            .collect();
+        crate::esm::exporter::export_to_db(&conn, &records).unwrap();
+        let sets = |base: u32| -> Vec<u32> {
+            conn.prepare(
+                "SELECT texture_set_id FROM base_texture_swaps WHERE base_id=?1 ORDER BY position",
+            )
+            .unwrap()
+            .query_map([base], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+        };
+        for (position, tag) in MODEL_BASES.into_iter().enumerate() {
+            if tag != b"ARMO" {
+                assert_eq!(
+                    sets(0x200 + position as u32),
+                    [0x101],
+                    "{}",
+                    tag.escape_ascii()
+                );
+            }
+        }
+        assert_eq!(sets(0x300), [0x101]);
+        assert_eq!(sets(0x301), [0x102]);
+        assert!(sets(0x302).is_empty());
     }
 
     #[test]

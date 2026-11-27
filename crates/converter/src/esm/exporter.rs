@@ -1067,7 +1067,7 @@ fn export_records(
         let projection = runtime_projection(record, unresolved_fields);
         let record = projection.as_ref().unwrap_or(record);
         let view = SubrecordView::new(&record.subrecords);
-        if record.record_type == *b"STAT" {
+        if super::object_materials::is_model_base(&record.record_type) {
             super::object_materials::insert(&tx, master, record, &view)?;
         }
         if order.is_none()

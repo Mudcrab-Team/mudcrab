@@ -132,7 +132,7 @@ changes the picture is unverified.
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
 | A pack without [material values](#material-values) keeps specular strength and colour clamped to `[0, 1]`, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
 | Only `XEMI` references take an emittance source, mixed by day part from the converter's table; an external emittance surface without a source is black | STAND-IN(#362): emittance source and membership |
-| The environment fade is 1 and the technique is not dropped at `fEnvmapLODFadeEnd`; the eye technique and a model-space reflection are not drawn; a `STAT` texture set that fills slot 4 or 5 is not applied; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
+| The environment fade is 1 and the technique is not dropped at `fEnvmapLODFadeEnd`; the eye technique and a model-space reflection are not drawn; a swapped glow map reaches a surface only when its model has one; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
 | Parallax, projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
 | Landscape specular is not drawn; layer weights stay normalised by their sum | STAND-IN(#547): the LTEX specular exponent per layer |
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |

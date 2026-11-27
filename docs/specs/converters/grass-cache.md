@@ -277,8 +277,8 @@ Earlier assignments do not reject the LAND or remove healthy neighboring items.
 
 ### Placed-STAT MODS visibility (producer 10)
 
-Permanent obstruction masks omit lighting primitives hidden by the winning STAT's
-NullTextureSet MODS entry in the runtime's supported standard-material swap path.
+Permanent obstruction masks omit lighting primitives hidden by the winning base record's
+NullTextureSet alternate-texture entry in the runtime's supported standard-material swap path.
 Signed negative indices are ignored; the last entry at each geometry index wins,
 so a later retexture or missing target restores the model's visible shape. Only
 matching eligible geometry tags enter each reference's hidden-index set. That set
@@ -292,8 +292,7 @@ The offline material classifier mirrors the current runtime binding exclusions:
 external emittance and native depth, skin, hair or palette wrappers retain their
 geometry because the current MODS query cannot hide those bindings. Native materials
 that still use the standard binding participate. This is a bounded mirror of that
-current path, not a claim that every material path supports MODS. The raw-colour
-Skyrim visual profile still declines MODS at runtime; these masks describe the normal
+current path, not a claim that every material path supports MODS. These masks describe the normal
 converted-world path. Producer 10 rejects producer-9 masks even when their other
 inputs happen to match. Mesh, texture and terrain cache identities are unchanged by
 this grass policy change.
