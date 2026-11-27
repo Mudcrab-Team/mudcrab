@@ -500,6 +500,7 @@ impl CellFog {
     /// (72-byte) lighting template without a max, and now get that fog with no cap.
     fn from_lighting(lighting: &Lighting) -> Option<Self> {
         let far = lighting.fog_far.unwrap_or(0.0);
+        // retail-default: RF-LIGHT-CPU-014, the getter reads a missing field as 0.
         let authored_near = lighting.fog_near.unwrap_or(0.0);
         let near = if authored_near <= 0.0 || authored_near > far {
             FOG_NEAR_CLAMP_FRACTION * far
@@ -756,9 +757,9 @@ impl FogFields {
             far_color,
             near,
             far,
-            // STAND-IN(#695): see above.
+            // STAND-IN(#695): a missing power field takes 1.
             self.power.unwrap_or(1.0),
-            // STAND-IN(#695): see above.
+            // STAND-IN(#695): a missing max field takes 1.
             self.max.unwrap_or(1.0),
         )
     }
@@ -1145,6 +1146,7 @@ fn step_room_blend(
     let camera = cameras.iter().next().map(|transform| transform.translation);
     let cell_id = scene.interior.as_ref().map(|interior| interior.cell_id);
     let room = scene.room_at(camera, blend.target);
+    // retail-default: not record data; a run without the real clock has no elapsed time.
     let delta = time.map_or(0.0, |time| time.delta_secs());
     if blend.cell_id != cell_id {
         blend.snap(cell_id, room);

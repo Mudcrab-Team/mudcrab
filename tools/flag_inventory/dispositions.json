@@ -3152,11 +3152,11 @@
           "path": "crates/engine/src/world/environment/interior.rs"
         },
         {
-          "anchor": "/// The near/far clamps are not traced. Clip distance is reported in [`InteriorLighting`] only.",
+          "anchor": "/// Clip distance is reported in [`InteriorLighting`] only.",
           "path": "crates/engine/src/world/environment/interior.rs"
         },
         {
-          "anchor": "colour are reported only. `far <= near` draws no fog. The near/far clamps and the clip",
+          "anchor": "the same). The far clamp above 163,840 and the clip distance are not applied.",
           "path": "docs/specs/engine/interior-environment.md"
         }
       ],
@@ -3342,7 +3342,7 @@
           "path": "crates/engine/src/world/environment/interior.rs"
         },
         {
-          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);",
+          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);",
           "path": "crates/engine/src/world/environment/interior.rs"
         },
         {
