@@ -181,6 +181,10 @@ pub struct WeatherSky {
     /// The `NAM0` Sunlight colours and `DALC` blocks the record did not publish, such as
     /// `sunlight (Night)`. Empty when `lighting` is `Some`.
     pub lighting_omissions: Vec<String>,
+    /// The weather's `IMSP` image-space forms by day part, indexed like [`TimeOfDay::ALL`]
+    /// (sunrise, day, sunset, night). `None` where the record names none. `retail_hdr.rs` mixes
+    /// these by [`slot_weights`].
+    image_spaces: [Option<u32>; 4],
 }
 
 impl WeatherSky {
@@ -278,7 +282,18 @@ impl WeatherSky {
             fog_omissions,
             lighting,
             lighting_omissions,
+            image_spaces: weather.image_spaces,
         })
+    }
+
+    /// The day-part weights at a game hour, as the sky and lighting mixers use them.
+    pub fn slot_weights_at(&self, hour: f64) -> SlotWeights {
+        slot_weights(hour, self.timing)
+    }
+
+    /// The weather's `IMSP` forms, indexed like [`TimeOfDay::ALL`]. `None` where it names none.
+    pub fn image_space_forms(&self) -> [Option<u32>; 4] {
+        self.image_spaces
     }
 
     /// Reads [`DEFAULT_WEATHER_FORM_ID`] from the catalog, with the sun timing of the climate of

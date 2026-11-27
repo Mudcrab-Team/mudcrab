@@ -736,7 +736,8 @@ pub(crate) fn apply_scene_grade_mode(
         }
         grading.global.post_saturation = resolved.bevy_saturation;
         *post = resolved.post;
-        *tonemapping = resolved.tonemapping;
+        // `skyrim` runs retail's tonemap pass (`retail_hdr.rs`), not a Bevy transform.
+        *tonemapping = source.profile.display_tonemapping(resolved.tonemapping);
     }
 }
 

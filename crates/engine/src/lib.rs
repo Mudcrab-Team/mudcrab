@@ -51,6 +51,11 @@ mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
 pub mod retail_fog;
+pub mod retail_hdr;
+pub mod retail_hdr_chain;
+#[cfg(test)]
+mod retail_hdr_gpu_tests;
+mod retail_hdr_render;
 pub mod room_culling;
 pub mod route;
 mod scene_evidence;
