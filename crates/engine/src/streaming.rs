@@ -1721,9 +1721,11 @@ fn spawn_cell(
     if let (Some(terrain), Some(merged)) = (&mut terrain, &merged) {
         terrain.heights = crate::terrain_merge::mesh::cell_to_grid(&merged.cell)?.0;
     }
-    let terrain_hide_flags = terrain
-        .as_ref()
-        .map_or(0, |terrain| terrain.land_hide_flags & 0x0F);
+    let terrain_hide_flags = if let Some(terrain) = &terrain {
+        terrain.land_hide_flags & 0x0F
+    } else {
+        payload.land_hide_flags & 0x0F
+    };
     // The merged cell's one mesh and its one collider, built from the same buffers. When all four
     // quadrants are hidden (`0x0F`), omit the mesh and collider altogether rather than building an
     // empty trimesh; `HiddenTerrainQuadrants` still suppresses near LOD tiles.
@@ -1778,17 +1780,10 @@ fn spawn_cell(
     ));
     if let CellKey::Exterior { grid_x, grid_y, .. } = payload.key {
         root_commands.insert(ExteriorCellGrid(IVec2::new(grid_x, grid_y)));
-        if merged_cell.is_none()
-            && terrain
-                .as_ref()
-                .is_some_and(|terrain| (terrain.land_hide_flags & 0x0F) != 0)
-        {
-            let mask = terrain
-                .as_ref()
-                .map_or(0, |terrain| terrain.land_hide_flags & 0x0F);
+        if merged_cell.is_none() && terrain_hide_flags != 0 {
             root_commands.insert(HiddenTerrainQuadrants {
                 grid: IVec2::new(grid_x, grid_y),
-                mask,
+                mask: terrain_hide_flags,
             });
         }
     }
