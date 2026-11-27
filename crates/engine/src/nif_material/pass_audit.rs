@@ -278,7 +278,8 @@ fn drawn(handler: &NativeMaterialHandler, source: &Material<'_>) -> Pass {
     };
     let mut material = stock.clone();
     if retail::is_lighting(source) {
-        retail::apply(source, &stock, &mut material);
+        // No value or texture changes a pass.
+        retail::apply(source, &stock, None, &[], &mut material);
     }
     let loaded = material.alpha_mode;
     let state = handler.depth_state(source, loaded);

@@ -7,9 +7,16 @@
 //! draws it:
 //!
 //! - **Specular:** colour times strength and the glossiness, with the term on for property flag bit
-//!   0 or 41. STAND-IN(#362): the converter clamps the strength and the colour to `[0, 1]`, drops
-//!   the strength of a surface that has only bit 41, and stores the glossiness as a roughness;
-//!   retail loads the NIF floats unscaled.
+//!   0 or 41, from the NIF floats the pack publishes ([`shared::material_values`]). A
+//!   model-space surface without a specular map has a black mask and no highlight.
+//!   STAND-IN(#362): without those values the colour and strength are the converter's glTF ones,
+//!   clamped to `[0, 1]`, zero for a surface with only bit 41, and the glossiness comes from the
+//!   roughness.
+//! - **Environment:** the environment technique adds its cube to the light sum's product
+//!   (section 9.2), scaled by the published environment map scale and masked by slot 5 or the
+//!   normal map's alpha. A pack without the scale draws no reflection.
+//!   STAND-IN(#490): the eye technique, a model-space surface and the distance cut at
+//!   `fEnvmapLODFadeEnd` are not drawn; the cut's distance input is open.
 //! - **Emission:** the file colour times the multiple only with `Own_Emit` (flag bit 22),
 //!   unclamped. External emittance (flag bit 29) clears own emit: the surface takes its source's
 //!   colour (`emittance.rs`) and is black without a source. The emission adds to the light sum, so
@@ -33,9 +40,12 @@ use super::{
 use crate::skin_material::{SkyrimSkinFlags, SkyrimSkinMaterial};
 use ::gltf::Material;
 use bevy::{pbr::RetailSurface, prelude::*};
+use shared::material_values::{MaterialValues, MaterialValuesFile};
 
 /// Property flag bit 0: specular.
 const SLSF1_SPECULAR: u32 = 1;
+/// Property flag bit 12: model-space normals.
+const SLSF1_MODEL_SPACE: u32 = 1 << 12;
 /// Property flag bit 41 is bit 9 of the second flag word. It also turns the specular term on.
 const SLSF2_SPECULAR_BIT_41: u32 = 1 << 9;
 /// Property flag bits 2 and 15: the two refraction flags.
@@ -86,6 +96,38 @@ pub(super) fn is_lighting(material: &Material<'_>) -> bool {
     native_tag(material, "shaderFamily", "lighting")
 }
 
+/// The NIF values of `source`: the ones the GLB publishes, else the pack's sidecar entry of the
+/// same shader block.
+pub(super) fn material_values(
+    source: &Material<'_>,
+    sidecar: Option<&MaterialValuesFile>,
+    mesh: &str,
+) -> Option<MaterialValues> {
+    // silent-ok: a material without extras publishes no values and names no shader block.
+    let extras: serde_json::Value = serde_json::from_str(source.extras().as_ref()?.get()).ok()?;
+    let published = extras
+        .pointer("/openSkyrim/materialValues")
+        // silent-ok: a malformed field is read from the sidecar, or not at all.
+        .and_then(|values| serde_json::from_value::<MaterialValues>(values.clone()).ok());
+    published
+        .or_else(|| {
+            let block = extras.pointer("/openSkyrim/shaderBlock")?.as_u64()?;
+            sidecar?.get(mesh, u32::try_from(block).ok()?)
+        })
+        .filter(MaterialValues::is_finite)
+}
+
+/// The glTF texture index of the environment slot `semantic`.
+fn environment_slot(source: &Material<'_>, semantic: &str) -> Option<usize> {
+    let slot = source
+        .extension_value("OPEN_SKYRIM_material")?
+        .get("textureSlots")?
+        .as_array()?
+        .iter()
+        .find(|slot| slot.get("semantic").and_then(|value| value.as_str()) == Some(semantic))?;
+    usize::try_from(slot.get("texture")?.as_u64()?).ok()
+}
+
 /// The signed emissive colour and multiple the converter kept for values glTF cannot hold.
 fn source_emission(material: &Material<'_>) -> Option<(Vec3, f32)> {
     // The extras are validated raw JSON; a material without the field has no signed emission.
@@ -110,17 +152,38 @@ fn glossiness(roughness: f32) -> f32 {
 
 /// Writes the retail inputs of `source` into `material`. `loaded` is the stock glTF material the
 /// published values are read from; `material` may already carry the `mudcrab` adaptations.
+/// `values` are the NIF floats ([`material_values`]) and `textures` the glTF load's images by
+/// texture index.
 pub(super) fn apply(
     source: &Material<'_>,
     loaded: &StandardMaterial,
+    values: Option<MaterialValues>,
+    textures: &[Handle<Image>],
     material: &mut StandardMaterial,
 ) {
     // silent-ok: a lighting material without published flag words has every flag clear.
     let (flags_1, flags_2) = native_depth_flags(source).unwrap_or_default();
     let specular = flags_1 & SLSF1_SPECULAR != 0 || flags_2 & SLSF2_SPECULAR_BIT_41 != 0;
-    // The glTF loader stores `specularFactor / 2` as the reflectance.
-    let strength = loaded.reflectance * 2.0;
-    let tint = loaded.specular_tint.to_linear();
+    let (colour, glossiness) = match values {
+        // An empty specular slot of a model-space surface is black (section 5).
+        Some(values) => {
+            let unmasked =
+                flags_1 & SLSF1_MODEL_SPACE != 0 && loaded.specular_tint_texture.is_none();
+            let colour = Vec3::from_array(values.specular_color) * values.specular_strength;
+            (
+                if unmasked { Vec3::ZERO } else { colour },
+                values.glossiness,
+            )
+        }
+        // The glTF loader stores `specularFactor / 2` as the reflectance.
+        None => {
+            let tint = loaded.specular_tint.to_linear();
+            (
+                Vec3::new(tint.red, tint.green, tint.blue) * (loaded.reflectance * 2.0),
+                glossiness(loaded.perceptual_roughness),
+            )
+        }
+    };
 
     // The emissive texture is the glow map alone, which only the glow technique reads.
     material.emissive_texture = (technique(flags_1, flags_2) == Technique::Glow)
@@ -178,16 +241,32 @@ pub(super) fn apply(
     // The object snow rule adds no specular colour, and the surface keeps two output stages.
     // With projected UV the specification does not cover the surface, which draws as before.
     let snow = snows(flags_1, flags_2) && flags_1 & SLSF1_PROJECTED_UV == 0;
+    // The environment technique, with the cube its slot names. An empty cube slot is the zero
+    // cube, which adds nothing.
+    // STAND-IN(#490): a model-space surface has no reflection here.
+    let environment = values
+        .and_then(|values| values.environment_map_scale)
+        .filter(|_| technique(flags_1, flags_2) == Technique::Environment)
+        .filter(|_| flags_1 & SLSF1_MODEL_SPACE == 0);
+    let texture = |semantic| {
+        textures
+            .get(environment_slot(source, semantic)?)
+            .filter(|handle| **handle != Handle::default())
+            .cloned()
+    };
+    material.retail_environment_cube_source = environment.and_then(|_| texture("environment_cube"));
+    material.retail_environment_mask_source = material
+        .retail_environment_cube_source
+        .as_ref()
+        .and_then(|_| texture("environment_mask"));
+
     material.retail_surface = Some(RetailSurface {
-        specular_color: if snow {
-            Vec3::ZERO
-        } else {
-            Vec3::new(tint.red, tint.green, tint.blue) * strength
-        },
-        glossiness: glossiness(loaded.perceptual_roughness),
+        specular_color: if snow { Vec3::ZERO } else { colour },
+        glossiness,
         specular: specular || snow,
         emissive_multiple: if external { multiple } else { 0.0 },
         alpha_reference: blended_reference,
+        environment_scale: environment.unwrap_or(0.0),
     });
 }
 
@@ -245,8 +324,141 @@ mod tests {
             emissive_texture: Some(Handle::default()),
             ..loaded.clone()
         };
-        apply(&source, &loaded, &mut material);
+        apply(&source, &loaded, None, &[], &mut material);
         material
+    }
+
+    /// A surface with the environment slots and published values of `flags_1`, loaded with the
+    /// textures its glTF indices name.
+    fn environment(
+        (flags_1, flags_2): (u32, u32),
+        values: Option<MaterialValues>,
+        slots: &str,
+        textures: &[Handle<Image>],
+    ) -> StandardMaterial {
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"extensionsUsed":["OPEN_SKYRIM_material"],
+            "materials":[{{"extensions":{{"OPEN_SKYRIM_material":{{"textureSlots":[{slots}]}}}},
+            "extras":{{"openSkyrim":{{"shaderFamily":"lighting","shaderFlags1":{flags_1},
+            "shaderFlags2":{flags_2}}}}}}}]}}"#
+        );
+        let gltf = Gltf::from_slice_without_validation(json.as_bytes()).unwrap();
+        let source = gltf.materials().next().unwrap();
+        let loaded = loaded();
+        let mut material = loaded.clone();
+        apply(&source, &loaded, values, textures, &mut material);
+        material
+    }
+
+    const ENVIRONMENT_BIT: u32 = 1 << 7;
+    const BOTH_SLOTS: &str = r#"{"semantic":"environment_cube","texture":1},
+        {"semantic":"environment_mask","texture":2}"#;
+
+    fn authored(scale: Option<f32>) -> MaterialValues {
+        MaterialValues {
+            specular_color: [1.5, 0.5, 0.25],
+            specular_strength: 2.0,
+            glossiness: 500.0,
+            environment_map_scale: scale,
+        }
+    }
+
+    fn handles() -> Vec<Handle<Image>> {
+        let mut images = Assets::<Image>::default();
+        (0..3).map(|_| images.add(Image::default())).collect()
+    }
+
+    /// SPEC-1 section 2.8: the NIF floats load unscaled, with the term of flag bit 41 too.
+    #[test]
+    fn published_values_replace_the_clamped_gltf_specular() {
+        for (flags_1, flags_2) in [(SLSF1_SPECULAR, 0), (0, SLSF2_SPECULAR_BIT_41)] {
+            let json = document(flags_1, flags_2, "", 1.0);
+            let source = json.materials().next().unwrap();
+            let mut material = loaded();
+            apply(&source, &loaded(), Some(authored(None)), &[], &mut material);
+            let surface = material.retail_surface.unwrap();
+            assert!(surface.specular);
+            assert_eq!(surface.specular_color, Vec3::new(3.0, 1.0, 0.5));
+            assert_eq!(surface.glossiness, 500.0);
+        }
+        // A model-space surface with no specular map has a black mask.
+        let unmasked = environment(
+            (SLSF1_SPECULAR | SLSF1_MODEL_SPACE, 0),
+            Some(authored(None)),
+            "",
+            &[],
+        );
+        assert_eq!(unmasked.retail_surface.unwrap().specular_color, Vec3::ZERO);
+    }
+
+    #[test]
+    fn the_values_come_from_the_mesh_before_the_sidecar() {
+        let mut sidecar = MaterialValuesFile::new();
+        sidecar
+            .meshes
+            .entry("meshes/a.glb".into())
+            .or_default()
+            .insert(22, authored(Some(0.5)));
+        let read = |extra: &str, mesh: &str| {
+            let json = document(0, 0, extra, 1.0);
+            material_values(&json.materials().next().unwrap(), Some(&sidecar), mesh)
+        };
+        assert_eq!(
+            read(r#","shaderBlock":22"#, "meshes/a.glb"),
+            Some(authored(Some(0.5)))
+        );
+        assert_eq!(read(r#","shaderBlock":23"#, "meshes/a.glb"), None);
+        assert_eq!(read(r#","shaderBlock":22"#, "meshes/b.glb"), None);
+        assert_eq!(read("", "meshes/a.glb"), None);
+        let published = r#","shaderBlock":22,"materialValues":{"specularColor":[0.0,0.0,1.0],
+            "specularStrength":3.0,"glossiness":4.0}"#;
+        assert_eq!(
+            read(published, "meshes/a.glb").unwrap().specular_strength,
+            3.0
+        );
+    }
+
+    /// SPEC-1 section 9.2, technique 1: the cube, the mask and the scale, only for the
+    /// environment technique, and never with an invented scale.
+    #[test]
+    fn the_environment_technique_names_its_cube_mask_and_scale() {
+        let textures = handles();
+        let values = Some(authored(Some(0.25)));
+        let drawn = environment((ENVIRONMENT_BIT, 0), values, BOTH_SLOTS, &textures);
+        assert_eq!(
+            drawn.retail_environment_cube_source.as_ref(),
+            Some(&textures[1])
+        );
+        assert_eq!(
+            drawn.retail_environment_mask_source.as_ref(),
+            Some(&textures[2])
+        );
+        assert_eq!(drawn.retail_surface.unwrap().environment_scale, 0.25);
+        // Bound only after the images are checked.
+        assert!(drawn.retail_environment_cube.is_none());
+
+        let cube_only = r#"{"semantic":"environment_cube","texture":1}"#;
+        let unmasked = environment((ENVIRONMENT_BIT, 0), values, cube_only, &textures);
+        assert!(unmasked.retail_environment_cube_source.is_some());
+        assert!(unmasked.retail_environment_mask_source.is_none());
+
+        let mask_only = r#"{"semantic":"environment_mask","texture":2}"#;
+        let plain = (ENVIRONMENT_BIT, 0);
+        // Flag 38, glow, has the higher priority.
+        let glow = (ENVIRONMENT_BIT, 1 << 6);
+        let model_space = (ENVIRONMENT_BIT | SLSF1_MODEL_SPACE, 0);
+        for (flags, values, slots, name) in [
+            ((0, 0), values, BOTH_SLOTS, "no environment flag"),
+            (glow, values, BOTH_SLOTS, "the glow technique wins"),
+            (model_space, values, BOTH_SLOTS, "model space"),
+            (plain, Some(authored(None)), BOTH_SLOTS, "no scale"),
+            (plain, None, BOTH_SLOTS, "no values"),
+            (plain, values, mask_only, "no cube"),
+        ] {
+            let surface = environment(flags, values, slots, &textures);
+            assert!(surface.retail_environment_cube_source.is_none(), "{name}");
+            assert!(surface.retail_environment_mask_source.is_none(), "{name}");
+        }
     }
 
     #[test]
@@ -327,7 +539,13 @@ mod tests {
         let apply_flags = |flags_1: u32, flags_2: u32| {
             let gltf = document(flags_1, flags_2, "", 1.0);
             let mut material = textured.clone();
-            apply(&gltf.materials().next().unwrap(), &textured, &mut material);
+            apply(
+                &gltf.materials().next().unwrap(),
+                &textured,
+                None,
+                &[],
+                &mut material,
+            );
             material
         };
         let black = apply_flags(SLSF1_BLACK_BASE, 0);

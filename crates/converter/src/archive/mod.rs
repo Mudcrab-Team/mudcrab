@@ -1363,6 +1363,21 @@ fn detect_archive_collision(
     Ok(())
 }
 
+/// Visits every entry of the BSA at `path` by its stored name. The second argument
+/// decompresses that entry, so an entry the caller does not want costs nothing.
+pub(crate) fn for_each_bsa_entry(
+    path: &Path,
+    visit: &mut dyn FnMut(&str, &dyn Fn() -> Result<Vec<u8>>) -> Result<()>,
+) -> Result<()> {
+    let file =
+        File::open(path).wrap_err_with(|| format!("failed to open archive {}", path.display()))?;
+    let source = source::ArchiveSource::from_file(file)?;
+    for entry in bsa::read_entries(&source)? {
+        visit(&entry.name, &|| entry.decompress(&source))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

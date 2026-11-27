@@ -1,6 +1,9 @@
 #define_import_path bevy_pbr::pbr_fragment
 
-#import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d}
+// mudcrab: the cube array too, for the retail environment cube.
+#import bevy_render::bindless::{
+    bindless_samplers_filtering, bindless_textures_2d, bindless_textures_cube,
+}
 
 #import bevy_pbr::{
     pbr_functions,
@@ -840,6 +843,50 @@ pbr_input.material.uv_transform = uv_transform;
 #endif  // PBR_ANISOTROPY_TEXTURE_SUPPORTED
 
 #endif  // LOAD_PREPASS_NORMALS
+
+        // mudcrab: retail's environment technique (SPEC-1 section 9.2, technique 1):
+        // `R = 2(N.V)N - V`, `m = t1.a + h (t5.r - t1.a)`, `E = t4(R).rgb m cb1[2].x`. The cube
+        // takes the direction in Creation's axes: (x, -z, y) of the runtime's.
+        // STAND-IN(#490): the environment fade `cb2[3].x` is one; its distance input is open.
+#ifdef VERTEX_UVS
+#ifndef MESHLET_MESH_MATERIAL_PASS
+        if ((flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_ENVIRONMENT_BIT) != 0u) {
+            var environment_mask = pbr_input.retail_specular_mask;
+            if ((flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_ENVIRONMENT_MASK_BIT) != 0u) {
+                environment_mask = textureSampleBias(
+#ifdef BINDLESS
+                    bindless_textures_2d[material_indices[slot].retail_environment_mask_texture],
+                    bindless_samplers_filtering[material_indices[slot].base_color_sampler],
+#else   // BINDLESS
+                    pbr_bindings::retail_environment_mask_texture,
+                    pbr_bindings::base_color_sampler,
+#endif  // BINDLESS
+                    uv,
+                    bias.mip_bias,
+                ).r;
+            }
+            let reflected = 2.0 * dot(pbr_input.N, pbr_input.V) * pbr_input.N - pbr_input.V;
+            let cube = textureSampleBias(
+#ifdef BINDLESS
+                bindless_textures_cube[material_indices[slot].retail_environment_cube_texture],
+                bindless_samplers_filtering[material_indices[slot].base_color_sampler],
+#else   // BINDLESS
+                pbr_bindings::retail_environment_cube_texture,
+                pbr_bindings::base_color_sampler,
+#endif  // BINDLESS
+                vec3<f32>(reflected.x, -reflected.z, reflected.y),
+                bias.mip_bias,
+            ).rgb;
+#ifdef BINDLESS
+            let environment_scale = pbr_bindings::material_array[
+                material_indices[slot].material].retail_environment.x;
+#else   // BINDLESS
+            let environment_scale = pbr_bindings::material.retail_environment.x;
+#endif  // BINDLESS
+            pbr_input.retail_environment = cube * environment_mask * environment_scale;
+        }
+#endif  // MESHLET_MESH_MATERIAL_PASS
+#endif  // VERTEX_UVS
 
 // TODO: Meshlet support
 #ifdef LIGHTMAP

@@ -13,6 +13,7 @@ pub mod grass_settings;
 pub mod initial_enable;
 pub mod legacy_id_view;
 pub mod lod;
+pub mod material_values;
 pub mod model_visibility;
 pub mod nif_alpha;
 pub mod plugin_selection;

@@ -230,7 +230,9 @@ fn retail_lighting(in: pbr_types::PbrInput) -> vec4<f32> {
     }
 
     let sum = diffuse + ambient + in.material.emissive.rgb;
-    let lit = in.material.base_color.rgb * sum;
+    // The environment colour takes the light sum without the diffuse texel and vertex colour
+    // (section 9.2, technique 1).
+    let lit = in.material.base_color.rgb * sum + in.retail_environment * sum;
     // `Spec` has no diffuse texel and no vertex colour (section 6.2).
     // STAND-IN(#362): the specular distance fade `cb2[3].y` is 1; its distance input is open.
     // STAND-IN(#362): ambient specular (key bit 17) is not drawn; its predicate is not traced.

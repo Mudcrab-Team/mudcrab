@@ -36,6 +36,9 @@ pub struct RetailSurface {
     /// The alpha test of a blended surface: a pixel whose alpha is below it is discarded. 0
     /// tests nothing. A masked surface keeps [`bevy_material::AlphaMode::Mask`].
     pub alpha_reference: f32,
+    /// The environment map scale (retail `cb1[2].x`) of an environment surface. The shader
+    /// draws the reflection only with a [`crate::StandardMaterial::retail_environment_cube`].
+    pub environment_scale: f32,
 }
 
 impl RetailSurface {
@@ -46,5 +49,6 @@ impl RetailSurface {
         specular: false,
         emissive_multiple: 0.0,
         alpha_reference: 0.0,
+        environment_scale: 0.0,
     };
 }

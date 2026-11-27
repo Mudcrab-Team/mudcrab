@@ -3,12 +3,13 @@ use color_eyre::{Result, eyre::ensure};
 use project_wormhole_nif::{
     bs::prelude::{BSShaderTextureSet, BSTriShape},
     nif_block::{
-        BSEffectShaderProperty, BSLightingShaderProperty, NiAVObjectFlags, NiAlphaProperty,
-        NifBlock,
+        BSEffectShaderProperty, BSLightingShaderProperty, LightingShaderTypeData, NiAVObjectFlags,
+        NiAlphaProperty, NifBlock,
     },
     nif_file::NifFile,
 };
 use serde::{Deserialize, Serialize};
+use shared::material_values::MaterialValues;
 use shared::texture_aliases::{SRGB_TEXTURE_SUFFIX, wrap_texture_suffix};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -165,6 +166,10 @@ pub struct ValidatedNifMaterial {
     /// (encoded RGB in 0..1). On FaceGen hair it is the NPC's hair colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint_color: Option<[f32; 3]>,
+    /// The environment map scale of an `environment_map` or `eye_environment_map` lighting
+    /// shader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_map_scale: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -577,6 +582,9 @@ fn publish_material(
     output["extras"]["openSkyrim"]["shaderFlags1"] = serde_json::json!(material.shader_flags_1);
     output["extras"]["openSkyrim"]["shaderFlags2"] = serde_json::json!(material.shader_flags_2);
     output["extras"]["openSkyrim"]["alphaProperty"] = serde_json::json!(material.alpha_property);
+    if let Some(values) = material_values(material) {
+        output["extras"]["openSkyrim"]["materialValues"] = serde_json::to_value(values)?;
+    }
     publish_emissive(
         &mut output,
         material,
@@ -995,7 +1003,36 @@ fn build_lighting_material(
         },
         textures: textures.map(|(_, slots)| slots).unwrap_or_default(),
         tint_color: lighting_tint_color(shader_type, property),
+        environment_map_scale: lighting_environment_scale(property),
     })
+}
+
+/// The environment map scale an `environment_map` shader, or the cubemap scale an eye shader,
+/// carries in its type-specific fields. A value that is not finite is omitted.
+fn lighting_environment_scale(property: &BSLightingShaderProperty) -> Option<f32> {
+    let scale = match property.type_data {
+        LightingShaderTypeData::EnvironmentMap { env_map_scale } => env_map_scale,
+        LightingShaderTypeData::EyeEnvmap {
+            eye_cubemap_scale, ..
+        } => eye_cubemap_scale,
+        _ => return None,
+    };
+    scale.is_finite().then_some(scale)
+}
+
+/// The values [`shared::material_values`] publishes for a lighting material, when the NIF's are
+/// all finite.
+pub fn material_values(material: &ValidatedNifMaterial) -> Option<MaterialValues> {
+    if material.shader_family != NifShaderFamily::Lighting {
+        return None;
+    }
+    let values = MaterialValues {
+        specular_color: material.specular_color,
+        specular_strength: material.specular_strength,
+        glossiness: material.glossiness,
+        environment_map_scale: material.environment_map_scale,
+    };
+    values.is_finite().then_some(values)
 }
 
 /// The tint colour a `skin_tint` or `hair_tint` shader carries in its type-specific fields.
@@ -1086,6 +1123,7 @@ fn build_effect_material(
         uv_scale: property.uv_scale.0.to_array(),
         texture_clamp_mode: property.texture_clamp_mode & 3,
         tint_color: None,
+        environment_map_scale: None,
         textures,
     };
     validate_material(source, shape_block, shape_name, &material)?;
@@ -1481,6 +1519,7 @@ mod tests {
             uv_scale: [1.0; 2],
             texture_clamp_mode: 3,
             tint_color: None,
+            environment_map_scale: None,
             textures: Vec::new(),
         }
     }
@@ -2211,6 +2250,43 @@ mod tests {
 
     /// A `BSLightingShaderProperty` block of `shader_type` with `tail` as its type-specific
     /// fields, laid out as Skyrim SE stores it.
+    #[test]
+    fn the_environment_scale_comes_from_the_environment_and_eye_tails() {
+        let environment = lighting_property(1, &[0.25]);
+        assert_eq!(lighting_environment_scale(&environment), Some(0.25));
+        let eye = lighting_property(16, &[0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(lighting_environment_scale(&eye), Some(0.5));
+        let infinite = lighting_property(1, &[f32::INFINITY]);
+        assert_eq!(lighting_environment_scale(&infinite), None);
+        assert_eq!(lighting_environment_scale(&lighting_property(0, &[])), None);
+    }
+
+    #[test]
+    fn lighting_materials_publish_their_authored_values_unclamped() {
+        let mut material = fixture(NifAlphaMode::Opaque, false, false, true);
+        material.shader_flags_1 = 0;
+        material.specular_color = [1.5, 0.5, 0.25];
+        material.specular_strength = 7.0;
+        material.glossiness = 80.0;
+        material.environment_map_scale = Some(0.25);
+        let document = publish_specular_fixture(material.clone());
+        let published = &document["materials"][0]["extras"]["openSkyrim"]["materialValues"];
+        assert_eq!(
+            serde_json::from_value::<MaterialValues>(published.clone()).unwrap(),
+            MaterialValues {
+                specular_color: [1.5, 0.5, 0.25],
+                specular_strength: 7.0,
+                glossiness: 80.0,
+                environment_map_scale: Some(0.25),
+            }
+        );
+        material.shader_family = NifShaderFamily::Effect;
+        assert_eq!(material_values(&material), None);
+        material.shader_family = NifShaderFamily::Lighting;
+        material.glossiness = f32::NAN;
+        assert_eq!(material_values(&material), None);
+    }
+
     fn lighting_property(shader_type: u32, tail: &[f32]) -> BSLightingShaderProperty {
         use nom_derive::Parse;
         let mut words = vec![shader_type, u32::MAX, 0, u32::MAX, 0x8244_030b, 0x0000_8021];

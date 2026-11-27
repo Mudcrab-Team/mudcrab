@@ -68,6 +68,7 @@ fn drive_emittance_by_hour(
     clock: Option<Res<crate::sun::GameClock>>,
     config: Option<Res<crate::config::EngineConfig>>,
     catalog: Option<Res<crate::world::environment::EnvironmentCatalog>>,
+    space: Option<Res<crate::streaming::ActiveSpace>>,
     mut references: Query<(
         &EmittanceDayParts,
         &mut ReferenceEmittance,
@@ -79,8 +80,12 @@ fn drive_emittance_by_hour(
     let (Some(clock), Some(config), Some(catalog)) = (clock, config, catalog) else {
         return;
     };
+    // The climate of the worldspace the player is in, as the sun and the sky take it.
+    let worldspace = space.as_deref().map_or(config.worldspace_id, |space| {
+        space.exterior_worldspace(config.worldspace_id)
+    });
     let Some(timing) = catalog
-        .worldspace_climate(config.worldspace_id)
+        .worldspace_climate(worldspace)
         .and_then(|climate| catalog.sun_timing(climate))
     else {
         return;
@@ -802,10 +807,15 @@ mod tests {
             crate::sun::SunTiming([30, 42, 102, 114]),
             [None; 5],
         );
+        // The configured worldspace has no climate; the one the player is in has.
         app.insert_resource(catalog)
             .insert_resource(crate::config::EngineConfig {
-                worldspace_id: 0x3C,
+                worldspace_id: 0x99,
                 ..default()
+            })
+            .insert_resource(crate::streaming::ActiveSpace {
+                worldspace_id: Some(0x3C),
+                interior: None,
             })
             .insert_resource(crate::sun::GameClock {
                 hour: 12.0,

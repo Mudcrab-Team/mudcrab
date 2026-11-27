@@ -58,7 +58,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 2.5 | directional ambient | vendored `pbr_ambient.wgsl`, `DirectionalAmbientCube` (#1013) |
 | 2.6 | point lights, flicker, pulse, emittance | `LightEvaluation::point_light_in`, `light_dynamics.rs` |
 | 2.7 | emission, own-emit gate, external emittance by day part | `nif_material/retail.rs`, `emittance.rs` |
-| 2.8 | specular values, vertex colour | `nif_material/retail.rs`, `RetailSurface` |
+| 2.8 | specular values from the NIF floats, vertex colour | `shared::material_values`, `nif_material/retail.rs`, `RetailSurface` |
 | 3.2 | tangent frame and normals | Bevy's frame; no back-face flip; `terrain_normal.wgsl` (no Z rebuild) |
 | 3.3 | vertex fog | `pbr_retail.wgsl`, evaluated per pixel |
 | 6.1 | light sum, attenuation, no clamp | vendored `render/pbr_retail.wgsl` |
@@ -67,6 +67,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 7 | output tail, `k`, `B`, `B2` | `render/pbr_retail.wgsl`, object LOD `lod_object.wgsl` |
 | 8 | fog property, composite records 53 and 49, clear colour (corrected by SPEC-4, below) | `sky.rs`, `retail_fog.rs`, `interior::FogFields` |
 | 9.2 | model-space normals, face, face tint, hair, landscape | `shaders/skyrim_skin.wgsl`, terrain shaders |
+| 9.2 | environment technique: cube, mask, scale | `nif_material/retail.rs`, `nif_material/retail_environment.rs`, vendored `pbr_fragment.wgsl` and `pbr_retail.wgsl` |
 | 8.1, 9.2, 9.3 | the pass of a surface: unblended lit surfaces and decals before the composite, blended surfaces after it | `NifDepthState::retail_first_stage`, `nif_material/retail.rs`, vendored `extended_material.rs`; table `nif_material/pass_audit.rs` |
 | 10 | image space, adaptation, bloom, tonemap | `retail_hdr*.rs` and `shaders/retail_hdr*.wgsl` |
 | 11 | worked examples A to D | `retail_lighting_examples.rs` (CPU), `retail_lighting_gpu_tests.rs` (GPU) |
@@ -96,12 +97,23 @@ and the same output tail.
 
 - `retail_lighting_examples.rs`: examples A to D through the engine's weather mix, sun path, image
   space, composite and HDR functions.
-- `retail_lighting_gpu_tests.rs` (ignored; offscreen, no window): examples A, B and D as pixels.
+- `retail_lighting_gpu_tests.rs` (ignored; offscreen, no window): examples A, B and D and the
+  environment reflection as pixels.
   Run with `MUDCRAB_RETAIL_PIXEL=1` and `--ignored retail_pixel --test-threads=1`.
 - `retail_hdr_gpu_tests.rs` (ignored): the HDR chain against its CPU reference. This covers the
   adaptation and tonemap of example C. Example C's SAO factor has no engine input.
 - `retail_output_examples.rs`: SPEC-2 examples E0 to E3. Example E4 is a test in `nif_depth.rs`.
 - `vendored_bevy_patches.rs`: every link of the vendored path.
+
+## Material values
+
+A pack publishes the NIF's specular colour, strength, glossiness and environment map scale at
+`materials[].extras.openSkyrim.materialValues`. A pack converted before that takes them from
+`material-values.json` at its root. `converter derive-material-values <pack> --registry
+<packs.json> --data <Skyrim Data> --output <new file>` writes that file from the source NIFs
+without a reconversion. It uses a NIF only when its bytes match the pack's conversion manifest,
+and it never writes into a registered pack. Without either source a surface keeps the converter's
+clamped glTF specular and draws no reflection.
 
 ## Stand-ins and gaps
 
@@ -118,9 +130,9 @@ changes the picture is unverified.
 | Blended decals draw after the composite with the second-stage tail ([Pass rules](#pass-rules)) | STAND-IN(#362): decal stage order |
 | Additive term `cb1[8]` is 0; the specular distance fade is 1 | STAND-IN(#362): open run-time inputs |
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
-| Specular strength and colour are clamped to `[0, 1]` by the converter, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
-| Only `XEMI` references take an emittance source, mixed by day part from the converter's table; a surface without a source follows own-emit | STAND-IN(#362): emittance source and membership |
-| Environment and eye cubemaps are not drawn; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
+| A pack without [material values](#material-values) keeps specular strength and colour clamped to `[0, 1]`, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
+| Only `XEMI` references take an emittance source, mixed by day part from the converter's table; an external emittance surface without a source is black | STAND-IN(#362): emittance source and membership |
+| The environment fade is 1 and the technique is not dropped at `fEnvmapLODFadeEnd`; the eye technique, a model-space reflection and an `STAT` swap of the cube or mask are not drawn; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
 | Parallax, projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
 | Landscape specular is not drawn; layer weights stay normalised by their sum | STAND-IN(#547): the LTEX specular exponent per layer |
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
@@ -132,7 +144,6 @@ changes the picture is unverified.
 | `ClearAdaptedLight` and the menu pause timer never fire | STAND-IN(#361): the adaptation reset triggers |
 | The composite's unsigned copy keeps only the sign clamp, not its 11/10-bit precision | STAND-IN(#362): the composite input format |
 | A blend pair outside retail's table draws as a plain alpha blend | STAND-IN(#362): inherited blend modes |
-| The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): the player position as origin |
 | A palette effect surface does not take its reference's emittance colour; an additive effect decal takes it after the composite, unfogged | STAND-IN(#984): the effect shader's emittance, tint and fog |
 
 ## Pass rules

@@ -46,7 +46,35 @@ const EXTENSION_ALPHA_LINKS: [(&str, &str); 2] = [
 /// The links of the retail Lighting path (`RetailSurface`): the file and the code it must hold.
 /// Every link has to hold. A lost link draws the surface with Bevy's light model, whose picture
 /// looks plausible, so only this check fails.
-const RETAIL_SURFACE_LINKS: [(&str, &str); 25] = [
+const RETAIL_SURFACE_LINKS: [(&str, &str); 32] = [
+    (
+        "src/pbr_material.rs",
+        "#[texture(31, dimension = \"cube\")] #[dependency] pub retail_environment_cube: Option<Handle<Image>>,",
+    ),
+    (
+        "src/pbr_material.rs",
+        "flags |= StandardMaterialFlags::RETAIL_ENVIRONMENT;",
+    ),
+    (
+        "src/pbr_material.rs",
+        "retail_environment.x = surface.environment_scale;",
+    ),
+    (
+        "src/render/pbr_bindings.wgsl",
+        "@binding(31) var retail_environment_cube_texture: texture_cube<f32>;",
+    ),
+    (
+        "src/render/pbr_types.wgsl",
+        "const STANDARD_MATERIAL_FLAGS_RETAIL_ENVIRONMENT_BIT: u32 = 1u << 23u;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "pbr_input.retail_environment = cube * environment_mask * environment_scale;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "vec3<f32>(reflected.x, -reflected.z, reflected.y),",
+    ),
     ("src/pbr_material.rs", "const RETAIL_ALPHA_TEST = 1 << 22;"),
     (
         "src/render/pbr_types.wgsl",
@@ -120,7 +148,7 @@ const RETAIL_SURFACE_LINKS: [(&str, &str); 25] = [
     ),
     (
         "src/render/pbr_retail.wgsl",
-        "let sum = diffuse + ambient + in.material.emissive.rgb; let lit = in.material.base_color.rgb * sum;",
+        "let sum = diffuse + ambient + in.material.emissive.rgb; let lit = in.material.base_color.rgb * sum + in.retail_environment * sum;",
     ),
     (
         "src/render/pbr_retail.wgsl",
@@ -579,6 +607,7 @@ fn vendored_copy_with_endings(
         ("bevy_pbr", "src/retail_surface.rs"),
         ("bevy_pbr", "src/extended_material.rs"),
         ("bevy_pbr", "src/pbr_material.rs"),
+        ("bevy_pbr", "src/render/pbr_bindings.wgsl"),
         ("bevy_pbr", "src/render/pbr_types.wgsl"),
         ("bevy_pbr", "src/render/pbr_fragment.wgsl"),
         ("bevy_pbr", "src/render/pbr_retail.wgsl"),

@@ -23,14 +23,17 @@ use bevy::{
     render::render_resource::{AsBindGroup, ShaderType},
     shader::{ShaderRef, load_shader_library},
 };
+use shared::material_values::{MATERIAL_VALUES_FILE, MaterialValuesFile};
 use std::{
     collections::{HashMap, HashSet},
     convert::Infallible,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
 /// The retail inputs of a lighting material under `skyrim`.
 mod retail;
+mod retail_environment;
 pub(crate) mod technique;
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
@@ -72,6 +75,15 @@ impl Plugin for NifMaterialPlugin {
             .copied()
             .unwrap_or_default();
         let missing_alpha = app.world().resource::<MissingNifAlphaData>().clone();
+        let raw_colour_texels = !profile.decodes_colour_srgb();
+        let material_values = app
+            .world()
+            .get_resource::<crate::config::EngineConfig>()
+            .filter(|_| raw_colour_texels)
+            .and_then(|config| load_material_values(&config.assets_dir));
+        if raw_colour_texels {
+            retail_environment::build(app);
+        }
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
@@ -79,7 +91,8 @@ impl Plugin for NifMaterialPlugin {
             .push(Box::new(NativeMaterialHandler {
                 default_sampler,
                 missing_alpha,
-                raw_colour_texels: !profile.decodes_colour_srgb(),
+                raw_colour_texels,
+                material_values,
                 ..default()
             }));
     }
@@ -407,6 +420,34 @@ struct NativeMaterialHandler {
     /// The profile reads colour textures as authored bytes, so the materials built here must tell
     /// their shaders not to undo an sRGB decode that never happened.
     raw_colour_texels: bool,
+    /// The pack's material values sidecar, read once under `skyrim`.
+    material_values: Option<Arc<MaterialValuesFile>>,
+}
+
+/// The sidecar at the root of the pack in `assets`, when the pack has one.
+fn load_material_values(assets: &Path) -> Option<Arc<MaterialValuesFile>> {
+    let path = assets.join(MATERIAL_VALUES_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!("cannot read {}: {error}", path.display());
+            return None;
+        }
+    };
+    match MaterialValuesFile::parse(&bytes) {
+        Ok(file) => {
+            info!(
+                "read the material values of {} meshes from {MATERIAL_VALUES_FILE}",
+                file.meshes.len()
+            );
+            Some(Arc::new(file))
+        }
+        Err(error) => {
+            warn!("ignoring {}: {error:#}", path.display());
+            None
+        }
+    }
 }
 
 impl NativeMaterialHandler {
@@ -805,7 +846,12 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         let mut material = native_material(source, standard).unwrap_or_else(|| standard.clone());
         // The raw colour space belongs to the `skyrim` profile, and so does the retail surface.
         if self.raw_colour_texels && retail::is_lighting(source) {
-            retail::apply(source, standard, &mut material);
+            let values = retail::material_values(
+                source,
+                self.material_values.as_deref(),
+                &context.path().path().to_string_lossy(),
+            );
+            retail::apply(source, standard, values, &self.textures, &mut material);
         }
         let mut depth = self.depth_state(source, material.alpha_mode);
         if palette.is_none()

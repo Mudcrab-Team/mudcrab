@@ -11,6 +11,7 @@ pub mod collision;
 pub mod compose;
 pub mod config;
 mod controls;
+pub mod derive_material_values;
 pub mod derive_object_lod;
 pub mod derive_outfits;
 pub mod derive_terrain_lod;

@@ -5325,6 +5325,7 @@ mod tests {
                         uv_scale: [1.0; 2],
                         texture_clamp_mode: 3,
                         tint_color: None,
+                        environment_map_scale: None,
                         shader_family: NifShaderFamily::Lighting,
                         lighting_shader_type: Some(LightingShaderType::Default),
                         shader_block: 0,

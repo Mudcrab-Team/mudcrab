@@ -30,6 +30,8 @@ struct StandardMaterial {
     deferred_lighting_pass_id: u32,
     // mudcrab: `RetailSurface`: specular colour times strength in `xyz`, glossiness in `w`.
     retail_specular: vec4<f32>,
+    // mudcrab: `RetailSurface`: the environment map scale in `x`.
+    retail_environment: vec4<f32>,
 };
 
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -61,6 +63,9 @@ const STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT: u32               = 1u << 20u
 const STANDARD_MATERIAL_FLAGS_RETAIL_SPECULAR_BIT: u32               = 1u << 21u;
 // mudcrab: a blended retail surface that also runs the alpha test.
 const STANDARD_MATERIAL_FLAGS_RETAIL_ALPHA_TEST_BIT: u32             = 1u << 22u;
+// mudcrab: a retail surface with a bound environment cube, and with a bound mask.
+const STANDARD_MATERIAL_FLAGS_RETAIL_ENVIRONMENT_BIT: u32            = 1u << 23u;
+const STANDARD_MATERIAL_FLAGS_RETAIL_ENVIRONMENT_MASK_BIT: u32       = 1u << 24u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS: u32          = 7u << 29u; // (0b111u << 29u)
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE: u32                 = 0u << 29u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK: u32                   = 1u << 29u;
@@ -96,6 +101,7 @@ fn standard_material_new() -> StandardMaterial {
     material.max_relief_mapping_search_steps = 5u;
     material.deferred_lighting_pass_id = 1u;
     material.retail_specular = vec4<f32>(0.0);
+    material.retail_environment = vec4<f32>(0.0);
     // scale 1, translation 0, rotation 0
     material.uv_transform = mat3x3<f32>(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 
@@ -129,6 +135,8 @@ struct PbrInput {
     flags: u32,
     // mudcrab: the retail specular mask: the normal map's alpha, or the model-space map's `.r`.
     retail_specular_mask: f32,
+    // mudcrab: the retail environment colour `E`, which adds to the light sum's product.
+    retail_environment: vec3<f32>,
 };
 
 // Creates a PbrInput with default values
@@ -158,6 +166,7 @@ fn pbr_input_new() -> PbrInput {
     pbr_input.flags = 0u;
     // mudcrab: an empty normal slot has alpha 255.
     pbr_input.retail_specular_mask = 1.0;
+    pbr_input.retail_environment = vec3<f32>(0.0);
 
     return pbr_input;
 }
