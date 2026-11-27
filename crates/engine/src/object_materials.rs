@@ -16,11 +16,13 @@
 //! The `skyrim` profile reads every swapped texture raw, as it reads the model's own (SPEC-1
 //! section 2.1, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): TX00 gets no
 //! sRGB view there. A lit surface with an authored depth state ([`NifDepthMaterial`]) is swapped
-//! like a plain one.
+//! like a plain one. That profile also applies the glow map (NIF slot 2) to a surface that reads
+//! one, and the environment cube and mask (slots 4 and 5) to an environment surface (section 9.2).
 //!
-//! Limits, reported rather than guessed: a TXST that fills a slot other than TX00 (diffuse) and
-//! TX01 (normal) is not applied and the shape keeps its model material. Directional MATO layers
-//! and a general TXST shader remain with their own owners.
+//! Limits, reported rather than guessed: a TXST that fills the height, specular or detail slot is
+//! not applied and the shape keeps its model material. `mudcrab` applies TX00 (diffuse) and TX01
+//! (normal) only. STAND-IN(#490): the glow map reaches a surface only when its model has one.
+//! Directional MATO layers and a general TXST shader remain with their own owners.
 
 use crate::nif_depth::NifDepthMaterial;
 use bevy::{
@@ -50,13 +52,46 @@ enum SwapKind {
     Textures {
         diffuse: Option<String>,
         normal: Option<String>,
-        /// Names of filled TXST slots this slice cannot apply (TX02 to TX07).
+        /// The slots only the `skyrim` profile applies.
+        retail: RetailSlots<String>,
+        /// Names of filled TXST slots no profile applies.
         unapplied: Vec<&'static str>,
     },
     /// The NullTextureSet hides the shape (RF-TEX-005).
     Hide,
     /// The target is absent, deleted, of another type or has an unusable path.
     Missing(String),
+}
+
+/// The texture set slots the `skyrim` profile applies beside the diffuse and normal maps.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RetailSlots<T> {
+    glow: Option<T>,
+    environment: Option<T>,
+    mask: Option<T>,
+}
+
+impl RetailSlots<String> {
+    fn borrowed(&self) -> RetailSlots<&str> {
+        RetailSlots {
+            glow: self.glow.as_deref(),
+            environment: self.environment.as_deref(),
+            mask: self.mask.as_deref(),
+        }
+    }
+}
+
+impl<T: Copy> RetailSlots<T> {
+    /// The filled slots with their names.
+    fn filled(&self) -> impl Iterator<Item = (&'static str, T)> {
+        [
+            ("glow", self.glow),
+            ("environment", self.environment),
+            ("mask", self.mask),
+        ]
+        .into_iter()
+        .filter_map(|(name, slot)| Some((name, slot?)))
+    }
 }
 
 /// A scene instance's base-record input. Immutable catalog rows are shared across placements.
@@ -150,16 +185,10 @@ impl ObjectTextureCatalog {
     }
 }
 
-/// Slot order of the `texture_sets` columns read above: TX00, TX01, then glow, height,
-/// environment, mask, specular and detail (the projection of TX02 to TX07 in `db-schema.md`).
-const UNAPPLIED_SLOTS: [&str; 6] = [
-    "glow",
-    "height",
-    "environment",
-    "mask",
-    "specular",
-    "detail",
-];
+/// The `texture_sets` columns no profile applies, with their place in the query above: diffuse,
+/// normal, glow, height, environment, mask, specular and detail (the projection of TX02 to TX07
+/// in `db-schema.md`).
+const UNAPPLIED_SLOTS: [(usize, &str); 3] = [(3, "height"), (6, "specular"), (7, "detail")];
 
 fn filled(slot: &Option<String>) -> Option<&str> {
     slot.as_deref().filter(|path| !path.is_empty())
@@ -174,19 +203,28 @@ fn set_kind(slots: &[Option<String>]) -> SwapKind {
                 .ok_or_else(|| format!("unusable texture path {path:?}")),
         }
     };
-    let (diffuse, normal) = match (convert(&slots[0]), convert(&slots[1])) {
-        (Ok(diffuse), Ok(normal)) => (diffuse, normal),
-        (Err(reason), _) | (_, Err(reason)) => return SwapKind::Missing(reason),
+    let converted: Result<Vec<_>, String> = [0, 1, 2, 4, 5]
+        .map(|column| convert(&slots[column]))
+        .into_iter()
+        .collect();
+    let [diffuse, normal, glow, environment, mask] = match converted.map(<[_; 5]>::try_from) {
+        Ok(Ok(converted)) => converted,
+        Ok(Err(_)) => return SwapKind::Missing("unusable texture set row".into()),
+        Err(reason) => return SwapKind::Missing(reason),
     };
-    let unapplied = slots[2..]
-        .iter()
-        .zip(UNAPPLIED_SLOTS)
-        .filter(|(slot, _)| filled(slot).is_some())
+    let unapplied = UNAPPLIED_SLOTS
+        .into_iter()
+        .filter(|(column, _)| filled(&slots[*column]).is_some())
         .map(|(_, name)| name)
         .collect();
     SwapKind::Textures {
         diffuse,
         normal,
+        retail: RetailSlots {
+            glow,
+            environment,
+            mask,
+        },
         unapplied,
     }
 }
@@ -361,15 +399,24 @@ enum Plan<'a> {
     Hide,
     Textures {
         swap: &'a TextureSwap,
-        diffuse: Option<&'a str>,
-        normal: Option<&'a str>,
+        paths: SwapPaths<'a>,
     },
+}
+
+/// The paths one derived material takes.
+#[derive(Clone, Copy)]
+struct SwapPaths<'a> {
+    diffuse: Option<&'a str>,
+    normal: Option<&'a str>,
+    /// Empty under a profile that applies the diffuse and normal maps only.
+    retail: RetailSlots<&'a str>,
 }
 
 /// The derived textures of one texture set, or why the images cannot take the slots.
 struct SwapTextures {
     diffuse: Option<Handle<Image>>,
     normal: Option<Handle<Image>>,
+    glow: Option<Handle<Image>>,
 }
 
 /// Replaces the texture set of the material `binding` draws with. `None` when the model's
@@ -381,7 +428,7 @@ fn bind_swapped<M: SwappedMaterial>(
     binding: &mut Mut<MeshMaterial3d<M>>,
     source: Option<&DiffuseSource<M>>,
     texture_set: u32,
-    paths: [Option<&str>; 2],
+    paths: SwapPaths<'_>,
     handles: &HashMap<String, Handle<Image>>,
     colour_srgb: bool,
     materials: &mut Assets<M>,
@@ -414,15 +461,22 @@ fn bind_swapped<M: SwappedMaterial>(
             let standard = derived.standard();
             standard.base_color_texture = textures.diffuse;
             standard.normal_map_texture = textures.normal;
-            standard.emissive_texture = None;
+            standard.emissive_texture = textures.glow;
             standard.specular_texture = None;
             standard.metallic_roughness_texture = None;
             standard.occlusion_texture = None;
-            // A set that fills the cube or mask slot is not applied, so both are empty here.
+            // The environment technique reads the new cube and mask. `retail_environment` binds
+            // them once their shapes are checked; an empty cube slot reflects nothing.
+            let reflects = standard
+                .retail_surface
+                .is_some_and(|surface| surface.environment_scale != 0.0);
+            let image = |path: Option<&str>| path.map(|path| handles[path].clone());
             standard.retail_environment_cube = None;
             standard.retail_environment_mask = None;
-            standard.retail_environment_cube_source = None;
-            standard.retail_environment_mask_source = None;
+            standard.retail_environment_cube_source =
+                image(paths.retail.environment).filter(|_| reflects);
+            standard.retail_environment_mask_source = image(paths.retail.mask)
+                .filter(|_| standard.retail_environment_cube_source.is_some());
             let derived = materials.add(derived);
             cache.0.insert(key, derived.id());
             derived
@@ -438,10 +492,15 @@ fn bind_swapped<M: SwappedMaterial>(
 }
 
 /// Copies of the loaded images in the colour space and sampler of the slots they take. TX00 is
-/// colour, which only a profile that decodes sRGB views as sRGB; TX01 is direction data.
+/// colour, which only a profile that decodes sRGB views as sRGB; TX01 is direction data. A glow
+/// map is taken only by a surface whose model has one, so only the glow technique reads it.
 fn swap_textures(
     model: &StandardMaterial,
-    [diffuse, normal]: [Option<&str>; 2],
+    SwapPaths {
+        diffuse,
+        normal,
+        retail,
+    }: SwapPaths<'_>,
     handles: &HashMap<String, Handle<Image>>,
     colour_srgb: bool,
     images: &mut Assets<Image>,
@@ -454,6 +513,8 @@ fn swap_textures(
     };
     let diffuse_sampler = sampler_of(&model.base_color_texture);
     let normal_sampler = sampler_of(&model.normal_map_texture).or_else(|| diffuse_sampler.clone());
+    let glow_sampler = sampler_of(&model.emissive_texture);
+    let glow = retail.glow.filter(|_| model.emissive_texture.is_some());
     let mut build = |path: Option<&str>,
                      srgb: bool,
                      sampler: Option<bevy::image::ImageSampler>|
@@ -498,6 +559,7 @@ fn swap_textures(
     Ok(SwapTextures {
         diffuse: build(diffuse, colour_srgb, diffuse_sampler)?,
         normal: build(normal, false, normal_sampler)?,
+        glow: build(glow, colour_srgb, glow_sampler)?,
     })
 }
 
@@ -564,21 +626,37 @@ fn apply_swaps(
                     SwapKind::Missing(reason) => {
                         skipped.push(format!("index {index}: {reason}"));
                     }
-                    SwapKind::Textures { unapplied, .. } if !unapplied.is_empty() => {
-                        skipped.push(format!(
-                            "index {index}: texture set fills unsupported slots {unapplied:?}"
+                    SwapKind::Textures {
+                        diffuse,
+                        normal,
+                        retail,
+                        unapplied,
+                    } => {
+                        // A profile that decodes colour applies the first two slots only.
+                        let mut refused = unapplied.clone();
+                        let mut retail = retail.borrowed();
+                        if colour_srgb {
+                            refused.extend(retail.filled().map(|(name, _)| name));
+                            retail = RetailSlots::default();
+                        }
+                        if !refused.is_empty() {
+                            skipped.push(format!(
+                                "index {index}: texture set fills unsupported slots {refused:?}"
+                            ));
+                            continue;
+                        }
+                        plans.push((
+                            *entity,
+                            Plan::Textures {
+                                swap,
+                                paths: SwapPaths {
+                                    diffuse: diffuse.as_deref(),
+                                    normal: normal.as_deref(),
+                                    retail,
+                                },
+                            },
                         ));
                     }
-                    SwapKind::Textures {
-                        diffuse, normal, ..
-                    } => plans.push((
-                        *entity,
-                        Plan::Textures {
-                            swap,
-                            diffuse: diffuse.as_deref(),
-                            normal: normal.as_deref(),
-                        },
-                    )),
                 }
             }
             let mut handles: HashMap<String, Handle<Image>> =
@@ -587,16 +665,15 @@ fn apply_swaps(
             let mut new_request = false;
             let mut pending = false;
             for (_, plan) in &plans {
-                let Plan::Textures {
-                    diffuse, normal, ..
-                } = plan
-                else {
+                let Plan::Textures { paths, .. } = plan else {
                     continue;
                 };
-                // TX00 is colour and TX01 is direction data.
-                for (path, srgb) in [(diffuse, colour_srgb), (normal, false)]
+                // TX00 is colour and TX01 is direction data. The slots only `skyrim` applies are
+                // read raw.
+                for (path, srgb) in [(paths.diffuse, colour_srgb), (paths.normal, false)]
                     .into_iter()
-                    .filter_map(|(path, srgb)| Some(((*path)?, srgb)))
+                    .filter_map(|(path, srgb)| Some((path?, srgb)))
+                    .chain(paths.retail.filled().map(|(_, path)| (path, false)))
                 {
                     let handle = handles.entry(path.to_owned()).or_insert_with(|| {
                         new_request = true;
@@ -625,12 +702,7 @@ fn apply_swaps(
                         commands.entity(entity).insert(Visibility::Hidden);
                         hidden += 1;
                     }
-                    Plan::Textures {
-                        swap,
-                        diffuse,
-                        normal,
-                    } => {
-                        let paths = [diffuse, normal];
+                    Plan::Textures { swap, paths } => {
                         let bound = if let Ok((_, mut binding, source)) = surfaces.get_mut(entity) {
                             bind_swapped(
                                 &mut commands,

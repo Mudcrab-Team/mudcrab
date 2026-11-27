@@ -1022,6 +1022,81 @@ fn the_skyrim_profile_swaps_texture_sets_with_raw_colour_views() {
     }
 }
 
+/// SPEC-1 section 9.2: under `skyrim` an environment surface takes the swapped set's cube and
+/// mask, and a surface of another technique takes neither. `mudcrab` refuses such a set.
+#[test]
+fn the_skyrim_profile_swaps_the_environment_cube_and_mask() {
+    for (skyrim, scale) in [(true, 2.0), (true, 0.0), (false, 2.0)] {
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path());
+        let (conn, mut records) = database();
+        records.insert(
+            101,
+            record(
+                101,
+                b"TXST",
+                &[
+                    (b"TX00", b"red.dds\0".to_vec()),
+                    (b"TX02", b"blue.dds\0".to_vec()),
+                    (b"TX05", b"cube.dds\0".to_vec()),
+                ],
+            ),
+        );
+        export_to_db(&conn, &records).unwrap();
+        let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+        let mut app = object_app(directory.path());
+        if skyrim {
+            app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+        }
+        let scene = load_scene(&mut app, "shared.glb");
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let models: Vec<_> = materials.ids().collect();
+        for id in models {
+            materials.get_mut(id).unwrap().retail_surface = Some(bevy::pbr::RetailSurface {
+                environment_scale: scale,
+                ..bevy::pbr::RetailSurface::MATTE
+            });
+        }
+        let root = spawn(&mut app, &scene, catalog.get(1));
+        settle(&mut app, &[root]);
+        let state = app.world().get::<ObjectTextureSwapState>(root).unwrap();
+        let material = material_of(&app, &surface(&app, root).1);
+        let path = |handle: &Option<Handle<Image>>| {
+            handle
+                .as_ref()
+                .and_then(|handle| handle.path())
+                .map(|path| path.to_string())
+        };
+        if !skyrim {
+            assert_eq!(
+                state,
+                &ObjectTextureSwapState::Applied {
+                    textured: 0,
+                    hidden: 0
+                }
+            );
+            assert!(material.retail_environment_cube_source.is_none());
+            continue;
+        }
+        assert_eq!(
+            state,
+            &ObjectTextureSwapState::Applied {
+                textured: 1,
+                hidden: 0
+            }
+        );
+        let wanted = |name: &str| (scale != 0.0).then(|| format!("textures/{name}.ktx2"));
+        assert_eq!(
+            path(&material.retail_environment_cube_source),
+            wanted("cube")
+        );
+        assert_eq!(
+            path(&material.retail_environment_mask_source),
+            wanted("blue")
+        );
+    }
+}
+
 #[test]
 fn projection_rows_resolve_texture_sets_and_keep_other_txst_consumers() {
     let (conn, mut records) = database();
@@ -1059,7 +1134,7 @@ fn projection_rows_resolve_texture_sets_and_keep_other_txst_consumers() {
     let pine = catalog.get(PINE).unwrap();
     assert!(matches!(
         &pine.swaps[0].kind,
-        SwapKind::Textures { diffuse: Some(diffuse), normal: Some(normal), unapplied }
+        SwapKind::Textures { diffuse: Some(diffuse), normal: Some(normal), unapplied, .. }
             if diffuse == "textures/landscape/pineforest02.ktx2"
                 && normal == "textures/landscape/pineforest02_n.ktx2"
                 && unapplied.is_empty()
