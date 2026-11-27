@@ -36,6 +36,8 @@ pub const ADAPTER_VERSION: u32 = 16;
 /// TXST links.
 /// Later LAND paint recovery shares version 6; reconvert to pick up recovered paint.
 /// This identity does not change the independent converted-asset producer/settings proofs.
+/// STAND-IN(#269): the legacy reader's record projection, which publishes only part of the
+/// decoded record data.
 pub const LEGACY_PROJECTION_VERSION: u32 = 7;
 
 /// Where localized plugins' string tables are found, and in which language.

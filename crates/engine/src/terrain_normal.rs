@@ -205,7 +205,7 @@ fn one_source_declares_the_sign_and_the_frame() {
 }
 
 /// SPEC-1 section 9.2: retail does not renormalise the layer weights, and its black texel decodes
-/// to -1 on every axis.
+/// to -1 on every axis ([near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
 #[test]
 fn retail_keeps_the_layer_weights_and_decodes_the_black_texel() {
     for (retail, divisor) in [(true, 1.0), (false, 1.5)] {

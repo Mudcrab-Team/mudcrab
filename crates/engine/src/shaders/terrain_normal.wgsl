@@ -44,7 +44,8 @@ fn retail_terrain_normal(sample_rgb: vec3<f32>) -> vec3<f32> {
 }
 
 // The divisor of a layer blend. Retail does not renormalise the layer weights (SPEC-1 section
-// 9.2), so the `skyrim` profile divides by 1. `mudcrab` divides by the weight sum.
+// 9.2, [near-lighting.md](../../../../docs/specs/engine/near-lighting.md)), so the `skyrim`
+// profile divides by 1. `mudcrab` divides by the weight sum.
 fn terrain_blend_divisor(total: f32, retail: bool) -> f32 {
     return select(total, 1.0, retail);
 }
