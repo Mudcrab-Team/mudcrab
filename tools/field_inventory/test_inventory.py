@@ -422,3 +422,22 @@ class FieldInventoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpdateBaselineKeepsRaiseReasonTests(unittest.TestCase):
+    def test_lowering_a_raised_ceiling_keeps_the_raise_reason(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import inventory_common
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            path.write_text(json.dumps({
+                "format_version": 1,
+                "dropped_plus_partial": 309,
+                "raise_reason": "Reclassified by the enum audit (#1061).",
+            }))
+            counts = {"dropped": 200, "partial": 108}
+            inventory_common.update_baseline_file(path, counts)
+            doc = json.loads(path.read_text())
+            self.assertEqual(doc["dropped_plus_partial"], 308)
+            self.assertEqual(doc["raise_reason"], "Reclassified by the enum audit (#1061).")

@@ -259,6 +259,7 @@ def update_baseline_file(baseline_path, counts, ratchet_dispositions=RATCHET_DIS
     """Lower (or keep equal) baseline.json without ever raising an existing ceiling."""
     current = sum(counts[disp] for disp in ratchet_dispositions)
     path = Path(baseline_path)
+    doc = {"format_version": 1, "dropped_plus_partial": current}
     if path.exists():
         existing_doc = load_json(path, "baseline")
         existing_limit, _ = parse_baseline_doc(existing_doc)
@@ -267,7 +268,12 @@ def update_baseline_file(baseline_path, counts, ratchet_dispositions=RATCHET_DIS
                 f"refusing to raise baseline from {existing_limit} to {current}; "
                 "update-baseline may only keep or lower the ceiling"
             )
-    write_json(path, {"format_version": 1, "dropped_plus_partial": current})
+        # Keep an approved raise reason: a lowered ceiling can still sit above the base
+        # revision's ceiling, and the base check needs the reason until it does not.
+        reason = existing_doc.get("raise_reason") if isinstance(existing_doc, dict) else None
+        if isinstance(reason, str) and reason.strip():
+            doc["raise_reason"] = reason
+    write_json(path, doc)
     return current
 
 
