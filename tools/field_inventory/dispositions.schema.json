@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Skyrim record field dispositions v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "dispositions"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "dispositions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "system_not_implemented_by_signature": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/signature_group"
+      }
+    }
+  },
+  "$defs": {
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "anchor"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "anchor": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "owner",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "respected",
+            "partial",
+            "dropped",
+            "system-not-implemented",
+            "format-not-read",
+            "record-not-read",
+            "not-applicable",
+            "covered-by-flag-audit"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "issue": {
+          "type": "string"
+        },
+        "spec": {
+          "type": "string"
+        }
+      }
+    },
+    "signature_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "missing_system",
+        "owner",
+        "reason",
+        "evidence",
+        "field_ids"
+      ],
+      "properties": {
+        "disposition": {
+          "const": "system-not-implemented"
+        },
+        "missing_system": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "field_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
