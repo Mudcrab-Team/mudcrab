@@ -1660,10 +1660,8 @@ fn reference_placement(
     // An actor reference keeps only its heading (Z) and is sized by its race and NPC height as
     // well as its own scale (RF-REFR-001, RF-REFR-002). The `retail-rules` crate makes both
     // choices from form types, and `world::actor_scale` maps record types to them.
-    let base_type = effective_base_record_type(
-        reference.base_record_type.as_deref(),
-        actor_model.is_some(),
-    );
+    let base_type =
+        effective_base_record_type(reference.base_record_type.as_deref(), actor_model.is_some());
     let rotation = creation_rotation_to_bevy(placed_reference_rotation(
         reference_form_type(base_type),
         reference.rotation,
@@ -10953,12 +10951,12 @@ mod tests {
         connection
     }
 
-    /// The `records` rows the height scale reads: one `RACE` with the male height at `DATA` offset
-    /// 16, and one `NPC_` with `NAM6`.
+    /// The `records` rows the height scale reads: one `RACE` with male/female heights at `DATA`
+    /// offsets 16 and 20, and one `NPC_` with `NAM6`.
     fn insert_height_records(
         connection: &rusqlite::Connection,
         race_id: u32,
-        race_male_height: f32,
+        race_height: f32,
         npc_id: u32,
         npc_height: f32,
     ) {
@@ -10970,7 +10968,8 @@ mod tests {
             )
             .unwrap();
         let mut race_data = vec![0u8; 36];
-        race_data[16..20].copy_from_slice(&race_male_height.to_le_bytes());
+        race_data[16..20].copy_from_slice(&race_height.to_le_bytes());
+        race_data[20..24].copy_from_slice(&race_height.to_le_bytes());
         let records = [
             (
                 race_id,
@@ -12098,6 +12097,121 @@ mod tests {
         );
         assert!(entity.get::<PendingModel>().is_some());
         assert_eq!(entity.get::<FormId>(), Some(&FormId(0x13475)));
+    }
+
+    #[test]
+    fn scaled_actor_visible_mesh_and_collider_share_the_same_scale() {
+        use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
+
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/female/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+
+        let connection = actor_catalog_connection();
+        connection
+            .execute(
+                "INSERT INTO actor_models(id,race_id,sex,skin_armo_id,head_model,head_source,resolution)
+                 VALUES(0x3000,0x13743,'female',NULL,NULL,NULL,'body')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO actor_model_parts(npc_id,slot,model_path)
+                 VALUES(0x3000,'body','Meshes\\Actors\\Character\\Character Assets\\FemaleBody_1.NIF')",
+                [],
+            )
+            .unwrap();
+        // Altmer female height 1.08, NPC NAM6 1.1, reference scale 1.5 -> 1.782.
+        insert_height_records(&connection, 0x13743, 1.08, 0x3000, 1.1);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+
+        let mut reference = lit_reference(0x3000, None, None);
+        reference.base_form_id = 0x3000;
+        reference.base_record_type = Some("NPC_".to_owned());
+        // Creation Z=100 maps to Bevy Y=100, keeping the collider clear of the arena floor at Y=0.
+        reference.position = [0.0, 0.0, 100.0];
+        reference.rotation = [0.0, 0.0, 0.0];
+        reference.scale = 1.5;
+
+        let actor_model = catalog.get(reference.base_form_id);
+        let (_, transform, _, _) =
+            reference_placement(CellKey::Interior(1), &reference, actor_model);
+        let expected_scale = 1.5 * (1.08 * 1.1);
+        assert!((transform.scale.x - expected_scale).abs() < 1.0e-5);
+
+        let mut app = crate::physics::headless::fixture_app();
+        let box_mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(20.0, 20.0, 20.0));
+        let actor_entity = app
+            .world_mut()
+            .spawn((transform, RigidBody::Fixed, Visibility::default()))
+            .id();
+        let mesh_child = app
+            .world_mut()
+            .spawn((Mesh3d(box_mesh), Transform::IDENTITY, ChildOf(actor_entity)))
+            .id();
+        let collider_child = app
+            .world_mut()
+            .spawn((
+                Collider::cuboid(10.0, 10.0, 10.0),
+                crate::physics::world_collision_groups(),
+                Transform::IDENTITY,
+                ChildOf(actor_entity),
+            ))
+            .id();
+        for _ in 0..3 {
+            app.update();
+        }
+
+        let mesh_scale = app
+            .world()
+            .get::<GlobalTransform>(mesh_child)
+            .unwrap()
+            .to_scale_rotation_translation()
+            .0;
+        let collider_scale = app
+            .world()
+            .get::<GlobalTransform>(collider_child)
+            .unwrap()
+            .to_scale_rotation_translation()
+            .0;
+        assert!(
+            (mesh_scale - Vec3::splat(expected_scale)).length() < 1.0e-4,
+            "mesh scale {mesh_scale:?} != {expected_scale}"
+        );
+        assert!(
+            (collider_scale - mesh_scale).length() < 1.0e-5,
+            "collider scale {collider_scale:?} != mesh scale {mesh_scale:?}"
+        );
+
+        let mut hit = |x: f32| {
+            app.world_mut()
+                .run_system_once(move |context: ReadRapierContext| {
+                    context.single().unwrap().cast_ray(
+                        Vec3::new(x, 150.0, 0.0),
+                        Vec3::NEG_Y,
+                        49.0,
+                        true,
+                        QueryFilter::default().groups(crate::physics::player_collision_groups()),
+                    )
+                })
+                .unwrap()
+        };
+        let half_extent = 10.0 * expected_scale;
+        let (hit_entity, distance) =
+            hit(half_extent - 1.0).expect("scaled collider must cover within half-extent");
+        assert_eq!(hit_entity, collider_child);
+        assert!((distance - (50.0 - half_extent)).abs() < 0.01);
+        assert!(
+            hit(half_extent + 1.0).is_none(),
+            "scaled collider must stop at {half_extent}"
+        );
     }
 
     /// The worn outfit travels with the spawned actor as one component, so the attachment system

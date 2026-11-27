@@ -130,7 +130,8 @@ pub(crate) fn guarded_placed_scale(
     reference_scale: f32,
     heights: NpcHeights,
 ) -> f32 {
-    let scale = retail_rules::scale::placed_reference_scale(base_form_type, reference_scale, heights);
+    let scale =
+        retail_rules::scale::placed_reference_scale(base_form_type, reference_scale, heights);
     if base_form_type == NPC_FORM_TYPE
         && !usable_uniform_scale(scale)
         && usable_uniform_scale(reference_scale)
@@ -151,14 +152,17 @@ fn race_heights(data: &[u8]) -> Option<RaceHeights> {
     if data.len() < RACE_DATA_HEIGHT_END {
         return None;
     }
-    let height = |offset: usize| -> Option<f32> {
-        Some(f32::from_le_bytes(
-            data[offset..offset + 4].try_into().ok()?,
-        ))
+    let height = |offset: usize| -> f32 {
+        f32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ])
     };
     Some(RaceHeights {
-        male: height(RACE_DATA_MALE_HEIGHT)?,
-        female: height(RACE_DATA_FEMALE_HEIGHT)?,
+        male: height(RACE_DATA_MALE_HEIGHT),
+        female: height(RACE_DATA_FEMALE_HEIGHT),
     })
 }
 
@@ -196,7 +200,7 @@ impl NpcHeightSource {
             }
         }
         Self {
-            uses_traits: uses_traits.unwrap_or(false),
+            uses_traits: uses_traits == Some(true),
             template: template.flatten(),
             height,
         }
@@ -240,13 +244,19 @@ pub(super) fn read_npc_heights(
     connection: &Connection,
     actors: &[ActorHeightQuery],
 ) -> HashMap<u32, NpcHeights> {
-    let has_records = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='records')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .unwrap_or(false);
+    let has_records = match connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='records')",
+        [],
+        |row| row.get::<_, bool>(0),
+    ) {
+        Ok(exists) => exists,
+        Err(error) => {
+            bevy::log::info!(
+                "actors: cannot check `records` table ({error}); actors keep their reference scale"
+            );
+            return HashMap::new();
+        }
+    };
     if !has_records {
         bevy::log::info!("actors: no `records` table; actors keep their reference scale");
         return HashMap::new();
@@ -543,5 +553,146 @@ mod tests {
     fn a_database_without_records_gives_no_factors() {
         let connection = Connection::open_in_memory().unwrap();
         assert!(read_npc_heights(&connection, &[]).is_empty());
+    }
+
+    #[test]
+    fn retail_race_heights_match_nord_altmer_bosmer_and_khajiit() {
+        let connection = database(&[
+            // Skyrim SE RACE/DATA male/female heights (verified in skyrim_world.db).
+            (0x0001_3746, "RACE", race_record(1.03, 1.03)), // NordRace
+            (0x0001_3743, "RACE", race_record(1.08, 1.08)), // HighElfRace (Altmer)
+            (0x0001_3749, "RACE", race_record(0.98, 1.00)), // WoodElfRace (Bosmer)
+            (0x0001_3745, "RACE", race_record(1.00, 0.95)), // KhajiitRace
+            (0x1001, "NPC_", npc_record(0, None, None)),
+            (0x1002, "NPC_", npc_record(0, None, None)),
+            (0x1003, "NPC_", npc_record(0, None, None)),
+            (0x1004, "NPC_", npc_record(0, None, None)),
+            (0x1005, "NPC_", npc_record(0, None, Some(1.15))),
+        ]);
+        let query = |npc_id, race_id, female| ActorHeightQuery {
+            npc_id,
+            race_id,
+            female,
+        };
+        let heights = read_npc_heights(
+            &connection,
+            &[
+                query(0x1001, 0x0001_3746, false), // Nord male
+                query(0x1002, 0x0001_3743, true),  // Altmer female
+                query(0x1003, 0x0001_3749, false), // Bosmer male
+                query(0x1004, 0x0001_3745, true),  // Khajiit female
+                query(0x1005, 0x0001_3746, false), // Nord male with own NAM6 1.15
+            ],
+        );
+        assert!(
+            (guarded_placed_scale(NPC_FORM_TYPE, 1.0, heights[&0x1001]) - 1.03).abs() < 1e-5,
+            "Nord"
+        );
+        assert!(
+            (guarded_placed_scale(NPC_FORM_TYPE, 1.0, heights[&0x1002]) - 1.08).abs() < 1e-5,
+            "Altmer"
+        );
+        assert!(
+            (guarded_placed_scale(NPC_FORM_TYPE, 1.0, heights[&0x1003]) - 0.98).abs() < 1e-5,
+            "Bosmer"
+        );
+        assert!(
+            (guarded_placed_scale(NPC_FORM_TYPE, 1.0, heights[&0x1004]) - 0.95).abs() < 1e-5,
+            "Khajiit"
+        );
+        assert!(
+            (guarded_placed_scale(NPC_FORM_TYPE, 1.2, heights[&0x1005]) - (1.2 * (1.03 * 1.15)))
+                .abs()
+                < 1e-5,
+            "NPC with own NAM6 and XSCL"
+        );
+    }
+
+    #[test]
+    fn duplicate_acbs_and_tplt_take_the_first_occurrence() {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&ArchivedRecordData {
+            subrecords: vec![
+                ArchivedSubRecord {
+                    tag: *b"ACBS",
+                    data: acbs(TEMPLATE_USE_TRAITS),
+                },
+                ArchivedSubRecord {
+                    tag: *b"ACBS",
+                    data: acbs(0),
+                },
+                ArchivedSubRecord {
+                    tag: *b"TPLT",
+                    data: 0x201u32.to_le_bytes().to_vec(),
+                },
+                ArchivedSubRecord {
+                    tag: *b"TPLT",
+                    data: 0x202u32.to_le_bytes().to_vec(),
+                },
+                ArchivedSubRecord {
+                    tag: *b"NAM6",
+                    data: 1.5f32.to_le_bytes().to_vec(),
+                },
+                ArchivedSubRecord {
+                    tag: *b"NAM6",
+                    data: 9.0f32.to_le_bytes().to_vec(),
+                },
+            ],
+        })
+        .unwrap()
+        .to_vec();
+        let connection = database(&[
+            (0x100, "RACE", race_record(1.0, 1.0)),
+            (0x200, "NPC_", bytes),
+            (0x201, "NPC_", npc_record(0, None, Some(1.25))),
+            (0x202, "NPC_", npc_record(0, None, Some(2.5))),
+        ]);
+        let heights = read_npc_heights(
+            &connection,
+            &[ActorHeightQuery {
+                npc_id: 0x200,
+                race_id: 0x100,
+                female: false,
+            }],
+        );
+        assert!((factor(heights[&0x200]) - 1.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn multi_hop_use_traits_and_non_traits_leveled_template() {
+        let connection = database(&[
+            (0x100, "RACE", race_record(1.0, 1.0)),
+            // Two-hop Use Traits chain: 0x200 -> 0x201 -> 0x202.
+            (0x200, "NPC_", npc_record(1, Some(0x201), Some(0.5))),
+            (0x201, "NPC_", npc_record(1, Some(0x202), Some(0.75))),
+            (0x202, "NPC_", npc_record(0, None, Some(1.35))),
+            // TPLT points to an LVLN (0x300, absent from NPC_ rows), without Use Traits:
+            // keeps the NPC's own NAM6 height.
+            (0x203, "NPC_", npc_record(0, Some(0x300), Some(1.12))),
+        ]);
+        let query = |npc_id| ActorHeightQuery {
+            npc_id,
+            race_id: 0x100,
+            female: false,
+        };
+        let heights = read_npc_heights(&connection, &[query(0x200), query(0x203)]);
+        assert!((factor(heights[&0x200]) - 1.35).abs() < 1e-5);
+        assert!((factor(heights[&0x203]) - 1.12).abs() < 1e-5);
+    }
+
+    #[test]
+    fn guarded_placed_scale_keeps_actor_above_transform_validation_floor() {
+        let tiny = guarded_heights(Some(&race_data(1.0, 1.0)), false, Some(0.2));
+        // 0.01 * 0.2 = 0.002 has |det| = 8e-9 <= 1e-8; fallback keeps reference_scale 0.01.
+        assert_eq!(guarded_placed_scale(NPC_FORM_TYPE, 0.01, tiny), 0.01);
+
+        let huge = guarded_heights(Some(&race_data(1.0, 1.0)), false, Some(1.0e35));
+        // 1e10 * 1e35 overflows f32; fallback keeps reference_scale 1e10.
+        assert_eq!(guarded_placed_scale(NPC_FORM_TYPE, 1.0e10, huge), 1.0e10);
+
+        let normal = guarded_heights(Some(&race_data(1.08, 1.08)), false, Some(1.1));
+        assert!(
+            (guarded_placed_scale(NPC_FORM_TYPE, 1.5, normal) - 1.5 * (1.08 * 1.1)).abs() < 1e-5
+        );
+        assert_eq!(guarded_placed_scale(OTHER_FORM_TYPE, 0.01, tiny), 0.01);
     }
 }
