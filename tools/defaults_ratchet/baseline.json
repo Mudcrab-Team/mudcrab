@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "counts": {
+    "converter": 133,
+    "engine": 179,
+    "project-wormhole-nif": 5,
+    "retail-rules": 2,
+    "shared": 2
+  },
+  "revision": 1
+}
