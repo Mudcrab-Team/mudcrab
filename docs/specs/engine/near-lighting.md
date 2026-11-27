@@ -18,6 +18,21 @@ here by number: 812, 946, 963, 979, 1003, 1052, 1059, 1073, 1077, 1080, 1121, 12
 Section numbers in the code and below are SPEC-1's unless a row says SPEC-2. Where the two differ,
 SPEC-2 wins for the frame after the first stage.
 
+## Flicker guards
+
+- Every pass that swaps the post-process texture has one order (`post_process_order.rs`). Two
+  unordered passes showed the untoned scene in single frames.
+- The chain shaders read a NaN as 0 and an infinity as the largest 16-bit float, so that one bad
+  scene pixel cannot reach the adapted pair. A finite value does not change. This guard is
+  Mudcrab's own because retail's behaviour on such a value is unverified.
+- A `--shots` pose with a `sequence` fails on a solid or flashing frame
+  ([reference-shots.md](reference-shots.md)).
+
+## Clear colour
+
+The frame clear colour is the fog far colour times the literal 0.83332998, not `k` (SPEC-4
+section 10, which corrects SPEC-1 section 8.1; unverified in game).
+
 ## Units
 
 Retail has no light unit (unverified in game; see [Source](#source)). A colour byte of a light, of the ambient, of the fog or of a vertex is
@@ -50,7 +65,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 6.2 | specular | `render/pbr_retail.wgsl` |
 | 6.3 | alpha test, hair decal | `nif_material/retail.rs`, `shaders/skyrim_skin.wgsl` |
 | 7 | output tail, `k`, `B`, `B2` | `render/pbr_retail.wgsl`, object LOD `lod_object.wgsl` |
-| 8 | fog property, composite records 53 and 49, clear colour | `sky.rs`, `retail_fog.rs`, `interior::FogFields` |
+| 8 | fog property, composite records 53 and 49, clear colour (corrected by SPEC-4, below) | `sky.rs`, `retail_fog.rs`, `interior::FogFields` |
 | 9.2 | model-space normals, face, face tint, hair, landscape | `shaders/skyrim_skin.wgsl`, terrain shaders |
 | 8.1, 9.2, 9.3 | the pass of a surface: unblended lit surfaces and decals before the composite, blended surfaces after it | `NifDepthState::retail_first_stage`, `nif_material/retail.rs`, vendored `extended_material.rs`; table `nif_material/pass_audit.rs` |
 | 10 | image space, adaptation, bloom, tonemap | `retail_hdr*.rs` and `shaders/retail_hdr*.wgsl` |

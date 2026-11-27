@@ -111,6 +111,7 @@ impl MatchedRoute {
                 reference: None,
                 note: None,
                 probes: Vec::new(),
+                sequence: 0,
             })
             .collect();
         let file = ShotsFile {

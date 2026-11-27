@@ -7,7 +7,7 @@
 // The 4-tap table is (+-1, +-1) with weight 1/4. The 16-tap table is -1.5, -0.5, 0.5 and 1.5 in
 // both axes with weight 1/16.
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
-#import engine::retail_hdr::{RetailHdr, luminance}
+#import engine::retail_hdr::{RetailHdr, finite, luminance}
 
 @group(0) @binding(0) var<uniform> hdr: RetailHdr;
 @group(0) @binding(1) var source: texture_2d<f32>;
@@ -27,7 +27,7 @@ fn average4(uv: vec2<f32>) -> vec3<f32> {
     for (var j = 0; j < 2; j++) {
         for (var i = 0; i < 2; i++) {
             let offset = vec2<f32>(f32(i) * 2.0 - 1.0, f32(j) * 2.0 - 1.0);
-            sum += textureSampleLevel(source, linear_clamp, uv + offset * step, 0.0).rgb;
+            sum += finite(textureSampleLevel(source, linear_clamp, uv + offset * step, 0.0).rgb);
         }
     }
     return sum * 0.25;
@@ -43,9 +43,9 @@ fn average16(uv: vec2<f32>, use_linear: bool) -> f32 {
             let offset = vec2<f32>(f32(i) - 1.5, f32(j) - 1.5);
             let at = uv + offset * step;
             if use_linear {
-                sum += luminance(textureSampleLevel(source, linear_clamp, at, 0.0).rgb);
+                sum += luminance(finite(textureSampleLevel(source, linear_clamp, at, 0.0).rgb));
             } else {
-                sum += luminance(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb);
+                sum += luminance(finite(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb));
             }
         }
     }
@@ -94,7 +94,7 @@ fn adapt_channel(previous_value: f32, measured: f32, rate: f32) -> f32 {
 @fragment
 fn adapt(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let measured = average16(in.uv, true);
-    let old = textureSampleLevel(previous, nearest_clamp, in.uv, 0.0).rg;
+    let old = finite(textureSampleLevel(previous, nearest_clamp, in.uv, 0.0).rgb).rg;
     let x = adapt_channel(old.x, measured, hdr.adapt.x);
     let y = adapt_channel(old.y, measured, hdr.adapt.y);
     return vec4<f32>(x, y, 0.0, 1.0);
@@ -116,10 +116,10 @@ fn bright_blur_vertical(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var sum = vec3<f32>(0.0);
     for (var u = -k; u <= k; u++) {
         let at = in.uv + vec2<f32>(0.0, f32(u) * row);
-        let colour = textureSampleLevel(source, nearest_clamp, at, 0.0).rgb;
+        let colour = finite(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb);
         sum += weight(u) * max(colour / k_r - vec3<f32>(hdr.bloom.x), vec3<f32>(0.0));
     }
-    return vec4<f32>(k_r * hdr.bloom.y * sum, 1.0);
+    return vec4<f32>(finite(k_r * hdr.bloom.y * sum), 1.0);
 }
 
 // Pass 1 of the bloom: the plain horizontal blur. k_r cancels.
@@ -130,7 +130,7 @@ fn blur_horizontal(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var sum = vec3<f32>(0.0);
     for (var u = -k; u <= k; u++) {
         let at = in.uv + vec2<f32>(f32(u) / size.x, 0.0);
-        sum += weight(u) * textureSampleLevel(source, nearest_clamp, at, 0.0).rgb;
+        sum += weight(u) * finite(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb);
     }
-    return vec4<f32>(sum, 1.0);
+    return vec4<f32>(finite(sum), 1.0);
 }

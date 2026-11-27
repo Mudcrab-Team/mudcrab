@@ -6213,6 +6213,7 @@ mod tests {
             reference: None,
             note: None,
             probes: Vec::new(),
+            sequence: 0,
         };
 
         assert_eq!(

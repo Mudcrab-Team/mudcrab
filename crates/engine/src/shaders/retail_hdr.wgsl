@@ -28,3 +28,15 @@ const LUMA: vec3<f32> = vec3<f32>(0.2125, 0.7154, 0.0721);
 fn luminance(colour: vec3<f32>) -> f32 {
     return dot(colour, LUMA);
 }
+
+// The largest 16-bit float, the format of the chain's targets.
+const HALF_MAX: f32 = 65504.0;
+
+// A guard of Mudcrab, with no effect on a finite value: a NaN reads as 0 and an infinity as the
+// largest value of the targets, so one bad scene pixel cannot reach the adapted pair and the
+// whole screen. The test reads the bits, because fast math may drop a NaN comparison.
+fn finite(value: vec3<f32>) -> vec3<f32> {
+    let bits = bitcast<vec3<u32>>(value) & vec3<u32>(0x7fffffffu);
+    let number = select(value, vec3<f32>(0.0), bits > vec3<u32>(0x7f800000u));
+    return clamp(number, vec3<f32>(-HALF_MAX), vec3<f32>(HALF_MAX));
+}

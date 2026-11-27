@@ -15,6 +15,7 @@ use bevy::{
         schedule::{Core3d, Core3dSystems},
         tonemapping::tonemapping as tonemapping_system,
     },
+    ecs::{schedule::ScheduleConfigs, system::BoxedSystem},
     pbr::main_transmissive_pass_3d,
     prelude::*,
     render::{
@@ -55,6 +56,20 @@ pub const SATURATE_BLEND: BlendState = BlendState {
     },
 };
 
+/// The chain and its tonemap. Each other pass that swaps the post-process texture is ordered
+/// against this set (`post_process_order.rs`).
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RetailHdrSet;
+
+/// The tonemap with its place in `PostProcess`: after Bevy's tone mapping, which does nothing for
+/// a `skyrim` camera.
+pub(crate) fn post_process_systems() -> ScheduleConfigs<BoxedSystem> {
+    run_retail_hdr
+        .in_set(Core3dSystems::PostProcess)
+        .in_set(RetailHdrSet)
+        .after(tonemapping_system)
+}
+
 /// Adds the render-world systems of the chain.
 pub(crate) fn build(app: &mut App) {
     let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -82,12 +97,7 @@ pub(crate) fn build(app: &mut App) {
                 .before(main_transmissive_pass_3d)
                 .before(main_transparent_pass_3d),
         )
-        .add_systems(
-            Core3d,
-            run_retail_hdr
-                .in_set(Core3dSystems::PostProcess)
-                .after(tonemapping_system),
-        );
+        .add_systems(Core3d, post_process_systems());
 }
 
 /// The pipelines of the chain passes and the layout and samplers they share.

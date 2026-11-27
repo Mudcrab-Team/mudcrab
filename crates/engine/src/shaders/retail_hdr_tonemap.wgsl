@@ -2,7 +2,7 @@
 // saturation, tint, brightness and contrast, saturate, power of 1 / fGamma, fade. It runs after
 // the scene and the fog composite and writes the display value.
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
-#import engine::retail_hdr::{RetailHdr, luminance}
+#import engine::retail_hdr::{RetailHdr, finite, luminance}
 
 @group(0) @binding(0) var<uniform> hdr: RetailHdr;
 @group(0) @binding(1) var scene: texture_2d<f32>;
@@ -47,7 +47,7 @@ fn retail_tonemap(scene_colour: vec3<f32>, a_x: f32, a_y: f32, bloom: vec3<f32>)
     colour = colour + hdr.grade.w * (vec3<f32>(l1) * hdr.tint.rgb - colour);
     // Brightness and contrast are multipliers. The contrast pivot is the adapted x value.
     colour = hdr.grade.z * (hdr.grade.y * colour - vec3<f32>(a_x)) + vec3<f32>(a_x);
-    colour = saturate(colour);
+    colour = saturate(finite(colour));
     colour = pow(colour, vec3<f32>(hdr.curve.z));
     // The fade variant is drawn when the fade amount is above 0.
     if hdr.curve.w > 0.0 {
@@ -69,8 +69,8 @@ fn srgb_to_linear(colour: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let source = textureLoad(scene, vec2<i32>(in.position.xy), 0);
-    let adapted = textureSampleLevel(adapted_texture, linear_clamp, in.uv, 0.0).rg;
-    let bloom = textureSampleLevel(bloom_texture, linear_clamp, in.uv, 0.0).rgb;
-    let display = retail_tonemap(source.rgb, adapted.x, adapted.y, bloom);
+    let adapted = finite(textureSampleLevel(adapted_texture, linear_clamp, in.uv, 0.0).rgb);
+    let bloom = finite(textureSampleLevel(bloom_texture, linear_clamp, in.uv, 0.0).rgb);
+    let display = retail_tonemap(finite(source.rgb), adapted.x, adapted.y, bloom);
     return vec4<f32>(srgb_to_linear(display), source.a);
 }

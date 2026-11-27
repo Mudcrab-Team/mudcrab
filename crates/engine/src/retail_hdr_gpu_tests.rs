@@ -710,6 +710,151 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
             }
         }
     }
+
+    // Many frames of inputs a broken shader upstream could produce: nothing that is not finite
+    // may reach a target of the chain or the screen, and a normal scene recovers afterwards.
+    const ZERO: u16 = 0x0000;
+    const LARGEST: u16 = 0x7bff;
+    const INFINITY: u16 = 0x7c00;
+    const NOT_A_NUMBER: u16 = 0x7e00;
+    let upload_halves = |value: &dyn Fn(u32, u32) -> u16| {
+        let mut bytes = Vec::new();
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let colour = value(x, y);
+                for half in [colour, colour, colour, f32_to_half(1.0)] {
+                    bytes.extend_from_slice(&half.to_le_bytes());
+                }
+            }
+        }
+        queue.write_texture(
+            scene.0.as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(SIZE * 8),
+                rows_per_image: Some(SIZE),
+            },
+            extent((SIZE, SIZE)),
+        );
+    };
+    let tonemapped = |pair: usize| {
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tonemap"),
+            layout: &tonemap_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&scene.1),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&bloom.1),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&adapted[pair].1),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&linear),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("tonemap"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.1,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&tonemap);
+            pass.set_bind_group(0, &group, &[0]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit([encoder.finish()]);
+        read_texture(&device, &queue, &target.0, false)
+    };
+    // The first pair of the run is made from a NaN frame, then the pair adapts through the rest.
+    let hazards = [
+        NOT_A_NUMBER,
+        ZERO,
+        INFINITY,
+        LARGEST,
+        0xfc00, // negative infinity
+        f32_to_half(0.5),
+    ];
+    let mut current = 0;
+    for frame in 0..36_usize {
+        let hazard = hazards[frame % hazards.len()];
+        // Whole hazard frames, then frames with the hazard in one texel of eight.
+        let sparse = frame >= hazards.len() * 3;
+        upload_halves(&|x, y| {
+            if sparse && (x + 3 * y) % 8 != 0 {
+                f32_to_half(0.25)
+            } else {
+                hazard
+            }
+        });
+        run(frame != 0, current);
+        let next = 1 - current;
+        for (what, texture) in [("adapted pair", &adapted[next].0), ("bloom", &bloom.0)] {
+            for texel in read_texture(&device, &queue, texture, true) {
+                assert!(
+                    texel.iter().all(|value| value.is_finite()),
+                    "frame {frame}, input {hazard:#06x}: {what} holds {texel:?}"
+                );
+            }
+        }
+        for pixel in tonemapped(next) {
+            assert!(
+                pixel[..3].iter().all(|value| (0.0..=1.0).contains(value)),
+                "frame {frame}, input {hazard:#06x}: the screen holds {pixel:?}"
+            );
+        }
+        current = next;
+    }
+    // A steady scene after the hazards: each frame shows the same, and not a solid frame.
+    upload(&first_scene);
+    let mut shown = Vec::new();
+    for _ in 0..24 {
+        run(true, current);
+        current = 1 - current;
+        shown.push(tonemapped(current));
+    }
+    let mean = |pixels: &[[f32; 4]]| {
+        pixels.iter().map(|pixel| pixel[1]).sum::<f32>() / pixels.len() as f32
+    };
+    for pair in shown.windows(2) {
+        assert!(
+            (mean(&pair[1]) - mean(&pair[0])).abs() < 0.05,
+            "a steady scene flickers: {} then {}",
+            mean(&pair[0]),
+            mean(&pair[1])
+        );
+    }
+    let last = &shown[shown.len() - 1];
+    assert!(
+        last.iter()
+            .any(|pixel| (pixel[1] - mean(last)).abs() > 0.05),
+        "the recovered frame is solid"
+    );
+
     let error = bevy::tasks::block_on(validation.pop());
     assert!(error.is_none(), "GPU validation error: {error:?}");
 }

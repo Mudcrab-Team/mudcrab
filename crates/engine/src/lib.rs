@@ -25,6 +25,7 @@ pub mod extensions;
 pub mod fingerprint;
 mod focus_pause;
 pub mod frame_budget;
+pub mod frame_sequence;
 pub mod grass;
 pub mod grass_render;
 pub mod grass_tuning;
@@ -45,6 +46,8 @@ pub mod papyrus_host;
 pub mod papyrus_plugin;
 pub mod papyrus_runtime;
 pub mod physics;
+#[cfg(test)]
+mod post_process_order;
 pub mod prepass_vertex_alpha;
 pub mod profiling;
 pub mod raw_texel;

@@ -840,8 +840,12 @@ impl RetailSkyInputs<'_> {
                 },
             ),
         };
-        let k = crate::retail_lighting::OUTPUT_SCALE;
-        Color::LinearRgba(LinearRgba::rgb(far.red * k, far.green * k, far.blue * k))
+        let scale = crate::retail_lighting::CLEAR_COLOUR_SCALE;
+        Color::LinearRgba(LinearRgba::rgb(
+            far.red * scale,
+            far.green * scale,
+            far.blue * scale,
+        ))
     }
 }
 

@@ -35,6 +35,10 @@ use core::f32::consts::PI;
 
 /// Section 4: `k`, the output scale (compiled 1 / 1.2).
 pub const OUTPUT_SCALE: f32 = 0.833_333_3;
+/// The frame clear colour's own scale, a literal of the executable and not `k` (SPEC-4 section 10,
+/// which corrects SPEC-1 section 8.1 and SPEC-2 section 3;
+/// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+pub const CLEAR_COLOUR_SCALE: f32 = 0.833_329_98;
 /// Section 4: `B`, `fLightingOutputColourClampPostLit`.
 pub const CLAMP_POST_LIT: f32 = 1.0;
 /// Section 4: `B2`, `fLightingOutputColourClampPostSpec`.
