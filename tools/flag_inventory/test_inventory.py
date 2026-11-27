@@ -193,10 +193,61 @@ class FlagInventoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, here, _ = make_fixture(directory)
             catalog = json.loads((here / "catalog.json").read_text(encoding="utf-8"))
-            catalog[0]["source"] = "/Users/taylor/xedit/wbDefinitionsTES5.pas:10"
-            (here / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, r"source must not contain local paths"):
+            for bad_source in (
+                "/Users/taylor/xedit/wbDefinitionsTES5.pas:10",
+                "xEdit 053da98 C:/work/wbDefinitionsTES5.pas",
+            ):
+                catalog[0]["source"] = bad_source
+                (here / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, r"source must not contain local paths"):
+                    run_check(root, here)
+
+    def test_boolean_format_version_rejected_and_update_baseline_cannot_raise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_fixture(directory, disposition="dropped", issue="#42", reason="", extra_flag=True)
+            disp_doc = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            disp_doc["format_version"] = True
+            (here / "dispositions.json").write_text(json.dumps(disp_doc), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"unsupported dispositions format_version: True"):
                 run_check(root, here)
+
+            disp_doc["format_version"] = 1
+            (here / "dispositions.json").write_text(json.dumps(disp_doc), encoding="utf-8")
+            (here / "baseline.json").write_text(
+                json.dumps({"format_version": 1, "dropped_plus_partial": 1}) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, r"refusing to raise baseline from 1 to 2"):
+                run_check(root, here, "update-baseline")
+
+    def test_base_ceiling_and_explicit_root_honored(self):
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as real_dir:
+            temp_root, here, temp_src = make_fixture(temp_dir, disposition="dropped", issue="#1061", reason="")
+            base_file = temp_root / "base_baseline.json"
+            base_file.write_text(json.dumps({"format_version": 1, "dropped_plus_partial": 0}), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, r"without a non-empty raise_reason naming an issue"):
+                run_check(temp_root, here, "check", "--base-baseline", str(base_file))
+
+            (here / "baseline.json").write_text(
+                json.dumps(
+                    {
+                        "format_version": 1,
+                        "dropped_plus_partial": 1,
+                        "raise_reason": "Enum audit reclassified mode 6 (#1061).",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            real_root = Path(real_dir)
+            real_src = real_root / "crates/engine/src/example.rs"
+            real_src.parent.mkdir(parents=True)
+            real_src.write_text("pub const EXAMPLE_FLAG: u32 = 0x1;\n", encoding="utf-8")
+            temp_src.write_text("pub const BROKEN: u32 = 0;\n", encoding="utf-8")
+            result = run_check(
+                temp_root, here, "check", "--root", str(real_root), "--base-baseline", str(base_file)
+            )
+            self.assertEqual(result["base_baseline"], 0)
+            self.assertIn("#1061", result["base_note"])
 
     def test_cli_returns_nonzero_on_failure(self):
         with tempfile.TemporaryDirectory() as directory:
