@@ -178,7 +178,7 @@ fn one_source_declares_the_sign_and_the_frame() {
     ] {
         assert!(
             shader.contains(
-                "#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}"
+                "#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_tangent_normal, terrain_tbn}"
             ),
             "{name} imports the shared normal module"
         );
@@ -191,6 +191,36 @@ fn one_source_declares_the_sign_and_the_frame() {
                 && shader.contains("retail_terrain_normal(sample.xyz)"),
             "{name} decodes normal samples through the shared functions"
         );
+        // SPEC-1 section 9.2: colour and normal take the same divisor, which is 1 for retail.
+        assert!(
+            shader.contains("color = color / divisor;") && shader.contains("/ divisor, vec3"),
+            "{name} blends through the shared divisor"
+        );
+        // Section 5: a layer with no normal map is the black texel.
+        assert!(
+            shader.contains("retail_terrain_normal(vec3<f32>(0.0))"),
+            "{name} binds the black texel for a missing normal map"
+        );
+    }
+}
+
+/// SPEC-1 section 9.2: retail does not renormalise the layer weights, and its black texel decodes
+/// to -1 on every axis.
+#[test]
+fn retail_keeps_the_layer_weights_and_decodes_the_black_texel() {
+    for (retail, divisor) in [(true, 1.0), (false, 1.5)] {
+        let input = format!("const total = f32(1.5);\nconst retail = {retail};");
+        let found = evaluate("terrain_blend_divisor", 1.0, &input, "");
+        assert!((found - divisor).abs() < 1.0e-6, "{retail}: {found}");
+    }
+    for axis in ["x", "y", "z"] {
+        let black = evaluate(
+            "retail_terrain_normal",
+            1.0,
+            "const sample_rgb = vec3<f32>(0.0);",
+            &format!(".{axis}"),
+        );
+        assert!((black + 1.0).abs() < 1.0e-6, "{axis}: {black}");
     }
 }
 

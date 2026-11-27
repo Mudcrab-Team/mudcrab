@@ -36,10 +36,17 @@ fn terrain_tilt(sample_xy: vec2<f32>) -> vec2<f32> {
 }
 
 // Retail's tangent-space normal of a stored texel under the `skyrim` profile: `2 rgb - 1`, with no
-// Z rebuild and no normalise before the layers are weighted (SPEC-1 section 9.2).
+// Z rebuild and no normalise before the layers are weighted (SPEC-1 section 9.2). A layer with no
+// normal map takes the black texel retail binds to every landscape slot first (section 5).
 fn retail_terrain_normal(sample_rgb: vec3<f32>) -> vec3<f32> {
     let n = sample_rgb * 2.0 - 1.0;
     return vec3<f32>(n.x, NORMAL_GREEN_SIGN * n.y, n.z);
+}
+
+// The divisor of a layer blend. Retail does not renormalise the layer weights (SPEC-1 section
+// 9.2), so the `skyrim` profile divides by 1. `mudcrab` divides by the weight sum.
+fn terrain_blend_divisor(total: f32, retail: bool) -> f32 {
+    return select(total, 1.0, retail);
 }
 
 // The unit tangent-space normal a stored texel decodes to. Z is rebuilt from the tilt.

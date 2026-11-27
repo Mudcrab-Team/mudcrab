@@ -1,5 +1,5 @@
 #import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
-#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}
+#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_tangent_normal, terrain_tbn}
 
 // The shared terrain shader of merged cells (#215): one material for every cell.
 //
@@ -312,6 +312,13 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
     // the face is reported as a front face: the terrain is lit by its interpolated normal from
     // both sides, exactly as the quadrant path lights it.
     var pbr_input = pbr_input_from_standard_material(standard_in, true);
+    let retail =
+        (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u;
+    // A layer with no normal map: the geometric normal, or retail's black texel (SPEC-1 section 5).
+    var empty_normal = vec3<f32>(0.0, 0.0, 1.0);
+    if retail {
+        empty_normal = retail_terrain_normal(vec3<f32>(0.0));
+    }
 
     // One UV for every layer, and its derivatives once, in uniform control flow.
     let uv = in.uv * settings.tiling.xy;
@@ -344,7 +351,7 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
 #ifdef TERRAIN_HAS_NORMAL_CLASSES
         if entry.y != NO_NORMAL_WORD {
             let sample = sample_normal(entry.y >> 16u, uv, entry.y & 0xFFFFu, ddx, ddy);
-            if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u {
+            if retail {
                 tangent_normal += retail_terrain_normal(sample.xyz) * weight;
             } else {
                 tangent_normal += terrain_tangent_normal(sample.xy) * weight;
@@ -352,13 +359,14 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
             specular_mask += sample.a * weight;
             any_normal = true;
         } else {
-            tangent_normal += vec3<f32>(0.0, 0.0, 1.0) * weight;
+            tangent_normal += empty_normal * weight;
         }
 #else
-        tangent_normal += vec3<f32>(0.0, 0.0, 1.0) * weight;
+        tangent_normal += empty_normal * weight;
 #endif
     }
-    color = color / total;
+    let divisor = terrain_blend_divisor(total, retail);
+    color = color / divisor;
     let seam_weight = terrain_blend_weight(in.seam_ramp, seam.atlas.w);
     if seam.atlas.w != 0.0 {
         let distant_uv = terrain_atlas_uv(in.uv, seam.atlas);
@@ -376,9 +384,9 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
     pbr_input.material.base_color *= color;
     pbr_input.material.reflectance = terrain_reflectance(pbr_input.material.reflectance, specular_mask, total);
     // Only a fragment that reads at least one normal map turns the blend into a world normal.
-    if any_normal {
+    if any_normal || retail {
         let geometric = normalize(pbr_input.world_normal);
-        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(tangent_normal / total, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
+        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(tangent_normal / divisor, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
     }
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     var out: FragmentOutput;
