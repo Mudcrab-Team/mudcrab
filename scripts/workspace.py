@@ -30,6 +30,9 @@ KEEP_DAYS = 7.0               # default length of a --keep pin
 MIN_IDLE_SECONDS = 1800       # settle and superseding leave builds used within this time
 LSOF_TIMEOUT_SECONDS = 120
 RETIRE_AFTER_SUCCESS = {"check", "clippy", "fmt", "test", "nextest"}  # `doc` output is the result
+# Taylor 2026-11-26: builds and tests run at low CPU priority so the desktop stays responsive.
+# `cargo run` is excluded: it launches the engine, and frame timing needs normal priority.
+LOW_PRIORITY_COMMANDS = {"build", "check", "clippy", "test", "nextest", "doc"}
 AUTOMATIC_REASONS = {"on-success", "superseded"}  # these never delete a build that holds result artifacts
 KEEP_LABELS_FILE = "keep-labels"
 KEEPS_BUILD_OUTPUT = {"--no-run", "--open", "--timings", "--message-format", "--build-plan"}
@@ -330,8 +333,20 @@ class Workspace:
             return False
         return args[0] != "nextest" or args[1:2] == ["run"]
 
+    @staticmethod
+    def low_priority_prefix() -> list[str]:
+        """Command prefix that lowers CPU priority. Children (rustc, build scripts, tests) inherit it."""
+        prefix = []
+        if sys.platform == "darwin" and Path("/usr/sbin/taskpolicy").is_file():
+            prefix += ["/usr/sbin/taskpolicy", "-c", "utility"]
+        # A fixed path, not a PATH lookup: `nice` is in /usr/bin on macOS and Linux runners.
+        nice = next((path for path in ("/usr/bin/nice", "/bin/nice") if Path(path).is_file()), None)
+        if nice:
+            prefix += [nice, "-n", "19"]
+        return prefix
+
     def cargo(self, args: list[str], label: str | None, needed_gib: float,
-              keep: bool = False, keep_days: float = KEEP_DAYS) -> int:
+              keep: bool = False, keep_days: float = KEEP_DAYS, normal_priority: bool = False) -> int:
         if not args or args[0] not in {"build", "check", "clippy", "test", "nextest", "run", "fmt", "doc"}:
             raise ValueError("Use cargo build/check/clippy/test/nextest/run/fmt/doc through this entrypoint")
         cargo_args = args[:args.index("--")] if "--" in args else args
@@ -339,11 +354,15 @@ class Workspace:
         if any(a in overrides or any(a.startswith(option + "=") for option in overrides)
                for a in cargo_args):
             raise ValueError("Run from the intended checkout; target-dir/config/manifest overrides bypass storage ownership")
+        low = not normal_priority and args[0] in LOW_PRIORITY_COMMANDS
+        if not low:
+            print(f"workspace: cargo {args[0]} runs at normal priority", file=sys.stderr, flush=True)
         return self.run_task(["cargo", *args], label, needed_gib, retire=self.retires_on_success(args),
-                             keep=keep, keep_days=keep_days)
+                             keep=keep, keep_days=keep_days, low_priority=low)
 
     def run_task(self, command: list[str], label: str | None, needed_gib: float,
-                 retire: bool = False, keep: bool = False, keep_days: float = KEEP_DAYS) -> int:
+                 retire: bool = False, keep: bool = False, keep_days: float = KEEP_DAYS,
+                 low_priority: bool = False) -> int:
         if not command:
             raise ValueError("Missing command")
         if keep and not label:
@@ -424,7 +443,8 @@ class Workspace:
             env["MUDCRAB_BUILD_LEASE"] = str(path)
             env["MUDCRAB_STORAGE"] = str(self.root)
             print(f"CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}", file=sys.stderr, flush=True)
-            result = subprocess.run(command, cwd=self.repo, env=env).returncode
+            launched = [*self.low_priority_prefix(), *command] if low_priority else command
+            result = subprocess.run(launched, cwd=self.repo, env=env).returncode
             try:
                 write_json(path / "build.json", {**read_json(path / "build.json"), "last_used": time.time()})
             except (OSError, ValueError) as exc:  # Keep the build and the child's exit status.
@@ -1053,6 +1073,9 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--needed-gib", type=float, default=8)
         command.add_argument("--keep", action="store_true", help="Pin the isolated build; it is never retired automatically while pinned")
         command.add_argument("--keep-days", type=float, default=KEEP_DAYS)
+        if name == "cargo":
+            command.add_argument("--normal-priority", action="store_true",
+                                 help="Run a build or test at normal CPU priority (timing-sensitive tests only)")
         command.add_argument("args", nargs=argparse.REMAINDER)
     prune = sub.add_parser("prune")
     prune.add_argument("--older-than-days", type=float, default=None,
@@ -1074,8 +1097,11 @@ def main(argv: list[str] | None = None) -> int:
             workspace.setup()
             if args.command in {"cargo", "exec"}:
                 cargo_args = args.args[1:] if args.args[:1] == ["--"] else args.args
-                run = workspace.cargo if args.command == "cargo" else workspace.run_task
-                return run(cargo_args, args.isolated, args.needed_gib, keep=args.keep, keep_days=args.keep_days)
+                if args.command == "cargo":
+                    return workspace.cargo(cargo_args, args.isolated, args.needed_gib, keep=args.keep,
+                                           keep_days=args.keep_days, normal_priority=args.normal_priority)
+                return workspace.run_task(cargo_args, args.isolated, args.needed_gib, keep=args.keep,
+                                          keep_days=args.keep_days)
             if args.command == "setup":
                 workspace.bootstrap_guidance()
                 result = {**workspace.paths(), "instructions": "Read AGENTS.md. Use workspace.py cargo; reuse registered packs. No per-worktree target directories."}
