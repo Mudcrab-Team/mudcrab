@@ -66054,7 +66054,7 @@
     "STAT.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps and applied under VisualProfile::Mudcrab for TX00/TX01 or NullTextureSet hide; missing: skipped under VisualProfile::Skyrim (object_materials.rs:347-351) and refused when TXST fills TX02..TX07 (object_materials.rs:384-388).",
+      "reason": "Exported to base_texture_swaps and applied under both visual profiles for TX00/TX01 or NullTextureSet hide (raw texels under VisualProfile::Skyrim, SPEC-1 2.1); missing: refused when TXST fills TX02..TX07 (object_materials.rs SwapKind::Textures unapplied).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66066,7 +66066,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "if profile.as_deref() == Some(&crate::visual_profile::VisualProfile::Skyrim) {"
+          "anchor": ".is_none_or(|profile| profile.decodes_colour_srgb());"
         },
         {
           "path": "crates/engine/src/object_materials.rs",
@@ -66082,7 +66082,7 @@
     "STAT.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps and applied under VisualProfile::Mudcrab for TX00/TX01 or NullTextureSet hide; missing: skipped under VisualProfile::Skyrim (object_materials.rs:347-351) and refused when TXST fills TX02..TX07 (object_materials.rs:384-388).",
+      "reason": "Exported to base_texture_swaps and applied under both visual profiles for TX00/TX01 or NullTextureSet hide (raw texels under VisualProfile::Skyrim, SPEC-1 2.1); missing: refused when TXST fills TX02..TX07 (object_materials.rs SwapKind::Textures unapplied).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66094,7 +66094,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "if profile.as_deref() == Some(&crate::visual_profile::VisualProfile::Skyrim) {"
+          "anchor": ".is_none_or(|profile| profile.decodes_colour_srgb());"
         },
         {
           "path": "crates/engine/src/object_materials.rs",
@@ -66129,7 +66129,7 @@
     "STAT.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps and applied under VisualProfile::Mudcrab for TX00/TX01 or NullTextureSet hide; missing: skipped under VisualProfile::Skyrim (object_materials.rs:347-351) and refused when TXST fills TX02..TX07 (object_materials.rs:384-388).",
+      "reason": "Exported to base_texture_swaps and applied under both visual profiles for TX00/TX01 or NullTextureSet hide (raw texels under VisualProfile::Skyrim, SPEC-1 2.1); missing: refused when TXST fills TX02..TX07 (object_materials.rs SwapKind::Textures unapplied).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66141,7 +66141,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "if profile.as_deref() == Some(&crate::visual_profile::VisualProfile::Skyrim) {"
+          "anchor": ".is_none_or(|profile| profile.decodes_colour_srgb());"
         },
         {
           "path": "crates/engine/src/object_materials.rs",
@@ -66157,7 +66157,7 @@
     "STAT.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps and applied under VisualProfile::Mudcrab for TX00/TX01 or NullTextureSet hide; missing: skipped under VisualProfile::Skyrim (object_materials.rs:347-351) and refused when TXST fills TX02..TX07 (object_materials.rs:384-388).",
+      "reason": "Exported to base_texture_swaps and applied under both visual profiles for TX00/TX01 or NullTextureSet hide (raw texels under VisualProfile::Skyrim, SPEC-1 2.1); missing: refused when TXST fills TX02..TX07 (object_materials.rs SwapKind::Textures unapplied).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66169,7 +66169,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "if profile.as_deref() == Some(&crate::visual_profile::VisualProfile::Skyrim) {"
+          "anchor": ".is_none_or(|profile| profile.decodes_colour_srgb());"
         },
         {
           "path": "crates/engine/src/object_materials.rs",
@@ -69903,7 +69903,7 @@
     "TXST.TX00.diffuse": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Consumed on terrain (TX00) and composed actor skins, and on STAT MODS swaps under VisualProfile::Mudcrab; missing: STAT MODS swaps skip VisualProfile::Skyrim and refuse any TXST that also fills TX02..TX07.",
+      "reason": "Consumed on terrain (TX00) and composed actor skins, and on STAT MODS swaps under both visual profiles; missing: STAT MODS swaps refuse any TXST that also fills TX02..TX07.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -69923,7 +69923,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "if profile.as_deref() == Some(&crate::visual_profile::VisualProfile::Skyrim) {"
+          "anchor": ".is_none_or(|profile| profile.decodes_colour_srgb());"
         },
         {
           "path": "crates/engine/src/object_materials.rs",
@@ -69939,7 +69939,7 @@
     "TXST.TX01.normal_gloss": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Consumed on terrain (TX01) and composed actor skins, and on STAT MODS swaps under VisualProfile::Mudcrab; missing: STAT MODS swaps skip VisualProfile::Skyrim and refuse any TXST that also fills TX02..TX07.",
+      "reason": "Consumed on terrain (TX01) and composed actor skins, and on STAT MODS swaps under both visual profiles; missing: STAT MODS swaps refuse any TXST that also fills TX02..TX07.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -69959,7 +69959,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "if profile.as_deref() == Some(&crate::visual_profile::VisualProfile::Skyrim) {"
+          "anchor": ".is_none_or(|profile| profile.decodes_colour_srgb());"
         },
         {
           "path": "crates/engine/src/object_materials.rs",

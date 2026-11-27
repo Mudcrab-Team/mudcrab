@@ -179,7 +179,8 @@ impl LightEvaluation {
             .source
             .fade
             .filter(|fade| fade.is_finite() && self.source.fade_status != Some(2))
-            // A record without a readable fade keeps the unit fade of `evaluate_light`.
+            // STAND-IN(#362): a record without a readable fade keeps the unit fade of
+            // `evaluate_light`.
             .unwrap_or(1.0);
         let offset = self
             .source
@@ -188,6 +189,7 @@ impl LightEvaluation {
             .filter(|data| [16, 20].contains(&data.data_size))
             .and_then(|data| data.fade_offset)
             .filter(|offset| offset.is_finite())
+            // retail-default: SPEC-1 section 2.6, a reference without the fade extra adds nothing.
             .unwrap_or(0.0);
         if base == f32::MAX || offset == f32::MAX {
             return f32::MAX;
@@ -198,6 +200,7 @@ impl LightEvaluation {
     /// The radius of the retail path: the record radius plus the `XRDS` offset, `0.1` when the sum
     /// is not above 0, with no upper bound (SPEC-1 section 2.6). `None` for an unreadable input.
     pub fn retail_radius(&self) -> Option<f32> {
+        // retail-default: SPEC-1 section 2.6, a reference without `XRDS` adds nothing.
         let offset = self.radius_offset.unwrap_or(0.0);
         if self.source.radius_status == Some(2)
             || !self.source.radius.is_finite()

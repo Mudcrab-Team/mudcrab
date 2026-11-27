@@ -268,6 +268,7 @@ pub(super) fn apply(
         specular: specular || snow,
         emissive_multiple: if external { multiple } else { 0.0 },
         alpha_reference: blended_reference,
+        // retail-default: SPEC-1 section 9.2, a surface without the technique reflects nothing.
         environment_scale: environment.unwrap_or(0.0),
     });
 }
