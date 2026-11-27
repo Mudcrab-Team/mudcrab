@@ -171,11 +171,9 @@
     },
     {
       "file": "crates/engine/src/papyrus_host.rs",
-      "anchor": "Ok(match scalar_kind {",
+      "anchor": "other => Err(format!(\"property type {other} has no value decoder\")),",
       "enum_id": "VMAD.Property.Type",
-      "status": "catch-all-allowed",
-      "reason": "Property type 0 (None) maps to `PropertyValue::None`; converter validates property types in 0..=5 | 11..=15 at ESM parse time.",
-      "reference": "crates/converter/src/esm/records/record_type/vmad.rs:230; xedit@053da98/src/Core/wbDefinitionsCommon.pas"
+      "status": "exhaustive"
     },
     {
       "file": "crates/converter/src/esm/rooms.rs",
@@ -527,6 +525,18 @@
       "file": "crates/converter/src/texture.rs",
       "anchor": "Some(D3DFormat::DXT1) => Ok(8),",
       "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/engine/src/papyrus_host.rs",
+      "anchor": "let reason = format!(\"status {other} is not a defined VMAD property status\");",
+      "enum_id": "VMAD.Property.Flags",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/engine/src/papyrus_host.rs",
+      "anchor": "let reason = format!(\"property type {kind} is not a defined VMAD property type\");",
+      "enum_id": "VMAD.Property.Type",
       "status": "exhaustive"
     }
   ]

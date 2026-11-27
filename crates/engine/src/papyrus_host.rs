@@ -34,6 +34,20 @@ const VMAD_BOOL: i64 = 5;
 const VMAD_ARRAY_OFFSET: i64 = 10;
 const VMAD_ARRAY_FIRST: i64 = VMAD_OBJECT + VMAD_ARRAY_OFFSET;
 const VMAD_ARRAY_LAST: i64 = VMAD_BOOL + VMAD_ARRAY_OFFSET;
+/// Type code of a property that holds no value (`None`). It has no value rows.
+const VMAD_NONE: i64 = 0;
+/// An object property whose alias id is this value is not bound to a quest alias. The
+/// converter stores the signed 16-bit alias id `-1` as `0xFFFF`.
+const VMAD_NO_ALIAS: u16 = u16::MAX;
+/// The alias types the engine declares natively, as `__types` spells them in lowercase.
+/// Any other type that derives from `Alias` is a script with its own property values.
+const BASE_ALIAS_TYPES: [&str; 3] = ["alias", "referencealias", "locationalias"];
+
+/// `VMAD.Property.Flags` as the converter writes them to `script_properties.status`
+/// (xEdit 053da98 `wbDefinitionsTES5.pas`, the `Flags` enum of a VMAD property: `1 = Edited`,
+/// `3 = Removed`; `0` and `2` are unnamed there). The value is stored as the file holds it.
+const VMAD_STATUS_EDITED: i64 = 1;
+const VMAD_STATUS_REMOVED: i64 = 3;
 
 /// The form id of the player reference.
 pub const PLAYER_REFERENCE: u32 = 0x14;
@@ -91,11 +105,46 @@ pub struct LogLine {
     pub message: String,
 }
 
+/// What a script property row says about itself, before any value is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertyStatus {
+    /// The record sets this property (`VMAD.Property.Flags` 1, Edited). Seed its value.
+    Edited,
+    /// The record removed its override (`VMAD.Property.Flags` 3, Removed). The row still
+    /// carries a value. It must not be seeded: an earlier owner's value, or the script's
+    /// own default, stays.
+    Removed,
+    /// The row cannot be read as retail data: a column that its property type needs is
+    /// NULL, a count or range is wrong, or the status or type is not a defined value. The
+    /// reason is logged and the property is not seeded. Nothing is invented in its place.
+    Unreadable(String),
+}
+
 /// One script property as the world database stores it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScriptProperty {
     pub name: String,
     pub value: PropertyValue,
+    pub status: PropertyStatus,
+}
+
+impl ScriptProperty {
+    /// A property its record sets ([`PropertyStatus::Edited`]).
+    pub fn edited(name: impl Into<String>, value: PropertyValue) -> Self {
+        Self {
+            name: name.into(),
+            value,
+            status: PropertyStatus::Edited,
+        }
+    }
+
+    fn unreadable(name: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: PropertyValue::None,
+            status: PropertyStatus::Unreadable(reason.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +156,24 @@ pub enum PropertyValue {
     Float(f64),
     Bool(bool),
     Array(Vec<PropertyValue>),
+}
+
+impl PropertyValue {
+    /// Whether this value, or an array element of it, is an object bound to a quest alias.
+    fn has_alias_binding(&self) -> bool {
+        match self {
+            Self::Object {
+                alias: Some(alias), ..
+            } => *alias != VMAD_NO_ALIAS,
+            Self::Array(items) => items.iter().any(Self::has_alias_binding),
+            Self::None
+            | Self::Object { alias: None, .. }
+            | Self::Str(_)
+            | Self::Int(_)
+            | Self::Float(_)
+            | Self::Bool(_) => false,
+        }
+    }
 }
 
 /// Read access to the converted world: which scripts a form carries and what the natives
@@ -470,6 +537,24 @@ impl PapyrusHost {
             Err(_) => return,
         };
         for property in props {
+            match &property.status {
+                PropertyStatus::Edited => {}
+                // xEdit 053da98 `wbDefinitionsTES5.pas` names VMAD property flag 3
+                // `Removed`. A removed row sets nothing, so the script's own default stays
+                // (#1052). When the base record also sets the property, the base value
+                // stays; that merge is unverified against retail.
+                PropertyStatus::Removed => continue,
+                PropertyStatus::Unreadable(reason) => {
+                    self.note(
+                        "error",
+                        format!(
+                            "script {script} on {reference:08X}: property {} is unreadable ({reason}); it is not set",
+                            property.name
+                        ),
+                    );
+                    continue;
+                }
+            }
             let setter: Value = find
                 .call((
                     self.runtime.clone(),
@@ -488,7 +573,13 @@ impl PapyrusHost {
                 );
                 continue;
             }
-            match self.property_value(&property.value, script, &property.name) {
+            let declared = if property.value.has_alias_binding() {
+                self.declared_type(object, &property.name)
+            } else {
+                None
+            };
+            match self.property_value(&property.value, script, &property.name, declared.as_deref())
+            {
                 Ok(value) => {
                     if let Err(error) = set.call::<()>((
                         self.runtime.clone(),
@@ -516,11 +607,89 @@ impl PapyrusHost {
         }
     }
 
+    /// The Papyrus type a script declares for an auto property, lowercase and without the
+    /// array suffix. Converted scripts record it as `__types["::<name>_var"]`, the backing
+    /// variable of the property. The class chain is searched, because a derived script
+    /// inherits properties its parent declares. `None` when no class in the chain names it.
+    fn declared_type(&self, object: &Table, name: &str) -> Option<String> {
+        let class_named: Function = self.runtime.get("class_named").ok()?; // silent-ok: a runtime without class lookup cannot name a type.
+        let identifier_key: Function = self.runtime.get("identifier_key").ok()?; // silent-ok: a runtime without key lookup cannot name a type.
+        let variable = format!("::{name}_var");
+        let mut types: Option<Table> = object.get("__types").ok().flatten(); // silent-ok: a script without type metadata declares no types.
+        let mut parent: Option<String> = object.get("__parent").ok().flatten(); // silent-ok: a script without a parent ends the search.
+        for _ in 0..64 {
+            if let Some(table) = &types
+                && let Ok(Some(key)) = identifier_key.call::<Option<String>>((
+                    self.runtime.clone(),
+                    table.clone(),
+                    variable.clone(),
+                ))
+                && let Ok(Some(declared)) = table.get::<Option<String>>(key)
+            {
+                let lowered = declared.to_lowercase();
+                return Some(lowered.strip_suffix("[]").unwrap_or(&lowered).to_string());
+            }
+            let class: Option<Table> = parent
+                .as_deref()
+                .and_then(|name| class_named.call((self.runtime.clone(), name)).ok()); // silent-ok: an unknown parent ends the search.
+            let class = class?;
+            types = class.get("__types").ok().flatten(); // silent-ok: a class without type metadata declares no types.
+            parent = class.get("__parent").ok().flatten(); // silent-ok: a class without a parent ends the search.
+        }
+        None
+    }
+
+    /// Whether the class is `ancestor` or derives from it, following `__parent`.
+    fn inherits(&self, class_name: &str, ancestor: &str) -> mlua::Result<bool> {
+        let inherits: Function = self.runtime.get("inherits")?;
+        inherits.call((self.runtime.clone(), class_name, ancestor))
+    }
+
+    /// The object for one quest alias. Every property bound to the alias shares it, so
+    /// Papyrus `==` is true for the same alias. It stores the quest and alias ids for
+    /// `ReferenceAlias.GetReference`, which reads the current fill in
+    /// [`WorldState::aliases`]. One property may declare `Alias` and another a subtype of
+    /// it; the object then takes the subtype's class. `None` when two declared types for one
+    /// alias are unrelated (`ReferenceAlias` and `LocationAlias`).
+    fn alias_object(&self, quest: u32, alias: u16, declared: &str) -> mlua::Result<Option<Table>> {
+        let cache: Table = match self.runtime.get::<Option<Table>>("alias_objects")? {
+            Some(table) => table,
+            None => {
+                let table = self.lua.create_table()?;
+                self.runtime.set("alias_objects", table.clone())?;
+                table
+            }
+        };
+        let class_named: Function = self.runtime.get("class_named")?;
+        let class: Table = class_named
+            .call::<Option<Table>>((self.runtime.clone(), declared))?
+            .ok_or_else(|| mlua::Error::runtime(format!("alias class {declared} not found")))?;
+        let key = format!("{quest:08X}:{alias}");
+        if let Some(object) = cache.get::<Option<Table>>(key.as_str())? {
+            let held: String = object.get("__name")?;
+            if self.inherits(&held, declared)? {
+                return Ok(Some(object));
+            }
+            if self.inherits(declared, &held)? {
+                object.set_metatable(Some(class));
+                return Ok(Some(object));
+            }
+            return Ok(None);
+        }
+        let new: Function = class.get("new")?;
+        let object: Table = new.call(self.runtime.clone())?;
+        object.raw_set("__form_id", quest)?;
+        object.raw_set("__alias_id", alias)?;
+        cache.set(key.as_str(), object.clone())?;
+        Ok(Some(object))
+    }
+
     fn property_value(
         &self,
         value: &PropertyValue,
         script: &str,
         name: &str,
+        declared: Option<&str>,
     ) -> mlua::Result<Value> {
         Ok(match value {
             PropertyValue::None => Value::Nil,
@@ -528,16 +697,55 @@ impl PapyrusHost {
             PropertyValue::Float(value) => Value::Number(*value),
             PropertyValue::Bool(value) => Value::Boolean(*value),
             PropertyValue::Str(value) => self.lua.create_string(value)?.into_lua(&self.lua)?,
-            PropertyValue::Object { form_id, alias } => {
-                if alias.is_some_and(|alias| alias != u16::MAX) {
+            PropertyValue::Object {
+                form_id,
+                alias: Some(alias),
+            } if *alias != VMAD_NO_ALIAS => {
+                // Retail: an object value with an alias id other than -1 is bound to that
+                // alias of the quest the FormID names (xEdit 053da98 `wbDefinitionsTES5.pas`,
+                // VMAD Object Union: FormID, Alias). The property holds the alias. A
+                // `ReferenceAlias` extends `Alias` in the Papyrus class tree, and its
+                // `GetReference` returns the current fill, or None for an empty alias
+                // (Creation Kit Papyrus reference, GetReference - ReferenceAlias).
+                // Only the engine's own alias types are built. A derived alias script needs
+                // the property values from the quest's alias VMAD section, which the world
+                // database does not hold. An object with empty variables would be a
+                // stand-in, so such a property stays None and says so.
+                let quest = *form_id;
+                let unset = |reason: String| {
                     self.note(
                         "warn",
                         format!(
-                            "script {script} property {name}: alias-bound objects are not supported yet; the property stays None"
+                            "script {script} property {name}: alias {alias} of form {quest:08X} {reason}; the property stays None"
                         ),
                     );
-                    return Ok(Value::Nil);
+                    Ok::<Value, mlua::Error>(Value::Nil)
+                };
+                let Some(declared) = declared else {
+                    return unset("is bound, but the script declares no type for it".into());
+                };
+                if !BASE_ALIAS_TYPES.contains(&declared) {
+                    return unset(if self.inherits(declared, "Alias")? {
+                        format!(
+                            "needs the alias script {declared}, and quest alias scripts are not attached yet"
+                        )
+                    } else {
+                        format!("is bound to type {declared}, which is not an alias type")
+                    });
                 }
+                if self.forms.record_type(quest).as_deref() != Some("QUST") {
+                    return unset("names a form that is not a quest in the world database".into());
+                }
+                match self.alias_object(quest, *alias, declared)? {
+                    Some(object) => Value::Table(object),
+                    None => {
+                        return unset(format!(
+                            "is declared {declared} here and an unrelated alias type elsewhere"
+                        ));
+                    }
+                }
+            }
+            PropertyValue::Object { form_id, .. } => {
                 if *form_id == 0 {
                     return Ok(Value::Nil);
                 }
@@ -560,7 +768,10 @@ impl PapyrusHost {
             PropertyValue::Array(items) => {
                 let table = self.lua.create_table()?;
                 for (index, item) in items.iter().enumerate() {
-                    table.set(index + 1, self.property_value(item, script, name)?)?;
+                    table.set(
+                        index + 1,
+                        self.property_value(item, script, name, declared)?,
+                    )?;
                 }
                 Value::Table(table)
             }
@@ -1097,6 +1308,148 @@ fn bind_natives(
     Ok(())
 }
 
+// ---- Property row decoding -----------------------------------------------------------
+
+/// One `script_property_values` row exactly as stored. A NULL column stays `None`: no
+/// column is ever replaced by `0`, an empty string or `false`.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ValueRow {
+    object: Option<i64>,
+    alias: Option<i64>,
+    string: Option<String>,
+    integer: Option<i64>,
+    float_bits: Option<i64>,
+    boolean: Option<i64>,
+}
+
+/// Decode one value row of a scalar property type. The column that matches the type must
+/// hold a value. A NULL or out-of-range column is corrupt data and is reported, never
+/// turned into a default (#1095). The converter writes every column it needs for a type
+/// (`crates/converter/src/esm/inhouse_script_properties.rs`).
+fn decode_scalar(kind: i64, row: &ValueRow) -> Result<PropertyValue, String> {
+    match kind {
+        VMAD_OBJECT => {
+            let object = row
+                .object
+                .ok_or_else(|| "object_form_id is NULL".to_string())?;
+            let form_id = u32::try_from(object)
+                .map_err(|_| format!("object_form_id {object} is not a 32-bit form id"))?;
+            let alias = row.alias.ok_or_else(|| "alias_id is NULL".to_string())?;
+            let alias = u16::try_from(alias)
+                .map_err(|_| format!("alias_id {alias} is not a 16-bit alias id"))?;
+            Ok(PropertyValue::Object {
+                form_id,
+                alias: Some(alias),
+            })
+        }
+        VMAD_STRING => row
+            .string
+            .clone()
+            .map(PropertyValue::Str)
+            .ok_or_else(|| "string_value is NULL".to_string()),
+        VMAD_INT => {
+            let integer = row
+                .integer
+                .ok_or_else(|| "integer_value is NULL".to_string())?;
+            i32::try_from(integer)
+                .map(|value| PropertyValue::Int(i64::from(value)))
+                .map_err(|_| format!("integer_value {integer} is outside a 32-bit Int"))
+        }
+        VMAD_FLOAT => {
+            let bits = row
+                .float_bits
+                .ok_or_else(|| "float_bits is NULL".to_string())?;
+            u32::try_from(bits)
+                .map(|bits| PropertyValue::Float(f64::from(f32::from_bits(bits))))
+                .map_err(|_| format!("float_bits {bits} is not 32 bits"))
+        }
+        VMAD_BOOL => match row.boolean {
+            Some(0) => Ok(PropertyValue::Bool(false)),
+            Some(1) => Ok(PropertyValue::Bool(true)),
+            Some(other) => Err(format!("boolean_value {other} is neither 0 nor 1")),
+            None => Err("boolean_value is NULL".to_string()),
+        },
+        other => Err(format!("property type {other} has no value decoder")),
+    }
+}
+
+/// Turn one `script_properties` row and its value rows into a [`ScriptProperty`].
+/// `status` and `kind` are checked against the defined VMAD values. An undefined one is
+/// rejected explicitly. The value count the header records must match the rows found, so a
+/// missing array element or a missing scalar row is reported, not silently shortened.
+fn decode_property(
+    name: String,
+    kind: i64,
+    status: i64,
+    count: i64,
+    rows: Vec<Result<ValueRow, String>>,
+) -> ScriptProperty {
+    match status {
+        VMAD_STATUS_EDITED => {}
+        VMAD_STATUS_REMOVED => {
+            return ScriptProperty {
+                name,
+                value: PropertyValue::None,
+                status: PropertyStatus::Removed,
+            };
+        }
+        other => {
+            let reason = format!("status {other} is not a defined VMAD property status");
+            return ScriptProperty::unreadable(name, reason);
+        }
+    }
+    let is_array = (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind);
+    let scalar_kind = if is_array {
+        kind - VMAD_ARRAY_OFFSET
+    } else {
+        kind
+    };
+    if kind != VMAD_NONE && !is_array && !(VMAD_OBJECT..=VMAD_BOOL).contains(&kind) {
+        let reason = format!("property type {kind} is not a defined VMAD property type");
+        return ScriptProperty::unreadable(name, reason);
+    }
+    let rows: Vec<ValueRow> = match rows.into_iter().collect() {
+        Ok(rows) => rows,
+        Err(error) => {
+            let reason = format!("a value row cannot be read: {error}");
+            return ScriptProperty::unreadable(name, reason);
+        }
+    };
+    if i64::try_from(rows.len()) != Ok(count) {
+        let reason = format!("value_count is {count} but {} value rows exist", rows.len());
+        return ScriptProperty::unreadable(name, reason);
+    }
+    if kind == VMAD_NONE {
+        let value = PropertyValue::None;
+        return if rows.is_empty() {
+            ScriptProperty::edited(name, value)
+        } else {
+            ScriptProperty::unreadable(name, "a None property has value rows")
+        };
+    }
+    if !is_array && rows.len() != 1 {
+        let reason = format!("a scalar property has {} value rows, not 1", rows.len());
+        return ScriptProperty::unreadable(name, reason);
+    }
+    let mut elements = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        match decode_scalar(scalar_kind, row) {
+            Ok(element) => elements.push(element),
+            Err(error) => {
+                let reason = format!("value row {index}: {error}");
+                return ScriptProperty::unreadable(name, reason);
+            }
+        }
+    }
+    let value = if is_array {
+        PropertyValue::Array(elements)
+    } else {
+        // The row count check above leaves exactly one element for a scalar.
+        elements.swap_remove(0)
+    };
+    ScriptProperty::edited(name, value)
+}
+
 // ---- Sqlite form source --------------------------------------------------------------
 
 /// A [`FormSource`] over the converted pack's `skyrim_world.db`, opened read-only.
@@ -1174,64 +1527,85 @@ impl FormSource for SqliteForms {
     }
 
     fn script_properties(&self, form_id: u32, script_name: &str) -> Vec<ScriptProperty> {
-        let Ok(mut properties) = self.connection.prepare_cached(
-            "SELECT property_index, name, property_type FROM script_properties \
+        // A statement or row that cannot be read becomes an unreadable property, which the
+        // host logs. It is never dropped, and its columns are never replaced by zero values.
+        let mut properties = match self.connection.prepare_cached(
+            "SELECT property_index, name, property_type, status, value_count \
+             FROM script_properties \
              WHERE form_id = ?1 AND script_name = ?2 ORDER BY property_index",
-        ) else {
-            return Vec::new();
+        ) {
+            Ok(statement) => statement,
+            Err(error) => {
+                return vec![ScriptProperty::unreadable(
+                    "<script_properties>",
+                    format!("cannot read script_properties: {error}"),
+                )];
+            }
         };
-        let Ok(mut values) = self.connection.prepare_cached(
+        let mut values = match self.connection.prepare_cached(
             "SELECT object_form_id, alias_id, string_value, integer_value, float_bits, boolean_value \
              FROM script_property_values \
              WHERE form_id = ?1 AND script_name = ?2 AND property_index = ?3 ORDER BY value_index",
-        ) else {
-            return Vec::new();
+        ) {
+            Ok(statement) => statement,
+            Err(error) => {
+                return vec![ScriptProperty::unreadable(
+                    "<script_property_values>",
+                    format!("cannot read script_property_values: {error}"),
+                )];
+            }
         };
-        let rows: Vec<(i64, String, i64)> = properties
-            .query_map(rusqlite::params![form_id, script_name], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        let headers = match properties.query_map(rusqlite::params![form_id, script_name], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        }) {
+            Ok(headers) => headers,
+            Err(error) => {
+                return vec![ScriptProperty::unreadable(
+                    "<script_properties>",
+                    error.to_string(),
+                )];
+            }
+        };
+        headers
+            .map(|header| {
+                let (index, name, kind, status, count) = match header {
+                    Ok(header) => header,
+                    Err(error) => {
+                        return ScriptProperty::unreadable(
+                            "<unreadable property row>",
+                            error.to_string(),
+                        );
+                    }
+                };
+                // The value of a Removed property is never used, so it is not read.
+                let rows: Vec<Result<ValueRow, String>> = if status == VMAD_STATUS_REMOVED {
+                    Vec::new()
+                } else {
+                    match values.query_map(rusqlite::params![form_id, script_name, index], |row| {
+                        Ok(ValueRow {
+                            object: row.get(0)?,
+                            alias: row.get(1)?,
+                            string: row.get(2)?,
+                            integer: row.get(3)?,
+                            float_bits: row.get(4)?,
+                            boolean: row.get(5)?,
+                        })
+                    }) {
+                        Ok(rows) => rows
+                            .map(|row| row.map_err(|error| error.to_string()))
+                            .collect(),
+                        Err(error) => vec![Err(error.to_string())],
+                    }
+                };
+                decode_property(name, kind, status, count, rows)
             })
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(); // silent-ok: a row that fails to decode is dropped from the list.
-        let mut output = Vec::new();
-        for (index, name, kind) in rows {
-            let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {
-                kind - VMAD_ARRAY_OFFSET
-            } else {
-                kind
-            };
-            let elements: Vec<PropertyValue> = values
-                .query_map(rusqlite::params![form_id, script_name, index], |row| {
-                    let object: Option<u32> = row.get(0)?;
-                    let alias: Option<i64> = row.get(1)?;
-                    let string: Option<String> = row.get(2)?;
-                    let integer: Option<i64> = row.get(3)?;
-                    let float_bits: Option<i64> = row.get(4)?;
-                    let boolean: Option<i64> = row.get(5)?;
-                    Ok(match scalar_kind {
-                        VMAD_OBJECT => PropertyValue::Object {
-                            form_id: object.unwrap_or(0),
-                            alias: alias.and_then(|alias| u16::try_from(alias & 0xFFFF).ok()), // silent-ok: the 16-bit mask makes this infallible.
-                        },
-                        VMAD_STRING => PropertyValue::Str(string.unwrap_or_default()), // silent-ok: an empty string is the default for an unfilled column.
-                        VMAD_INT => PropertyValue::Int(integer.unwrap_or(0)),
-                        VMAD_FLOAT => PropertyValue::Float(f64::from(f32::from_bits(
-                            float_bits.unwrap_or(0) as u32,
-                        ))),
-                        VMAD_BOOL => PropertyValue::Bool(boolean.unwrap_or(0) != 0),
-                        _ => PropertyValue::None,
-                    })
-                })
-                .map(|rows| rows.flatten().collect())
-                .unwrap_or_default(); // silent-ok: a row that fails to decode is dropped from the array.
-            let value = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {
-                PropertyValue::Array(elements)
-            } else {
-                elements.into_iter().next().unwrap_or(PropertyValue::None)
-            };
-            output.push(ScriptProperty { name, value });
-        }
-        output
+            .collect()
     }
 
     fn base_form(&self, reference: u32) -> Option<u32> {
@@ -1420,6 +1794,55 @@ return Script
                       Script[\"GetStageDone\"] = function(self, stage) return self.__runtime:call_method(self, \"IsStageDone\", {stage}) end\n"),
             ),
         );
+        // Alias classes as the converter emits them: `Alias` has no parent, and
+        // `ReferenceAlias` and `LocationAlias` extend it. `heroAlias` is an alias script.
+        write("alias", natives("Alias", "", &[]));
+        write(
+            "referencealias",
+            natives("ReferenceAlias", "Alias", &[("GetReference", 0)]),
+        );
+        write("locationalias", natives("LocationAlias", "Alias", &[]));
+        write("heroalias", natives("heroAlias", "ReferenceAlias", &[]));
+        // A reference script with alias-typed, array-of-alias and plain object properties.
+        write(
+            "aliasuser",
+            class(
+                "aliasUser",
+                "ObjectReference",
+                "",
+                &("Script.__types[\"::Hero_var\"] = \"referencealias\"\n\
+                   Script.__types[\"::Boss_var\"] = \"referencealias\"\n\
+                   Script.__types[\"::Guards_var\"] = \"referencealias[]\"\n\
+                   Script.__types[\"::Plain_var\"] = \"objectreference\"\n\
+                   Script.__types[\"::Anyone_var\"] = \"alias\"\n\
+                   Script.__types[\"::Place_var\"] = \"locationalias\"\n\
+                   Script.__types[\"::Scripted_var\"] = \"heroalias\"\n"
+                    .to_string()
+                    + &property("Hero")
+                    + &property("Boss")
+                    + &property("Guards")
+                    + &property("Plain")
+                    + &property("Untyped")
+                    + &property("Anyone")
+                    + &property("Place")
+                    + &property("Scripted")),
+            ),
+        );
+        // A script whose properties have defaults, to show what a removed override leaves.
+        write(
+            "defaultsdemo",
+            class(
+                "defaultsDemo",
+                "ObjectReference",
+                "",
+                &("function Script.new(runtime) \
+                   local self = setmetatable({ __runtime = runtime }, Script) \
+                   self[\"::level_var\"] = 42 self[\"::flag_var\"] = true return self end\n"
+                    .to_string()
+                    + &property("level")
+                    + &property("flag")),
+            ),
+        );
         write("game", natives("Game", "", &[("GetPlayer", 0)]));
         write("utility", natives("Utility", "", &[("Wait", 1)]));
         // Mixed-case parent names and lowercase method names, as in the converted pack.
@@ -1553,13 +1976,13 @@ return Script
     }
 
     fn object_prop(name: &str, form_id: u32) -> ScriptProperty {
-        ScriptProperty {
-            name: name.into(),
-            value: PropertyValue::Object {
+        ScriptProperty::edited(
+            name,
+            PropertyValue::Object {
                 form_id,
                 alias: Some(u16::MAX),
             },
-        }
+        )
     }
 
     /// The slice assertions, shared by the hand-written fixtures and real converted scripts.
@@ -1623,10 +2046,7 @@ return Script
             "defaultUnlockOnLoad",
             vec![
                 object_prop("myQuest", QUEST),
-                ScriptProperty {
-                    name: "unlockStage".into(),
-                    value: PropertyValue::Int(10),
-                },
+                ScriptProperty::edited("unlockStage", PropertyValue::Int(10)),
             ],
         );
         let mut host = host_with(dir, forms, true);
@@ -1655,10 +2075,10 @@ return Script
             &mut forms,
             REFERENCE,
             "dunDeadMensRotatingDoor",
-            vec![ScriptProperty {
-                name: "startOpen".into(),
-                value: PropertyValue::Bool(false),
-            }],
+            vec![ScriptProperty::edited(
+                "startOpen",
+                PropertyValue::Bool(false),
+            )],
         );
         let mut host = host_with(dir, forms, true);
         host.attach_reference(REFERENCE);
@@ -1735,6 +2155,87 @@ return Script
             return;
         };
         exercise_slice(Path::new(&dir));
+    }
+
+    /// The VMAD property rules on a real converted pack, which the test only reads. Set
+    /// `MUDCRAB_PAPYRUS_PACK` to a pack folder. The form ids are vanilla Skyrim SE records
+    /// named in #1051 and #1052.
+    #[test]
+    fn real_pack_vmad_properties() {
+        let Some(pack) = std::env::var_os("MUDCRAB_PAPYRUS_PACK") else {
+            return;
+        };
+        let pack = Path::new(&pack);
+        let forms = SqliteForms::open(&pack.join("skyrim_world.db")).unwrap();
+
+        // #1095: no retail row is refused by the stricter reader.
+        let (mut read, mut removed, mut aliased) = (0, 0, 0);
+        let mut unreadable = Vec::new();
+        for &form in &forms.scripted {
+            for script in forms.script_names(form) {
+                for property in forms.script_properties(form, &script) {
+                    read += 1;
+                    aliased += usize::from(property.value.has_alias_binding());
+                    match property.status {
+                        PropertyStatus::Edited => {}
+                        PropertyStatus::Removed => removed += 1,
+                        PropertyStatus::Unreadable(reason) => {
+                            unreadable.push(format!("{form:08X} {script} {reason}"));
+                        }
+                    }
+                }
+            }
+        }
+        println!("properties {read}, removed {removed}, with an alias binding {aliased}");
+        assert!(read > 0);
+        assert_eq!(unreadable, Vec::<String>::new());
+
+        let mut host =
+            PapyrusHost::new(HostConfig::new(pack.join("scripts")), Rc::new(forms)).unwrap();
+        let script_object = |host: &PapyrusHost, form: u32, script: &str| -> Table {
+            let objects: Table = host.runtime().get("objects").unwrap();
+            let list: Table = objects.get(form).unwrap();
+            list.sequence_values::<Table>()
+                .map(Result::unwrap)
+                .find(|o| {
+                    o.get::<String>("__name")
+                        .unwrap()
+                        .eq_ignore_ascii_case(script)
+                })
+                .unwrap_or_else(|| panic!("{script} is not attached to {form:08X}"))
+        };
+
+        // #1051: a scalar reference alias reads the fill, through the converted ReferenceAlias.
+        host.attach_reference(0x0001_5514);
+        let wizard = script_object(&host, 0x0001_5514, "dunMarkarthWizard_UpdateFactions");
+        let actor: Table = wizard.get("::Actor1_var").unwrap();
+        assert_eq!(actor.get::<String>("__name").unwrap(), "ReferenceAlias");
+        assert_eq!(actor.get::<u32>("__form_id").unwrap(), 0x0008_7105);
+        assert_eq!(actor.get::<u16>("__alias_id").unwrap(), 27);
+        assert!(matches!(get_reference(&host, &actor), Value::Nil));
+        host.world().aliases.insert((0x0008_7105, 27), 0x0001_5514);
+        assert!(matches!(get_reference(&host, &actor), Value::Table(_)));
+
+        // #1051: a quest script's alias properties, reference and location aliases.
+        host.attach_quest(0x0001_5D24);
+        let quest = script_object(&host, 0x0001_5D24, "QF_TGRDU_00015D24");
+        let vex: Table = quest.get("::Alias_VexAlias_var").unwrap();
+        assert_eq!(vex.get::<u16>("__alias_id").unwrap(), 6);
+        let city: Table = quest.get("::Alias_City_var").unwrap();
+        assert_eq!(city.get::<String>("__name").unwrap(), "LocationAlias");
+
+        // #1052: the reference removed `myHMface05`. Its row still names 0403913F, which is
+        // not seeded, so the base record's 04037AE2 stays.
+        host.attach_reference(0x0403_9140);
+        let face = script_object(&host, 0x0403_9140, "DLC2HermaeusMoraFaceFXSCRIPT");
+        let target: Table = face.get("::myHMface05_var").unwrap();
+        assert_eq!(target.get::<u32>("__form_id").unwrap(), 0x0403_7AE2);
+
+        let unreadable_lines: Vec<String> = errors(&host)
+            .into_iter()
+            .filter(|line| line.contains("is unreadable"))
+            .collect();
+        assert_eq!(unreadable_lines, Vec::<String>::new());
     }
 
     #[test]
@@ -2085,24 +2586,975 @@ return Script
             &mut forms,
             0x9000,
             "defaultUnlockOnLoad",
-            vec![ScriptProperty {
-                name: "unlockStage".into(),
-                value: PropertyValue::Int(5),
-            }],
+            vec![ScriptProperty::edited("unlockStage", PropertyValue::Int(5))],
         );
         attach(
             &mut forms,
             REFERENCE,
             "defaultUnlockOnLoad",
-            vec![ScriptProperty {
-                name: "unlockStage".into(),
-                value: PropertyValue::Int(7),
-            }],
+            vec![ScriptProperty::edited("unlockStage", PropertyValue::Int(7))],
         );
         let mut host = host_with(dir.path(), forms, true);
         let report = host.attach_reference(REFERENCE);
         assert_eq!(report.attached.len(), 1, "one script, merged: {report:?}");
         let object = host.object(REFERENCE).unwrap();
         assert_eq!(object.get::<i64>("::unlockStage_var").unwrap(), 7);
+    }
+
+    // ---- #1052 removed properties, #1095 NULL columns, #1051 alias-bound objects ----------
+
+    /// A value row with only the column that `kind` needs filled.
+    fn filled_row(kind: i64) -> ValueRow {
+        let mut row = ValueRow::default();
+        match kind {
+            VMAD_OBJECT => {
+                row.object = Some(0x1234);
+                row.alias = Some(i64::from(VMAD_NO_ALIAS));
+            }
+            VMAD_STRING => row.string = Some("text".into()),
+            VMAD_INT => row.integer = Some(0),
+            VMAD_FLOAT => row.float_bits = Some(i64::from(1.5_f32.to_bits())),
+            VMAD_BOOL => row.boolean = Some(0),
+            other => panic!("no fixture for type {other}"),
+        }
+        row
+    }
+
+    fn decoded(kind: i64, status: i64, count: i64, rows: Vec<ValueRow>) -> ScriptProperty {
+        decode_property(
+            "p".into(),
+            kind,
+            status,
+            count,
+            rows.into_iter().map(Ok).collect(),
+        )
+    }
+
+    #[test]
+    fn a_stored_zero_empty_string_or_false_is_data_and_stays() {
+        // 0, "" and false are legitimate when the column holds them. Only NULL is absent.
+        let mut row = filled_row(VMAD_STRING);
+        row.string = Some(String::new());
+        assert_eq!(
+            decoded(VMAD_STRING, 1, 1, vec![row]).value,
+            PropertyValue::Str(String::new())
+        );
+        assert_eq!(
+            decoded(VMAD_INT, 1, 1, vec![filled_row(VMAD_INT)]).value,
+            PropertyValue::Int(0)
+        );
+        assert_eq!(
+            decoded(VMAD_BOOL, 1, 1, vec![filled_row(VMAD_BOOL)]).value,
+            PropertyValue::Bool(false)
+        );
+        let mut row = filled_row(VMAD_FLOAT);
+        row.float_bits = Some(0);
+        assert_eq!(
+            decoded(VMAD_FLOAT, 1, 1, vec![row]).value,
+            PropertyValue::Float(0.0)
+        );
+    }
+
+    #[test]
+    fn a_null_value_column_is_unreadable_never_a_default_value() {
+        for kind in [VMAD_OBJECT, VMAD_STRING, VMAD_INT, VMAD_FLOAT, VMAD_BOOL] {
+            let mut row = filled_row(kind);
+            match kind {
+                VMAD_OBJECT => row.object = None,
+                VMAD_STRING => row.string = None,
+                VMAD_INT => row.integer = None,
+                VMAD_FLOAT => row.float_bits = None,
+                _ => row.boolean = None,
+            }
+            let property = decoded(kind, 1, 1, vec![row]);
+            assert!(
+                matches!(&property.status, PropertyStatus::Unreadable(reason) if reason.contains("NULL")),
+                "type {kind}: {property:?}"
+            );
+            assert_eq!(property.value, PropertyValue::None, "type {kind}");
+        }
+        // The alias column of an object row is NULL-checked too.
+        let mut row = filled_row(VMAD_OBJECT);
+        row.alias = None;
+        assert!(matches!(
+            decoded(VMAD_OBJECT, 1, 1, vec![row]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+    }
+
+    #[test]
+    fn one_null_array_element_makes_the_whole_array_unreadable() {
+        let mut hole = filled_row(VMAD_INT);
+        hole.integer = None;
+        let property = decoded(
+            VMAD_INT + VMAD_ARRAY_OFFSET,
+            1,
+            3,
+            vec![filled_row(VMAD_INT), hole, filled_row(VMAD_INT)],
+        );
+        assert!(
+            matches!(&property.status, PropertyStatus::Unreadable(reason) if reason.contains("value row 1")),
+            "{property:?}"
+        );
+        // An array of three fully filled rows reads as three elements.
+        let property = decoded(
+            VMAD_INT + VMAD_ARRAY_OFFSET,
+            1,
+            3,
+            vec![
+                filled_row(VMAD_INT),
+                filled_row(VMAD_INT),
+                filled_row(VMAD_INT),
+            ],
+        );
+        assert_eq!(property.status, PropertyStatus::Edited);
+        assert_eq!(
+            property.value,
+            PropertyValue::Array(vec![PropertyValue::Int(0); 3])
+        );
+        // An empty array is data, not corruption.
+        assert_eq!(
+            decoded(VMAD_INT + VMAD_ARRAY_OFFSET, 1, 0, vec![]).value,
+            PropertyValue::Array(vec![])
+        );
+    }
+
+    #[test]
+    fn out_of_range_columns_and_wrong_counts_are_unreadable() {
+        let mut row = filled_row(VMAD_OBJECT);
+        row.object = Some(-1);
+        assert!(matches!(
+            decoded(VMAD_OBJECT, 1, 1, vec![row]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+        let mut row = filled_row(VMAD_OBJECT);
+        row.alias = Some(0x1_0000);
+        assert!(matches!(
+            decoded(VMAD_OBJECT, 1, 1, vec![row]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+        let mut row = filled_row(VMAD_INT);
+        row.integer = Some(i64::from(i32::MAX) + 1);
+        assert!(matches!(
+            decoded(VMAD_INT, 1, 1, vec![row]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+        let mut row = filled_row(VMAD_FLOAT);
+        row.float_bits = Some(-1);
+        assert!(matches!(
+            decoded(VMAD_FLOAT, 1, 1, vec![row]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+        let mut row = filled_row(VMAD_BOOL);
+        row.boolean = Some(2);
+        assert!(matches!(
+            decoded(VMAD_BOOL, 1, 1, vec![row]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+        // A scalar with no value row, and a header count that disagrees with the rows.
+        assert!(matches!(
+            decoded(VMAD_INT, 1, 1, vec![]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+        assert!(matches!(
+            decoded(
+                VMAD_INT + VMAD_ARRAY_OFFSET,
+                1,
+                2,
+                vec![filled_row(VMAD_INT)]
+            )
+            .status,
+            PropertyStatus::Unreadable(_)
+        ));
+        // A None property carries no value rows.
+        assert_eq!(
+            decoded(VMAD_NONE, 1, 0, vec![]).status,
+            PropertyStatus::Edited
+        );
+        assert!(matches!(
+            decoded(VMAD_NONE, 1, 1, vec![filled_row(VMAD_INT)]).status,
+            PropertyStatus::Unreadable(_)
+        ));
+    }
+
+    #[test]
+    fn an_undefined_status_or_type_is_rejected_not_guessed() {
+        for status in [0, 2, 4, -1, 255] {
+            let property = decoded(VMAD_INT, status, 1, vec![filled_row(VMAD_INT)]);
+            assert!(
+                matches!(&property.status, PropertyStatus::Unreadable(reason) if reason.contains("status")),
+                "status {status}: {property:?}"
+            );
+        }
+        for kind in [6, 7, 9, 10, 16, 17, -1, 100] {
+            let property = decoded(kind, 1, 1, vec![filled_row(VMAD_INT)]);
+            assert!(
+                matches!(&property.status, PropertyStatus::Unreadable(reason) if reason.contains("type")),
+                "type {kind}: {property:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_removed_status_wins_over_whatever_the_row_holds() {
+        // A removed property still carries a value (a bool false, an object id). It never
+        // reaches the script.
+        let property = decoded(
+            VMAD_BOOL,
+            VMAD_STATUS_REMOVED,
+            1,
+            vec![filled_row(VMAD_BOOL)],
+        );
+        assert_eq!(property.status, PropertyStatus::Removed);
+        let property = decode_property(
+            "p".into(),
+            VMAD_INT,
+            VMAD_STATUS_REMOVED,
+            1,
+            vec![Err("not even readable".into())],
+        );
+        assert_eq!(property.status, PropertyStatus::Removed);
+    }
+
+    /// A tiny deterministic generator, so a fuzz failure reproduces from its seed.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+
+        /// A column value: NULL a third of the time, else a value that is sometimes out of range.
+        fn column(&mut self) -> Option<i64> {
+            match self.below(6) {
+                0 | 1 => None,
+                2 => Some(0),
+                3 => Some(1),
+                4 => Some(i64::try_from(self.below(70_000)).unwrap()),
+                _ => Some(i64::try_from(self.next()).unwrap() - (1 << 30)),
+            }
+        }
+    }
+
+    /// The oracle: a row decodes only when the column its type needs is present and in range.
+    fn oracle(kind: i64, row: &ValueRow) -> bool {
+        match kind {
+            VMAD_OBJECT => {
+                row.object.is_some_and(|v| u32::try_from(v).is_ok())
+                    && row.alias.is_some_and(|v| u16::try_from(v).is_ok())
+            }
+            VMAD_STRING => row.string.is_some(),
+            VMAD_INT => row.integer.is_some_and(|v| i32::try_from(v).is_ok()),
+            VMAD_FLOAT => row.float_bits.is_some_and(|v| u32::try_from(v).is_ok()),
+            VMAD_BOOL => matches!(row.boolean, Some(0 | 1)),
+            _ => false,
+        }
+    }
+
+    fn random_row(rng: &mut Lcg) -> ValueRow {
+        ValueRow {
+            object: rng.column(),
+            alias: rng.column(),
+            string: (rng.below(3) != 0).then(|| "s".to_string()),
+            integer: rng.column(),
+            float_bits: rng.column(),
+            boolean: rng.column(),
+        }
+    }
+
+    #[test]
+    fn fuzz_decoding_never_turns_a_null_or_bad_column_into_data() {
+        let mut rng = Lcg(0x1095);
+        for case in 0..20_000 {
+            let scalar = 1 + i64::try_from(rng.below(5)).unwrap();
+            let array = rng.below(2) == 0;
+            let kind = if array {
+                scalar + VMAD_ARRAY_OFFSET
+            } else {
+                scalar
+            };
+            let rows: Vec<ValueRow> = (0..if array { rng.below(4) } else { 1 })
+                .map(|_| random_row(&mut rng))
+                .collect();
+            let all_good = rows.iter().all(|row| oracle(scalar, row));
+            let property = decoded(
+                kind,
+                VMAD_STATUS_EDITED,
+                i64::try_from(rows.len()).unwrap(),
+                rows.clone(),
+            );
+            match property.status {
+                PropertyStatus::Edited => {
+                    assert!(
+                        all_good,
+                        "case {case}: type {kind} accepted bad rows {rows:?}"
+                    );
+                    let expected = if array { rows.len() } else { 1 };
+                    match (&property.value, array) {
+                        (PropertyValue::Array(items), true) => assert_eq!(items.len(), expected),
+                        (_, false) => {}
+                        (other, true) => panic!("case {case}: array decoded as {other:?}"),
+                    }
+                }
+                PropertyStatus::Unreadable(_) => {
+                    assert!(
+                        !all_good,
+                        "case {case}: type {kind} refused good rows {rows:?}"
+                    );
+                    assert_eq!(property.value, PropertyValue::None);
+                }
+                PropertyStatus::Removed => panic!("case {case}: an Edited row came back Removed"),
+            }
+            // A header that disagrees with the rows is always refused.
+            let wrong = decoded(
+                kind,
+                VMAD_STATUS_EDITED,
+                i64::try_from(rows.len()).unwrap() + 1,
+                rows,
+            );
+            assert!(
+                matches!(wrong.status, PropertyStatus::Unreadable(_)),
+                "case {case}"
+            );
+        }
+    }
+
+    fn property_database(dir: &Path) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open(dir.join("skyrim_world.db")).unwrap();
+        // The tables as `inhouse_script_properties.rs` creates them.
+        connection
+            .execute_batch(
+                "CREATE TABLE scripts(form_id INTEGER NOT NULL, script_name TEXT NOT NULL, \
+                 vmad BLOB NOT NULL, PRIMARY KEY(form_id, script_name)); \
+                 CREATE TABLE script_properties(form_id INTEGER NOT NULL, script_name TEXT NOT NULL, \
+                 property_index INTEGER NOT NULL, name TEXT NOT NULL, property_type INTEGER NOT NULL, \
+                 status INTEGER NOT NULL, value_count INTEGER NOT NULL, \
+                 PRIMARY KEY(form_id, script_name, property_index)) WITHOUT ROWID; \
+                 CREATE TABLE script_property_values(form_id INTEGER NOT NULL, \
+                 script_name TEXT NOT NULL, property_index INTEGER NOT NULL, \
+                 value_index INTEGER NOT NULL, object_form_id INTEGER, alias_id INTEGER, \
+                 string_value TEXT, integer_value INTEGER, float_bits INTEGER, boolean_value INTEGER, \
+                 PRIMARY KEY(form_id, script_name, property_index, value_index)) WITHOUT ROWID;",
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO scripts VALUES (?1, 'S', x'00')", [REFERENCE])
+            .unwrap();
+        connection
+    }
+
+    fn add_property(
+        connection: &rusqlite::Connection,
+        index: i64,
+        name: &str,
+        kind: i64,
+        status: i64,
+        rows: &[ValueRow],
+    ) {
+        connection
+            .execute(
+                "INSERT INTO script_properties VALUES (?1, 'S', ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    REFERENCE,
+                    index,
+                    name,
+                    kind,
+                    status,
+                    i64::try_from(rows.len()).unwrap()
+                ],
+            )
+            .unwrap();
+        for (value_index, row) in rows.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO script_property_values VALUES (?1, 'S', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        REFERENCE,
+                        index,
+                        i64::try_from(value_index).unwrap(),
+                        row.object,
+                        row.alias,
+                        row.string,
+                        row.integer,
+                        row.float_bits,
+                        row.boolean
+                    ],
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn the_sqlite_reader_keeps_null_absent_and_reports_the_row() {
+        let dir = TempDir::new().unwrap();
+        let connection = property_database(dir.path());
+        let null = ValueRow::default();
+        let empty = ValueRow {
+            string: Some(String::new()),
+            ..ValueRow::default()
+        };
+        let zero = filled_row(VMAD_INT);
+        let false_value = filled_row(VMAD_BOOL);
+        let null_alias = ValueRow {
+            object: Some(0x2000),
+            ..ValueRow::default()
+        };
+        let object = ValueRow {
+            alias: Some(i64::from(VMAD_NO_ALIAS)),
+            ..null_alias.clone()
+        };
+        let hole = [zero.clone(), null.clone(), zero.clone()];
+        let cases: [(&str, i64, i64, &[ValueRow]); 12] = [
+            (
+                "nullInt",
+                VMAD_INT,
+                VMAD_STATUS_EDITED,
+                std::slice::from_ref(&null),
+            ),
+            (
+                "nullString",
+                VMAD_STRING,
+                VMAD_STATUS_EDITED,
+                std::slice::from_ref(&null),
+            ),
+            ("emptyString", VMAD_STRING, VMAD_STATUS_EDITED, &[empty]),
+            (
+                "zeroInt",
+                VMAD_INT,
+                VMAD_STATUS_EDITED,
+                std::slice::from_ref(&zero),
+            ),
+            (
+                "falseBool",
+                VMAD_BOOL,
+                VMAD_STATUS_EDITED,
+                std::slice::from_ref(&false_value),
+            ),
+            (
+                "nullObject",
+                VMAD_OBJECT,
+                VMAD_STATUS_EDITED,
+                std::slice::from_ref(&null),
+            ),
+            ("nullAlias", VMAD_OBJECT, VMAD_STATUS_EDITED, &[null_alias]),
+            ("object", VMAD_OBJECT, VMAD_STATUS_EDITED, &[object]),
+            (
+                "removedBool",
+                VMAD_BOOL,
+                VMAD_STATUS_REMOVED,
+                std::slice::from_ref(&false_value),
+            ),
+            ("removedNone", VMAD_OBJECT, VMAD_STATUS_REMOVED, &[]),
+            (
+                "holeArray",
+                VMAD_INT + VMAD_ARRAY_OFFSET,
+                VMAD_STATUS_EDITED,
+                &hole,
+            ),
+            ("oddStatus", VMAD_INT, 2, std::slice::from_ref(&zero)),
+        ];
+        for (index, (name, kind, status, rows)) in cases.into_iter().enumerate() {
+            add_property(
+                &connection,
+                i64::try_from(index).unwrap(),
+                name,
+                kind,
+                status,
+                rows,
+            );
+        }
+        drop(connection);
+        let forms = SqliteForms::open(&dir.path().join("skyrim_world.db")).unwrap();
+        let properties = forms.script_properties(REFERENCE, "S");
+        let by_name = |name: &str| properties.iter().find(|p| p.name == name).unwrap();
+        let unreadable = |name: &str| {
+            assert!(
+                matches!(by_name(name).status, PropertyStatus::Unreadable(_)),
+                "{name}: {:?}",
+                by_name(name)
+            );
+            assert_eq!(by_name(name).value, PropertyValue::None, "{name}");
+        };
+        for name in [
+            "nullInt",
+            "nullString",
+            "nullObject",
+            "nullAlias",
+            "holeArray",
+            "oddStatus",
+        ] {
+            unreadable(name);
+        }
+        assert_eq!(
+            by_name("emptyString"),
+            &ScriptProperty::edited("emptyString", PropertyValue::Str(String::new()))
+        );
+        assert_eq!(
+            by_name("zeroInt"),
+            &ScriptProperty::edited("zeroInt", PropertyValue::Int(0))
+        );
+        assert_eq!(
+            by_name("falseBool"),
+            &ScriptProperty::edited("falseBool", PropertyValue::Bool(false))
+        );
+        assert_eq!(
+            by_name("object"),
+            &ScriptProperty::edited(
+                "object",
+                PropertyValue::Object {
+                    form_id: 0x2000,
+                    alias: Some(0xFFFF)
+                }
+            )
+        );
+        assert_eq!(by_name("removedBool").status, PropertyStatus::Removed);
+        assert_eq!(by_name("removedNone").status, PropertyStatus::Removed);
+        assert_eq!(properties.len(), 12, "no row is dropped: {properties:?}");
+    }
+
+    #[test]
+    fn fuzz_the_sqlite_reader_against_the_decoder() {
+        let mut rng = Lcg(0x1052);
+        let dir = TempDir::new().unwrap();
+        let connection = property_database(dir.path());
+        let mut expected = Vec::new();
+        for index in 0..400_i64 {
+            let scalar = 1 + i64::try_from(rng.below(5)).unwrap();
+            let array = rng.below(2) == 0;
+            let kind = if array {
+                scalar + VMAD_ARRAY_OFFSET
+            } else {
+                scalar
+            };
+            let status = [1, 1, 1, 3, 0, 2][usize::try_from(rng.below(6)).unwrap()];
+            let count = if array { rng.below(4) } else { 1 };
+            let rows: Vec<ValueRow> = (0..count).map(|_| random_row(&mut rng)).collect();
+            let name = format!("p{index}");
+            add_property(&connection, index, &name, kind, status, &rows);
+            expected.push(decode_property(
+                name,
+                kind,
+                status,
+                i64::try_from(count).unwrap(),
+                if status == VMAD_STATUS_REMOVED {
+                    Vec::new()
+                } else {
+                    rows.into_iter().map(Ok).collect()
+                },
+            ));
+        }
+        drop(connection);
+        let forms = SqliteForms::open(&dir.path().join("skyrim_world.db")).unwrap();
+        assert_eq!(forms.script_properties(REFERENCE, "S"), expected);
+    }
+
+    /// The seeded value of one property of the `defaultsDemo` script.
+    fn level_of(host: &PapyrusHost) -> i64 {
+        host.object(REFERENCE).unwrap().get("::level_var").unwrap()
+    }
+
+    #[test]
+    fn a_removed_property_leaves_the_script_default() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "defaultsDemo",
+            vec![
+                ScriptProperty {
+                    name: "level".into(),
+                    value: PropertyValue::Int(0),
+                    status: PropertyStatus::Removed,
+                },
+                ScriptProperty {
+                    name: "flag".into(),
+                    value: PropertyValue::Bool(false),
+                    status: PropertyStatus::Removed,
+                },
+            ],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        assert_eq!(level_of(&host), 42, "the default stays");
+        assert!(
+            host.object(REFERENCE)
+                .unwrap()
+                .get::<bool>("::flag_var")
+                .unwrap()
+        );
+        assert_eq!(errors(&host), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_removed_reference_override_keeps_the_base_value() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        forms.bases.insert(REFERENCE, 0x9000);
+        attach(
+            &mut forms,
+            0x9000,
+            "defaultsDemo",
+            vec![ScriptProperty::edited("level", PropertyValue::Int(5))],
+        );
+        attach(
+            &mut forms,
+            REFERENCE,
+            "defaultsDemo",
+            vec![ScriptProperty {
+                name: "level".into(),
+                value: PropertyValue::Int(0),
+                status: PropertyStatus::Removed,
+            }],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        assert_eq!(
+            level_of(&host),
+            5,
+            "the removed row does not clobber the base"
+        );
+    }
+
+    #[test]
+    fn an_edited_reference_override_still_wins_over_the_base() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        forms.bases.insert(REFERENCE, 0x9000);
+        attach(
+            &mut forms,
+            0x9000,
+            "defaultsDemo",
+            vec![ScriptProperty::edited("level", PropertyValue::Int(5))],
+        );
+        attach(
+            &mut forms,
+            REFERENCE,
+            "defaultsDemo",
+            vec![ScriptProperty::edited("level", PropertyValue::Int(0))],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        assert_eq!(level_of(&host), 0, "a stored zero is a value");
+    }
+
+    #[test]
+    fn an_unreadable_property_is_logged_and_sets_nothing() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        forms.bases.insert(REFERENCE, 0x9000);
+        attach(
+            &mut forms,
+            0x9000,
+            "defaultsDemo",
+            vec![ScriptProperty::edited("level", PropertyValue::Int(5))],
+        );
+        attach(
+            &mut forms,
+            REFERENCE,
+            "defaultsDemo",
+            vec![ScriptProperty::unreadable("level", "integer_value is NULL")],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        assert_eq!(
+            level_of(&host),
+            5,
+            "neither zero nor the default replaces the base"
+        );
+        let logged = errors(&host);
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(logged[0].contains("level") && logged[0].contains("integer_value is NULL"));
+    }
+
+    fn alias_prop(name: &str, quest: u32, alias: u16) -> ScriptProperty {
+        ScriptProperty::edited(
+            name,
+            PropertyValue::Object {
+                form_id: quest,
+                alias: Some(alias),
+            },
+        )
+    }
+
+    fn get_reference(host: &PapyrusHost, alias_object: &Table) -> Value {
+        let call: Function = host.runtime().get("call_method").unwrap();
+        let args = host.lua().create_table().unwrap();
+        call.call((
+            host.runtime().clone(),
+            alias_object.clone(),
+            "GetReference",
+            args,
+        ))
+        .unwrap()
+    }
+
+    fn warnings(host: &PapyrusHost) -> Vec<String> {
+        host.log_lines()
+            .into_iter()
+            .filter(|line| line.level == "warn")
+            .map(|line| line.message)
+            .collect()
+    }
+
+    #[test]
+    fn an_alias_bound_property_holds_the_alias_and_reads_the_current_fill() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            // Alias id 0 is a real alias. Only 0xFFFF means "not bound".
+            vec![alias_prop("Hero", QUEST, 0), alias_prop("Boss", QUEST, 3)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let object = host.object(REFERENCE).unwrap();
+        let hero: Table = object.get("::Hero_var").unwrap();
+        let boss: Table = object.get("::Boss_var").unwrap();
+        assert_eq!(hero.get::<u32>("__form_id").unwrap(), QUEST);
+        assert_eq!(hero.get::<i64>("__alias_id").unwrap(), 0);
+        assert_eq!(boss.get::<i64>("__alias_id").unwrap(), 3);
+        assert_eq!(hero.get::<String>("__name").unwrap(), "ReferenceAlias");
+        // Empty alias: GetReference gives None. Retail fills nothing the quest did not fill.
+        assert!(matches!(get_reference(&host, &boss), Value::Nil));
+        // The quest fills the alias later. The same property object now reads the new target.
+        host.world().aliases.insert((QUEST, 3), MARKER);
+        let Value::Table(target) = get_reference(&host, &boss) else {
+            panic!("a filled alias must give its reference");
+        };
+        assert_eq!(target.get::<u32>("__form_id").unwrap(), MARKER);
+        assert!(
+            matches!(get_reference(&host, &hero), Value::Nil),
+            "alias 0 is still empty"
+        );
+        assert_eq!(warnings(&host), Vec::<String>::new());
+        assert_eq!(errors(&host), Vec::<String>::new());
+    }
+
+    #[test]
+    fn two_properties_bound_to_one_alias_share_one_object() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![alias_prop("Hero", QUEST, 7), alias_prop("Boss", QUEST, 7)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let object = host.object(REFERENCE).unwrap();
+        let hero: Table = object.get("::Hero_var").unwrap();
+        let boss: Table = object.get("::Boss_var").unwrap();
+        assert!(
+            hero.equals(&boss).unwrap(),
+            "Papyrus `==` on one alias is true"
+        );
+    }
+
+    #[test]
+    fn an_alias_typed_and_a_reference_alias_typed_property_share_one_object() {
+        // Both attach orders: the shared object always ends with the subtype's class.
+        for order in [["Anyone", "Hero"], ["Hero", "Anyone"]] {
+            let dir = fixture_dir();
+            let mut forms = base_forms();
+            attach(
+                &mut forms,
+                REFERENCE,
+                "aliasUser",
+                order.map(|name| alias_prop(name, QUEST, 5)).to_vec(),
+            );
+            let mut host = host_with(dir.path(), forms, true);
+            host.attach_reference(REFERENCE);
+            let object = host.object(REFERENCE).unwrap();
+            let anyone: Table = object.get("::Anyone_var").unwrap();
+            let hero: Table = object.get("::Hero_var").unwrap();
+            assert!(anyone.equals(&hero).unwrap(), "{order:?}");
+            assert_eq!(hero.get::<String>("__name").unwrap(), "ReferenceAlias");
+            host.world().aliases.insert((QUEST, 5), MARKER);
+            assert!(matches!(get_reference(&host, &hero), Value::Table(_)));
+            assert_eq!(warnings(&host), Vec::<String>::new(), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn one_alias_declared_as_two_unrelated_types_gives_the_second_property_none() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![alias_prop("Hero", QUEST, 6), alias_prop("Place", QUEST, 6)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let object = host.object(REFERENCE).unwrap();
+        assert!(object.get::<Option<Table>>("::Hero_var").unwrap().is_some());
+        assert!(
+            object
+                .get::<Option<Table>>("::Place_var")
+                .unwrap()
+                .is_none()
+        );
+        let logged = warnings(&host);
+        assert!(
+            logged
+                .iter()
+                .any(|m| m.contains("Place") && m.contains("unrelated alias type")),
+            "{logged:?}"
+        );
+    }
+
+    #[test]
+    fn an_alias_script_type_stays_none_instead_of_an_object_with_empty_variables() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![alias_prop("Scripted", QUEST, 2)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let object = host.object(REFERENCE).unwrap();
+        assert!(
+            object
+                .get::<Option<Table>>("::Scripted_var")
+                .unwrap()
+                .is_none()
+        );
+        let logged = warnings(&host);
+        assert!(
+            logged
+                .iter()
+                .any(|m| m.contains("Scripted") && m.contains("not attached yet")),
+            "{logged:?}"
+        );
+    }
+
+    #[test]
+    fn an_array_of_alias_bound_objects_holds_one_alias_object_per_element() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![ScriptProperty::edited(
+                "Guards",
+                PropertyValue::Array(vec![
+                    PropertyValue::Object {
+                        form_id: QUEST,
+                        alias: Some(1),
+                    },
+                    PropertyValue::Object {
+                        form_id: QUEST,
+                        alias: Some(2),
+                    },
+                ]),
+            )],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let guards: Table = host.object(REFERENCE).unwrap().get("::Guards_var").unwrap();
+        assert_eq!(guards.raw_len(), 2);
+        let first: Table = guards.get(1).unwrap();
+        let second: Table = guards.get(2).unwrap();
+        assert_eq!(first.get::<i64>("__alias_id").unwrap(), 1);
+        assert_eq!(second.get::<i64>("__alias_id").unwrap(), 2);
+        host.world().aliases.insert((QUEST, 2), MARKER);
+        assert!(matches!(get_reference(&host, &first), Value::Nil));
+        assert!(matches!(get_reference(&host, &second), Value::Table(_)));
+        assert_eq!(warnings(&host), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_unbound_object_property_still_resolves_to_the_form_not_an_alias() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![alias_prop("Plain", MARKER, u16::MAX)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let plain: Table = host.object(REFERENCE).unwrap().get("::Plain_var").unwrap();
+        assert_eq!(plain.get::<u32>("__form_id").unwrap(), MARKER);
+        assert!(plain.get::<Option<i64>>("__alias_id").unwrap().is_none());
+    }
+
+    #[test]
+    fn an_alias_binding_without_a_retail_backed_type_stays_none_and_says_why() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            // `Plain` is declared ObjectReference. `Untyped` has no backing variable type.
+            vec![
+                alias_prop("Plain", QUEST, 4),
+                alias_prop("Untyped", QUEST, 4),
+            ],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let object = host.object(REFERENCE).unwrap();
+        assert!(
+            object
+                .get::<Option<Table>>("::Plain_var")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            object
+                .get::<Option<Table>>("::Untyped_var")
+                .unwrap()
+                .is_none()
+        );
+        let logged = warnings(&host);
+        assert!(
+            logged
+                .iter()
+                .any(|m| m.contains("Plain") && m.contains("not an alias type")),
+            "{logged:?}"
+        );
+        assert!(
+            logged
+                .iter()
+                .any(|m| m.contains("Untyped") && m.contains("declares no type")),
+            "{logged:?}"
+        );
+    }
+
+    #[test]
+    fn an_alias_on_a_form_that_is_not_a_quest_stays_none() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![alias_prop("Hero", MARKER, 1)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let object = host.object(REFERENCE).unwrap();
+        assert!(object.get::<Option<Table>>("::Hero_var").unwrap().is_none());
+        assert!(warnings(&host).iter().any(|m| m.contains("not a quest")));
     }
 }

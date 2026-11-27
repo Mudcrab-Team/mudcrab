@@ -23,6 +23,19 @@ on its base record (`scripts`, `script_properties`, `script_property_values`). B
 first and the reference's override them. A script attaches only if its name is in the allowlist
 (`SLICE_SCRIPTS`) and its class extends `ObjectReference`. Each attach logs one `info` line.
 
+**Property rows.** `script_properties.status` holds the VMAD property flag, which xEdit names
+1 (Edited) and 3 (Removed). The host seeds an Edited row. A Removed row sets nothing (#1052). Each
+type needs its own value column: a NULL or out-of-range column, a value count that does not match,
+or an undefined status or type makes the property unreadable. The host logs it and does not set it
+(#1095). A stored 0, empty string or false is a value. `crates/engine/tests/sqlite_null_guard.rs`
+rejects a new NULL-to-literal coercion in the engine's SQLite readers.
+
+**Quest aliases.** An object value with an alias id other than `0xFFFF` names a quest alias (#1051).
+A property typed `ReferenceAlias`, `LocationAlias` or `Alias` holds that alias, and every property
+bound to it shares one object. `GetReference` reads the current fill. Two cases stay `None` with a
+`warn` line: a property typed as a derived alias script (the database has no alias script data), and
+a property whose script declares no type for `::<name>_var`. Nothing fills aliases yet.
+
 **Allowlist.** Four scripts: `defaultDisableSelfOnActivate`, `defaultUnlockOnLoad`,
 `dunDeadMensRotatingDoor` and `dunPOIDragonNoteScript`. Every other converted script stays detached
 until its natives exist.
@@ -46,7 +59,7 @@ entry into script code is a coroutine, so a wait suspends one script and nothing
 | ObjectReference | `PlayAnimation` | returns false and logs once: no animation graph yet |
 | ObjectReference | `AddToMap` | records the marker; no map yet |
 | Actor | `IsInFaction`, `SetFactionRank` | ranks scripts set; base-record factions are not read |
-| ReferenceAlias | `GetReference` | the reference bound to the alias, if any |
+| ReferenceAlias | `GetReference` | the current alias fill, or `None`; nothing in the engine fills aliases yet |
 | Quest | `Start`, `IsRunning`, `IsStageDone`, `GetCurrentStageID`, `SetCurrentStageID` | in-memory quest state |
 | Form, Alias, ActiveMagicEffect | `RegisterForUpdate`, `RegisterForSingleUpdate`, `UnregisterForUpdate` | the scheduler |
 | Utility | `Wait`, `WaitMenuMode` | suspend the calling script |
@@ -80,7 +93,10 @@ These points are unverified: the repository holds no captured source that record
 - Retail logs a script error and drops the stack. Mudcrab logs and continues with `None` for the
   faults in section 3.
 - Not in the slice: trigger volumes, death and combat events, an animation graph, a lock system, a
-  map, and alias-bound properties.
+  map, quest alias filling, and quest alias scripts.
+- When a reference removes a property that its base record sets, Mudcrab keeps the base value. In
+  the vanilla pack, 13 of the 18 Removed rows have a base value for the same property.
+- The database has no VMAD script status, so a removed script still attaches (#1050).
 - Several scripts on one form all attach and run their own events, but a native or another script
   that looks the form up gets only the first script object.
 - One E press goes to the nearest scripted reference the ray hits, and a load door or a carryable
@@ -97,6 +113,8 @@ These points are unverified: the repository holds no captured source that record
 
 Headless tests (`cargo test -p engine --lib papyrus`) drive each allowlisted script through the host
 with a fake world, and press E in a Bevy test app. Setting `MUDCRAB_PAPYRUS_SCRIPTS` to a pack's
-`scripts` folder runs the same assertions on the real converted scripts. In a live run, look for
+`scripts` folder runs the same assertions on the real converted scripts. Setting
+`MUDCRAB_PAPYRUS_PACK` to a pack folder reads every script property in its database and checks the
+alias and removed-property rules on vanilla records. In a live run, look for
 `scripts on: attaching ...`, one `attached ... to <form id>` line per scripted reference, and
 `script disabled <form id>` after pressing E.

@@ -39277,7 +39277,7 @@
       "reason": "vmad.rs decodes fragment flags, but exporter.rs never exports fragments and dialogue/package/scene fragment execution does not exist in crates/engine."
     },
     "VMAD.Property.flag.edited": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
           "anchor": "let (input, status) = if version >= 4 {",
@@ -39288,20 +39288,23 @@
           "path": "crates/converter/src/esm/inhouse_script_properties.rs"
         },
         {
-          "anchor": "fn script_properties(&self, form_id: u32, script_name: &str) -> Vec<ScriptProperty> {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "PropertyStatus::Removed => continue,"
         },
         {
-          "anchor": "for property in props {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "fn decode_property("
+        },
+        {
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "VMAD_STATUS_REMOVED => {"
         }
       ],
-      "issue": "#1052",
       "owner": "Mudcrab maintainers",
-      "reason": "inhouse_script_properties stores script_properties.status, but papyrus_host SELECT omits status, so Edited (1) is ignored (Removed properties still overwrite defaults with nil)."
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property."
     },
     "VMAD.Property.flag.removed": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
           "anchor": "let (input, status) = if version >= 4 {",
@@ -39312,17 +39315,20 @@
           "path": "crates/converter/src/esm/inhouse_script_properties.rs"
         },
         {
-          "anchor": "fn script_properties(&self, form_id: u32, script_name: &str) -> Vec<ScriptProperty> {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "PropertyStatus::Removed => continue,"
         },
         {
-          "anchor": "for property in props {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "fn decode_property("
+        },
+        {
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "VMAD_STATUS_REMOVED => {"
         }
       ],
-      "issue": "#1052",
       "owner": "Mudcrab maintainers",
-      "reason": "inhouse_script_properties stores script_properties.status, but papyrus_host SELECT omits status, so Removed (3) is ignored (Removed properties still overwrite defaults with nil)."
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property."
     },
     "VMAD.Property.flag.val0": {
       "disposition": "not-applicable",
@@ -39370,7 +39376,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39397,7 +39403,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39424,7 +39430,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39455,17 +39461,25 @@
           "path": "crates/converter/src/esm/inhouse_script_properties.rs"
         },
         {
-          "anchor": "VMAD_OBJECT => PropertyValue::Object {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "} if *alias != VMAD_NO_ALIAS => {"
         },
         {
-          "anchor": "PropertyValue::Object { form_id, alias } => {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "fn alias_object("
+        },
+        {
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "\"alias_id is NULL\""
+        },
+        {
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "fn decode_scalar(kind: i64, row: &ValueRow) -> Result<PropertyValue, String> {"
         }
       ],
       "issue": "#1051",
       "owner": "Mudcrab maintainers",
-      "reason": "Converter exports and papyrus_host resolves scalar/array Object FormIDs into Luau proxies; missing: alias-bound object properties (alias != 0xFFFF) log a warning and remain None."
+      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None."
     },
     "VMAD.Property.type.array_of_string": {
       "disposition": "respected",
@@ -39483,7 +39497,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39510,7 +39524,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39537,7 +39551,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39564,7 +39578,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39591,7 +39605,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
@@ -39622,17 +39636,25 @@
           "path": "crates/converter/src/esm/inhouse_script_properties.rs"
         },
         {
-          "anchor": "VMAD_OBJECT => PropertyValue::Object {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "} if *alias != VMAD_NO_ALIAS => {"
         },
         {
-          "anchor": "PropertyValue::Object { form_id, alias } => {",
-          "path": "crates/engine/src/papyrus_host.rs"
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "fn alias_object("
+        },
+        {
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "\"alias_id is NULL\""
+        },
+        {
+          "path": "crates/engine/src/papyrus_host.rs",
+          "anchor": "fn decode_scalar(kind: i64, row: &ValueRow) -> Result<PropertyValue, String> {"
         }
       ],
       "issue": "#1051",
       "owner": "Mudcrab maintainers",
-      "reason": "Converter exports and papyrus_host resolves scalar/array Object FormIDs into Luau proxies; missing: alias-bound object properties (alias != 0xFFFF) log a warning and remain None."
+      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None."
     },
     "VMAD.Property.type.string": {
       "disposition": "respected",
@@ -39650,7 +39672,7 @@
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
-          "anchor": "let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {",
+          "anchor": "let scalar_kind = if is_array {",
           "path": "crates/engine/src/papyrus_host.rs"
         },
         {
