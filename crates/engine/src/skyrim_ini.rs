@@ -404,7 +404,7 @@ impl SkyrimIni {
         }
         if let Some(raw) = self.get("General", "iFPSClamp") {
             match raw.parse::<u16>() {
-                Ok(value @ 1..=199) => hdr.fps_clamp = u8::try_from(value).unwrap_or_default(),
+                Ok(value @ 1..=199) => hdr.fps_clamp = value,
                 Ok(_) => hdr.fps_clamp = 0,
                 Err(_) => eprintln!("warning: ignoring iFPSClamp={raw:?}; expected a whole number"),
             }

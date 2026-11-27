@@ -30,9 +30,9 @@ use bevy::{
             UniformComponentPlugin,
         },
         render_resource::{
-            BindGroupLayoutDescriptor, BindGroupLayoutEntries, BlendComponent, BlendFactor,
-            BlendOperation, BlendState, CachedRenderPipelineId, ColorTargetState, ColorWrites,
-            Extent3d, FragmentState, LoadOp, MultisampleState, Operations, PipelineCache,
+            BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BlendComponent,
+            BlendFactor, BlendOperation, BlendState, CachedRenderPipelineId, ColorTargetState,
+            ColorWrites, Extent3d, FragmentState, LoadOp, MultisampleState, Operations, PipelineCache,
             PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor,
             RenderPipelineDescriptor, ShaderStages, ShaderType, SpecializedRenderPipeline,
             SpecializedRenderPipelines, TextureDescriptor, TextureDimension, TextureFormat,
@@ -635,8 +635,6 @@ pub(crate) fn run_retail_fog_pass(
             pipeline_cache.get_render_pipeline(packed.replace),
         )
     {
-        use bevy::render::render_resource::BindGroupEntries;
-
         let device = ctx.render_device();
         let copy_group = device.create_bind_group(
             "retail_fog_scene_copy",

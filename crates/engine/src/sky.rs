@@ -759,7 +759,7 @@ fn apply_sky(
 ) {
     let adjusted_palette = scaled_palette(&palette, settings.as_deref());
     let look = retail.look();
-    // Under `skyrim` the frame clears to `k x` the fog far colour (SPEC-1 section 8.1).
+    // SPEC-2 amendment: the `skyrim` clear uses fog far colour multiplied by 0.83332998.
     let sky_clear = match look {
         FogLook::Mudcrab => adjusted_palette.clear_colour(*space),
         FogLook::Retail => retail.clear_colour(&adjusted_palette, *space),

@@ -83,7 +83,7 @@ pub struct RetailHdrConfig {
     pub map_contrast_boost: f32,
     pub map_bloom_threshold_boost: f32,
     pub menu_adapt_timer: f32,
-    pub fps_clamp: u8,
+    pub fps_clamp: u16,
     pub compensate_unstable_frame_time: bool,
     pub frame_time_history_size: usize,
     pub use_64_bit_hdr_targets: bool,
@@ -983,9 +983,10 @@ fn set_gamma_command() -> ConsoleCommand {
             };
             let gamma = value
                 .parse::<f32>()
-                .ok()
-                .filter(|gamma| gamma.is_finite() && *gamma > 0.0)
-                .ok_or("gamma must be positive and finite")?;
+                .map_err(|_| "gamma must be positive and finite")?;
+            if !gamma.is_finite() || gamma <= 0.0 {
+                return Err("gamma must be positive and finite".into());
+            }
             let mut settings = world
                 .get_resource_mut::<crate::settings::RenderingSettings>()
                 .ok_or("rendering settings are unavailable")?;
