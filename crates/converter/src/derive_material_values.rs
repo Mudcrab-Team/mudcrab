@@ -6,7 +6,7 @@
 //! file and nothing else; the pack it reads is not changed.
 //!
 //! A NIF is used only when its bytes have the SHA-256 the pack's conversion manifest records for
-//! that mesh, whether it comes from a loose file or a `.bsa` archive of the Skyrim `Data` folder.
+//! that mesh (the first part of a skinned mesh's `<mesh>:<skeleton>` hash), whether it comes from a loose file or a `.bsa` archive of the Skyrim `Data` folder.
 //! A mesh whose source is not found or does not parse is counted and left out; nothing is
 //! filled in. The command refuses an output inside a registered pack, and an output that exists.
 
@@ -65,6 +65,14 @@ struct Wanted {
     source_hash: String,
 }
 
+/// The hash of the mesh's own bytes in a manifest source hash. A skinned mesh records
+/// `<mesh>:<skeleton>`.
+fn mesh_hash(source_hash: &str) -> &str {
+    source_hash
+        .split_once(':')
+        .map_or(source_hash, |(mesh, _)| mesh)
+}
+
 /// Derives the sidecar. See the module documentation for the rules.
 pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValuesReport> {
     require_outside_registered_packs(&options.registry, &options.output)?;
@@ -92,7 +100,7 @@ pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValues
                 MaterialValuesFile::key(source),
                 Wanted {
                     output: entry.output.clone(),
-                    source_hash: entry.source_hash.clone(),
+                    source_hash: mesh_hash(&entry.source_hash).to_owned(),
                 },
             )
         })
@@ -294,7 +302,8 @@ mod tests {
         manifest.entries.insert(
             "meshes/a.nif".to_owned(),
             CacheEntry {
-                source_hash: hash_bytes(b"recorded"),
+                // A skinned mesh's hash names its skeleton too.
+                source_hash: format!("{}:{}", hash_bytes(b"recorded"), hash_bytes(b"rig")),
                 output: "meshes/a.glb".to_owned(),
                 output_size: 0,
                 output_hash: String::new(),
@@ -314,6 +323,8 @@ mod tests {
         let error = run(&options).unwrap_err();
         assert!(format!("{error:#}").contains("none of the 1"), "{error:#}");
         assert!(!options.output.exists());
+        assert_eq!(mesh_hash("abc:def"), "abc");
+        assert_eq!(mesh_hash("abc"), "abc");
         // A loose file with the recorded bytes is found; it is reported, not invented.
         fs::create_dir_all(data.join("meshes")).unwrap();
         fs::write(data.join("meshes/a.nif"), b"recorded").unwrap();
