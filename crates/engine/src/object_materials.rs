@@ -418,6 +418,11 @@ fn bind_swapped<M: SwappedMaterial>(
             standard.specular_texture = None;
             standard.metallic_roughness_texture = None;
             standard.occlusion_texture = None;
+            // A set that fills the cube or mask slot is not applied, so both are empty here.
+            standard.retail_environment_cube = None;
+            standard.retail_environment_mask = None;
+            standard.retail_environment_cube_source = None;
+            standard.retail_environment_mask_source = None;
             let derived = materials.add(derived);
             cache.0.insert(key, derived.id());
             derived

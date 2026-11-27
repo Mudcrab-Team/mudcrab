@@ -988,6 +988,16 @@ fn the_skyrim_profile_swaps_texture_sets_with_raw_colour_views() {
     let mut app = object_app(directory.path());
     app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
     let scene = load_scene(&mut app, "shared.glb");
+    // The model's surfaces reflect a cube.
+    let cube = app.world().resource::<Assets<Image>>().reserve_handle();
+    let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+    let models: Vec<_> = materials.ids().collect();
+    for id in models {
+        materials
+            .get_mut(id)
+            .unwrap()
+            .retail_environment_cube_source = Some(cube.clone());
+    }
     let pine = spawn(&mut app, &scene, catalog.get(PINE));
     let control = spawn(&mut app, &scene, catalog.get(3));
     settle(&mut app, &[pine]);
@@ -1000,7 +1010,11 @@ fn the_skyrim_profile_swaps_texture_sets_with_raw_colour_views() {
     );
     let swapped = surface(&app, pine).1;
     assert_ne!(swapped, surface(&app, control).1);
+    // The new set leaves the cube slot empty, so the swapped surface reflects nothing.
+    let kept = material_of(&app, &surface(&app, control).1);
+    assert!(kept.retail_environment_cube_source.is_some());
     let material = material_of(&app, &swapped);
+    assert!(material.retail_environment_cube_source.is_none());
     let images = app.world().resource::<Assets<Image>>();
     for texture in [&material.base_color_texture, &material.normal_map_texture] {
         let image = images.get(texture.as_ref().unwrap()).unwrap();

@@ -166,8 +166,7 @@ pub struct ValidatedNifMaterial {
     /// (encoded RGB in 0..1). On FaceGen hair it is the NPC's hair colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint_color: Option<[f32; 3]>,
-    /// The environment map scale of an `environment_map` or `eye_environment_map` lighting
-    /// shader.
+    /// The environment map scale of an environment-map or eye lighting shader.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_map_scale: Option<f32>,
 }

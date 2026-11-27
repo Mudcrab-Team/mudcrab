@@ -485,8 +485,9 @@ fn the_skyrim_dynamics_limit_the_period_read_the_table_and_detach_dim_lights() {
     assert_eq!(LightDynamics::new(&dim, 3).fade(), 0.04);
 }
 
-/// SPEC-1 section 2.6: the retail fade keeps a negative `FNAM` and the largest float, and the
-/// retail radius has no upper bound.
+/// SPEC-1 section 2.6 ([near-lighting.md](../../../../docs/specs/engine/near-lighting.md)): the
+/// retail fade keeps a negative `FNAM` and the largest float, and the retail radius has no upper
+/// bound.
 #[test]
 fn the_skyrim_fade_and_radius_keep_the_authored_values() {
     use crate::world::database::ReferenceLightRow;

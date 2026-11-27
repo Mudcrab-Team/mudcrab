@@ -14056,13 +14056,13 @@
           "path": "crates/engine/src/nif_material/retail.rs"
         },
         {
-          "anchor": "\"STAND-IN(#362): a blended surface with an alpha test and no depth write is not cut\"",
-          "path": "crates/engine/src/nif_material/pass_audit.rs"
+          "anchor": "alpha_reference: blended_reference,",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Alpha Test maps to AlphaMode::Mask with retail threshold * alpha rounding, but when combined with alpha_blend and ZBuffer_Write == 0 under skyrim profile retail::apply switches to AlphaMode::Blend and drops alpha testing (Gap::BlendWithoutCut)."
+      "reason": "Alpha Test maps to AlphaMode::Mask with retail threshold * alpha rounding, and a blended retail surface keeps the cut in its shader. A blended surface with an alpha test and depth write still draws as a hard cut-out (Gap::CutoutWithBlend)."
     },
     "NIF.AlphaFlags.clone_unique": {
       "disposition": "not-applicable",
@@ -14715,10 +14715,14 @@
         {
           "anchor": "let environment = matches!(",
           "path": "crates/converter/src/material.rs"
+        },
+        {
+          "anchor": "let environment = values",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "LightingShaderType 1 (Environment Map) is parsed (and EnvMap/Parallax slots tagged in OPEN_SKYRIM_material.textureSlots), but the engine lacks the corresponding shader implementation (cubemap envmap, parallax, POM, snow, multilayer parallax, cloud, or LOD noise/blend)."
+      "reason": "LightingShaderType 1 (Environment Map) publishes its scale, and the skyrim profile draws the cube reflection when the surface also has the environment technique. The distance fade and cut are not implemented (#490)."
     },
     "NIF.BSLightingShaderType.eye_envmap": {
       "disposition": "system-not-implemented",
@@ -18796,7 +18800,7 @@
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         },
         {
-          "anchor": "Self::Refraction => {",
+          "anchor": "Self::Refraction => \"STAND-IN(#362): a refraction effect surface draws as a surface\",",
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         },
         {
@@ -18805,7 +18809,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 15 (Refraction) is documented as an Open::Refraction stand-in in pass_audit.rs; screen-space refraction distortion is not implemented."
+      "reason": "SLSF1 bit 15 (Refraction): the skyrim profile draws no lit pass for a refraction surface, a refraction effect surface draws as a surface (Open::Refraction), and screen-space refraction distortion is not implemented."
     },
     "NIF.SLSF1.bit16": {
       "disposition": "system-not-implemented",
@@ -18876,7 +18880,7 @@
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         },
         {
-          "anchor": "Self::Refraction => {",
+          "anchor": "Self::Refraction => \"STAND-IN(#362): a refraction effect surface draws as a surface\",",
           "path": "crates/engine/src/nif_material/pass_audit.rs"
         },
         {
@@ -18885,7 +18889,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 2 (Temp_Refraction) is documented as an Open::Refraction stand-in in pass_audit.rs; screen-space refraction distortion is not implemented."
+      "reason": "SLSF1 bit 2 (Temp_Refraction): the skyrim profile draws no lit pass for a refraction surface, a refraction effect surface draws as a surface (Open::Refraction), and screen-space refraction distortion is not implemented."
     },
     "NIF.SLSF1.bit20": {
       "disposition": "system-not-implemented",
@@ -18934,7 +18938,7 @@
           "path": "crates/engine/src/nif_material.rs"
         },
         {
-          "anchor": "let emission = if flags_1 & SLSF1_OWN_EMIT != 0 {",
+          "anchor": "let emission = if flags_1 & SLSF1_OWN_EMIT != 0 && !external {",
           "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
@@ -19207,10 +19211,14 @@
         {
           "anchor": ") || flags_1 & SLSF1_ENVIRONMENT_MAPPING != 0;",
           "path": "crates/converter/src/material.rs"
+        },
+        {
+          "anchor": "let environment = values",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1_Environment_Mapping (bit 7) classifies texture slots 4/5 as EnvironmentCube/EnvironmentMask in converter, but engine has no cubemap reflection shader."
+      "reason": "SLSF1_Environment_Mapping (bit 7) classifies texture slots 4/5 in the converter, and the skyrim profile draws the technique 1 cube reflection from published material values. The distance fade and the fEnvmapLODFadeEnd cut, model-space surfaces and the mudcrab profile are not implemented (#490)."
     },
     "NIF.SLSF1.bit8": {
       "disposition": "dropped",
@@ -19750,7 +19758,7 @@
           "path": "crates/engine/src/nif_material.rs"
         },
         {
-          "anchor": "// The emissive texture is the glow map alone.",
+          "anchor": "// The emissive texture is the glow map alone, which only the glow technique reads.",
           "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
@@ -19800,7 +19808,7 @@
       "disposition": "partial",
       "evidence": [
         {
-          "anchor": "//!   0 or 41. STAND-IN(#362): the converter clamps the strength and the colour to `[0, 1]`, drops",
+          "anchor": "const SLSF2_SPECULAR_BIT_41: u32 = 1 << 9;",
           "path": "crates/engine/src/nif_material/retail.rs"
         },
         {
@@ -19818,7 +19826,7 @@
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF2 bit 9 enables retail specular (bit 41) in retail.rs:97, but converter material.rs:679 checks only SLSF1_Specular so specular strength is dropped when bit 0 is unset; Multi_Index_Snow effect itself is unimplemented."
+      "reason": "SLSF2 bit 9 enables retail specular (bit 41) in retail::apply, with the NIF strength from published material values; a pack without them keeps the converter's strength, which is dropped when bit 0 is unset. The Multi_Index_Snow effect itself is not implemented."
     },
     "NIF.ShadeFlags.shading_hard": {
       "disposition": "format-not-read",
@@ -39136,13 +39144,13 @@
           "path": "crates/engine/src/object_materials.rs"
         },
         {
-          "anchor": "let new_normal =",
+          "anchor": "standard.normal_map_texture = textures.normal;",
           "path": "crates/engine/src/object_materials.rs"
         }
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Converter decodes TXST.DNAM (schema.json:830) but exporter.rs:284-288,1374-1391 projects texture_sets without DNAM. object_materials.rs:533-548 always binds swapped TX01 as a tangent-space normal_map_texture, and material.rs:1208-1245 checks only the NIF's SLSF1_MODEL_SPACE_NORMALS flag."
+      "reason": "Converter decodes TXST.DNAM but the exporter projects texture_sets without DNAM. object_materials.rs always binds a swapped TX01 as a normal_map_texture, and material.rs checks only the NIF's SLSF1_MODEL_SPACE_NORMALS flag."
     },
     "TXST.DNAM.no_specular_map": {
       "disposition": "dropped",
@@ -39172,13 +39180,13 @@
           "path": "crates/engine/src/object_materials.rs"
         },
         {
-          "anchor": "derived.base_color_texture = new_diffuse;",
+          "anchor": "standard.base_color_texture = textures.diffuse;",
           "path": "crates/engine/src/object_materials.rs"
         }
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Converter decodes TXST.DNAM (schema.json:828) but exporter.rs:284-288,1374-1391 projects texture_sets without DNAM. Both apply_skin_texture_set (material.rs:1208-1245) and ObjectTextureCatalog/apply_swaps (object_materials.rs:95-104,542-547) consume texture_sets without honoring no_specular_map."
+      "reason": "Converter decodes TXST.DNAM but the exporter projects texture_sets without DNAM. Both apply_skin_texture_set (converter) and ObjectTextureCatalog/apply_swaps consume texture_sets without honoring no_specular_map."
     },
     "VMAD.INFO.fragment.onbegin": {
       "disposition": "system-not-implemented",
