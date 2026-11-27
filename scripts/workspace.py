@@ -242,15 +242,83 @@ class Workspace:
                 inputs[name] = digest(path)
         return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16]
 
+    def checkout_identity(self) -> str:
+        """Path and root inode. A different directory moved to this path is another checkout."""
+        return f"{self.repo}#{os.stat(self.repo).st_ino}"
+
+    def registry_only_packages(self) -> set[str]:
+        """Package names whose every source is immutable (registry or git) for this checkout.
+
+        Read from files only. `cargo metadata` could rewrite Cargo.lock before a `--locked` run.
+        A name that this cannot prove is not returned, so its fingerprints are removed."""
+        external: set[str] = set()
+        local: set[str] = set()
+        lock = self.repo / "Cargo.lock"
+        if lock.is_file():
+            for block in lock.read_text(encoding="utf-8").split("[[package]]")[1:]:
+                name = re.search(r'^name = "([^"]+)"', block, re.MULTILINE)
+                if name:
+                    (external if re.search(r"^source = ", block, re.MULTILINE) else local).add(name[1])
+        # A new or newly patched path crate can be missing from a stale lock file. Read every
+        # listed manifest, and follow `path` values into directories that Git ignores. Matching
+        # any `name` or `path` over-selects, which only costs a rebuild.
+        listed = git(self.repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                     "--", "Cargo.toml", "*/Cargo.toml")
+        pending = [self.repo / relative for relative in filter(None, listed.split("\0"))]
+        seen: set[Path] = set()
+        while pending:
+            manifest = pending.pop().resolve()
+            if manifest in seen or not manifest.is_file():
+                continue
+            seen.add(manifest)
+            text = manifest.read_text(encoding="utf-8")
+            local.update(re.findall(r"""\bname["']?\s*=\s*["']([^"'\n]+)["']""", text))
+            pending.extend(manifest.parent / value / "Cargo.toml"
+                           for value in re.findall(r"""\bpath["']?\s*=\s*["']([^"'\n]+)["']""", text))
+        return external - local
+
+    def forget_path_crates(self, slot: Path) -> int:
+        """Remove the slot's Cargo fingerprints for every package that is not from a registry or git.
+
+        Cargo gives a path package the same fingerprint directory in every checkout, and judges
+        freshness by mtime. Without this, it can report another checkout's output as Fresh.
+        Cargo then rebuilds these packages and the packages that depend on them."""
+        target = slot / "target"
+        stores = []
+        for profile in [*target.glob("*"), *target.glob("*/*")]:  # <profile> and <triple>/<profile>
+            if profile.relative_to(target).parts[0] in {"doc", "package", "tmp"}:
+                continue
+            store = profile / ".fingerprint"
+            # Fail closed on a layout this does not know, such as Cargo's newer build-dir layout.
+            if (any(profile.glob("build/*/*/fingerprint")) or store.is_symlink()
+                    or (not store.is_dir() and ((profile / "deps").is_dir() or (profile / "build").is_dir()))):
+                raise ValueError(f"Unknown Cargo layout, so {slot.name} cannot be made safe for this checkout: "
+                                 f"{profile}. Use --isolated LABEL and report this")
+            if store.is_dir():
+                stores.append(store)
+        if not stores:
+            return 0
+        keep = self.registry_only_packages()
+        removed = 0
+        for store in stores:
+            for entry in store.iterdir():
+                unit = re.fullmatch(r"(.+)-[0-9a-f]{16}", entry.name)
+                if unit and unit[1] not in keep:
+                    shutil.rmtree(entry)  # A failure stops the build: the output is still unsafe.
+                    removed += 1
+        return removed
+
     def candidates(self, label: str | None, key: str) -> list[Path]:
         if label:
             head = git(self.repo, "rev-parse", "HEAD")[:12]
             return [self.root / "builds" / f"isolated-{self.owner}-{valid_name(label)}-{head}"]
         slots = [self.root / "builds" / f"slot-{i}" for i in range(SLOTS)]
-        def matching(path):
+        def preference(path):
             marker = path / "build.json"
-            return marker.exists() and read_json(marker).get("key") == key
-        return sorted(slots, key=lambda p: not matching(p))
+            previous = read_json(marker) if marker.exists() else {}
+            # A matching key avoids the largest rebuild. This checkout's slot then avoids the path crates.
+            return previous.get("key") != key, previous.get("fresh_for") != self.checkout_identity()
+        return sorted(slots, key=preference)
 
     @staticmethod
     def retires_on_success(args: list[str]) -> bool:
@@ -328,6 +396,17 @@ class Workspace:
                 # means "no result". A directory from an older script has no key and counts as a result.
                 if label:
                     marker["deliverable"] = (not retire) or (existed and previous.get("deliverable") is not False)
+                elif command[:2] == ["cargo", "fmt"]:  # Builds nothing, so the slot's owner does not change.
+                    if "fresh_for" in previous:
+                        marker["fresh_for"] = previous["fresh_for"]
+                else:
+                    # A new key, not "checkout": an older script drops it, so the next run removes again.
+                    marker["fresh_for"] = self.checkout_identity()
+                    if existed and previous.get("fresh_for") != marker["fresh_for"]:
+                        removed = self.forget_path_crates(path)
+                        if removed:
+                            print(f"workspace: {path.name} last served another checkout; removed {removed} "
+                                  "path-package fingerprints so Cargo rebuilds them", file=sys.stderr)
                 write_json(path / "build.json", marker)
             except BaseException:
                 if not existed and path.is_dir() and not path.is_symlink():

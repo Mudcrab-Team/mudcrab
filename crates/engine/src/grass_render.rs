@@ -1145,6 +1145,7 @@ fn prepare_grass(
     let (sun_direction, sun_color) = prepared_grass_sun(
         &suns,
         &layers,
+        // silent-ok: `GrassRenderPlugin` initialises and extracts this resource before this system runs, so only a world without the plugin takes the default.
         units.as_deref().copied().unwrap_or_default(),
     );
     buffers
