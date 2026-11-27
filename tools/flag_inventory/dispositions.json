@@ -11582,7 +11582,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! TX01 (normal) is not applied and the shape keeps its model material. Directional MATO layers",
+          "anchor": "//! Directional MATO layers and a general TXST shader remain with their own owners.",
           "path": "crates/engine/src/object_materials.rs"
         },
         {
@@ -11605,7 +11605,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! TX01 (normal) is not applied and the shape keeps its model material. Directional MATO layers",
+          "anchor": "//! Directional MATO layers and a general TXST shader remain with their own owners.",
           "path": "crates/engine/src/object_materials.rs"
         },
         {
@@ -38294,7 +38294,7 @@
           "path": "crates/converter/src/records/schema.json"
         },
         {
-          "anchor": "if record.record_type == *b\"STAT\" {",
+          "anchor": "if super::object_materials::is_model_base(&record.record_type) {",
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
