@@ -357,7 +357,7 @@ mod tests {
             assert_eq!(json[field][0], before[field][0]);
             assert_eq!(json[field][1], before[field][1]);
         }
-        let mut extension = before.clone();
+        let mut extension = before;
         extension["extensions"] = serde_json::json!({"UNKNOWN_resources":{"accessor":2}});
         let expected = extension.clone();
         isolate_unused_dependencies(&mut extension);

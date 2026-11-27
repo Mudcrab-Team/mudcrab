@@ -1,4 +1,5 @@
 #import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
+#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}
 
 // The shared terrain shader of merged cells (#215): one material for every cell.
 //
@@ -18,7 +19,7 @@
     forward_io::{VertexOutput, FragmentOutput},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
+    pbr_types::{STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
     view_transformations::position_world_to_clip,
 }
 
@@ -93,10 +94,6 @@ struct MergedTerrainSettings {
 #endif
 @group(#{MATERIAL_BIND_GROUP}) @binding(119) var<storage, read> land_entries: array<vec2<u32>>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(120) var<uniform> settings: MergedTerrainSettings;
-
-// Skyrim's `_n` maps are DirectX-convention: green points down the texture, so it is flipped to the
-// tangent frame's +Y. The same constant as `terrain.wgsl`.
-const NORMAL_GREEN_SIGN: f32 = -1.0;
 
 struct TerrainVertex {
     @builtin(instance_index) instance_index: u32,
@@ -261,14 +258,6 @@ fn sample_normal(class_slot: u32, uv: vec2<f32>, layer: u32, ddx: vec2<f32>, ddy
 #endif
 }
 
-// The terrain's tangent frame, the same analytic one as `terrain.wgsl`: texture coordinates run
-// along world +X (u) and world -Z (v).
-fn terrain_tbn(n: vec3<f32>) -> mat3x3<f32> {
-    let u_axis = vec3<f32>(1.0, 0.0, 0.0);
-    let t = normalize(u_axis - n * dot(n, u_axis) + vec3<f32>(0.0, 0.0, 1.0e-6));
-    return mat3x3<f32>(t, cross(n, t), n);
-}
-
 // Same PBR bridge as terrain.wgsl: normal alpha is Skyrim's specular intensity, not roughness.
 // Community Shaders (GPL-3.0), Lighting.hlsl at e53c0a1ffaa01199490c6097a7dabb559932a88e,
 // lines 1192-1357 and 1968-1976. Bevy's F0 is quadratic in reflectance, hence sqrt(mask).
@@ -355,9 +344,11 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
 #ifdef TERRAIN_HAS_NORMAL_CLASSES
         if entry.y != NO_NORMAL_WORD {
             let sample = sample_normal(entry.y >> 16u, uv, entry.y & 0xFFFFu, ddx, ddy);
-            let xy = sample.xy * 2.0 - 1.0;
-            let tilt = vec2<f32>(xy.x, NORMAL_GREEN_SIGN * xy.y);
-            tangent_normal += vec3<f32>(tilt, sqrt(max(0.0, 1.0 - dot(tilt, tilt)))) * weight;
+            if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u {
+                tangent_normal += retail_terrain_normal(sample.xyz) * weight;
+            } else {
+                tangent_normal += terrain_tangent_normal(sample.xy) * weight;
+            }
             specular_mask += sample.a * weight;
             any_normal = true;
         } else {

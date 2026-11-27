@@ -559,6 +559,7 @@ fn orphan_watch_accounts_for_depth_and_skin_material_lifetimes() {
                     cast_shadows: true,
                     blend_factors: None,
                     uses_effect_emittance: false,
+                    first_stage: false,
                 },
             },
         });
@@ -586,6 +587,7 @@ fn orphan_watch_accounts_for_depth_and_skin_material_lifetimes() {
                     cast_shadows: true,
                     blend_factors: None,
                     uses_effect_emittance: false,
+                    first_stage: false,
                 },
             },
         });
@@ -1899,6 +1901,7 @@ impl bevy::asset::AssetLoader for CatalogSceneLoader {
                             cast_shadows: true,
                             blend_factors: None,
                             uses_effect_emittance: false,
+                            first_stage: false,
                         },
                     },
                 },

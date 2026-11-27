@@ -77,6 +77,9 @@ pub struct ReferenceRow {
     /// when the reference names no source the converter could resolve, and in a database
     /// converted before the `emittance` table existed.
     pub emittance: Option<[u8; 3]>,
+    /// The same source's colour in all four day parts (sunrise, day, sunset, night), which the
+    /// `skyrim` profile mixes by the game hour (`crate::emittance`).
+    pub emittance_day_parts: Option<[[u8; 3]; 4]>,
     /// The reference's `door_links` row, when the database has the table and the reference is a
     /// load door. `None` for every other reference, and for every reference in a database
     /// converted before door links were exported.
@@ -120,6 +123,16 @@ pub struct LightRow {
     pub reference_data: Option<ReferenceLightRow>,
     /// Placing reference's XRDS state: 0 absent, 1 valid signed offset, 2 malformed.
     pub radius_status: Option<u8>,
+    /// `DATA` flicker period, raw (`flicker_period`); `None` in an older package.
+    pub flicker_period: Option<f32>,
+    /// `DATA` flicker/pulse intensity amplitude, raw; `None` in an older package.
+    pub flicker_intensity_amplitude: Option<f32>,
+    /// `DATA` flicker/pulse movement amplitude in Creation units, raw; `None` in an older package.
+    pub flicker_movement_amplitude: Option<f32>,
+    /// The placing reference carries the `Never Fades` header flag (`0x10000`). Retail then sets
+    /// the light's distance-fade flag off (`RF-LIGHT-CPU-007`, [retail registry](../../../../docs/research/retail/registry.md)). `false` for an older package
+    /// without reference header flags.
+    pub reference_never_fades: bool,
 }
 
 /// Raw XLIG inputs, not effective multipliers. NULL fields retain malformed/non-finite status.
@@ -1585,6 +1598,9 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 // reserved suffix so combining the optional door/emittance projections with enable state cannot
 // reinterpret either feature.
 const REFERENCE_ENABLE_START: usize = 37;
+/// `REFR` record header flag `0x10000`, "Never Fades": the light keeps full strength at any
+/// distance (`RF-LIGHT-CPU-007`).
+const REFERENCE_NEVER_FADES: u32 = 0x0001_0000;
 /// `ACHR` record header flag: the actor is placed as a corpse.
 const ACTOR_STARTS_DEAD: u32 = 0x200;
 
@@ -1597,6 +1613,48 @@ const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
 const EMITTANCE_COLUMNS: &str = "e.day_r,e.day_g,e.day_b";
 const ABSENT_EMITTANCE_COLUMNS: &str = "NULL,NULL,NULL";
 const EMITTANCE_JOIN: &str = " LEFT JOIN emittance e ON e.id=r.emittance_id";
+/// The twelve colour columns of the four day parts, in the order sunrise, day, sunset, night.
+/// They are read by name, so they sit after every positional column.
+const EMITTANCE_DAY_PART_COLUMNS: [&str; 12] = [
+    "sunrise_r",
+    "sunrise_g",
+    "sunrise_b",
+    "day_r",
+    "day_g",
+    "day_b",
+    "sunset_r",
+    "sunset_g",
+    "sunset_b",
+    "night_r",
+    "night_g",
+    "night_b",
+];
+
+/// The select list of [`EMITTANCE_DAY_PART_COLUMNS`], each under an `emit_` alias, or `NULL`s for a
+/// database without the table.
+fn emittance_day_part_columns(present: bool) -> String {
+    EMITTANCE_DAY_PART_COLUMNS
+        .map(|column| {
+            if present {
+                format!("e.{column} AS emit_{column}")
+            } else {
+                format!("NULL AS emit_{column}")
+            }
+        })
+        .join(",")
+}
+
+/// The four day-part colours of a row, `None` when the reference has no emittance row.
+fn map_emittance_day_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<[[u8; 3]; 4]>> {
+    let mut parts = [[0_u8; 3]; 4];
+    for (index, column) in EMITTANCE_DAY_PART_COLUMNS.iter().enumerate() {
+        match row.get::<_, Option<u8>>(format!("emit_{column}").as_str())? {
+            Some(value) => parts[index / 3][index % 3] = value,
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(parts))
+}
 
 /// The base record's header flags, which [`map_reference`] reads for [`MARKER_RECORD_FLAG`].
 /// `NULL` for a reference whose base has no `statics` row.
@@ -1803,6 +1861,12 @@ impl ReferenceQuery {
         let fade_column = optional_light_column("fade")?;
         let falloff_column = optional_light_column("falloff")?;
         let fade_status_column = optional_light_column("fade_status")?;
+        let flicker_columns = format!(
+            "{},{},{}",
+            optional_light_column("flicker_period")?,
+            optional_light_column("flicker_intensity_amplitude")?,
+            optional_light_column("flicker_movement_amplitude")?
+        );
         let light_data_count: usize = connection.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('reference_light_data') WHERE name IN \
              ('reference_id','data_size','fov_offset','fade_offset','end_distance_cap','shadow_depth_bias')",
@@ -1829,11 +1893,12 @@ impl ReferenceQuery {
                 [],
                 |row| row.get(0),
             )?;
+        let day_part_columns = emittance_day_part_columns(has_emittance);
         Ok(Self {
             columns: format!(
                 "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
                  {door_columns},{emittance_columns},{reference_enable_columns},\
-                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column}"
+                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column},{flicker_columns},{day_part_columns}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
@@ -2233,6 +2298,12 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             color: [row.get(20)?, row.get(21)?, row.get(22)?],
             flags: row.get(23)?,
             radius_status: row.get(STATIC_FLAGS_INDEX + 9)?,
+            flicker_period: row.get(STATIC_FLAGS_INDEX + 10)?,
+            flicker_intensity_amplitude: row.get(STATIC_FLAGS_INDEX + 11)?,
+            flicker_movement_amplitude: row.get(STATIC_FLAGS_INDEX + 12)?,
+            reference_never_fades: row.get::<_, u32>(REFERENCE_ENABLE_START)?
+                & REFERENCE_NEVER_FADES
+                != 0,
             fade: row.get(STATIC_FLAGS_INDEX + 1)?,
             fade_status: row.get(STATIC_FLAGS_INDEX + 8)?,
             falloff: row.get(STATIC_FLAGS_INDEX + 2)?,
@@ -2283,6 +2354,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         Some(red) => Some([red, row.get(35)?, row.get(36)?]),
         None => None,
     };
+    let emittance_day_parts = map_emittance_day_parts(row)?;
     let base_flags: Option<u32> = row.get(STATIC_FLAGS_INDEX)?;
     let enable_inputs = map_enable_inputs(row, REFERENCE_ENABLE_START)?;
     Ok((
@@ -2310,6 +2382,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             light_radius_override: row.get(24)?,
             door,
             emittance,
+            emittance_day_parts,
         },
         enable_inputs,
     ))
@@ -4523,6 +4596,10 @@ mod tests {
                 falloff: None,
                 reference_data: None,
                 radius_status: None,
+                flicker_period: None,
+                flicker_intensity_amplitude: None,
+                flicker_movement_amplitude: None,
+                reference_never_fades: false,
             })
         );
         assert_eq!(
@@ -4634,6 +4711,14 @@ mod tests {
                 .emittance
         };
         assert_eq!(emittance(30), Some([12, 34, 56]), "the day column only");
+        assert_eq!(
+            payload
+                .references
+                .iter()
+                .find(|reference| reference.form_id == 30)
+                .and_then(|reference| reference.emittance_day_parts),
+            Some([[124, 70, 16], [12, 34, 56], [243, 118, 54], [242, 176, 55]])
+        );
         assert_eq!(
             emittance(40),
             None,

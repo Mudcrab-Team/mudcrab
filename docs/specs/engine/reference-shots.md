@@ -54,6 +54,7 @@ The capture still waits for room graph reads. In `shots.log`, `room_culling.draw
 | `pitch` | Skyrim's X angle in degrees: positive looks down. |
 | `hfov` | Horizontal field of view in degrees, between 0 and 180; the vertical one follows from the frame's aspect. |
 | `probes` | Optional named world positions to measure. The run writes `<out>/<name>.stages.json` with each probe's pre-tonemap HDR color and output bytes; the format, the probe fields and the V1 probe set are in [visual-profiles.md](visual-profiles.md#writing-stage-receipts-from-a-shots-run). |
+| `sequence` | Optional number of consecutive frames to capture after the image, at most 3600. The run writes `<out>/<name>.frames.csv` (frame, mean luma, luma standard deviation) and fails when a frame is solid (deviation below 2) or its mean differs from the median of the sequence by more than 12. Use it to find a flicker that one screenshot misses. |
 | `reference`, `note` | Free text for people and comparison tools; the engine ignores them, and any other field. |
 
 `name` has to be a file this engine can create on Windows, since it is written there: no `/`, `\`,

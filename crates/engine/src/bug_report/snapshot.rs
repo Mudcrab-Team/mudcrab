@@ -276,6 +276,12 @@ pub(super) fn capture(world: &mut World) -> Value {
             "distance_fog_component_present",
             world.get::<DistanceFog>(camera).is_some(),
         );
+        effective.set(
+            "retail_fog_composite_present",
+            world
+                .get::<crate::retail_fog::RetailFogPass>(camera)
+                .is_some(),
+        );
         if let Some(fog) = world.get::<DistanceFog>(camera) {
             let mut settings = Section::default();
             let color = fog.color.to_srgba().to_f32_array();
@@ -574,8 +580,18 @@ fn fog_falloff_snapshot(falloff: &FogFalloff) -> Value {
         }
         FogFalloff::PowerRamp {
             start, end, power, ..
+        }
+        | FogFalloff::PowerRampBlended {
+            start, end, power, ..
         } => {
-            settings.set("kind", "power_ramp");
+            settings.set(
+                "kind",
+                if matches!(falloff, FogFalloff::PowerRamp { .. }) {
+                    "power_ramp"
+                } else {
+                    "power_ramp_blended"
+                },
+            );
             settings.numeric("start", f64::from(*start));
             settings.numeric("end", f64::from(*end));
             settings.numeric("power", f64::from(*power));

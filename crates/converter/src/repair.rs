@@ -158,10 +158,17 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         !manifest.failures.is_empty(),
         "manifest has no failed inputs to repair"
     );
-    ensure!(
-        manifest.configuration_hash == configuration_hash(config)?,
-        "repair configuration differs from the original conversion; use the same Data, MO2 instance/profile and encoding settings"
-    );
+    if manifest.configuration_hash != configuration_hash(config)? {
+        if config.mo2.is_some() {
+            bail!(
+                "repair configuration differs from the original conversion; the enabled-mod list may have changed or the pack may come from a \
+                converter with the old MO2 identity; run a normal conversion before repair or use the same Data, MO2 profile, enabled mods and encoding settings"
+            );
+        }
+        bail!(
+            "repair configuration differs from the original conversion; use the same Data, MO2 instance/profile and encoding settings"
+        );
+    }
     ensure!(
         manifest.asset_configuration_hashes.get("nif")
             == Some(&crate::cache::asset_configuration_hash_for_schema(

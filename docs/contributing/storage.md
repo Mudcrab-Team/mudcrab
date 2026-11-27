@@ -36,6 +36,15 @@ The wrapper holds a process lease for the entire Cargo command, including `cargo
 tests. Matching compiler/dependency/configuration keys get first choice of a free slot;
 other builds reuse either idle slot. There are two slots total, not two per branch or key.
 Cargo decides which artifacts need rebuilding. Leases are released by the OS after exit.
+
+Cargo gives a path package (a workspace member or a `vendor/` crate) the same fingerprint in
+every checkout, and judges freshness by mtime. It can therefore report another checkout's
+output as `Fresh`. When a slot last served a different checkout, the wrapper removes the
+slot's fingerprints for all packages that do not come from a registry or git, before the
+command starts. Cargo then rebuilds those packages and the packages that depend on them.
+The wrapper prefers the slot that last served your checkout. `cargo fmt` removes nothing.
+An older copy of `workspace.py` does not do this, so use `--isolated` from a branch that
+carries one. If the wrapper does not recognize Cargo's output layout, it stops the command.
 When both slots are busy, the command fails without allocating another directory. Retry
 when a slot becomes free. Do not run slot binaries directly; another build can replace them.
 
@@ -229,8 +238,9 @@ a pending receipt, contains a symlink, contains a mount point or any entry on an
 or sits outside `<storage>/builds`. `prune --apply` and `settle --apply` run all of these checks.
 The trim and the crash recovery run only the lease, open-file, symlink and device checks. The trim
 touches only the regenerable `incremental` directory. Recovery treats a leftover as the tool's own
-only if it holds a `build.json` or a receipt in `evidence/` names it, because it only finishes a
-removal that the tool already approved. Whole slots are only removed by `prune` with an age
+only if it holds a `build.json` (for a retired build) or the receipt for that removal lists the
+exact leftover path under `builds/`. Older receipts omit those paths. Recovery holds older
+markerless leftovers for manual inspection. Whole slots are only removed by `prune` with an age
 (7 days by default), never by the automatic rules. The tool never deletes anything in `packs/` or
 `scratch/`. In `evidence/` it only adds receipts. It removes a receipt only when it wrote that
 receipt moments before and the removal then failed to start.

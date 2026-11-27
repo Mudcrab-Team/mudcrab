@@ -736,7 +736,8 @@ pub(crate) fn apply_scene_grade_mode(
         }
         grading.global.post_saturation = resolved.bevy_saturation;
         *post = resolved.post;
-        *tonemapping = resolved.tonemapping;
+        // `skyrim` runs retail's tonemap pass (`retail_hdr.rs`), not a Bevy transform.
+        *tonemapping = source.profile.display_tonemapping(resolved.tonemapping);
     }
 }
 
@@ -897,7 +898,9 @@ impl FullscreenMaterial for SkyrimCinematicPost {
         "embedded://engine/shaders/cinematic_post.wgsl".into()
     }
 
-    /// Run after Bevy tonemapping, inside `PostProcess` and before upscaling.
+    /// Run after Bevy tonemapping and the retail tonemap, inside `PostProcess` and before
+    /// upscaling. Every pass that swaps the post-process texture needs a place in one order: two
+    /// unordered ones put the untoned scene on screen in single frames (`post_process_order.rs`).
     /// The shader expects linear RGB storage and grades its sRGB encoding.
     /// Cameras using this experiment must retain `CompositingSpace::Linear`.
     /// Ordering relative to AA and CAS has not been validated.
@@ -906,6 +909,7 @@ impl FullscreenMaterial for SkyrimCinematicPost {
         system
             .in_set(Core3dSystems::PostProcess)
             .after(tonemapping_system)
+            .after(crate::retail_hdr_render::RetailHdrSet)
     }
 }
 

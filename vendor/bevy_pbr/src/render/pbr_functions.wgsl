@@ -19,6 +19,11 @@
 #import bevy_pbr::view_transformations::{position_world_to_ndc}
 #import bevy_render::maths::{E, powsafe}
 
+// mudcrab: retail's Lighting path.
+#ifndef PREPASS_FRAGMENT
+#import bevy_pbr::retail
+#endif
+
 #ifdef STANDARD_MATERIAL_SPECULAR_TRANSMISSION
 #import bevy_pbr::transmission
 #endif
@@ -336,6 +341,12 @@ fn calculate_contact_shadow(
 fn apply_pbr_lighting(
     in: pbr_types::PbrInput,
 ) -> vec4<f32> {
+    // mudcrab: a retail surface (`RetailSurface`) takes retail's light sum and output tail in place
+    // of everything below (`pbr_retail.wgsl`).
+    if (in.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u {
+        return retail::retail_lighting(in);
+    }
+
     var output_color: vec4<f32> = in.material.base_color;
 
     let emissive = in.material.emissive;
@@ -931,7 +942,8 @@ fn apply_fog(
         return bevy_pbr::fog::exponential_squared_fog(fog_params, input_color, distance, scattering);
     } else if fog_params.mode == mesh_view_types::FOG_MODE_ATMOSPHERIC {
         return bevy_pbr::fog::atmospheric_fog(fog_params, input_color, distance, scattering);
-    } else if fog_params.mode == mesh_view_types::FOG_MODE_POWER_RAMP {
+    } else if fog_params.mode == mesh_view_types::FOG_MODE_POWER_RAMP
+        || fog_params.mode == mesh_view_types::FOG_MODE_POWER_RAMP_BLENDED {
         // mudcrab: the weather's exterior fog (#891).
         return bevy_pbr::fog::power_ramp_fog(fog_params, input_color, distance, scattering);
     } else {
@@ -992,6 +1004,17 @@ fn premultiply_alpha(standard_material_flags: u32, color: vec4<f32>) -> vec4<f32
 }
 #endif
 
+// mudcrab: whether a material is drawn in the opaque or alpha-mask pass without reading the view
+// transmission texture. The `skyrim` profile fogs those draws in one full-screen pass after the
+// opaque stage (`retail_fog.rs`, #891), so `FOG_MODE_POWER_RAMP_BLENDED` skips them here.
+fn fogged_by_opaque_composite(material: pbr_types::StandardMaterial) -> bool {
+    let alpha_mode = material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS;
+    let opaque_pass = alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE
+        || alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK
+        || alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_ALPHA_TO_COVERAGE;
+    return opaque_pass && material.specular_transmission == 0.0;
+}
+
 // fog, alpha premultiply
 // for non-hdr cameras, tonemapping and debanding
 fn main_pass_post_lighting_processing(
@@ -1002,7 +1025,12 @@ fn main_pass_post_lighting_processing(
 
 #ifdef DISTANCE_FOG
     // fog
-    if ((pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT) != 0u) {
+    // mudcrab: opaque-pass draws skip the shader fog under `FOG_MODE_POWER_RAMP_BLENDED` (#891).
+    // A retail surface takes its fog inside retail's output tail (`pbr_retail.wgsl`).
+    if ((pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT) != 0u
+        && (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u
+        && !(view_bindings::fog.mode == mesh_view_types::FOG_MODE_POWER_RAMP_BLENDED
+            && fogged_by_opaque_composite(pbr_input.material))) {
         output_color = apply_fog(
             view_bindings::fog,
             output_color,

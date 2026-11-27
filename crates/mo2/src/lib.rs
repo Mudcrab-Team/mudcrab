@@ -53,6 +53,13 @@ pub struct Resolved {
     pub selection_warnings: Vec<CreationFallbackWarning>,
 }
 
+/// Stable profile identity independent of absolute instance paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileIdentity {
+    pub profile: String,
+    pub enabled_mods: Vec<String>,
+}
+
 impl Instance {
     /// Opens an MO2 instance, resolves configured directories, and discovers sorted profile names.
     ///
@@ -152,8 +159,8 @@ impl Instance {
         })
     }
 
-    /// Finds a profile directory by case-insensitive name, rejecting unsafe or missing selections.
-    pub fn profile_dir(&self, profile: &str) -> Result<PathBuf> {
+    /// Resolves a profile's canonical directory name and verified path.
+    fn resolve_profile(&self, profile: &str) -> Result<(String, PathBuf)> {
         safe_name(profile)?;
         let name = self
             .profiles
@@ -166,7 +173,54 @@ impl Instance {
             "MO2 profile is not a directory: {}",
             path.display()
         );
-        Ok(path)
+        Ok((name.clone(), path))
+    }
+
+    /// Finds a profile directory by case-insensitive name, rejecting unsafe or missing selections.
+    pub fn profile_dir(&self, profile: &str) -> Result<PathBuf> {
+        Ok(self.resolve_profile(profile)?.1)
+    }
+
+    /// Parses enabled (`+`) mod names from `modlist.txt` in priority order.
+    fn parse_enabled_mods(profile: &str, modlist: &str) -> Result<Vec<String>> {
+        let mut mods = Vec::new();
+        let mut seen = BTreeSet::new();
+        for line in lines(modlist) {
+            let (enabled, name) = match line.as_bytes().first() {
+                Some(b'+') => (true, &line[1..]),
+                Some(b'-' | b'*') => (false, &line[1..]),
+                _ => bail!("MO2 profile {profile}: malformed modlist entry {line}"),
+            };
+            if !enabled {
+                continue;
+            }
+            safe_name(name)?;
+            ensure!(
+                seen.insert(name.to_ascii_lowercase()),
+                "MO2 profile {profile}: duplicate enabled mod {name}"
+            );
+            mods.push(name.to_owned());
+        }
+        Ok(mods)
+    }
+
+    /// Reads and parses the required enabled-mod list with profile-specific error context.
+    fn enabled_mods(profile: &str, profile_dir: &Path) -> Result<Vec<String>> {
+        let path = child(profile_dir, "modlist.txt")
+            .wrap_err_with(|| format!("MO2 profile {profile}: locating required modlist.txt"))?;
+        let contents = fs::read_to_string(path)
+            .wrap_err_with(|| format!("MO2 profile {profile}: reading modlist.txt"))?;
+        Self::parse_enabled_mods(profile, &contents)
+    }
+
+    /// Returns the canonical profile name and enabled mod names in priority order, without paths.
+    pub fn profile_identity(&self, profile: &str) -> Result<ProfileIdentity> {
+        let (canonical_profile, profile_dir) = self.resolve_profile(profile)?;
+        let enabled_mods = Self::enabled_mods(&canonical_profile, &profile_dir)?;
+        Ok(ProfileIdentity {
+            profile: canonical_profile,
+            enabled_mods,
+        })
     }
 
     /// Instance/profile files that determine selection, for converter cache provenance.
@@ -213,25 +267,11 @@ impl Instance {
         profile: &str,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Resolved> {
-        let profile_dir = self.profile_dir(profile)?;
-        let modlist = fs::read_to_string(child(&profile_dir, "modlist.txt")?)?;
-        let mut mods = Vec::new();
-        let mut seen = BTreeSet::new();
-        for line in lines(&modlist) {
-            let (enabled, name) = match line.as_bytes().first() {
-                Some(b'+') => (true, &line[1..]),
-                Some(b'-' | b'*') => (false, &line[1..]),
-                _ => bail!("MO2 profile {profile}: malformed modlist entry {line}"),
-            };
-            if !enabled {
-                continue;
-            }
-            safe_name(name)?;
-            ensure!(
-                seen.insert(name.to_ascii_lowercase()),
-                "MO2 profile {profile}: duplicate enabled mod {name}"
-            );
-            let path = child(&self.mods_dir, name)
+        let (canonical_profile, profile_dir) = self.resolve_profile(profile)?;
+        let enabled_mods = Self::enabled_mods(&canonical_profile, &profile_dir)?;
+        let mut mods = Vec::with_capacity(enabled_mods.len());
+        for name in enabled_mods {
+            let path = child(&self.mods_dir, &name)
                 .wrap_err_with(|| format!("MO2 profile {profile}: enabled mod missing: {name}"))?;
             ensure!(
                 path.is_dir(),

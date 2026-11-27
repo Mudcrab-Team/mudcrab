@@ -48,6 +48,12 @@ pub trait MaterialExtension: Asset + AsBindGroup + Clone + Sized {
         None
     }
 
+    /// mudcrab: the alpha mode of one material, for an extension that picks the render phase per
+    /// material. `None` keeps the base material's mode. The default is [`Self::alpha_mode`].
+    fn instance_alpha_mode(&self) -> Option<AlphaMode> {
+        Self::alpha_mode()
+    }
+
     /// Controls if the prepass is enabled for the Material.
     /// For more information about what a prepass is, see the [`bevy_core_pipeline::prepass`] docs.
     #[inline]
@@ -329,7 +335,8 @@ impl<B: Material, E: MaterialExtension> Material for ExtendedMaterial<B, E> {
     }
 
     fn alpha_mode(&self) -> AlphaMode {
-        match E::alpha_mode() {
+        // mudcrab: the extension answers per material.
+        match E::instance_alpha_mode(&self.extension) {
             Some(specified) => specified,
             None => B::alpha_mode(&self.base),
         }

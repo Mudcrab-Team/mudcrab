@@ -40,6 +40,9 @@ pub struct NifDepthState {
     pub cast_shadows: bool,
     pub blend_factors: Option<[u8; 2]>,
     pub uses_effect_emittance: bool,
+    /// Drawn in the opaque or cutout phase, with the base material's alpha mode, so that the fog
+    /// composite runs after it ([`Self::retail_first_stage`]).
+    pub first_stage: bool,
 }
 
 impl NifDepthState {
@@ -73,6 +76,52 @@ impl NifDepthState {
                 blend_factors
             },
             uses_effect_emittance: false,
+            first_stage: false,
+        })
+    }
+
+    /// The retail stage of a lit surface that does not blend (SPEC-1 sections 8.1, 9.2 and 9.3,
+    /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): retail draws it in the
+    /// first stage, before the composite. A decal writes depth there; another surface keeps its
+    /// authored write. A blended surface and a surface without a depth test keep the sorted draw.
+    /// STAND-IN(#362): a blended decal draws after the composite and applies it in its shader.
+    #[must_use]
+    pub fn retail_first_stage(mut self, alpha_mode: AlphaMode) -> Self {
+        if self.depth_test && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+            self.first_stage = true;
+            self.depth_write |= self.decal;
+        }
+        self
+    }
+
+    /// [`Self::from_material`] under the `skyrim` profile: the blend pair is retail's
+    /// ([`retail_blend_factors`]), and a blended surface whose pair is not the plain alpha blend
+    /// takes the authored state even when its depth state alone would not need one.
+    pub fn retail_from_material(
+        flags_1: u32,
+        flags_2: u32,
+        alpha_mode: AlphaMode,
+        blend_factors: Option<[u8; 2]>,
+    ) -> Option<Self> {
+        let blend_factors = blend_factors.map(retail_blend_factors);
+        let state = Self::from_material(flags_1, flags_2, alpha_mode, blend_factors);
+        if state.is_some()
+            || !matches!(alpha_mode, AlphaMode::Blend)
+            || blend_factors.is_none_or(|factors| factors == [6, 7])
+        {
+            return state;
+        }
+        let depth_test = flags_1 & DEPTH_TEST != 0;
+        Some(Self {
+            depth_test,
+            // A sorted blended draw of this path writes no depth, as before.
+            depth_write: false,
+            decal: false,
+            alpha_mask: false,
+            cast_shadows: flags_1 & CAST_SHADOWS != 0,
+            blend_factors,
+            uses_effect_emittance: false,
+            first_stage: false,
         })
     }
 
@@ -111,6 +160,15 @@ impl MaterialExtension for NifDepthExtension {
         // The sorted color pass runs after opaque and cutout geometry. The base material's
         // GPU flags still control opaque alpha, mask discard, and genuine alpha blending.
         Some(AlphaMode::Blend)
+    }
+
+    fn instance_alpha_mode(&self) -> Option<AlphaMode> {
+        if self.state.first_stage {
+            // A surface that writes no depth draws in the cutout phase, after the opaque
+            // surfaces that could otherwise cover it.
+            return (!self.state.depth_write).then_some(AlphaMode::Mask(0.5));
+        }
+        Self::alpha_mode()
     }
 
     fn enable_prepass() -> bool {
@@ -164,6 +222,27 @@ pub(super) fn specialize_nif_depth_descriptor(
     }
     if color_pass && let Some(depth) = descriptor.depth_stencil.as_mut() {
         state.apply(depth);
+    }
+}
+
+/// The factors retail draws a serialized blend pair with (SPEC-2 section 4.2 and SPEC-1 section
+/// 9.2, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)):
+///
+/// | Authored (source, destination) | Retail mode | Drawn as |
+/// |---|---|---|
+/// | (6, 7) | 1 | SrcAlpha, InvSrcAlpha |
+/// | (6, 0), (0, 0), (6, 9) | 2 | SrcAlpha, One |
+/// | (4, 7) | 3 | DestColor, InvSrcAlpha |
+/// | (1, 2), (4, 1) | 4 | DestColor, Zero |
+///
+/// STAND-IN(#362): for any other pair retail keeps the mode of the previous draw, which has no
+/// equivalent here; it draws with SrcAlpha, InvSrcAlpha.
+pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {
+    match (source, destination) {
+        (6, 0) | (0, 0) | (6, 9) => SOURCE_ALPHA_ADDITIVE,
+        (4, 7) => [4, 7],
+        (1, 2) | (4, 1) => [4, 1],
+        _ => [6, 7],
     }
 }
 
@@ -261,6 +340,46 @@ mod tests {
                     && matches!(def, bevy::shader::ShaderDefVal::Bool(_, true))
             })
         })
+    }
+
+    #[test]
+    fn a_retail_decal_that_does_not_blend_draws_in_the_first_stage_and_writes_depth() {
+        // The Whiterun wall-top cap: a decal with an alpha test and no depth-write flag.
+        for alpha_mode in [AlphaMode::Mask(0.5), AlphaMode::Opaque] {
+            let authored = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, alpha_mode).unwrap();
+            assert!(!authored.first_stage && !authored.depth_write);
+            let state = authored.retail_first_stage(alpha_mode);
+            assert!(state.first_stage && state.depth_write && state.decal);
+            let base = StandardMaterial {
+                alpha_mode,
+                ..default()
+            };
+            let first = depth_material(base.clone(), state);
+            assert_eq!(Material::alpha_mode(&first), alpha_mode);
+            // The sorted draw of the same surface stays after the composite.
+            let sorted = depth_material(base, authored);
+            assert_eq!(Material::alpha_mode(&sorted), AlphaMode::Blend);
+        }
+    }
+
+    #[test]
+    fn a_retail_surface_without_depth_write_draws_first_after_the_opaque_phase() {
+        let authored = NifDepthState::from_flags(DEPTH_TEST, 0, AlphaMode::Opaque).unwrap();
+        let state = authored.retail_first_stage(AlphaMode::Opaque);
+        assert!(state.first_stage && !state.depth_write);
+        let material = depth_material(StandardMaterial::default(), state);
+        assert_eq!(Material::alpha_mode(&material), AlphaMode::Mask(0.5));
+    }
+
+    #[test]
+    fn other_authored_surfaces_keep_the_sorted_draw_under_retail() {
+        for (flags_1, alpha_mode) in [
+            (DEPTH_TEST | DECAL, AlphaMode::Blend),
+            (DECAL, AlphaMode::Mask(0.5)),
+        ] {
+            let authored = NifDepthState::from_flags(flags_1, 0, alpha_mode).unwrap();
+            assert_eq!(authored.retail_first_stage(alpha_mode), authored);
+        }
     }
 
     #[test]
@@ -548,6 +667,61 @@ mod tests {
                 .base
                 .depth_bias,
             0.0
+        );
+    }
+
+    /// SPEC-2 example E4: destination (0.5, 0.4, 0.3), source (0.8, 0.6, 0.2), alpha 0.25 through
+    /// the factors each authored pair is drawn with.
+    #[test]
+    fn retail_blend_pairs_give_the_specification_example() {
+        let (destination, source, alpha) = ([0.5_f32, 0.4, 0.3], [0.8_f32, 0.6, 0.2], 0.25_f32);
+        let drawn = |pair| {
+            let component =
+                blend_component(retail_blend_factors(pair)[0], retail_blend_factors(pair)[1])
+                    .unwrap();
+            let factor = |factor: BlendFactor, channel: usize| match factor {
+                BlendFactor::One => 1.0,
+                BlendFactor::Zero => 0.0,
+                BlendFactor::SrcAlpha => alpha,
+                BlendFactor::OneMinusSrcAlpha => 1.0 - alpha,
+                BlendFactor::Dst => destination[channel],
+                other => panic!("unexpected factor {other:?}"),
+            };
+            [0, 1, 2].map(|channel| {
+                source[channel] * factor(component.src_factor, channel)
+                    + destination[channel] * factor(component.dst_factor, channel)
+            })
+        };
+        for (pairs, expected) in [
+            (&[[6, 7]][..], [0.575, 0.45, 0.275]),
+            (&[[6, 0], [0, 0], [6, 9]][..], [0.70, 0.55, 0.35]),
+            (&[[4, 7]][..], [0.775, 0.54, 0.285]),
+            (&[[1, 2], [4, 1]][..], [0.40, 0.24, 0.06]),
+        ] {
+            for &pair in pairs {
+                for (actual, expected) in drawn(pair).into_iter().zip(expected) {
+                    assert!(
+                        (actual - expected).abs() < 1.0e-6,
+                        "{pair:?}: {actual} {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An additive surface with an ordinary depth state takes the authored blend under `skyrim`
+    /// only; a plain alpha blend keeps its route.
+    #[test]
+    fn retail_blend_state_covers_a_non_decal_additive_surface() {
+        let flags = (DEPTH_TEST, 0);
+        let mode = AlphaMode::Blend;
+        assert!(NifDepthState::from_material(flags.0, flags.1, mode, Some([6, 0])).is_none());
+        let state =
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([0, 0])).unwrap();
+        assert_eq!(state.blend_factors, Some(SOURCE_ALPHA_ADDITIVE));
+        assert!(!state.depth_write && !state.decal);
+        assert!(
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([6, 7])).is_none()
         );
     }
 }

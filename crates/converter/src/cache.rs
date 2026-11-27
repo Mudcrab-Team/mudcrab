@@ -639,8 +639,8 @@ pub fn configuration_hash(config: &crate::config::PipelineConfig) -> Result<Stri
 /// non-MO2 calculation remains byte-identical. New publication uses `configuration_hash`.
 /// Matching this known hash is the conservative fallback when per-kind settings
 /// are absent; an arbitrary historical hash cannot establish those settings.
-/// MO2 instance/profile paths also bind source selection; winning input bytes
-/// remain independently hashed per source.
+/// MO2 profile identity binds the profile and enabled mods without paths;
+/// winning input bytes remain independently hashed per source.
 pub fn configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,
@@ -774,7 +774,13 @@ pub(crate) fn legacy_projection5_reader_identity(language: &str) -> Option<serde
     Some(identity)
 }
 
+// Version 1 was the unversioned path-based key; version 2 uses path-independent profile identity.
+const MO2_CONFIGURATION_KEY_VERSION: u32 = 2;
+
 /// Hash the unchanged settings payload with an explicitly selected metadata identity.
+///
+/// MO2 identity uses the profile name and enabled-mod list, not filesystem paths;
+/// winning input bytes are hashed separately per source.
 fn configuration_hash_with_identity(
     config: &crate::config::PipelineConfig,
     schema: u32,
@@ -792,14 +798,13 @@ fn configuration_hash_with_identity(
     }
     if let Some(selection) = &config.mo2 {
         let instance = mo2::Instance::open(&selection.instance_path)?;
-        let profile = instance.profile_dir(&selection.profile)?;
+        let identity = instance.profile_identity(&selection.profile)?;
+        let enabled_mods_hash = hash_bytes(&serde_json::to_vec(&identity.enabled_mods)?);
 
         relevant["mo2"] = serde_json::json!({
-            "instance": instance.instance_path,
-            "profile": profile,
-            "mods": instance.mods_dir,
-            "overwrite": instance.overwrite_dir,
-            "data": std::fs::canonicalize(&config.data_dir)?,
+            "version": MO2_CONFIGURATION_KEY_VERSION,
+            "profile": identity.profile,
+            "enabled_mods_hash": enabled_mods_hash,
         });
     }
     if schema >= 16 {
@@ -2348,7 +2353,7 @@ mod tests {
             .unwrap()
         );
         assert_ne!(recorded, configuration_hash(&config).unwrap());
-        let mut changed = config.clone();
+        let mut changed = config;
         changed.texture_fallback_quality += 1;
         assert!(
             !retained_configuration_matches_for_reader(
@@ -2756,7 +2761,7 @@ mod tests {
             }))
             .unwrap();
         assert!(!recipe_less_converter_entry.covers(IngestionSelection::ConverterInputsV1));
-        let mut conflicting = raw_entry.clone();
+        let mut conflicting = raw_entry;
         conflicting.recipe = "all-v1".into();
         assert!(!conflicting.covers(IngestionSelection::All));
         conflicting.recipe = "unknown-v99".into();

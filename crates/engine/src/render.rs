@@ -44,6 +44,17 @@ use std::sync::{
 };
 
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
+
+/// The retail surface of near landscape under the `skyrim` profile, whose colour textures decode
+/// raw (SPEC-1 sections 6.1 and 9.2).
+///
+/// STAND-IN(#547): retail's landscape specular is not drawn. The converter publishes no `LTEX`
+/// specular exponent and the specification gives no land specular colour.
+pub(crate) fn retail_terrain_surface(
+    decodes_colour_srgb: bool,
+) -> Option<bevy::pbr::RetailSurface> {
+    (!decodes_colour_srgb).then_some(bevy::pbr::RetailSurface::MATTE)
+}
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
 /// The previous procedural waves' tilt, kept only as the neutral point of the user's "Water wave
@@ -439,6 +450,8 @@ impl Plugin for VercidiumRendererPlugin {
             crate::prepass_vertex_alpha::PrepassVertexAlphaPlugin,
             crate::water_depth::WaterDepthPlugin,
             crate::underwater_pass::UnderwaterPassPlugin,
+            crate::retail_fog::RetailFogPlugin,
+            crate::retail_hdr::RetailHdrPlugin,
             ExtractComponentPlugin::<crate::world::components::StreamingCamera>::default(),
         ))
         .init_resource::<RendererMetrics>()
@@ -3517,7 +3530,7 @@ mod tests {
             wave_scale: defaults.wave_scale * 2.0,
             wave_speed: defaults.wave_speed * 2.0,
             wave_strength: defaults.wave_strength * 2.0,
-            ..defaults.clone()
+            ..defaults
         };
         let wanted = wanted_water_settings(&water, 0.0, Some(&doubled));
         assert_eq!(wanted.wave_scale_speed_strength.x, 2.0);
@@ -3609,7 +3622,7 @@ mod tests {
         assert!(
             !RendererMetrics {
                 hzb_views: 0,
-                ..complete.clone()
+                ..complete
             }
             .final_path_active()
         );
@@ -3683,21 +3696,21 @@ mod tests {
         assert!(
             !RendererMetrics {
                 direct_drawing_views: 0,
-                ..direct.clone()
+                ..direct
             }
             .final_path_active()
         );
         assert!(
             !RendererMetrics {
                 metal_backend: false,
-                ..direct.clone()
+                ..direct
             }
             .final_path_active()
         );
         assert!(
             !RendererMetrics {
                 proof_frames: 0,
-                ..direct.clone()
+                ..direct
             }
             .final_path_active()
         );
@@ -4651,7 +4664,7 @@ mod water_body_tests {
         // A bound texture with a valid texel must not take the same branch.
         assert_ne!(shade(&extension, texel_for_bed(-110.0)), (1.0, anam));
 
-        let mut unbound = extension.clone();
+        let mut unbound = extension;
         unbound.set_bed_depth(None);
         assert_eq!(shade(&unbound, texel_for_bed(-300.0)), (1.0, anam));
     }

@@ -886,7 +886,7 @@ mod tests {
         ));
         let mut scene_world = World::new();
         scene_world.spawn((
-            Mesh3d(mesh.clone()),
+            Mesh3d(mesh),
             MeshMaterial3d(skin.clone()),
             NifSourceMaterial(base.clone()),
             NifNativeMaterialSource(base.clone()),

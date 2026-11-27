@@ -23,6 +23,8 @@ const POINT_LIGHT_FLAGS_VOLUMETRIC_BIT: u32                         = 1u << 2u;
 const POINT_LIGHT_FLAGS_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE_BIT: u32   = 1u << 3u;
 const POINT_LIGHT_FLAGS_CONTACT_SHADOWS_ENABLED_BIT: u32            = 1u << 4u;
 const POINT_LIGHT_FLAGS_SPOT_LIGHT_BIT: u32                         = 1u << 5u;
+// mudcrab: retail point-light falloff, `1 - saturate(d / range)^2`, see `RetailPointFalloff`.
+const POINT_LIGHT_FLAGS_RETAIL_FALLOFF_BIT: u32                     = 1u << 6u;
 
 struct DirectionalCascade {
     clip_from_world: mat4x4<f32>,
@@ -66,6 +68,11 @@ struct Lights {
     // NOTE: this array size must be kept in sync with the constants defined in bevy_pbr/src/render/light.rs
     directional_lights: array<DirectionalLight, #{MAX_DIRECTIONAL_LIGHTS}u>,
     ambient_color: vec4<f32>,
+    // mudcrab: retail's directional ambient (`DirectionalAmbientCube`): the slopes along Creation X, Y
+    // and Z. `ambient_color` is then the mean. Used when `ambient_directional` is not 0.
+    ambient_slope_x: vec4<f32>,
+    ambient_slope_y: vec4<f32>,
+    ambient_slope_z: vec4<f32>,
     // x/y/z dimensions and n_clusters in w
     cluster_dimensions: vec4<u32>,
     // xy are vec2<f32>(cluster_dimensions.xy) / vec2<f32>(view.width, view.height)
@@ -83,6 +90,8 @@ struct Lights {
     spot_light_shadowmap_offset: i32,
     ambient_light_affects_lightmapped_meshes: u32,
     n_rect_lights: u32,
+    // mudcrab: not 0 when the ambient is `ambient_color + N . slopes`.
+    ambient_directional: u32,
     rect_lights: array<RectLight, #{MAX_RECT_LIGHTS}u>,
 };
 
@@ -101,6 +110,7 @@ struct Fog {
     // For Power Ramp Fog (mudcrab):
     //     be.x = start, be.y = end, be.z = power
     //     bi = near colour (linear RGB)
+    // For Power Ramp Blended Fog (mudcrab): the same allocation as Power Ramp.
     be: vec3<f32>,
     directional_light_exponent: f32,
     bi: vec3<f32>,
@@ -115,6 +125,8 @@ const FOG_MODE_EXPONENTIAL_SQUARED: u32   = 3u;
 const FOG_MODE_ATMOSPHERIC: u32           = 4u;
 // mudcrab: the power ramp mode of the weather's exterior fog (#891).
 const FOG_MODE_POWER_RAMP: u32            = 5u;
+// mudcrab: the power ramp for draws the full-screen opaque fog does not cover (#891).
+const FOG_MODE_POWER_RAMP_BLENDED: u32    = 6u;
 
 #if AVAILABLE_STORAGE_BUFFER_BINDINGS >= 3
 struct ClusteredLights {

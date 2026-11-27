@@ -41,6 +41,8 @@ const GPU_FOG_MODE_EXPONENTIAL_SQUARED: u32 = 3;
 const GPU_FOG_MODE_ATMOSPHERIC: u32 = 4;
 // mudcrab: the power ramp mode of the weather's exterior fog (#891).
 const GPU_FOG_MODE_POWER_RAMP: u32 = 5;
+// mudcrab: the power ramp for draws the full-screen opaque fog does not cover (#891).
+const GPU_FOG_MODE_POWER_RAMP_BLENDED: u32 = 6;
 
 /// Metadata for fog
 #[derive(Default, Resource)]
@@ -114,6 +116,21 @@ pub fn prepare_fog(
                     near_color,
                 } => GpuFog {
                     mode: GPU_FOG_MODE_POWER_RAMP,
+                    base_color: LinearRgba::from(fog.color).to_vec4(),
+                    directional_light_color: LinearRgba::from(fog.directional_light_color)
+                        .to_vec4(),
+                    directional_light_exponent: fog.directional_light_exponent,
+                    be: Vec3::new(*start, *end, *power),
+                    bi: LinearRgba::from(*near_color).to_vec4().truncate(),
+                },
+                // mudcrab: the same uniform as `PowerRamp`, with the mode that skips opaque draws.
+                FogFalloff::PowerRampBlended {
+                    start,
+                    end,
+                    power,
+                    near_color,
+                } => GpuFog {
+                    mode: GPU_FOG_MODE_POWER_RAMP_BLENDED,
                     base_color: LinearRgba::from(fog.color).to_vec4(),
                     directional_light_color: LinearRgba::from(fog.directional_light_color)
                         .to_vec4(),

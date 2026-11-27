@@ -224,7 +224,7 @@ terrain chunk of the same key (`lod/<world>/<tier>/objects_<x>_<y>.glb`).
   The normal atlas uses the same lookup as the diffuse atlas, with `_n` before `.dds`.
   The `object_normal_atlases` field in `lod-manifest.json` records the path and SHA-256. A world with compiled chunks and no normal atlas reports `missing_normal_atlas`.
   The engine's object LOD material uses the normal atlas and the BTO basis for diffuse lighting
-  (skyrim_decomp#948).
+  (skyrim_decomp#948). The lighting terms are in `lod-architecture.md`.
 - **Material (reviewed static research, skyrim_decomp#675; not match evidence).** Alpha mask at
   128/255 with no blending. The grouped draw uses runtime flags unavailable in the BTO reader
   (finding B3). Mudcrab uses back-face culling for all imported shapes. Winding and vertex colours

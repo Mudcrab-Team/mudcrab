@@ -1768,7 +1768,7 @@ mod tests {
 
         // Delete it: the same settings still come out, with the same hash.
         fs::remove_file(&ini).unwrap();
-        let settings = land_texture_settings(&source, &options, defaults.ini_sha256.clone());
+        let settings = land_texture_settings(&source, &options, defaults.ini_sha256);
         assert_eq!(
             settings.terrain_ini_sha256.as_deref(),
             Some(recorded.as_str())
@@ -2001,7 +2001,7 @@ mod tests {
             cell_key(&merged, &first_changed, &land, &HashSet::new()).unwrap(),
             "a LAND keys with its own plugin's masters, not the first plugin's"
         );
-        let mut own_changed = masters.clone();
+        let mut own_changed = masters;
         own_changed.insert(1, vec!["Update.esm".to_string()]);
         assert_ne!(
             key,
@@ -2091,7 +2091,7 @@ mod tests {
         // An edit that leaves the TNAM alone still changes the key: the record's own bytes are
         // hashed.
         let mut edited = records.clone();
-        let mut edited_ltex = ltex.clone();
+        let mut edited_ltex = ltex;
         edited_ltex.subrecords[1].1.push(b'x');
         edited.insert(edited_ltex.form_id, edited_ltex);
         assert_ne!(
@@ -2102,7 +2102,7 @@ mod tests {
 
         // An edit to the texture set's own payload does too.
         let mut edited_txst = records.clone();
-        let mut edited_set = texture_set.clone();
+        let mut edited_set = texture_set;
         edited_set.subrecords[0].1.push(b'.');
         edited_txst.insert(edited_set.form_id, edited_set);
         assert_ne!(

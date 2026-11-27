@@ -940,3 +940,130 @@ fn cli_reports_one_bounded_fallback_warning_per_shape() {
     assert_rigid(&glb, "Affected");
     assert_healthy(&glb);
 }
+
+/// Return the block index of the only `BSSkinInstance` in a Bethesda skin fixture.
+fn skin_instance_index(nif: &NifFile) -> usize {
+    nif.blocks
+        .iter()
+        .position(|block| matches!(block, NifBlock::BSSkinInstance(_)))
+        .unwrap()
+}
+
+/// Run the resolved Bethesda skin path and return its error text.
+fn resolved_skin_error(nif: &NifFile) -> String {
+    nif_to_model_with_skin_fallback(nif, Some(nif), None)
+        .expect_err("a bad skin must give a typed error, not a model")
+}
+
+/// A skin data index outside the block list is an error, not an index panic.
+#[test]
+fn skin_data_index_out_of_range_is_a_typed_error() {
+    let mut nif = bethesda_skin_fixture(false, false);
+    let index = skin_instance_index(&nif);
+    let NifBlock::BSSkinInstance(skin) = &mut nif.blocks[index] else {
+        unreachable!();
+    };
+    skin.data = u32::MAX;
+    let error = resolved_skin_error(&nif);
+    assert!(error.contains("outside"), "{error}");
+}
+
+/// A skin data index that names the wrong block kind is an error, not a panic.
+#[test]
+fn skin_data_of_the_wrong_kind_is_a_typed_error() {
+    let mut nif = bethesda_skin_fixture(false, false);
+    let index = skin_instance_index(&nif);
+    let NifBlock::BSSkinInstance(skin) = &mut nif.blocks[index] else {
+        unreachable!();
+    };
+    skin.data = 0;
+    let error = resolved_skin_error(&nif);
+    assert!(error.contains("not a BSSkinBoneData"), "{error}");
+}
+
+/// A joint index outside the block list is an error, not an index panic.
+#[test]
+fn skin_joint_index_out_of_range_is_a_typed_error() {
+    let mut nif = bethesda_skin_fixture(false, false);
+    let index = skin_instance_index(&nif);
+    let NifBlock::BSSkinInstance(skin) = &mut nif.blocks[index] else {
+        unreachable!();
+    };
+    skin.bones[0] = u32::MAX;
+    let error = resolved_skin_error(&nif);
+    assert!(error.contains("outside"), "{error}");
+}
+
+/// A joint index that names a block that is not a node is an error, not a panic.
+#[test]
+fn skin_joint_of_the_wrong_kind_is_a_typed_error() {
+    let mut nif = bethesda_skin_fixture(false, false);
+    let index = skin_instance_index(&nif);
+    let data = {
+        let NifBlock::BSSkinInstance(skin) = &mut nif.blocks[index] else {
+            unreachable!();
+        };
+        skin.data
+    };
+    let NifBlock::BSSkinInstance(skin) = &mut nif.blocks[index] else {
+        unreachable!();
+    };
+    skin.bones[0] = data;
+    let error = resolved_skin_error(&nif);
+    assert!(error.contains("not a NiNode"), "{error}");
+}
+
+/// A skinned shape with the format's "no name" value (`0xFFFFFFFF`) is unnamed, not a panic.
+#[test]
+fn unnamed_skinned_shape_converts_without_a_name() {
+    let mut nif = bethesda_skin_fixture(false, false);
+    for block in &mut nif.blocks {
+        if let NifBlock::BSTriShape(shape) = block {
+            shape.av.object.name = u32::MAX;
+        }
+    }
+    let (model, _) = nif_to_model_with_skin_fallback(&nif, Some(&nif), None).unwrap();
+    assert_eq!(model.skeletal_meshes.len(), 1);
+    assert!(
+        model.skeletal_meshes[0]
+            .mesh
+            .as_ref()
+            .unwrap()
+            .name
+            .is_none()
+    );
+}
+
+/// A joint node with no name cannot be bound, so it is a typed error, not a panic.
+#[test]
+fn unnamed_skin_joint_is_a_typed_error() {
+    let mut nif = bethesda_skin_fixture(false, false);
+    let index = skin_instance_index(&nif);
+    let joint = {
+        let NifBlock::BSSkinInstance(skin) = &nif.blocks[index] else {
+            unreachable!();
+        };
+        skin.bones[0] as usize
+    };
+    let NifBlock::NiNode(node) = &mut nif.blocks[joint] else {
+        panic!("fixture joint must be a NiNode");
+    };
+    node.av.object.name = u32::MAX;
+    // No skeleton: the self-contained path reaches the skin reader's joint-name check.
+    let error = nif_to_model_with_skin_fallback(&nif, None, None)
+        .expect_err("a nameless joint must give a typed error, not a model");
+    assert!(error.contains("has no name"), "{error}");
+}
+
+/// A block type index outside the header's type table is a parse error, not a panic.
+#[test]
+fn block_type_index_out_of_range_is_a_parse_error() {
+    use nom_derive::Parse;
+    use project_wormhole_nif::nif_header::NifHeader;
+    let bytes = static_fixture("TypeIndex");
+    let (rest, header) = NifHeader::parse(&bytes).unwrap();
+    assert!(NifFile::parse_blocks(header, rest).is_ok());
+    let (rest, mut header) = NifHeader::parse(&bytes).unwrap();
+    header.block_type_index[0] = u16::MAX;
+    assert!(NifFile::parse_blocks(header, rest).is_err());
+}

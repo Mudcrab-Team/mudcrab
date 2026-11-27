@@ -77,6 +77,21 @@ impl VisualProfile {
         }
     }
 
+    /// The artistic grade the profile starts with when nothing selects one.
+    ///
+    /// `mudcrab` keeps the approved snapshot grade. `skyrim` starts with the grade off: the
+    /// approved grade (saturation 1.66, contrast 1.5, brightness 1.38, tint 0.56) is a Mudcrab
+    /// artistic override, not a Skyrim extraction (`ApprovedLook` source note). Retail has no such
+    /// stage, and it amplified the fog tint on the Whiterun walls (#796). Selecting a grade in the
+    /// settings menu under `skyrim` still works and is saved apart from the `mudcrab` choice.
+    pub fn default_color_grade(self) -> crate::color_pipeline::SceneGradeMode {
+        use crate::color_pipeline::SceneGradeMode;
+        match self {
+            Self::Mudcrab => SceneGradeMode::SnapshotSrgb,
+            Self::Skyrim => SceneGradeMode::Off,
+        }
+    }
+
     /// Whether colour textures are sampled through an sRGB view.
     ///
     /// `skyrim` evaluates the authored bytes raw, so every colour slot loads the UNORM twin of the
@@ -86,6 +101,29 @@ impl VisualProfile {
         match self {
             Self::Mudcrab => true,
             Self::Skyrim => false,
+        }
+    }
+
+    /// The Bevy display transform a scene camera runs. `skyrim` runs none: retail's own tonemap
+    /// pass (`retail_hdr.rs`) is the only transform, so Bevy's is `None`. `mudcrab` keeps the
+    /// selected one.
+    pub fn display_tonemapping(
+        self,
+        selected: bevy::core_pipeline::tonemapping::Tonemapping,
+    ) -> bevy::core_pipeline::tonemapping::Tonemapping {
+        match self {
+            Self::Mudcrab => selected,
+            Self::Skyrim => bevy::core_pipeline::tonemapping::Tonemapping::None,
+        }
+    }
+
+    /// The camera exposure. `skyrim` runs at an exposure of exactly 1, so the scene colour is the
+    /// retail sum (SPEC-1; [`crate::retail_lighting::UNIT_EXPOSURE_EV100`]). The settings menu's
+    /// EV100 row steers `mudcrab` only. `mudcrab` keeps the selected value.
+    pub fn scene_exposure_ev100(self, selected: f32) -> f32 {
+        match self {
+            Self::Mudcrab => selected,
+            Self::Skyrim => crate::retail_lighting::UNIT_EXPOSURE_EV100,
         }
     }
 
@@ -121,6 +159,19 @@ mod tests {
         assert_eq!(VisualProfile::from_index(2), None);
         assert_eq!(VisualProfile::default(), VisualProfile::Mudcrab);
         assert_eq!(VisualProfile::Mudcrab.index(), 0);
+    }
+
+    #[test]
+    fn grade_defaults_per_profile() {
+        use crate::color_pipeline::SceneGradeMode;
+        assert_eq!(
+            VisualProfile::Mudcrab.default_color_grade(),
+            SceneGradeMode::SnapshotSrgb
+        );
+        assert_eq!(
+            VisualProfile::Skyrim.default_color_grade(),
+            SceneGradeMode::Off
+        );
     }
 
     #[test]

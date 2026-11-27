@@ -760,6 +760,7 @@ fn advance_terrain_merge(
                     pending.join(", ")
                 )))
             } else {
+                let retail_surface = crate::render::retail_terrain_surface(colour_srgb);
                 // Every array the material binds, for the bridge's declaration of each cell.
                 let bound = diffuse.iter().chain(normal).map(Handle::id).collect();
                 match MergedTerrainExtension::new(diffuse, normal, entries.clone()) {
@@ -772,6 +773,7 @@ fn advance_terrain_merge(
                                 perceptual_roughness: 0.92,
                                 cull_mode: None,
                                 double_sided: true,
+                                retail_surface,
                                 ..default()
                             },
                             extension,
@@ -1025,7 +1027,7 @@ mod tests {
                 .unwrap_err()
                 .contains("repeating sampler")
         );
-        let mut flat = good.clone();
+        let mut flat = good;
         flat.texture_view_descriptor = None;
         assert!(
             validate_array_image(&flat, slot, usage, true)
@@ -1214,7 +1216,7 @@ mod tests {
     fn only_exterior_cells_with_terrain_wait_for_the_setup() {
         let classes = Arc::new(TerrainClasses::from_table(vanilla_table(6)).unwrap());
         let mut merge =
-            TerrainMerge::with_state(MergeState::AwaitingDevice(classes.clone()), PathBuf::new());
+            TerrainMerge::with_state(MergeState::AwaitingDevice(classes), PathBuf::new());
         assert!(merge.holds_cell(exterior(0, 0), true));
         assert!(!merge.holds_cell(exterior(0, 0), false), "no LAND");
         assert!(!merge.holds_cell(CellKey::Interior(7), true), "an interior");

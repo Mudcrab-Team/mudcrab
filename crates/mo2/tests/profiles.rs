@@ -113,6 +113,32 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     );
 }
 
+/// Case-insensitive profile lookup returns one canonical identity.
+#[test]
+fn profile_identity_uses_canonical_profile_name() {
+    let (_dir, root) = fixture();
+    let instance = Instance::open(&root).unwrap();
+    assert_eq!(
+        instance.profile_identity("Default").unwrap(),
+        instance.profile_identity("default").unwrap()
+    );
+}
+
+/// Identity lookup and resolution reject the same missing required modlist.
+#[test]
+fn profile_identity_and_resolution_require_the_modlist() {
+    let (_dir, root) = fixture();
+    let instance = Instance::open(&root).unwrap();
+    fs::remove_file(root.join("profiles/Default/modlist.txt")).unwrap();
+    let identity_error = instance.profile_identity("Default").unwrap_err();
+    let resolve_error = instance.resolve(&root.join("Data"), "Default").unwrap_err();
+    assert_eq!(format!("{identity_error:#}"), format!("{resolve_error:#}"));
+    assert!(
+        format!("{identity_error:#}").contains("required modlist.txt"),
+        "{identity_error:#}"
+    );
+}
+
 /// Windows-1252 profile spellings select an installed plugin with different accented case.
 #[test]
 fn unicode_profile_names_match_installed_plugins_and_loadorder() {

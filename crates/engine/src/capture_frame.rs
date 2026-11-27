@@ -42,6 +42,15 @@ pub(crate) struct CaptureTicket {
     probes: Option<crate::hdr_probe::ProbeTicket>,
 }
 
+/// The camera's absolute position in Creation units, from its position relative to the render
+/// origin. Reuses the same origin conversion as the pose driver; the origin is an absolute cell
+/// offset.
+pub(crate) fn absolute_creation_position(translation: Vec3, origin: IVec2) -> [f32; 3] {
+    let offset = shot_camera_translation([0.0; 3], origin);
+    let absolute = translation - offset;
+    shared::coordinates::runtime_to_creation_vector(absolute.to_array())
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct CaptureFrame {
     pub main_frame: u32,
@@ -132,10 +141,16 @@ fn capture_grade_with_overrides(
         .resolve_with_overrides(source, mode, preset, overrides)
         .ok()?;
     let (tonemapping, exposure, compositing) = (tonemapping?, exposure?, compositing?);
-    // A source describes this frame only after its settings reached the camera.
+    // A source describes this frame only after its settings reached the camera. Under `skyrim`
+    // the camera runs no Bevy transform, because retail's tonemap pass is the transform
+    // (`retail_hdr.rs`).
+    let expected_tonemapping = source.profile.display_tonemapping(resolved.tonemapping);
+    // The `skyrim` camera runs at the retail exposure of 1.
+    let expected_exposure = source.profile.scene_exposure_ev100(exposure.ev100);
     if grading.global.post_saturation != resolved.bevy_saturation
         || *post != resolved.post
-        || *tonemapping != resolved.tonemapping
+        || exposure.ev100 != expected_exposure
+        || *tonemapping != expected_tonemapping
         || *compositing != CompositingSpace::Linear
     {
         return None;
@@ -143,6 +158,10 @@ fn capture_grade_with_overrides(
     let grade = resolved.grade;
     let mut evidence = tone.evidence_with_overrides(source, mode, preset, overrides);
     evidence["exposure_ev100"] = exposure.ev100.into();
+    // The resolved Bevy transform is the `mudcrab` one. The camera's own value is the truth.
+    evidence["tonemapping"] = format!("{tonemapping:?}").into();
+    evidence["retail_hdr_chain"] =
+        (source.profile == crate::visual_profile::VisualProfile::Skyrim).into();
     evidence["actual_camera"] = serde_json::json!({
         "tonemapping": format!("{tonemapping:?}"),
         "exposure_ev100": exposure.ev100,
@@ -332,10 +351,7 @@ fn extract_capture_frames(
     else {
         return;
     };
-    // Reuse the same origin conversion as the pose driver; origin is an absolute cell offset.
-    let offset = shot_camera_translation([0.0; 3], origin.0);
-    let absolute = transform.translation - offset;
-    let pose = shared::coordinates::runtime_to_creation_vector(absolute.to_array());
+    let pose = absolute_creation_position(transform.translation, origin.0);
     for ticket in tickets {
         if ticket.receipt().is_some() {
             continue;
@@ -744,6 +760,71 @@ mod tests {
         );
     }
 
+    /// Under `skyrim` the camera runs no Bevy transform and the exposure is the retail unit
+    /// mapping, so the receipt expects `Tonemapping::None`. `mudcrab` still expects its own.
+    #[test]
+    fn the_skyrim_receipt_expects_the_retail_chain_camera() {
+        use crate::visual_profile::VisualProfile;
+        let tone = SceneToneMapSource::default();
+        let mode = SceneGradeMode::Off;
+        let preset = SceneVisualPreset::CoolGray;
+        let exposure = Exposure {
+            ev100: crate::retail_lighting::UNIT_EXPOSURE_EV100,
+        };
+        let receipt = |profile: VisualProfile, camera_tonemapping: Tonemapping| {
+            let source = SceneGradeSource::default().with_weather(profile, None);
+            let resolved = tone.resolve(&source, mode, preset).unwrap();
+            let mut grading = ColorGrading::default();
+            grading.global.post_saturation = resolved.bevy_saturation;
+            capture_grade(
+                Some(&source),
+                Some(&tone),
+                Some(&mode),
+                Some(&preset),
+                Some(&grading),
+                Some(&resolved.post),
+                Some(&camera_tonemapping),
+                Some(&exposure),
+                Some(&CompositingSpace::Linear),
+            )
+        };
+        let skyrim = receipt(VisualProfile::Skyrim, Tonemapping::None)
+            .expect("a skyrim camera without a Bevy transform matches its source");
+        assert_eq!(skyrim.source["tonemapping"], serde_json::json!("None"));
+        assert_eq!(skyrim.source["retail_hdr_chain"], serde_json::json!(true));
+        assert_eq!(
+            skyrim.source["actual_camera"]["exposure_ev100"],
+            serde_json::json!(crate::retail_lighting::UNIT_EXPOSURE_EV100)
+        );
+        assert!(
+            receipt(VisualProfile::Skyrim, Tonemapping::TonyMcMapface).is_none(),
+            "a skyrim camera that still runs Tony does not match its source"
+        );
+        let source = SceneGradeSource::default().with_weather(VisualProfile::Skyrim, None);
+        let resolved = tone.resolve(&source, mode, preset).unwrap();
+        let mut grading = ColorGrading::default();
+        grading.global.post_saturation = resolved.bevy_saturation;
+        assert!(
+            capture_grade(
+                Some(&source),
+                Some(&tone),
+                Some(&mode),
+                Some(&preset),
+                Some(&grading),
+                Some(&resolved.post),
+                Some(&Tonemapping::None),
+                Some(&Exposure { ev100: 9.7 }),
+                Some(&CompositingSpace::Linear),
+            )
+            .is_none(),
+            "a skyrim camera at another exposure does not match its source"
+        );
+        let mudcrab = receipt(VisualProfile::Mudcrab, Tonemapping::TonyMcMapface)
+            .expect("a mudcrab camera keeps Tony");
+        assert_eq!(mudcrab.source["retail_hdr_chain"], serde_json::json!(false));
+        assert!(receipt(VisualProfile::Mudcrab, Tonemapping::None).is_none());
+    }
+
     #[test]
     fn render_receipt_is_immutable_across_callback_delay() {
         let ticket = CaptureTicket::default();
@@ -905,7 +986,7 @@ mod tests {
         assert!(!not_ready.is_quiet(), "an unready renderer is not settled");
 
         // Pending LOD work holds the receipt back whatever the failure baseline says.
-        let mut pending_lod = earlier_failures.clone();
+        let mut pending_lod = earlier_failures;
         pending_lod.pending_lod_queries = 1;
         let mut pending =
             captured_work(&ticket, &pending_lod, &renderer, &profiler, &uploads, true);

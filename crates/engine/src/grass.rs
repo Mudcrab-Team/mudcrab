@@ -13,6 +13,7 @@ use crate::{
     world::{
         cache::TerrainSnapshot,
         components::{CELL_SIZE, CellRef, ExteriorCellGrid, StreamedCellRoot, StreamingCamera},
+        environment::EnvironmentCatalog,
         grass_cache::GrassCache,
     },
 };
@@ -270,6 +271,7 @@ struct GrassState {
     tick: u64,
     previous_camera: Option<Vec2>,
     previous_direction: Vec2,
+    reported_no_grass_worldspace: Option<u32>,
 }
 
 impl GrassState {
@@ -338,6 +340,7 @@ fn stream_grass(
     mut commands: Commands,
     config: Res<EngineConfig>,
     cache: Res<GrassCache>,
+    environment: Option<Res<EnvironmentCatalog>>,
     origin: Res<RenderOrigin>,
     space: Option<Res<ActiveSpace>>,
     camera: Query<&Transform, With<StreamingCamera>>,
@@ -364,19 +367,48 @@ fn stream_grass(
         .map_or(Vec2::ZERO, |old| absolute - old);
     state.previous_camera = Some(absolute);
     state.tick = state.tick.wrapping_add(1);
-    let mut wanted: Vec<_> = cells
-        .iter()
-        .filter(|(_, id, grid, _)| {
-            space.as_ref().is_none_or(|space| {
-                space.interior.is_none()
-                    && cache.cell(id.0).is_some_and(|cell| {
-                        u32::from(cell.worldspace_id)
-                            == space.exterior_worldspace(config.worldspace_id)
-                    })
-            }) && grid.0.x.abs_diff(center.x).max(grid.0.y.abs_diff(center.y)) <= radius as u32
+    let in_interior = space.as_ref().is_some_and(|space| space.interior.is_some());
+    let active_worldspace = space.as_ref().map_or(config.worldspace_id, |space| {
+        space.exterior_worldspace(config.worldspace_id)
+    });
+    // Retail skips grass generation and caching when winning `WRLD DATA` sets `0x80` (`no_grass`),
+    // so worldspaces like WhiterunWorld receive no grass
+    // (https://github.com/Mudcrab-Team/skyrim_decomp/issues/879).
+    let no_grass = !in_interior
+        && environment
+            .as_deref()
+            .is_some_and(|catalog| catalog.worldspace_no_grass(active_worldspace));
+    if no_grass {
+        if state.reported_no_grass_worldspace != Some(active_worldspace) {
+            info!(
+                worldspace = format_args!("{active_worldspace:08X}"),
+                "skipping grass: worldspace WRLD DATA has no_grass (0x80) set"
+            );
+            state.reported_no_grass_worldspace = Some(active_worldspace);
+        }
+    } else {
+        state.reported_no_grass_worldspace = None;
+    }
+    let matches_space = |cell_id: u32| {
+        space.as_ref().is_none_or(|space| {
+            space.interior.is_none()
+                && cache
+                    .cell(cell_id)
+                    .is_some_and(|cell| u32::from(cell.worldspace_id) == active_worldspace)
         })
-        .map(|(root, id, grid, terrain)| (id.0, root, grid.0, terrain.clone()))
-        .collect();
+    };
+    let mut wanted: Vec<_> = if no_grass {
+        Vec::new()
+    } else {
+        cells
+            .iter()
+            .filter(|(_, id, grid, _)| {
+                matches_space(id.0)
+                    && grid.0.x.abs_diff(center.x).max(grid.0.y.abs_diff(center.y)) <= radius as u32
+            })
+            .map(|(root, id, grid, terrain)| (id.0, root, grid.0, terrain.clone()))
+            .collect()
+    };
     wanted.sort_by_key(|(id, _, grid, _)| {
         let x = u128::from(grid.x.abs_diff(center.x));
         let y = u128::from(grid.y.abs_diff(center.y));
@@ -439,18 +471,11 @@ fn stream_grass(
             .y
             .saturating_add(direction.y.round() as i32 * (radius + 1)),
     );
-    let prefetch_source = (direction.length_squared() > 0.0)
+    let prefetch_source = (!no_grass && direction.length_squared() > 0.0)
         .then(|| {
-            cells.iter().find(|(_, id, grid, _)| {
-                grid.0 == ahead
-                    && space.as_ref().is_none_or(|space| {
-                        space.interior.is_none()
-                            && cache.cell(id.0).is_some_and(|cell| {
-                                u32::from(cell.worldspace_id)
-                                    == space.exterior_worldspace(config.worldspace_id)
-                            })
-                    })
-            })
+            cells
+                .iter()
+                .find(|(_, id, grid, _)| grid.0 == ahead && matches_space(id.0))
         })
         .flatten()
         .map(|(root, id, _, terrain)| (id.0, root, terrain.clone()));
@@ -799,6 +824,10 @@ mod tests {
 
     /// Create a one-species mapped cache and CPU-only app with one candidate per spot.
     fn surface_streaming_app() -> (App, tempfile::TempDir) {
+        surface_streaming_app_with_cells(&[(42, 3)])
+    }
+
+    fn surface_streaming_app_with_cells(cells: &[(u32, u32)]) -> (App, tempfile::TempDir) {
         use shared::grass::{GrassCell, GrassLayer, GrassQuadrant, GrassType};
         AsyncComputeTaskPool::get_or_init(|| {
             bevy::tasks::TaskPoolBuilder::new().num_threads(1).build()
@@ -823,31 +852,34 @@ mod tests {
                     wave_period: 0.0,
                     flags: 4,
                 }],
-                cells: vec![GrassCell {
-                    cell_id: 42,
-                    worldspace_id: 3,
-                    grid_x: 0,
-                    grid_y: 0,
-                    input_hash: [0; 32],
-                    obstruction_failures: vec![],
-                    expanded_sampling: 0,
-                    heights: vec![0.0; 33 * 33],
-                    normals: vec![],
-                    vertex_colors: vec![],
-                    water_height: None,
-                    quadrants: (0..4)
-                        .map(|quadrant| GrassQuadrant {
-                            quadrant,
-                            layers: vec![GrassLayer {
-                                texture_form_id: 9,
-                                is_base: false,
-                                grass_ids: vec![7],
-                                weights: vec![1.0; 17 * 17],
-                            }],
-                            exclusion: vec![0; 512],
-                        })
-                        .collect(),
-                }],
+                cells: cells
+                    .iter()
+                    .map(|&(cell_id, worldspace_id)| GrassCell {
+                        cell_id,
+                        worldspace_id,
+                        grid_x: 0,
+                        grid_y: 0,
+                        input_hash: [0; 32],
+                        obstruction_failures: vec![],
+                        expanded_sampling: 0,
+                        heights: vec![0.0; 33 * 33],
+                        normals: vec![],
+                        vertex_colors: vec![],
+                        water_height: None,
+                        quadrants: (0..4)
+                            .map(|quadrant| GrassQuadrant {
+                                quadrant,
+                                layers: vec![GrassLayer {
+                                    texture_form_id: 9,
+                                    is_base: false,
+                                    grass_ids: vec![7],
+                                    weights: vec![1.0; 17 * 17],
+                                }],
+                                exclusion: vec![0; 512],
+                            })
+                            .collect(),
+                    })
+                    .collect(),
             })
             .unwrap(),
         )
@@ -1217,6 +1249,146 @@ mod tests {
                 .iter(app.world())
                 .count(),
             0
+        );
+    }
+
+    #[test]
+    fn worldspace_no_grass_flag_skips_placement_and_retires_existing_grass() {
+        use crate::world::environment::WORLDSPACE_NO_GRASS;
+
+        // 1. Flag set (0x80): skips both resident placement and directional prefetch.
+        let (mut app, _directory) = surface_streaming_app();
+        app.insert_resource(EnvironmentCatalog::with_worldspace_flags_for_tests([(
+            3,
+            Some(WORLDSPACE_NO_GRASS),
+        )]));
+        app.insert_resource(ActiveSpace {
+            worldspace_id: Some(3),
+            interior: None,
+        });
+        app.world_mut().resource_mut::<EngineConfig>().grass_radius = 1;
+        surface_root(&mut app, 0.0, None);
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x = -2.0 * CELL_SIZE;
+        app.world_mut().resource_mut::<GrassState>().previous_camera =
+            Some(Vec2::new(-3.0 * CELL_SIZE, 0.0));
+        app.update();
+        assert!(app.world().resource::<GrassMetrics>().ready);
+        assert_eq!(app.world().resource::<GrassMetrics>().generated_cells, 0);
+        assert!(app.world().resource::<GrassState>().attached.is_empty());
+        assert!(app.world().resource::<GrassState>().pending.is_empty());
+        assert!(app.world().resource::<GrassState>().pool.is_empty());
+        assert_eq!(
+            app.world()
+                .resource::<GrassState>()
+                .reported_no_grass_worldspace,
+            Some(3)
+        );
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x = 0.0;
+        app.update();
+        assert!(app.world().resource::<GrassMetrics>().ready);
+        assert_eq!(app.world().resource::<GrassMetrics>().generated_cells, 0);
+        assert_eq!(
+            app.world_mut()
+                .query::<&GrassBatch>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+
+        // 2. Flag clear (0x00) generates grass; entering a no_grass worldspace (0x80) retires
+        //    existing batches, cancels in-flight work, and blocks the destination worldspace's cell.
+        let (mut app, _directory) = surface_streaming_app_with_cells(&[(42, 3), (43, 4)]);
+        app.insert_resource(EnvironmentCatalog::with_worldspace_flags_for_tests([
+            (3, Some(0)),
+            (4, Some(WORLDSPACE_NO_GRASS)),
+        ]));
+        app.insert_resource(ActiveSpace {
+            worldspace_id: Some(3),
+            interior: None,
+        });
+        surface_root(&mut app, 0.0, None);
+        settle_surface_streaming(&mut app);
+        assert_eq!(
+            app.world_mut()
+                .query::<&GrassBatch>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+        assert_eq!(app.world().resource::<GrassMetrics>().generated_cells, 1);
+        assert_eq!(
+            app.world()
+                .resource::<GrassState>()
+                .reported_no_grass_worldspace,
+            None
+        );
+
+        let pool = AsyncComputeTaskPool::get_or_init(|| {
+            bevy::tasks::TaskPoolBuilder::new().num_threads(1).build()
+        });
+        app.world_mut().resource_mut::<GrassState>().pending.insert(
+            43,
+            PendingGrass {
+                root: None,
+                task: pool.spawn(async {
+                    std::future::pending::<(GeneratedGrass, GrassTerrain)>().await
+                }),
+            },
+        );
+        app.world_mut().spawn((
+            StreamedCellRoot,
+            CellRef(43),
+            ExteriorCellGrid(IVec2::ZERO),
+            Transform::default(),
+            GrassTerrain::new(vec![0.0; 33 * 33], None),
+        ));
+        *app.world_mut().resource_mut::<ActiveSpace>() = ActiveSpace {
+            worldspace_id: Some(4),
+            interior: None,
+        };
+        app.update();
+        assert!(app.world().resource::<GrassMetrics>().ready);
+        assert_eq!(app.world().resource::<GrassMetrics>().generated_cells, 1);
+        assert!(app.world().resource::<GrassState>().attached.is_empty());
+        assert!(app.world().resource::<GrassState>().pending.is_empty());
+        assert_eq!(
+            app.world()
+                .resource::<GrassState>()
+                .reported_no_grass_worldspace,
+            Some(4)
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&GrassBatch>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+
+        // 3. Entering an interior clears the exterior no_grass report state.
+        *app.world_mut().resource_mut::<ActiveSpace>() = ActiveSpace {
+            worldspace_id: Some(4),
+            interior: Some(99),
+        };
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<GrassState>()
+                .reported_no_grass_worldspace,
+            None
         );
     }
 }

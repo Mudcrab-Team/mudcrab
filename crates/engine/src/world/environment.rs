@@ -36,8 +36,11 @@ impl TimeOfDay {
     }
 }
 
-/// A directional ambient block (`DALC`): colours along X+, X-, Y+, Y-, Z+, and Z-.
-/// Specular colour and scale are optional. Colours are 8-bit sRGB.
+/// A directional ambient block (`DALC`): six colours in file order, F0 to F5. The field names in
+/// the converter schema (`x_pos`, `x_neg`, ...) follow the editor's labels and are unverified. The
+/// retail shader applies them as F0 on -X, F1 on +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z,
+/// in Creation axes (NEEDS 41, reviewed). Specular colour and scale are optional. Colours are
+/// 8-bit sRGB.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
 pub struct DirectionalAmbient {
     pub colors: [[u8; 3]; 6],
@@ -84,6 +87,10 @@ pub struct LightingTemplate {
     pub lighting: Lighting,
     pub directional_ambient: Option<DirectionalAmbient>,
 }
+
+/// `WRLD DATA` flag bit marking a worldspace as having no grass
+/// ([skyrim_decomp#879](https://github.com/Mudcrab-Team/skyrim_decomp/issues/879)).
+pub const WORLDSPACE_NO_GRASS: u8 = 0x80;
 
 /// A worldspace's climate, lighting template, music and flags.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -201,6 +208,9 @@ pub struct EnvironmentCatalog {
     /// `cell_environment.image_space_id` (XCIM) by cell. A cell is absent when the table or the
     /// column is missing. A present entry may hold `None` (the cell has no XCIM).
     cell_image_spaces: HashMap<u32, Option<u32>>,
+    /// The XCIM link of each exterior cell, by world space and grid square, for the world spaces
+    /// whose record names a lighting template.
+    exterior_cell_image_spaces: HashMap<(u32, i32, i32), Option<u32>>,
     worldspaces: HashMap<u32, WorldspaceEnvironment>,
     templates: HashMap<u32, LightingTemplate>,
     weathers: HashMap<u32, Weather>,
@@ -356,6 +366,17 @@ impl EnvironmentCatalog {
             "cell_environment.image_space_id",
             |row| Ok((row.get(0)?, row.get(1)?)),
         );
+        let exterior_cell_image_spaces = read_rows(
+            connection,
+            "SELECT c.worldspace_id, c.grid_x, c.grid_y, e.image_space_id FROM cells c \
+             JOIN worldspace_environment w ON w.worldspace_id = c.worldspace_id \
+             LEFT JOIN cell_environment e ON e.cell_id = c.id \
+             WHERE w.lighting_template_id <> 0 AND c.grid_x IS NOT NULL AND c.grid_y IS NOT NULL",
+            "exterior cell image spaces",
+            |row| Ok(((row.get(0)?, row.get(1)?, row.get(2)?), row.get(3)?)),
+        )
+        .into_iter()
+        .collect();
         let worldspaces = read(
             connection,
             "SELECT worldspace_id, data_flags, parent_flags, climate_id, water_id, \
@@ -492,6 +513,7 @@ impl EnvironmentCatalog {
             cells,
             cell_flags,
             cell_image_spaces,
+            exterior_cell_image_spaces,
             worldspaces,
             templates,
             weathers,
@@ -534,6 +556,16 @@ impl EnvironmentCatalog {
         self.worldspaces.get(&worldspace_id)
     }
 
+    /// True when the winning `WRLD DATA` for `worldspace_id` sets bit `0x80` (`no_grass`),
+    /// skipping grass generation and drawing in this worldspace
+    /// ([skyrim_decomp#879](https://github.com/Mudcrab-Team/skyrim_decomp/issues/879)).
+    pub fn worldspace_no_grass(&self, worldspace_id: u32) -> bool {
+        self.worldspaces
+            .get(&worldspace_id)
+            .and_then(|environment| environment.data_flags)
+            .is_some_and(|flags| flags & WORLDSPACE_NO_GRASS != 0)
+    }
+
     pub fn lighting_template(&self, id: u32) -> Option<&LightingTemplate> {
         self.templates.get(&id)
     }
@@ -544,6 +576,27 @@ impl EnvironmentCatalog {
 
     pub fn image_space(&self, id: u32) -> Option<&ImageSpace> {
         self.image_spaces.get(&id)
+    }
+
+    /// Whether the world space's record names a lighting template.
+    pub fn worldspace_has_lighting_template(&self, worldspace_id: u32) -> bool {
+        self.worldspaces
+            .get(&worldspace_id)
+            .and_then(|world| world.lighting_template)
+            .is_some_and(|template| template != 0)
+    }
+
+    /// The XCIM link of an exterior cell of a world space with a lighting template. `None` when
+    /// the database has no such cell, `Some(None)` when the cell names no image space.
+    pub fn exterior_cell_image_space(
+        &self,
+        worldspace_id: u32,
+        grid_x: i32,
+        grid_y: i32,
+    ) -> Option<Option<u32>> {
+        self.exterior_cell_image_spaces
+            .get(&(worldspace_id, grid_x, grid_y))
+            .copied()
     }
 
     /// Resolve WRLD PNAM bit 0x10 (use parent's climate). Missing parents or cycles return None.
@@ -591,11 +644,42 @@ impl EnvironmentCatalog {
         catalog
     }
 
+    /// Test catalog with explicit `WRLD DATA` flags per worldspace.
+    #[cfg(test)]
+    pub(crate) fn with_worldspace_flags_for_tests(
+        flags: impl IntoIterator<Item = (u32, Option<u8>)>,
+    ) -> Self {
+        let mut catalog = Self::default();
+        for (worldspace, data_flags) in flags {
+            catalog.worldspaces.insert(
+                worldspace,
+                WorldspaceEnvironment {
+                    data_flags,
+                    ..Default::default()
+                },
+            );
+        }
+        catalog
+    }
+
     /// A climate's weather list in authored order; empty when unknown.
     pub fn climate_weathers(&self, climate_id: u32) -> &[ClimateWeather] {
         self.climate_weathers
             .get(&climate_id)
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// Add one weather and its image spaces to a test catalog.
+    #[cfg(test)]
+    pub(crate) fn with_weather_for_tests(
+        mut self,
+        id: u32,
+        weather: Weather,
+        image_spaces: Vec<(u32, ImageSpace)>,
+    ) -> Self {
+        self.weathers.insert(id, weather);
+        self.image_spaces.extend(image_spaces);
+        self
     }
 }
 
@@ -1334,5 +1418,28 @@ mod tests {
         assert_eq!(climate[0].weather, Some(0x81A), "authored order");
         assert_eq!(climate[0].chance_global, Some(0x6000));
         assert_eq!(climate[1].chance, 20);
+    }
+
+    #[test]
+    fn worldspace_no_grass_honours_wrld_data_bit_0x80() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO worldspace_environment(worldspace_id, data_flags) VALUES
+                    (1, 128),
+                    (2, 129),
+                    (3, 127),
+                    (4, 0),
+                    (5, NULL);",
+            )
+            .unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        assert!(catalog.worldspace_no_grass(1));
+        assert!(catalog.worldspace_no_grass(2));
+        assert!(!catalog.worldspace_no_grass(3));
+        assert!(!catalog.worldspace_no_grass(4));
+        assert!(!catalog.worldspace_no_grass(5));
+        assert!(!catalog.worldspace_no_grass(99));
     }
 }

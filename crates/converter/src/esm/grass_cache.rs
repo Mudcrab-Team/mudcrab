@@ -3651,7 +3651,7 @@ mod selection_transform_tests {
         let missing = selection_layers(&land, 0, &links, &|id| id == 30);
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].weights[0], 0.0);
-        let mut cleared = land.clone();
+        let mut cleared = land;
         cleared.layers.truncate(2);
         cleared.layers[1].texture_form_id = 0;
         cleared.layers[1].weights[0].opacity = 0.75;

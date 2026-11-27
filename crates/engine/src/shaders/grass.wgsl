@@ -10,7 +10,7 @@
 @group(0) @binding(0) var<uniform> view: View;
 #endif
 #ifdef DISTANCE_FOG
-#import bevy_pbr::{mesh_view_bindings::fog, pbr_functions::apply_fog}
+#import bevy_pbr::{mesh_view_bindings::fog, mesh_view_types::FOG_MODE_POWER_RAMP_BLENDED, pbr_functions::apply_fog}
 #endif
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
@@ -281,6 +281,11 @@ fn mapped_normal(input:Varyings) -> vec3<f32> {
 // Lighting already includes exposure; Bevy applies fog in this same HDR space.
 fn grass_fog(input_color:vec4<f32>, world_position:vec3<f32>, frag_coord:vec2<f32>) -> vec4<f32> {
 #ifdef DISTANCE_FOG
+    // Grass is drawn in the alpha-mask pass, so the `skyrim` profile fogs it in the full-screen
+    // pass after the opaque stage (`retail_fog.rs`, #891) and not here.
+    if fog.mode == FOG_MODE_POWER_RAMP_BLENDED {
+        return input_color;
+    }
     return apply_fog(fog,input_color,world_position,view.world_position,frag_coord);
 #else
     return input_color;
@@ -299,10 +304,17 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is cb2[16].w, the
     // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004). Only grass applies it
     // today; terrain, sky and water do not (open question: does retail apply it there too?).
-    // Exposure and 1/pi: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
-    // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker
-    // than a Bevy PBR surface with the same ambient input. Retail has no such factor. The
-    // sun:ambient balance is unverified until the engine light units match retail (#706).
+    // The units of `grass.ambient` and of the sun in `input.light` come from the CPU side,
+    // `GrassLightUnits::ambient` and `GrassLightUnits::sun` (`grass_render.rs`). The shader
+    // multiplies the sum by `view.exposure / pi`.
+    // Under `skyrim` (docs/specs/engine/near-lighting.md) the exposure is 1 and both uniforms
+    // carry a factor pi that cancels the 1/pi. The grass then adds the raw sun colour, without
+    // SunlightScale (RF-GRASS-004; a static reading, unverified at run time), and the mean of the
+    // raw directional ambient cube. Near surfaces add the same cube by normal, unscaled, and take
+    // the sun times SunlightScale.
+    // Under `mudcrab` both uniforms are the scene's own sun and ambient. The 1/pi equals Bevy's
+    // Lambert diffuse for the sun. It does not match a Bevy surface's ambient, which Bevy scales
+    // by `EnvBRDFApprox` (about 0.4524 at roughness 1), not by 1/pi.
     let shadow = directional_shadow(input);
     let light = tuning_illumination(grass.ambient.rgb,input.light,shadow,view.exposure,grass.tuning_light,grass.tuning_surface,grass.tuning_specular);
     let visibility = grass.tuning_surface.z + (1.0-grass.tuning_surface.z)*mix(1.0,shadow,grass.tuning_surface.y);

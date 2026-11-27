@@ -29,6 +29,7 @@ use bevy::{
         schedule::{Core3d, Core3dSystems},
         tonemapping::tonemapping,
     },
+    ecs::{schedule::ScheduleConfigs, system::BoxedSystem},
     prelude::*,
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
@@ -126,6 +127,14 @@ pub(crate) fn underwater_fog_share(depth: f32, near: f32, far: f32) -> f32 {
     ((depth - near) / (far - near)).clamp(0.0, 1.0)
 }
 
+/// The pass with its place in `PostProcess`: before the tone mapping, so also before the retail
+/// tonemap (`post_process_order.rs`).
+pub(crate) fn post_process_systems() -> ScheduleConfigs<BoxedSystem> {
+    run_underwater_pass
+        .in_set(Core3dSystems::PostProcess)
+        .before(tonemapping)
+}
+
 pub(crate) struct UnderwaterPassPlugin;
 
 impl Plugin for UnderwaterPassPlugin {
@@ -150,12 +159,7 @@ impl Plugin for UnderwaterPassPlugin {
                     prepare_underwater_pipelines.in_set(RenderSystems::Prepare),
                 ),
             )
-            .add_systems(
-                Core3d,
-                run_underwater_pass
-                    .in_set(Core3dSystems::PostProcess)
-                    .before(tonemapping),
-            );
+            .add_systems(Core3d, post_process_systems());
     }
 }
 

@@ -29,6 +29,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// The retail inputs of a lighting material under `skyrim`.
+mod retail;
+
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
 pub struct NifMaterialPlugin;
 
@@ -502,6 +505,43 @@ impl NativeMaterialHandler {
         }
         self.skin_labels.insert(label.to_owned());
     }
+
+    /// Whether this profile draws a material through a native one: always the converter-tagged
+    /// cases, and under `skyrim` every lighting material, which takes the retail surface.
+    fn needs_native(&self, material: &gltf::Material<'_>) -> bool {
+        let alpha_mode = match material.alpha_mode() {
+            GltfAlphaMode::Blend => AlphaMode::Blend,
+            _ => AlphaMode::Opaque,
+        };
+        needs_native_material(material)
+            || (self.raw_colour_texels
+                && (retail::is_lighting(material)
+                    || self.depth_state(material, alpha_mode).is_some()))
+    }
+
+    /// The authored depth and blend state this profile draws a material with. Under `skyrim` the
+    /// blend pair is retail's.
+    fn depth_state(
+        &self,
+        material: &gltf::Material<'_>,
+        alpha_mode: AlphaMode,
+    ) -> Option<NifDepthState> {
+        if !self.raw_colour_texels {
+            return native_depth_state(material, alpha_mode);
+        }
+        let (flags_1, flags_2) = native_depth_flags(material)?;
+        let state = NifDepthState::retail_from_material(
+            flags_1,
+            flags_2,
+            alpha_mode,
+            authored_blend_factors(material),
+        )?;
+        Some(if retail::is_lighting(material) {
+            state.retail_first_stage(alpha_mode)
+        } else {
+            state
+        })
+    }
 }
 
 /// The stock hook records this dependency before our hook replaces its render binding.
@@ -752,7 +792,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         label: &str,
     ) {
         let palette = self.palette(source);
-        if !needs_native_material(source) && palette.is_none() {
+        if !self.needs_native(source) && palette.is_none() {
             return;
         }
         // Reuse Bevy's fully constructed standard material instead of duplicating
@@ -762,7 +802,11 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             .and_then(|asset| asset.get::<StandardMaterial>())
             .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
         let mut material = native_material(source, standard).unwrap_or_else(|| standard.clone());
-        let mut depth = native_depth_state(source, material.alpha_mode);
+        // The raw colour space belongs to the `skyrim` profile, and so does the retail surface.
+        if self.raw_colour_texels && retail::is_lighting(source) {
+            retail::apply(source, standard, &mut material);
+        }
+        let mut depth = self.depth_state(source, material.alpha_mode);
         if palette.is_none()
             && let Some(state) = depth.as_mut()
             && !has_model_space_normals(source)
@@ -771,7 +815,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         {
             state.uses_effect_emittance = true;
             // Sample the source colour and alpha without lighting the overlay as a solid wall.
-            // STAND-IN(#934): Use the packed emission as the source multiplier and skip
+            // STAND-IN(#984): Use the packed emission as the source multiplier and skip
             // surface fog until the retail effect's tint and fog evaluation are traced.
             let alpha = material.base_color.to_linear().alpha;
             material.base_color = Color::LinearRgba(LinearRgba {
@@ -837,7 +881,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         context.add_labeled_asset(
                             format!("{label}/skin-depth"),
                             depth_material(
-                                hair_material(material.clone(), tint, self.raw_colour_texels),
+                                retail::hair_decal(
+                                    source,
+                                    hair_material(material.clone(), tint, self.raw_colour_texels),
+                                ),
                                 state,
                             ),
                         );
@@ -901,7 +948,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         if has_external_emittance(material) {
             entity.insert(ExternalEmittance);
         }
-        if palette || needs_native_material(material) {
+        if palette || self.needs_native(material) {
             let source = entity
                 .get::<MeshMaterial3d<StandardMaterial>>()
                 .expect("NifMaterialPlugin requires the stock PBR glTF handler before it")
@@ -971,6 +1018,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
 #[cfg(test)]
 #[path = "nif_material/palette_shader_check.rs"]
 mod palette_shader_check;
+
+#[cfg(test)]
+#[path = "nif_material/pass_audit.rs"]
+mod pass_audit;
 
 #[cfg(test)]
 #[path = "nif_material/skin_load_tests.rs"]
@@ -1582,6 +1633,36 @@ mod tests {
         assert_eq!(bevy::pbr::Material::alpha_mode(&wrapped), AlphaMode::Blend);
     }
 
+    /// The Whiterun wall-top cap: a lit decal with an alpha test and no depth-write flag. Under
+    /// `skyrim` it draws before the fog composite (SPEC-1 section 9.3); under `mudcrab` it keeps
+    /// the sorted draw.
+    #[test]
+    fn only_skyrim_draws_a_lit_cutout_decal_in_the_first_stage() {
+        let document = |family: &str| {
+            first_material(serde_json::json!({
+                "alphaMode": "MASK",
+                "extras": {"openSkyrim": {"shaderFamily": family,
+                    "shaderFlags1": DEPTH_TEST | DECAL, "shaderFlags2": 0}}
+            }))
+        };
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        let mudcrab = NativeMaterialHandler::default();
+        let mode = AlphaMode::Mask(0.5);
+        let lighting = document("lighting");
+        let source = lighting.materials().next().unwrap();
+        let state = skyrim.depth_state(&source, mode).unwrap();
+        assert!(state.first_stage && state.depth_write);
+        let state = mudcrab.depth_state(&source, mode).unwrap();
+        assert!(!state.first_stage && !state.depth_write);
+        // An effect surface keeps the sorted draw: its retail stage is not a lit decal's.
+        let effect = document("effect");
+        let source = effect.materials().next().unwrap();
+        assert!(!skyrim.depth_state(&source, mode).unwrap().first_stage);
+    }
+
     #[test]
     fn depth_wrapped_palette_scene_clone_retains_the_palette_source() {
         let mut app = App::new();
@@ -1806,7 +1887,7 @@ mod tests {
             (effect(0xC000_0008, "effect", greyscale.clone()), None),
             (effect(0, "effect", greyscale.clone()), None),
             // Bits 4 and 5 mean other things on a lighting shader.
-            (effect(0xC000_0078, "lighting", greyscale.clone()), None),
+            (effect(0xC000_0078, "lighting", greyscale), None),
             (
                 effect(
                     0xC000_0078,

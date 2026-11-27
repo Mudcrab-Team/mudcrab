@@ -24,6 +24,7 @@ const PBR_TYPES: &str = "
 #define_import_path bevy_pbr::pbr_types
 struct StandardMaterial { base_color: vec4<f32>, flags: u32, reflectance: vec3<f32> }
 const STANDARD_MATERIAL_FLAGS_UNLIT_BIT: u32 = 32u;
+const STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT: u32 = 1048576u;
 struct PbrInput {
     material: StandardMaterial,
     world_normal: vec3<f32>,
@@ -223,6 +224,10 @@ fn compose_module(
         (
             "terrain_blend.wgsl",
             include_str!("../shaders/terrain_blend.wgsl"),
+        ),
+        (
+            "terrain_normal.wgsl",
+            include_str!("../shaders/terrain_normal.wgsl"),
         ),
         ("pbr_types.wgsl", PBR_TYPES),
         ("forward_io.wgsl", FORWARD_IO),
@@ -529,6 +534,9 @@ fn sampled_alpha(
         match &function.expressions[expression] {
             Expression::Literal(naga::Literal::F32(value)) => *value,
             Expression::FunctionArgument(2) => present,
+            // `layer_surface`'s retail switch changes the decoded normal, never the alpha: the
+            // slice follows the `mudcrab` branch.
+            Expression::FunctionArgument(3) => 0.0,
             Expression::ImageSample { image, .. } => {
                 let texture = match function.expressions[*image] {
                     // The near fragment's caller binding is checked by mask_slots.
@@ -585,6 +593,14 @@ fn sampled_alpha(
                 }
             }
             Statement::Emit(_) => {}
+            // The normal's xyz is rebuilt by the shared decode, which never touches alpha.
+            Statement::Call {
+                function: callee, ..
+            } // Imported functions carry a module suffix after composition.
+            if module.functions[*callee]
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("terrain_tangent_normal")) => {}
             other => panic!("unsupported alpha control flow {other:?}"),
         }
     }

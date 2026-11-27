@@ -768,7 +768,7 @@ pub(crate) mod tests {
         assert_eq!(
             state,
             ConversionState::Stopped {
-                staging: Some(staging.clone()),
+                staging: Some(staging),
                 cancelled: false,
             }
         );
@@ -1495,7 +1495,7 @@ pub(crate) mod tests {
             &tx,
             RunMessage::Failed(FailureReport {
                 message: "stopped".into(),
-                staging: Some(staging.clone()),
+                staging: Some(staging),
                 cancelled: true,
             }),
         );
@@ -1791,10 +1791,7 @@ pub(crate) mod tests {
         let (data, _) = folders();
         app.world_mut()
             .resource_mut::<PendingInputs>()
-            .push(Input::Resume {
-                data,
-                output: output.clone(),
-            });
+            .push(Input::Resume { data, output });
         app.update();
         let effects = take_effects(&mut app);
         let [Effect::Begin(config)] = effects.as_slice() else {

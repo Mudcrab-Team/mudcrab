@@ -170,8 +170,9 @@ fn position_world_to_clip(world: vec3<f32>) -> vec4<f32> { return vec4<f32>(worl
 const PBR_TYPES: &str = r#"
 #define_import_path bevy_pbr::pbr_types
 struct StandardMaterial { base_color: vec4<f32>, uv_transform: mat3x3<f32>, reflectance: vec3<f32>, flags: u32 }
-struct PbrInput { material: StandardMaterial, N: vec3<f32>, clearcoat_N: vec3<f32>, world_normal: vec3<f32> }
+struct PbrInput { material: StandardMaterial, N: vec3<f32>, clearcoat_N: vec3<f32>, world_normal: vec3<f32>, retail_specular_mask: f32 }
 const STANDARD_MATERIAL_FLAGS_UNLIT_BIT: u32 = 1u << 5u;
+const STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT: u32 = 1u << 20u;
 const STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT: u32 = 1u << 4u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS: u32 = 7u << 29u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE: u32 = 0u << 29u;

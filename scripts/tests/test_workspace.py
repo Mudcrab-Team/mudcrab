@@ -42,6 +42,35 @@ class WorkspaceTests(unittest.TestCase):
     def git(self, *args):
         return workspace.git(self.repo, *args)
 
+    def run_cargo(self, args, **kwargs):
+        observed = []
+        original_run = subprocess.run
+        def run(command, **run_kwargs):
+            if command[0] == "git":
+                return original_run(command, **run_kwargs)
+            if os.path.basename(str(command[0])) == "lsof":
+                return subprocess.CompletedProcess(command, 1, "", "")
+            observed.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(self.ws, "build_key", return_value="compatible"), patch.object(workspace.subprocess, "run", side_effect=run):
+            self.ws.cargo(args, None, 0, **kwargs)
+        return observed[-1]
+
+    def test_builds_and_tests_run_at_low_priority(self):
+        prefix = workspace.Workspace.low_priority_prefix()
+        self.assertTrue(prefix, "no priority tool found")
+        self.assertIn("19", prefix)
+        if sys.platform == "darwin":
+            self.assertEqual(prefix[:3], ["/usr/sbin/taskpolicy", "-c", "utility"])
+        for sub in ("build", "check", "clippy", "test", "doc"):
+            command = self.run_cargo([sub, "--locked"])
+            self.assertEqual(command[:len(prefix)], prefix, sub)
+            self.assertEqual(command[len(prefix):len(prefix) + 2], ["cargo", sub])
+
+    def test_run_and_opt_out_keep_normal_priority(self):
+        self.assertEqual(self.run_cargo(["run", "--locked"])[:2], ["cargo", "run"])
+        self.assertEqual(self.run_cargo(["test", "--locked"], normal_priority=True)[:2], ["cargo", "test"])
+
     def run_build(self, label=None, returncode=0):
         observed = []
         original_run = subprocess.run

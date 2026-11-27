@@ -84,7 +84,9 @@ impl Plugin for GrassRenderPlugin {
         app.init_resource::<GrassModels>()
             .init_resource::<GrassRenderMetrics>()
             .insert_resource(GrassUploadBudget(upload_budget))
+            .init_resource::<GrassLightUnits>()
             .add_plugins(ExtractResourcePlugin::<GrassUploadBudget>::default())
+            .add_plugins(ExtractResourcePlugin::<GrassLightUnits>::default())
             .add_plugins((
                 ExtractComponentPlugin::<GrassPrimitive>::default(),
                 ExtractComponentPlugin::<GrassView>::default(),
@@ -670,10 +672,23 @@ fn update_grass_uniforms(
     fogs: Query<(), (With<StreamingCamera>, With<bevy::pbr::DistanceFog>)>,
     tuning: Option<Res<crate::grass_tuning::GrassTuningState>>,
     ambient: Option<Res<GlobalAmbientLight>>,
+    cube: Option<Res<bevy::pbr::DirectionalAmbientCube>>,
+    profile: Option<Res<crate::visual_profile::VisualProfile>>,
+    mut light_units: Option<ResMut<GrassLightUnits>>,
     batches: Query<(&GrassBatch, Option<&GrassAttached>)>,
     models: Res<GrassModels>,
     mut metrics: ResMut<GrassRenderMetrics>,
 ) {
+    // The profile is read once at startup. Grass takes retail's light units only under `skyrim`.
+    let units = profile
+        .as_deref()
+        .copied()
+        .map_or_else(GrassLightUnits::default, GrassLightUnits::of);
+    if let Some(current) = light_units.as_deref_mut()
+        && *current != units
+    {
+        *current = units;
+    }
     for camera in &retired_views {
         commands.entity(camera).remove::<GrassView>();
     }
@@ -731,8 +746,10 @@ fn update_grass_uniforms(
             if fade.enabled { 0.0 } else { 1.0 },
         );
         if let Some(ambient) = &ambient {
-            primitive.uniform.ambient =
-                Vec4::from_array(ambient.color.to_linear().to_f32_array()) * ambient.brightness;
+            primitive.uniform.ambient = units.ambient(
+                grass_ambient_colour(ambient, cube.as_deref().filter(|_| units.retail)),
+                ambient.brightness,
+            );
         }
         all_drawn &= primitive.suppress_draw
             || primitive.culled.load(Ordering::Acquire)
@@ -1020,6 +1037,7 @@ fn prepare_view(
 fn prepared_grass_sun(
     suns: &Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>,
     layers: &bevy::camera::visibility::RenderLayers,
+    units: GrassLightUnits,
 ) -> (Vec4, Vec4) {
     let sun = suns
         .iter()
@@ -1029,9 +1047,81 @@ fn prepared_grass_sun(
     sun.map_or((Vec4::Y, Vec4::ZERO), |(_, light)| {
         (
             light.transform.back().extend(0.0),
-            Vec4::from_array(light.color.to_f32_array()) * light.illuminance,
+            units.sun(light.color.to_f32_array(), light.illuminance),
         )
     })
+}
+
+/// The ambient colour grass takes before [`GrassLightUnits::ambient`]. Under `skyrim` the near
+/// meshes read the directional ambient cube (#1010), and grass takes the same cube's mean, so grass
+/// and the near meshes use one ambient in one unit. Without an enabled cube (the `mudcrab`
+/// profile, or a record that lacks the lighting) it is the flat `GlobalAmbientLight` colour, as
+/// before. Grass has no normal in retail's grass shader that matches the cube's by-normal form
+/// (unverified), so it takes the mean.
+fn grass_ambient_colour(
+    ambient: &GlobalAmbientLight,
+    cube: Option<&bevy::pbr::DirectionalAmbientCube>,
+) -> [f32; 4] {
+    match cube {
+        Some(cube) if cube.enabled => cube.mean.extend(1.0).to_array(),
+        _ => ambient.color.to_linear().to_f32_array(),
+    }
+}
+
+/// Which light units the grass shader's sun and ambient uniforms are in.
+///
+/// Under `skyrim` they are retail's grass units: the raw sun and the raw ambient (see
+/// [`GrassLightUnits::sun`] and [`GrassLightUnits::ambient`]). Under `mudcrab` they are the
+/// scene's own sun and ambient, unchanged, so that profile renders as it always did.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, ExtractResource)]
+pub(crate) struct GrassLightUnits {
+    pub retail: bool,
+}
+
+impl GrassLightUnits {
+    pub(crate) fn of(profile: crate::visual_profile::VisualProfile) -> Self {
+        Self {
+            retail: profile == crate::visual_profile::VisualProfile::Skyrim,
+        }
+    }
+
+    /// The sun colour the grass shader receives.
+    ///
+    /// Retail grass takes the raw `NiLight.diffuse`, without `SunlightScale` (RF-GRASS-004;
+    /// skyrim-research NEEDS 18 question 3, skyrim_decomp PR 1059; static reading, unverified at
+    /// run time). Under `skyrim` the scene sun's linear colour is that diffuse (SPEC-1 section
+    /// 2.3) and its illuminance carries the scale, so grass takes the colour alone, times the `pi`
+    /// that cancels the shader's `1 / pi`. A sun that is switched off (illuminance 0) stays off.
+    /// `mudcrab` takes the scene sun, colour times illuminance.
+    pub(crate) fn sun(self, colour: [f32; 4], illuminance: f32) -> Vec4 {
+        if !self.retail {
+            return Vec4::from_array(colour) * illuminance;
+        }
+        let on = if illuminance > 0.0 { 1.0 } else { 0.0 };
+        Vec4::from_array(colour) * (std::f32::consts::PI * on)
+    }
+
+    /// The ambient colour the grass shader receives.
+    ///
+    /// The shader divides the whole lit sum by pi. That is exact for the sun (Bevy's Lambert
+    /// diffuse is `albedo / pi`) and wrong for an ambient, which retail applies as
+    /// `albedo * ambient` (RF-GRASS-004: grass takes the raw ambient; unverified at run time).
+    /// Under `skyrim` the ambient carries a factor pi here, which cancels the shader's `1 / pi`,
+    /// so grass gets the raw ambient. The factor sits in the uniform, not in the shader, so the
+    /// `mudcrab` profile stays byte-identical and the pinned shader fixture is unchanged.
+    ///
+    /// The near meshes take the same unit: under `skyrim` their ambient term adds
+    /// `albedo * ambient` from the directional cube with no `EnvBRDFApprox` scale (#1010), and grass
+    /// takes the cube's mean ([`grass_ambient_colour`]). Whether retail's grass `NiLight.ambient` is
+    /// the same value as the near Lighting ambient is unverified.
+    pub(crate) fn ambient(self, colour: [f32; 4], brightness: f32) -> Vec4 {
+        let factor = if self.retail {
+            std::f32::consts::PI
+        } else {
+            1.0
+        };
+        Vec4::from_array(colour) * (brightness * factor)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1049,9 +1139,15 @@ fn prepare_grass(
     mut buffers: ResMut<GrassInstanceBuffers>,
     suns: Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>,
     views: Query<Option<&bevy::camera::visibility::RenderLayers>, With<GrassView>>,
+    units: Option<Res<GrassLightUnits>>,
 ) {
     let layers = views.single().ok().flatten().cloned().unwrap_or_default();
-    let (sun_direction, sun_color) = prepared_grass_sun(&suns, &layers);
+    let (sun_direction, sun_color) = prepared_grass_sun(
+        &suns,
+        &layers,
+        // silent-ok: `GrassRenderPlugin` initialises and extracts this resource before this system runs, so only a world without the plugin takes the default.
+        units.as_deref().copied().unwrap_or_default(),
+    );
     buffers
         .0
         .retain(|_, (instances, _)| instances.strong_count() > 0);
@@ -1475,6 +1571,171 @@ mod tests {
     use bevy::gltf::GltfPrimitive;
 
     include!("grass_render_alpha_tests.rs");
+
+    /// Retail grass takes the raw sun and the raw ambient (RF-GRASS-004). Under `skyrim` the
+    /// scene sun's colour is the raw diffuse and its illuminance holds `SunlightScale`, which
+    /// grass leaves out. The shader divides the lit sum by pi, so both grass values carry the
+    /// matching factor. `mudcrab` keeps the scene's own values.
+    #[test]
+    fn grass_light_units_by_profile() {
+        let retail = GrassLightUnits::of(crate::visual_profile::VisualProfile::Skyrim);
+        let scene = GrassLightUnits::of(crate::visual_profile::VisualProfile::Mudcrab);
+        assert!(retail.retail && !scene.retail);
+        assert_eq!(scene, GrassLightUnits::default());
+
+        let colour = [0.5, 1.0, 0.25, 1.0];
+        let lux = crate::lights::SUN_ILLUMINANCE;
+        let pi_colour = Vec4::from_array(colour) * std::f32::consts::PI;
+        // Whatever scale the scene sun carries, grass takes the colour alone.
+        for scale in [1.0, 1.8, 2.8] {
+            let illuminance = crate::retail_lighting::sun_illuminance(scale);
+            assert!(
+                retail
+                    .sun(colour, illuminance)
+                    .abs_diff_eq(pi_colour, 1.0e-6)
+            );
+        }
+        assert_eq!(retail.sun(colour, 0.0), Vec4::ZERO);
+        // The old expression, bit for bit.
+        assert_eq!(scene.sun(colour, lux), Vec4::from_array(colour) * lux);
+
+        let brightness = crate::lights::AMBIENT_ILLUMINANCE;
+        let pi = std::f32::consts::PI;
+        let raised = Vec4::from_array(colour) * (brightness * pi);
+        assert!(
+            retail
+                .ambient(colour, brightness)
+                .abs_diff_eq(raised, 1.0e-2)
+        );
+        assert_eq!(
+            scene.ambient(colour, brightness),
+            Vec4::from_array(colour) * brightness
+        );
+    }
+
+    /// The call site: `update_grass_uniforms` writes the ambient uniform and the extracted unit
+    /// switch from the profile. Reverting either line fails this test.
+    #[test]
+    fn update_grass_uniforms_applies_the_profile_light_units() {
+        use crate::visual_profile::VisualProfile;
+        let ambient = GlobalAmbientLight {
+            color: Color::linear_rgb(0.5, 0.25, 1.0),
+            brightness: 400.0,
+            ..default()
+        };
+        let expected_ambient = |units: GrassLightUnits| {
+            units.ambient(ambient.color.to_linear().to_f32_array(), ambient.brightness)
+        };
+        for profile in [
+            None,
+            Some(VisualProfile::Mudcrab),
+            Some(VisualProfile::Skyrim),
+        ] {
+            let mut app = App::new();
+            app.insert_resource(GrassFade {
+                enabled: true,
+                start: 1000.0,
+                end: 2000.0,
+            })
+            .insert_resource(GrassModels::default())
+            .insert_resource(GrassRenderMetrics::default())
+            .init_resource::<GrassLightUnits>()
+            .insert_resource(ambient.clone())
+            .add_systems(Update, update_grass_uniforms);
+            if let Some(profile) = profile {
+                app.insert_resource(profile);
+            }
+            app.world_mut()
+                .spawn((StreamingCamera, GlobalTransform::IDENTITY));
+            let entity = app
+                .world_mut()
+                .spawn((primitive(), GlobalTransform::IDENTITY))
+                .id();
+            app.update();
+            let units = GrassLightUnits {
+                retail: profile == Some(VisualProfile::Skyrim),
+            };
+            assert_eq!(*app.world().resource::<GrassLightUnits>(), units);
+            let uniform = &app.world().get::<GrassPrimitive>(entity).unwrap().uniform;
+            assert_eq!(uniform.ambient, expected_ambient(units), "{profile:?}");
+            let plain =
+                Vec4::from_array(ambient.color.to_linear().to_f32_array()) * ambient.brightness;
+            assert_eq!(
+                uniform.ambient == plain,
+                !units.retail,
+                "only skyrim changes the ambient: {profile:?}"
+            );
+        }
+    }
+
+    /// Grass and the near meshes use one ambient in one unit under `skyrim` (#1010, #1011). The
+    /// near ambient term adds `cube.mean * brightness` to the diffuse sum before the view
+    /// exposure, with no other scale (`pbr_ambient.wgsl`; the render pixel test
+    /// `ambient_pixel_tests` pins that). The grass shader divides its lit sum by pi and the
+    /// uniform carries a factor of pi, so grass adds the same `cube.mean * brightness`. This test
+    /// runs the call site with an enabled cube and checks the uniform against the near term.
+    /// `mudcrab` keeps its flat ambient even if a cube exists.
+    #[test]
+    fn grass_and_near_meshes_take_the_same_ambient_under_skyrim() {
+        use crate::visual_profile::VisualProfile;
+        let ambient = GlobalAmbientLight {
+            // The flat, decoded colour: not what the cube holds.
+            color: Color::linear_rgb(0.1, 0.1, 0.1),
+            brightness: 400.0,
+            ..default()
+        };
+        let cube = bevy::pbr::DirectionalAmbientCube {
+            enabled: true,
+            mean: Vec3::new(0.5, 0.4, 0.3),
+            slope_x: Vec3::new(0.1, 0.0, 0.0),
+            ..default()
+        };
+        for profile in [VisualProfile::Mudcrab, VisualProfile::Skyrim] {
+            let mut app = App::new();
+            app.insert_resource(GrassFade {
+                enabled: true,
+                start: 1000.0,
+                end: 2000.0,
+            })
+            .insert_resource(GrassModels::default())
+            .insert_resource(GrassRenderMetrics::default())
+            .init_resource::<GrassLightUnits>()
+            .insert_resource(ambient.clone())
+            .insert_resource(cube)
+            .insert_resource(profile)
+            .add_systems(Update, update_grass_uniforms);
+            app.world_mut()
+                .spawn((StreamingCamera, GlobalTransform::IDENTITY));
+            let entity = app
+                .world_mut()
+                .spawn((primitive(), GlobalTransform::IDENTITY))
+                .id();
+            app.update();
+            let uniform = app
+                .world()
+                .get::<GrassPrimitive>(entity)
+                .unwrap()
+                .uniform
+                .ambient;
+            // What the grass shader adds: the uniform divided by its `1 / pi`.
+            let grass_adds = uniform.truncate() / std::f32::consts::PI;
+            // What the near ambient term adds for a normal-less surface: the cube mean at the
+            // scene brightness.
+            let near_adds = cube.evaluate(Vec3::ZERO) * ambient.brightness;
+            if profile == VisualProfile::Skyrim {
+                assert!(
+                    (grass_adds - near_adds).abs().max_element() < 1.0e-3,
+                    "grass adds {grass_adds}, near meshes add {near_adds}"
+                );
+            } else {
+                let flat = Vec3::splat(0.1) * ambient.brightness;
+                assert!(
+                    (uniform.truncate() - flat).abs().max_element() < 1.0e-3,
+                    "mudcrab grass keeps the flat ambient"
+                );
+            }
+        }
+    }
 
     /// Keep signed and unsigned BC5 decode flags through successive live updates.
     #[test]
@@ -2624,16 +2885,25 @@ mod tests {
         let mut state: SystemState<Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>> =
             SystemState::new(&mut world);
         let suns = state.get(&world).unwrap();
-        let (direction, color) = prepared_grass_sun(&suns, &RenderLayers::default());
+        // Under `skyrim` the grass sun is the scene sun's colour, times pi.
+        let units = GrassLightUnits { retail: true };
+        let times_pi = |value: Vec4| value * std::f32::consts::PI;
+        let (direction, color) = prepared_grass_sun(&suns, &RenderLayers::default(), units);
         assert_eq!(direction, Vec4::Z);
-        assert_eq!(color, Vec4::new(5.0, 10.0, 20.0, 20.0));
-        assert_eq!(
-            prepared_grass_sun(&suns, &RenderLayers::layer(1)).1,
-            Vec4::new(0.0, 13.0, 0.0, 13.0)
+        assert!(color.abs_diff_eq(times_pi(Vec4::new(0.25, 0.5, 1.0, 1.0)), 1.0e-5));
+        assert!(
+            prepared_grass_sun(&suns, &RenderLayers::layer(1), units)
+                .1
+                .abs_diff_eq(times_pi(Vec4::new(0.0, 1.0, 0.0, 1.0)), 1.0e-5)
         );
         assert_eq!(
-            prepared_grass_sun(&suns, &RenderLayers::layer(9)),
+            prepared_grass_sun(&suns, &RenderLayers::layer(9), units),
             (Vec4::Y, Vec4::ZERO)
+        );
+        // `mudcrab` keeps the scene sun untouched.
+        assert_eq!(
+            prepared_grass_sun(&suns, &RenderLayers::default(), GrassLightUnits::default()).1,
+            Vec4::new(5.0, 10.0, 20.0, 20.0)
         );
     }
 

@@ -28,6 +28,8 @@ struct StandardMaterial {
     max_relief_mapping_search_steps: u32,
     /// ID for specifying which deferred lighting pass should be used for rendering this material, if any.
     deferred_lighting_pass_id: u32,
+    // mudcrab: `RetailSurface`: specular colour times strength in `xyz`, glossiness in `w`.
+    retail_specular: vec4<f32>,
 };
 
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -54,6 +56,9 @@ const STANDARD_MATERIAL_FLAGS_CLEARCOAT_NORMAL_TEXTURE_BIT: u32      = 1u << 16u
 const STANDARD_MATERIAL_FLAGS_ANISOTROPY_TEXTURE_BIT: u32            = 1u << 17u;
 const STANDARD_MATERIAL_FLAGS_SPECULAR_TEXTURE_BIT: u32              = 1u << 18u;
 const STANDARD_MATERIAL_FLAGS_SPECULAR_TINT_TEXTURE_BIT: u32         = 1u << 19u;
+// mudcrab: the retail Lighting path (`RetailSurface`), and its specular term.
+const STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT: u32               = 1u << 20u;
+const STANDARD_MATERIAL_FLAGS_RETAIL_SPECULAR_BIT: u32               = 1u << 21u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS: u32          = 7u << 29u; // (0b111u << 29u)
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE: u32                 = 0u << 29u;
 const STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK: u32                   = 1u << 29u;
@@ -88,6 +93,7 @@ fn standard_material_new() -> StandardMaterial {
     material.max_parallax_layer_count = 16.0;
     material.max_relief_mapping_search_steps = 5u;
     material.deferred_lighting_pass_id = 1u;
+    material.retail_specular = vec4<f32>(0.0);
     // scale 1, translation 0, rotation 0
     material.uv_transform = mat3x3<f32>(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 
@@ -119,6 +125,8 @@ struct PbrInput {
     anisotropy_B: vec3<f32>,
     is_orthographic: bool,
     flags: u32,
+    // mudcrab: the retail specular mask: the normal map's alpha, or the model-space map's `.r`.
+    retail_specular_mask: f32,
 };
 
 // Creates a PbrInput with default values
@@ -146,6 +154,8 @@ fn pbr_input_new() -> PbrInput {
     pbr_input.lightmap_light = vec3<f32>(0.0);
 
     pbr_input.flags = 0u;
+    // mudcrab: an empty normal slot has alpha 255.
+    pbr_input.retail_specular_mask = 1.0;
 
     return pbr_input;
 }

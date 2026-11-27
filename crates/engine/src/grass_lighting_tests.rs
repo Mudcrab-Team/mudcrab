@@ -427,7 +427,9 @@ fn grass_output_scale_includes_nonzero_sheen() {
 
 /// The retail grass pixel formula, written out independently of the shader (RF-SHADER-003):
 /// `(NdotL*C*Dir*albedo*lerp(floor,1,mask) + C*Ambient*albedo) * scale`, then the engine's
-/// exposure/pi factor (exact for the sun; Bevy's ambient has no 1/pi). The fixture's sun, ambient and albedo are fixed in the fixture.
+/// exposure/pi factor (exact for the sun). Bevy's ambient has no 1/pi, so the engine's CPU side
+/// multiplies the grass ambient by pi under `skyrim` (`GrassLightUnits::ambient`). The fixture's
+/// sun, ambient and albedo are fixed in the fixture.
 fn retail_grass_pixel(n_dot_l: f32, shadow_mask: f32, floor: f32, output_scale: f32) -> [f32; 3] {
     let (sun, ambient, albedo) = ([1.5, 3.0, 5.0], [0.25, 0.5, 1.0], [0.25, 0.5, 0.75]);
     let shadow = floor + (1.0 - floor) * shadow_mask;
@@ -692,6 +694,39 @@ fn grass_tuning_light_and_shadow_controls() {
 }
 
 #[test]
+/// The CPU ambient factor and the shader's 1/pi cancel under `skyrim`: grass gets the raw ambient
+/// (RF-GRASS-004), `ambient * exposure`. Under `mudcrab` the old uniform stays, so the shader
+/// still divides it by pi.
+fn grass_ambient_uniform_and_shader_pi_cancel() {
+    let exposure = 2.0;
+    let raw = [0.25, 0.5, 1.0];
+    let lit = |units: super::GrassLightUnits| {
+        let uniform = units.ambient([raw[0], raw[1], raw[2], 1.0], 1.0);
+        tuning_helper(
+            "tuning_illumination",
+            &[
+                vec![uniform.x, uniform.y, uniform.z],
+                vec![0.0; 3],
+                vec![1.0],
+                vec![exposure],
+                vec![1.0, 1.0, 1.0, 1.0],
+                vec![0.0, 1.0, 0.3, 0.0],
+                vec![0.0, 0.5, 0.0, 0.0],
+            ],
+        )
+    };
+    for (value, wanted) in lit(super::GrassLightUnits { retail: true }).iter().zip(raw) {
+        assert!(
+            (value - wanted * exposure).abs() < 1.0e-5,
+            "{value} vs {wanted}"
+        );
+    }
+    for (value, wanted) in lit(super::GrassLightUnits::default()).iter().zip(raw) {
+        assert!((value - wanted * exposure / std::f32::consts::PI).abs() < 1.0e-5);
+    }
+}
+
+#[test]
 /// Final brightness, luminance saturation and base darkening each have literal targets.
 fn grass_tuning_final_color_controls() {
     let run = |brightness, saturation, root, dark| {
@@ -801,7 +836,7 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
         }
     }
     // The positive-Z reconstruction clamps XY samples outside the unit disk.
-    let mut outside_disk = args.clone();
+    let mut outside_disk = args;
     outside_disk[0] = vec![1.0, 1.0, 0.9];
     outside_disk[4][0] = 1.0;
     let length = 2.0_f32.sqrt();

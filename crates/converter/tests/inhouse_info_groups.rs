@@ -134,7 +134,7 @@ fn grouped_info_without_tpic_keeps_lexical_owner_and_source_offsets() {
         first.clone(),
         nested.clone(),
         restored.clone(),
-        inside_neighbor.clone(),
+        inside_neighbor,
     ]
     .concat();
     let outer = group(7, 0x4100, &outer_payload);
@@ -144,7 +144,7 @@ fn grouped_info_without_tpic_keeps_lexical_owner_and_source_offsets() {
         topic_b.clone(),
         outer.clone(),
         outside.clone(),
-        sibling.clone(),
+        sibling,
     ]
     .concat();
     let header = fixture.add("Grouped.esm", &[], 1, &records);

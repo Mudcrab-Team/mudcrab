@@ -114,8 +114,8 @@ object path (`streaming/lod_objects.rs`) works as follows.
   `fBlockLevel0Distance` x sqrt(NAMA). NAMA is 1.0 for every worldspace until the pack carries
   the WRLD value (retail uses 0.25 for Whiterun, Markarth, Windhelm and Alftand).
 - **Tiers (RF-LOD-004).** The engine measures squared XY distance from the continuous camera
-  position to the block rectangle. It uses strict comparisons at the default distances of 35,000,
-  70,000 and 250,000 world units. Movement within a cell can change the selected tier.
+  position to the block rectangle. It uses strict comparisons at the default distances of 60,000,
+  90,000 and 250,000 world units (the Ultra preset, #949). Movement within a cell can change the selected tier.
 - **Hand-over.** An outgoing chunk stays visible while any selected replacement in its block is
   waiting for budget or loading. The replacements stay hidden until the same pass that retires the
   outgoing chunk. If a replacement stalls or fails, the outgoing chunk retires at the deadline
@@ -129,8 +129,8 @@ object path (`streaming/lod_objects.rs`) works as follows.
   cap of one cell by default. The marked tier-4 filter uses a strict deadline comparison
   after a 2,000 ms delay. See [reviewed retail facts, G01–G04](https://github.com/Mudcrab-Team/skyrim_decomp/pull/821/files).
   The engine keeps marked LOD when projected membership or model readiness is incomplete.
-  STAND-IN(#913): Mudcrab sweeps the outer ring around the camera's cell and uses width 9
-  across profiles. It uses Bevy virtual time and switches ownership when a replacement can draw.
+  STAND-IN(#913): Mudcrab sweeps the outer ring around the camera's cell and uses the configured
+  width (11 by default) across profiles. It uses Bevy virtual time and switches ownership when a replacement can draw.
   Same-worldspace moves share the demotion cap, with cells retired in sorted order and
   admission bounded by one large window.
 - **Shared atlas.** When the worldspace has a row in `lod_object_atlases`, its chunks reference one
@@ -142,6 +142,20 @@ object path (`streaming/lod_objects.rs`) works as follows.
   signed RGB with blue as Z and transforms the result through the vertex basis for diffuse lighting.
   Both slots use clamp addressing and 16× anisotropy (skyrim_decomp#948). Older chunks and chunks
   with a missing atlas, failed load, or missing basis retain the standard material.
+- **Object LOD lighting (#946, skyrim_decomp#1003).** The lighting depends on the visual profile
+  (`visual-profiles.md`). Under `skyrim` the shader uses the retail terms on raw values:
+  `(sun + ambient) × diffuse × vertex colour`. Ambient is the weather directional ambient mean plus
+  the dot of the model-space normal with the three rows. The rows come from the creation-axis
+  slopes, mapped to runtime axes (X, Z, −Y) and rotated into model space with the transpose of the
+  normalised world columns. Sun is the saturated dot of the model-space normal and the rotated
+  to-sun vector, times the weather sunlight colour and the image-space sunlight scale. The mesh
+  has no point lights, no emission and no vertex-colour multiplier for technique 13 (white). The
+  normal is model space: the atlas basis is not rotated into the world. There is no exposure, no
+  engine illuminance and no cast shadow. Haze comes from the retail fog composite, so the
+  material stays in the opaque or alpha-mask pass without transmission. A world without the
+  default weather or climate timing is black and logged once. Under `mudcrab` the material keeps
+  the earlier terms: the engine ambient illuminance, the view exposure and the Bevy sun. The
+  near objects of both profiles use the engine light path (#1010).
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
   every file of every tier, and the shared atlas, is hash-checked, one IO-pool task per file. A bad row, a missing file
   or a wrong hash logs one error and turns object LOD off for the pack. No chunk is skipped on its
@@ -165,9 +179,16 @@ edge of a worldspace). The material carries the colour map and a normal map appl
 constant reference frame. The lighting is the engine's ordinary material, not the retail
 equation (unverified).
 
-Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
-70000 and 250000 with a multiplier of 1.5
-([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)). The initial terrain slice was measured and
+Defaults are the Ultra preset's `[TerrainManager]` values from the game's `Ultra.ini`
+(#949): `fBlockLevel0Distance` 60000, `fBlockLevel1Distance` 90000, `fBlockMaximumDistance`
+250000, `fSplitDistanceMult` 1.5 and `fTreeLoadDistance` 75000. The High preset (35000, 70000,
+250000, 1.5) was the default before #949. `--ini` overrides each key. The retail terrain rule
+uses only `fSplitDistanceMult` and the outer reach; the two block distances drive object LOD.
+`[General] uLargeRefLODGridSize` sets the width of the large-reference grid: 11 by default (an odd
+number from 1 to 31; the compiled default 9 was the earlier fixed width). Other Ultra defaults
+with no consumer yet: `[LOD] fLODFadeOutMultObjects` 30, `fLODFadeOutMultActors` 15,
+`fLODFadeOutMultItems` 10, and `[Display] fMeshLODLevel1FadeDist` and `fMeshLODLevel2FadeDist`
+999999. The initial terrain slice was measured and
 accepted at a 4/8/16-cell reach under the earlier rule (block distances times
 `fSplitDistanceMult`, compared by Chebyshev cell distance). The
 [`cb617fc0` candidate](../../research/lod-rc-20261002.md) was approved visually
@@ -177,9 +198,9 @@ replaced it, so `--ini` values no longer reproduce those runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
-(Phase 3), custom `uLargeRefLODGridSize` values and retail's
+(Phase 3), the `[LOD]` fade-out multipliers, the mesh LOD fade distances and retail's
 flag 0x8000, RF-LOD-006, which forces level 4 in blocks touching that square: no
-difference at the default High preset, but at Low, `fSplitDistanceMult` 0.5,
+difference at the High preset, but at Low, `fSplitDistanceMult` 0.5,
 retail would force level 4 out to about 18,000 units and Mudcrab does not), and the
 Skyrim quality presets themselves. The engine does not search for the user's
 `My Games` INI files; a launcher or script passes them explicitly.
@@ -224,8 +245,8 @@ cumulative diagnostics and the unrecovered gauge.
 
 Camera far is currently `CELL_SIZE * (stream_radius + 2) * 2` (`app.rs`),
 32,768 units at the default radius 2. Once terrain LOD chunks arrive it
-extends to cover the largest configured tier reach (`streaming/lod.rs`). Sun shadow cascades derive from the
-same radius. LOD range must be fitted with the far plane and fog; distant
+extends to cover the largest configured tier reach (`streaming/lod.rs`). The sun shadow range is `[Display] fShadowDistance`
+(default 10000, from Ultra), limited by the drawn grid where that is smaller. LOD range must be set together with the far plane and fog; distant
 shadow coverage needs its own quality and cost decision. `SkyrimClear` fog
 reaches its maximum amount of 0.85 at 53,289 units (`sky.rs`), so it does not
 make geometry beyond that distance invisible. See the

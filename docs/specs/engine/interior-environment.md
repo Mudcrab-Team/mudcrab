@@ -46,12 +46,15 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
      (RF-LIGHT-CPU-008).
    - Shadows OFF. **Mudcrab interim decision.** Retail is UNRESOLVED (RF-LIGHT-GPU-010: the light
      is wired as the shadow light with `fInteriorShadowDistance` 3000, and one interior gate is
-     not decoded). The exterior cascades (8000 range) would let the roof and floor shadow the
-     room.
+     not decoded). The exterior cascades would let the roof and floor shadow the
+     room. Their range is the exterior `fShadowDistance`; the interior distance is open (#857).
    - `crate::sun::update_sun` skips the sun while `ExteriorSunState` holds it.
 6. **Ambient**: `GlobalAmbientLight.color` is the mean of the six DALC colours, with the same
    averaging as `WeatherLighting::mean_ambient`. Brightness stays `AMBIENT_ILLUMINANCE`. XCLL
-   ambient is not a Lighting-shader input (RF-LIGHT-GPU-002) and is reported only.
+   ambient is not a Lighting-shader input (RF-LIGHT-GPU-002) and is reported only. Under `skyrim`
+   the key light, the whole DALC cube and the fog take the raw record bytes in retail units, with
+   the cell image space's `SunlightScale`, and the interior draws the retail power ramp and
+   composite instead of the linear fog below ([near-lighting.md](near-lighting.md), #1010).
 7. **Fog**: Bevy linear fog from the resolved near and far and the near colour. Fog max is a cap:
    Bevy multiplies its ramp by the colour alpha, so the engine sets alpha = max and ends the ramp
    at `near + max * (far - near)`, which gives `min(ramp, max)`. Max 0 draws no fog.
@@ -71,8 +74,10 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
 9. **Order**: `crate::sky`'s `apply_fog` runs after `EnvironmentSet`, so a door or room crossing
    changes the fog in the same frame as the light.
 
-Point lights are unchanged (`--lights` path). Light fade 0/0 means no fade (RF-LIGHT-CPU-003,
-RF-LIGHT-CPU-007); the fade factor is reported for #488.
+Point lights are on by default (`--no-lights` turns them off) and use retail's falloff and unit
+([point-lights.md](point-lights.md)). A stored light fade of 0/0 does not mean "no fade": a
+zero begin or end is replaced by the INI values, so 0/0 reads as 3500/4000 and the distance
+dimmer applies (NEEDS 20; see section 4 of [point-lights.md](point-lights.md)).
 
 ## Reported only
 
@@ -84,7 +89,6 @@ Use Sky Lighting, the sky mode, and the applied values (`cell_render`).
 ## Open items
 
 - Interior directional shadows (RF-LIGHT-GPU-010).
-- The per-normal DALC ambient term in the shader (RF-LIGHT-CPU-002, RF-LIGHT-GPU-001/003).
 - The Show Sky dome indoors, worldspace templates (`WRLD` `0x20`, Blackreach), the reference
   image space override (RF-IMGS-001 extra `0x77`), and fog power and far colour.
 - **UNVERIFIED: the world sign of the key light.** RF-LIGHT-CPU-012 settles the local rotation

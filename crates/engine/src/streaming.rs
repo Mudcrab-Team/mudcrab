@@ -1471,7 +1471,10 @@ fn collect_cells(
                     config.lights,
                     config.interactive_world_physics(),
                     requests::enabled(&config),
-                    large_references::window_enabled(config.stream_radius),
+                    large_references::window_enabled(
+                        config.stream_radius,
+                        config.large_ref_grid_radius(),
+                    ),
                     payload,
                     terrain,
                     merged,
@@ -1809,6 +1812,7 @@ fn spawn_cell(
                         perceptual_roughness: 0.92,
                         cull_mode: None,
                         double_sided: true,
+                        retail_surface: crate::render::retail_terrain_surface(colour_srgb),
                         ..default()
                     },
                     extension,
@@ -2096,7 +2100,12 @@ fn spawn_cell(
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
             // surfaces once they are instantiated below it; see `crate::emittance`.
             if let Some(rgb) = reference.emittance {
-                entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
+                let units = crate::retail_lighting::LightUnits::of_colour_space(colour_srgb);
+                entity.insert(crate::emittance::ReferenceEmittance::of(units, rgb));
+            }
+            // Under `skyrim` the source's colour follows the day parts.
+            if !colour_srgb && let Some(parts) = reference.emittance_day_parts {
+                entity.insert(crate::emittance::EmittanceDayParts(parts));
             }
             if let Some(swaps) = catalog.object_texture_swaps(reference.base_form_id) {
                 entity.insert(swaps);
@@ -2111,26 +2120,50 @@ fn spawn_cell(
             if let Some(evaluation) = &evaluated_light {
                 entity.insert(evaluation.clone());
             }
-            if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
+            let shadow_flagged = evaluated_light
+                .as_ref()
+                .is_some_and(crate::lights::LightEvaluation::shadow_flagged);
+            let units = crate::retail_lighting::LightUnits::of_colour_space(colour_srgb);
+            let dynamics = evaluated_light
+                .as_ref()
+                .map(|evaluation| evaluation.dynamics_in(units, reference.form_id));
+            if let Some(light) = evaluated_light
+                .and_then(|evaluation| evaluation.point_light_in(units, reference.emittance))
+            {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
+                    shadow_flagged,
                 };
-                if !lights {
-                    entity.insert(crate::lights::DeferredPointLight { light, marker });
-                } else {
-                    // A reference without a model has no visibility components, so its light child
-                    // could never become visible: Bevy warned (B0004) and extract_lights dropped every
-                    // such light. The reference needs Visibility for the hierarchy to propagate.
-                    entity.insert(Visibility::default());
-                    entity.with_child((
-                        Name::new(format!("Light {:08X}", reference.form_id)),
-                        light,
-                        marker,
-                        // Not the reference's propagated placed-object layer: a light keeps
-                        // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
-                        crate::render::light_render_layers(),
-                    ));
+                match dynamics {
+                    // `dynamics` is `Some` whenever the light row is, so this cannot happen today.
+                    None => error!(
+                        reference_form_id = format_args!("{:08X}", reference.form_id),
+                        "light not spawned: the evaluated light has no dynamics"
+                    ),
+                    Some(dynamics) if !lights => {
+                        entity.insert(crate::lights::DeferredPointLight {
+                            light,
+                            marker,
+                            dynamics,
+                        });
+                    }
+                    Some(dynamics) => {
+                        // A reference without a model has no visibility components, so its light
+                        // child could never become visible: Bevy warned (B0004) and extract_lights
+                        // dropped every such light. The reference needs Visibility for the
+                        // hierarchy to propagate.
+                        entity.insert(Visibility::default());
+                        entity.with_child((
+                            Name::new(format!("Light {:08X}", reference.form_id)),
+                            light,
+                            marker,
+                            dynamics,
+                            // Not the reference's propagated placed-object layer: a light keeps
+                            // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
+                            crate::render::light_render_layers(),
+                        ));
+                    }
                 }
             }
             if let Some(door) = crate::doors::load_door(reference.form_id, reference.door.as_ref())
@@ -7352,7 +7385,7 @@ mod tests {
 
     /// An app with the cell plan, the unload pacer and the lifecycle validator chained as they run
     /// in `StreamingPlugin`. `collect_cells` is left out, so a requested cell stays `Loading` and
-    /// the test drives the resident cells itself through [`spawn_resident_cell`].
+    /// the test drives the resident cells itself through [`spawn_mock_cell`].
     fn streaming_test_app(config: EngineConfig) -> (App, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("world.db");
@@ -9051,13 +9084,9 @@ mod tests {
             .contains("palette image color space mismatch")
         );
         assert!(
-            validate_effect_palette_material(
-                &material(linear.clone(), linear.clone()),
-                &images,
-                false
-            )
-            .unwrap_err()
-            .contains("palette image color space mismatch")
+            validate_effect_palette_material(&material(linear.clone(), linear), &images, false)
+                .unwrap_err()
+                .contains("palette image color space mismatch")
         );
         assert!(
             validate_effect_palette_material(&material(Handle::default(), srgb), &images, true)
@@ -9660,6 +9689,7 @@ mod tests {
                     light_radius_override: None,
                     door: None,
                     emittance: None,
+                    emittance_day_parts: None,
                 }],
             },
             Some(terrain),
@@ -10678,6 +10708,10 @@ mod tests {
             falloff: None,
             reference_data: None,
             radius_status: None,
+            flicker_period: None,
+            flicker_intensity_amplitude: None,
+            flicker_movement_amplitude: None,
+            reference_never_fades: false,
         }
     }
 
@@ -10711,6 +10745,7 @@ mod tests {
             light_radius_override: radius_override,
             door: None,
             emittance: None,
+            emittance_day_parts: None,
         }
     }
 
@@ -12426,7 +12461,7 @@ mod tests {
         assert_eq!(light.range, 1106.8, "signed XRDS adds to the record radius");
         assert_eq!(light.color, Color::srgb_u8(255, 200, 120));
         assert!(
-            (light.intensity - crate::lights::intensity_for_radius(1106.8)).abs() < 1.0e3,
+            (light.intensity - crate::lights::retail_intensity(1.0)).abs() < 1.0e3,
             "{}",
             light.intensity
         );
@@ -12484,10 +12519,10 @@ mod tests {
         );
     }
 
-    /// The flag is the whole switch: the same cell places no light at all without `--lights`, and
-    /// the references themselves are spawned exactly as before.
+    /// The setting is the whole switch: the same cell places no light at all with lights off
+    /// (`--no-lights`), and the references themselves are spawned exactly as before.
     #[test]
-    fn places_no_light_without_the_lights_flag() {
+    fn places_no_light_with_lights_off() {
         let mut app = spawn_reference_cell_app(
             vec![lit_reference(
                 0x100,

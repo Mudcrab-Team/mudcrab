@@ -30,6 +30,9 @@ KEEP_DAYS = 7.0               # default length of a --keep pin
 MIN_IDLE_SECONDS = 1800       # settle and superseding leave builds used within this time
 LSOF_TIMEOUT_SECONDS = 120
 RETIRE_AFTER_SUCCESS = {"check", "clippy", "fmt", "test", "nextest"}  # `doc` output is the result
+# Taylor 2026-11-26: builds and tests run at low CPU priority so the desktop stays responsive.
+# `cargo run` is excluded: it launches the engine, and frame timing needs normal priority.
+LOW_PRIORITY_COMMANDS = {"build", "check", "clippy", "test", "nextest", "doc"}
 AUTOMATIC_REASONS = {"on-success", "superseded"}  # these never delete a build that holds result artifacts
 KEEP_LABELS_FILE = "keep-labels"
 KEEPS_BUILD_OUTPUT = {"--no-run", "--open", "--timings", "--message-format", "--build-plan"}
@@ -242,15 +245,83 @@ class Workspace:
                 inputs[name] = digest(path)
         return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16]
 
+    def checkout_identity(self) -> str:
+        """Path and root inode. A different directory moved to this path is another checkout."""
+        return f"{self.repo}#{os.stat(self.repo).st_ino}"
+
+    def registry_only_packages(self) -> set[str]:
+        """Package names whose every source is immutable (registry or git) for this checkout.
+
+        Read from files only. `cargo metadata` could rewrite Cargo.lock before a `--locked` run.
+        A name that this cannot prove is not returned, so its fingerprints are removed."""
+        external: set[str] = set()
+        local: set[str] = set()
+        lock = self.repo / "Cargo.lock"
+        if lock.is_file():
+            for block in lock.read_text(encoding="utf-8").split("[[package]]")[1:]:
+                name = re.search(r'^name = "([^"]+)"', block, re.MULTILINE)
+                if name:
+                    (external if re.search(r"^source = ", block, re.MULTILINE) else local).add(name[1])
+        # A new or newly patched path crate can be missing from a stale lock file. Read every
+        # listed manifest, and follow `path` values into directories that Git ignores. Matching
+        # any `name` or `path` over-selects, which only costs a rebuild.
+        listed = git(self.repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                     "--", "Cargo.toml", "*/Cargo.toml")
+        pending = [self.repo / relative for relative in filter(None, listed.split("\0"))]
+        seen: set[Path] = set()
+        while pending:
+            manifest = pending.pop().resolve()
+            if manifest in seen or not manifest.is_file():
+                continue
+            seen.add(manifest)
+            text = manifest.read_text(encoding="utf-8")
+            local.update(re.findall(r"""\bname["']?\s*=\s*["']([^"'\n]+)["']""", text))
+            pending.extend(manifest.parent / value / "Cargo.toml"
+                           for value in re.findall(r"""\bpath["']?\s*=\s*["']([^"'\n]+)["']""", text))
+        return external - local
+
+    def forget_path_crates(self, slot: Path) -> int:
+        """Remove the slot's Cargo fingerprints for every package that is not from a registry or git.
+
+        Cargo gives a path package the same fingerprint directory in every checkout, and judges
+        freshness by mtime. Without this, it can report another checkout's output as Fresh.
+        Cargo then rebuilds these packages and the packages that depend on them."""
+        target = slot / "target"
+        stores = []
+        for profile in [*target.glob("*"), *target.glob("*/*")]:  # <profile> and <triple>/<profile>
+            if profile.relative_to(target).parts[0] in {"doc", "package", "tmp"}:
+                continue
+            store = profile / ".fingerprint"
+            # Fail closed on a layout this does not know, such as Cargo's newer build-dir layout.
+            if (any(profile.glob("build/*/*/fingerprint")) or store.is_symlink()
+                    or (not store.is_dir() and ((profile / "deps").is_dir() or (profile / "build").is_dir()))):
+                raise ValueError(f"Unknown Cargo layout, so {slot.name} cannot be made safe for this checkout: "
+                                 f"{profile}. Use --isolated LABEL and report this")
+            if store.is_dir():
+                stores.append(store)
+        if not stores:
+            return 0
+        keep = self.registry_only_packages()
+        removed = 0
+        for store in stores:
+            for entry in store.iterdir():
+                unit = re.fullmatch(r"(.+)-[0-9a-f]{16}", entry.name)
+                if unit and unit[1] not in keep:
+                    shutil.rmtree(entry)  # A failure stops the build: the output is still unsafe.
+                    removed += 1
+        return removed
+
     def candidates(self, label: str | None, key: str) -> list[Path]:
         if label:
             head = git(self.repo, "rev-parse", "HEAD")[:12]
             return [self.root / "builds" / f"isolated-{self.owner}-{valid_name(label)}-{head}"]
         slots = [self.root / "builds" / f"slot-{i}" for i in range(SLOTS)]
-        def matching(path):
+        def preference(path):
             marker = path / "build.json"
-            return marker.exists() and read_json(marker).get("key") == key
-        return sorted(slots, key=lambda p: not matching(p))
+            previous = read_json(marker) if marker.exists() else {}
+            # A matching key avoids the largest rebuild. This checkout's slot then avoids the path crates.
+            return previous.get("key") != key, previous.get("fresh_for") != self.checkout_identity()
+        return sorted(slots, key=preference)
 
     @staticmethod
     def retires_on_success(args: list[str]) -> bool:
@@ -262,8 +333,20 @@ class Workspace:
             return False
         return args[0] != "nextest" or args[1:2] == ["run"]
 
+    @staticmethod
+    def low_priority_prefix() -> list[str]:
+        """Command prefix that lowers CPU priority. Children (rustc, build scripts, tests) inherit it."""
+        prefix = []
+        if sys.platform == "darwin" and Path("/usr/sbin/taskpolicy").is_file():
+            prefix += ["/usr/sbin/taskpolicy", "-c", "utility"]
+        # A fixed path, not a PATH lookup: `nice` is in /usr/bin on macOS and Linux runners.
+        nice = next((path for path in ("/usr/bin/nice", "/bin/nice") if Path(path).is_file()), None)
+        if nice:
+            prefix += [nice, "-n", "19"]
+        return prefix
+
     def cargo(self, args: list[str], label: str | None, needed_gib: float,
-              keep: bool = False, keep_days: float = KEEP_DAYS) -> int:
+              keep: bool = False, keep_days: float = KEEP_DAYS, normal_priority: bool = False) -> int:
         if not args or args[0] not in {"build", "check", "clippy", "test", "nextest", "run", "fmt", "doc"}:
             raise ValueError("Use cargo build/check/clippy/test/nextest/run/fmt/doc through this entrypoint")
         cargo_args = args[:args.index("--")] if "--" in args else args
@@ -271,11 +354,15 @@ class Workspace:
         if any(a in overrides or any(a.startswith(option + "=") for option in overrides)
                for a in cargo_args):
             raise ValueError("Run from the intended checkout; target-dir/config/manifest overrides bypass storage ownership")
+        low = not normal_priority and args[0] in LOW_PRIORITY_COMMANDS
+        if not low:
+            print(f"workspace: cargo {args[0]} runs at normal priority", file=sys.stderr, flush=True)
         return self.run_task(["cargo", *args], label, needed_gib, retire=self.retires_on_success(args),
-                             keep=keep, keep_days=keep_days)
+                             keep=keep, keep_days=keep_days, low_priority=low)
 
     def run_task(self, command: list[str], label: str | None, needed_gib: float,
-                 retire: bool = False, keep: bool = False, keep_days: float = KEEP_DAYS) -> int:
+                 retire: bool = False, keep: bool = False, keep_days: float = KEEP_DAYS,
+                 low_priority: bool = False) -> int:
         if not command:
             raise ValueError("Missing command")
         if keep and not label:
@@ -328,6 +415,17 @@ class Workspace:
                 # means "no result". A directory from an older script has no key and counts as a result.
                 if label:
                     marker["deliverable"] = (not retire) or (existed and previous.get("deliverable") is not False)
+                elif command[:2] == ["cargo", "fmt"]:  # Builds nothing, so the slot's owner does not change.
+                    if "fresh_for" in previous:
+                        marker["fresh_for"] = previous["fresh_for"]
+                else:
+                    # A new key, not "checkout": an older script drops it, so the next run removes again.
+                    marker["fresh_for"] = self.checkout_identity()
+                    if existed and previous.get("fresh_for") != marker["fresh_for"]:
+                        removed = self.forget_path_crates(path)
+                        if removed:
+                            print(f"workspace: {path.name} last served another checkout; removed {removed} "
+                                  "path-package fingerprints so Cargo rebuilds them", file=sys.stderr)
                 write_json(path / "build.json", marker)
             except BaseException:
                 if not existed and path.is_dir() and not path.is_symlink():
@@ -345,7 +443,8 @@ class Workspace:
             env["MUDCRAB_BUILD_LEASE"] = str(path)
             env["MUDCRAB_STORAGE"] = str(self.root)
             print(f"CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}", file=sys.stderr, flush=True)
-            result = subprocess.run(command, cwd=self.repo, env=env).returncode
+            launched = [*self.low_priority_prefix(), *command] if low_priority else command
+            result = subprocess.run(launched, cwd=self.repo, env=env).returncode
             try:
                 write_json(path / "build.json", {**read_json(path / "build.json"), "last_used": time.time()})
             except (OSError, ValueError) as exc:  # Keep the build and the child's exit status.
@@ -648,12 +747,13 @@ class Workspace:
         if hold:
             row["status"] = hold
             return row
-        retiring = path.with_name(f".retiring-{path.name}-{time.time_ns()}")
+        stamp = time.time_ns()
+        retiring = path.with_name(f".retiring-{path.name}-{stamp}")
         receipt = {"build": metadata, "inventory": scan, "retired_at": time.time(), "reason": reason,
+                   "leftovers": [retiring.name],
                    "checks": checks, "free_before": shutil.disk_usage(self.root).free}
-        receipt_path = self.root / "evidence" / f"retired-{path.name}-{time.time_ns()}.json"
+        receipt_path = self.root / "evidence" / f"retired-{path.name}-{stamp}.json"
         try:
-            # Save the receipt before the first change. A failed write keeps the build.
             write_json(receipt_path, receipt)
             path.rename(retiring)
         except OSError as exc:
@@ -725,9 +825,12 @@ class Workspace:
                 row["status"] = hold
                 return row
         checks = ["slot-name", "lease", "no-symlinks", "no-open-files", "over-cap"]
-        receipt = self.root / "evidence" / f"trimmed-{slot.name}-{time.time_ns()}.json"
-        try:  # Save the receipt before the first change. A failed write keeps the state.
+        stamp = time.time_ns()
+        planned = [p.with_name(f".trim-incremental-{stamp}") for p in found]
+        receipt = self.root / "evidence" / f"trimmed-{slot.name}-{stamp}.json"
+        try:
             write_json(receipt, {"slot": slot.name, "directories": [str(p) for p in found], "bytes": total,
+                                 "leftovers": [p.relative_to(self.root / "builds").as_posix() for p in planned],
                                  "checks": checks, "cap_bytes": cap, "trimmed_at": time.time()})
         except OSError as exc:
             row["status"] = f"held: could not write receipt: {exc}"
@@ -735,8 +838,7 @@ class Workspace:
         leftovers = []
         failed = False
         try:
-            for incremental in found:
-                leftover = incremental.with_name(f".trim-incremental-{time.time_ns()}")
+            for incremental, leftover in zip(found, planned):
                 incremental.rename(leftover)  # Cargo recreates `incremental` on the next build.
                 leftovers.append(leftover)
         except OSError as exc:
@@ -756,20 +858,22 @@ class Workspace:
         self.safe_receipt(slot, "slot-incremental", "removal incomplete" if failed else "trimmed", total, checks)
         return row
 
-    def leftover_proven(self, leftover: Path) -> bool:
-        """A leftover is the tool's own if it holds its build.json or a receipt names it.
-
-        The tool writes the receipt before it renames a build or an incremental directory."""
+    def has_recovery_evidence(self, leftover: Path) -> bool:
+        evidence = self.root / "evidence"
         if leftover.name.startswith(".retiring-"):
             marker = leftover / "build.json"
             if marker.is_file() and not marker.is_symlink():
                 return True
-            prefix = f"retired-{leftover.name[len('.retiring-'):leftover.name.rfind('-')]}-"
+            receipt = evidence / f"retired-{leftover.name[len('.retiring-'):]}.json"
         else:
-            prefix = f"trimmed-{leftover.parent.parent.parent.name}-"
+            stamp = leftover.name[len(".trim-incremental-"):]
+            receipt = evidence / f"trimmed-{leftover.parent.parent.parent.name}-{stamp}.json"
         try:
-            return any(p.is_file() and not p.is_symlink() for p in (self.root / "evidence").glob(prefix + "*.json"))
-        except OSError:
+            if receipt.is_symlink() or not receipt.is_file():
+                return False
+            recorded = read_json(receipt).get("leftovers")
+            return isinstance(recorded, list) and leftover.relative_to(self.root / "builds").as_posix() in recorded
+        except (OSError, ValueError):
             return False
 
     def recover_interrupted(self) -> list[dict]:
@@ -793,7 +897,7 @@ class Workspace:
             if leftover.is_symlink() or not leftover.is_dir():
                 row["status"] = "held: symlink or not a directory"
                 continue
-            if not self.leftover_proven(leftover):
+            if not self.has_recovery_evidence(leftover):
                 row["status"] = "held: no build.json or receipt shows that the tool made it"
                 continue
             hold = self.consumer_hold(leftover)
@@ -969,6 +1073,9 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--needed-gib", type=float, default=8)
         command.add_argument("--keep", action="store_true", help="Pin the isolated build; it is never retired automatically while pinned")
         command.add_argument("--keep-days", type=float, default=KEEP_DAYS)
+        if name == "cargo":
+            command.add_argument("--normal-priority", action="store_true",
+                                 help="Run a build or test at normal CPU priority (timing-sensitive tests only)")
         command.add_argument("args", nargs=argparse.REMAINDER)
     prune = sub.add_parser("prune")
     prune.add_argument("--older-than-days", type=float, default=None,
@@ -990,8 +1097,11 @@ def main(argv: list[str] | None = None) -> int:
             workspace.setup()
             if args.command in {"cargo", "exec"}:
                 cargo_args = args.args[1:] if args.args[:1] == ["--"] else args.args
-                run = workspace.cargo if args.command == "cargo" else workspace.run_task
-                return run(cargo_args, args.isolated, args.needed_gib, keep=args.keep, keep_days=args.keep_days)
+                if args.command == "cargo":
+                    return workspace.cargo(cargo_args, args.isolated, args.needed_gib, keep=args.keep,
+                                           keep_days=args.keep_days, normal_priority=args.normal_priority)
+                return workspace.run_task(cargo_args, args.isolated, args.needed_gib, keep=args.keep,
+                                          keep_days=args.keep_days)
             if args.command == "setup":
                 workspace.bootstrap_guidance()
                 result = {**workspace.paths(), "instructions": "Read AGENTS.md. Use workspace.py cargo; reuse registered packs. No per-worktree target directories."}

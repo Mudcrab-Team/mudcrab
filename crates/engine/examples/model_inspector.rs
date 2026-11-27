@@ -439,7 +439,7 @@ fn main() -> Result<()> {
         live_pending: false,
         warmup_rendered: false,
         pending_since: None,
-        sequence_dir: options.output.clone(),
+        sequence_dir: options.output,
         recording_active: false,
         recording_stop_requested: false,
         recording_was_paused: None,
