@@ -97,7 +97,7 @@ pub struct RenderingSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skyrim_gamma: Option<f32>,
     #[serde(skip)]
-    skyrim_hdr_config: crate::retail_hdr::RetailHdrConfig,
+    pub(crate) skyrim_hdr_config: crate::retail_hdr::RetailHdrConfig,
     pub tone_map: usize,
     /// Persisted grade mode; existing indices 0 through 4 remain stable.
     pub color_grade: usize,
