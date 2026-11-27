@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "paths": [
+    "crates/engine/src/emittance.rs",
+    "crates/engine/src/underwater*.rs",
+    "crates/engine/src/weather_sky.rs",
+    "crates/engine/src/retail_lighting.rs",
+    "crates/engine/src/sky.rs",
+    "crates/engine/src/render.rs",
+    "crates/engine/src/world/environment/interior.rs",
+    "crates/engine/src/lights.rs",
+    "crates/engine/src/grass_render.rs",
+    "crates/engine/src/shaders/*.wgsl"
+  ]
+}
