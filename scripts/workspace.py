@@ -339,7 +339,8 @@ class Workspace:
         prefix = []
         if sys.platform == "darwin" and Path("/usr/sbin/taskpolicy").is_file():
             prefix += ["/usr/sbin/taskpolicy", "-c", "utility"]
-        nice = shutil.which("nice")
+        # A fixed path, not a PATH lookup: `nice` is in /usr/bin on macOS and Linux runners.
+        nice = next((path for path in ("/usr/bin/nice", "/bin/nice") if Path(path).is_file()), None)
         if nice:
             prefix += [nice, "-n", "19"]
         return prefix
