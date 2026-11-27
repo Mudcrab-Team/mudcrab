@@ -6,10 +6,10 @@
 //   Fc  = min(saturate(z * r - near * r) ^ p, max)      r = 1 / (far - near)
 //   Cfc = nearRGB + Fc * (farRGB - nearRGB)
 //   k   = 1 / FramebufferRange = 0.8333 (the uniform carries `output_scale.rs`, the one constant)
-// The pass is a blend, `src.rgb + dst.rgb * src.a`, so it outputs src.rgb = k * Fc * Cfc and
-// src.a = k * (1 - Fc) * A. The outer saturate of retail's formula is not drawn (HDR target); the
-// notes in `retail_fog.rs` say why. A = 1 while Mudcrab has no SAO pass: STAND-IN(#995): factor one replaces the retail SAO texture. A pixel with no
-// geometry (depth 0 in Mudcrab's reverse-Z buffer, the sky) skips both the fog and the `k` scale.
+// The packed path applies the mix and saturates it in one write. The blend fallback leaves the
+// saturation to the following Min-blend pass.
+// STAND-IN(#995): factor one replaces the retail SAO texture.
+// A sky pixel has reverse-Z depth 0 and skips the fog and output scale.
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
 #import bevy_render::view::{View, frag_coord_to_uv, position_ndc_to_view, uv_to_ndc}
 
@@ -29,6 +29,7 @@ struct RetailFog {
 #else
 @group(0) @binding(2) var scene_depth: texture_depth_2d;
 #endif
+@group(0) @binding(3) var scene_colour: texture_2d<f32>;
 
 // Retail's composite reads a copy of the scene in an unsigned format, so a negative scene value
 // reads as 0 (SPEC-2 section 3, docs/specs/engine/near-lighting.md). This draw, with a Max blend,
@@ -38,8 +39,7 @@ fn unsigned_input() -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-@fragment
-fn fragment(in: FullscreenVertexOutput, @builtin(sample_index) sample_index: u32) -> @location(0) vec4<f32> {
+fn composite_terms(in: FullscreenVertexOutput, sample_index: u32) -> vec4<f32> {
     let coord = vec2<i32>(in.position.xy);
 #ifdef MULTISAMPLED
     let ndc = textureLoad(scene_depth, coord, sample_index);
@@ -68,4 +68,28 @@ fn fragment(in: FullscreenVertexOutput, @builtin(sample_index) sample_index: u32
     let cfc = fog.near_colour.rgb + fc * (fog.far_colour.rgb - fog.near_colour.rgb);
     let k = fog.near_colour.w;
     return vec4<f32>(k * fc * cfc, k * (1.0 - fc) * fog.far_colour.w);
+}
+
+@fragment
+fn fragment(in: FullscreenVertexOutput, @builtin(sample_index) sample_index: u32) -> @location(0) vec4<f32> {
+    return composite_terms(in, sample_index);
+}
+
+// SPEC-2 section 3: target 113 stores the scene copy in R11G11B10_FLOAT.
+@fragment
+fn copy_scene(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let scene = textureLoad(scene_colour, vec2<i32>(in.position.xy), 0).rgb;
+    let valid = (bitcast<vec3<u32>>(scene) & vec3<u32>(0x7fffffffu)) <= vec3<u32>(0x7f800000u);
+    return vec4<f32>(
+        clamp(select(vec3<f32>(0.0), scene, valid), vec3<f32>(0.0),
+              vec3<f32>(65024.0, 65024.0, 64512.0)),
+        1.0,
+    );
+}
+
+@fragment
+fn composite_scene(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let terms = composite_terms(in, 0u);
+    let scene = textureLoad(scene_colour, vec2<i32>(in.position.xy), 0).rgb;
+    return vec4<f32>(saturate(scene * terms.a + terms.rgb), 1.0);
 }

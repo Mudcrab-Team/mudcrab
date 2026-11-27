@@ -478,7 +478,7 @@ fn retail_pixel_example_d_sky() {
         ..SkyPalette::SKYRIM_CLEAR_DAY
     });
     let mut image_space = crate::retail_hdr::RetailImageSpace::default();
-    image_space.0.sky_scale = 0.2;
+    image_space.block.sky_scale = 0.2;
     app.insert_resource(image_space);
     let target = target(&mut app);
     let camera = spawn_camera(

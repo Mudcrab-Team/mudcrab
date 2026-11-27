@@ -38,9 +38,17 @@ use bevy::{
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// The format of the chain, bloom and adapted-pair targets: the HDR format of the `Ultra` preset
-/// (`bUse64bitsHDRRenderTarget` 1).
-pub const CHAIN_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+pub(crate) const WIDE_HDR_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+const PACKED_HDR_FORMAT: TextureFormat = TextureFormat::Rg11b10Ufloat;
+const DISPLAY_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
+
+fn chain_format(settings: &RetailHdr, features: wgpu::Features) -> TextureFormat {
+    if settings.output.x == 0 && features.contains(wgpu::Features::RG11B10UFLOAT_RENDERABLE) {
+        PACKED_HDR_FORMAT
+    } else {
+        WIDE_HDR_FORMAT
+    }
+}
 
 /// The Min-blend draw of 1.0 that saturates the opaque scene after the fog composite (D3).
 pub const SATURATE_BLEND: BlendState = BlendState {
@@ -104,7 +112,8 @@ pub(crate) fn build(app: &mut App) {
 #[derive(Resource)]
 struct RetailHdrPipelines {
     chain_layout: BindGroupLayoutDescriptor,
-    chain: [CachedRenderPipelineId; PassKind::ALL.len()],
+    wide_chain: [CachedRenderPipelineId; PassKind::ALL.len()],
+    packed_chain: Option<[CachedRenderPipelineId; PassKind::ALL.len()]>,
     linear: Sampler,
     nearest: Sampler,
 }
@@ -114,6 +123,13 @@ struct TonemapPipeline {
     shader: Handle<Shader>,
     layout: BindGroupLayoutDescriptor,
     fullscreen_shader: FullscreenShader,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum OutputPass {
+    Tonemap,
+    CopyDisplay,
+    Present(TextureFormat),
 }
 
 #[derive(Resource)]
@@ -163,6 +179,7 @@ fn chain_pipeline_descriptor(
     layout: BindGroupLayoutDescriptor,
     fullscreen: &FullscreenShader,
     kind: PassKind,
+    format: TextureFormat,
 ) -> RenderPipelineDescriptor {
     RenderPipelineDescriptor {
         label: Some(format!("retail_hdr_{}", kind.entry_point()).into()),
@@ -176,7 +193,7 @@ fn chain_pipeline_descriptor(
             shader_defs: Vec::new(),
             entry_point: Some(kind.entry_point().into()),
             targets: vec![Some(ColorTargetState {
-                format: CHAIN_FORMAT,
+                format,
                 blend: None,
                 write_mask: ColorWrites::ALL,
             })],
@@ -194,17 +211,25 @@ fn init_retail_hdr_pipelines(
 ) {
     let chain_shader = load_embedded_asset!(asset_server.as_ref(), "shaders/retail_hdr_chain.wgsl");
     let layout = chain_layout();
-    let chain = PassKind::ALL.map(|kind| {
-        pipeline_cache.queue_render_pipeline(chain_pipeline_descriptor(
-            chain_shader.clone(),
-            layout.clone(),
-            &fullscreen_shader,
-            kind,
-        ))
-    });
+    let queue_chain = |format| {
+        PassKind::ALL.map(|kind| {
+            pipeline_cache.queue_render_pipeline(chain_pipeline_descriptor(
+                chain_shader.clone(),
+                layout.clone(),
+                &fullscreen_shader,
+                kind,
+                format,
+            ))
+        })
+    };
+    let packed_chain = device
+        .features()
+        .contains(wgpu::Features::RG11B10UFLOAT_RENDERABLE)
+        .then(|| queue_chain(PACKED_HDR_FORMAT));
     commands.insert_resource(RetailHdrPipelines {
-        chain_layout: layout,
-        chain,
+        chain_layout: layout.clone(),
+        wide_chain: queue_chain(WIDE_HDR_FORMAT),
+        packed_chain,
         linear: device.create_sampler(&SamplerDescriptor {
             label: Some("retail_hdr_linear_clamp"),
             mag_filter: bevy::render::render_resource::FilterMode::Linear,
@@ -228,11 +253,16 @@ fn init_retail_hdr_pipelines(
 }
 
 impl SpecializedRenderPipeline for TonemapPipeline {
-    type Key = TextureFormat;
+    type Key = OutputPass;
 
-    fn specialize(&self, format: TextureFormat) -> RenderPipelineDescriptor {
+    fn specialize(&self, output: OutputPass) -> RenderPipelineDescriptor {
+        let (entry_point, format) = match output {
+            OutputPass::Tonemap => ("display_fragment", DISPLAY_FORMAT),
+            OutputPass::CopyDisplay => ("copy_display_fragment", DISPLAY_FORMAT),
+            OutputPass::Present(format) => ("present_fragment", format),
+        };
         RenderPipelineDescriptor {
-            label: Some("retail_hdr_tonemap".into()),
+            label: Some(format!("retail_hdr_{entry_point}").into()),
             layout: vec![self.layout.clone()],
             vertex: self.fullscreen_shader.to_vertex_state(),
             primitive: PrimitiveState::default(),
@@ -241,7 +271,7 @@ impl SpecializedRenderPipeline for TonemapPipeline {
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 shader_defs: Vec::new(),
-                entry_point: Some("fragment".into()),
+                entry_point: Some(entry_point.into()),
                 targets: vec![Some(ColorTargetState {
                     format,
                     blend: None,
@@ -295,6 +325,8 @@ impl SpecializedRenderPipeline for SaturatePipeline {
 #[derive(Component, Clone, Copy)]
 struct RetailHdrPipelineIds {
     tonemap: CachedRenderPipelineId,
+    copy_display: CachedRenderPipelineId,
+    present: CachedRenderPipelineId,
     saturate: CachedRenderPipelineId,
 }
 
@@ -309,11 +341,13 @@ struct Target {
 /// adapted texture that holds the last frame's pair.
 #[derive(Component)]
 struct RetailHdrTargets {
-    key: (u32, u32, bool),
+    key: (u32, u32, bool, TextureFormat),
+    generation: u32,
     levels: Vec<Target>,
     adapted: [Target; 2],
     bloom_swap: Target,
     bloom: Target,
+    display: Target,
     state: AtomicU32,
 }
 
@@ -335,7 +369,12 @@ fn clear_inactive_retail_hdr_views(
     }
 }
 
-fn target(device: &RenderDevice, label: &'static str, (width, height): (u32, u32)) -> Target {
+fn target(
+    device: &RenderDevice,
+    label: &'static str,
+    (width, height): (u32, u32),
+    format: TextureFormat,
+) -> Target {
     let texture = device.create_texture(&TextureDescriptor {
         label: Some(label),
         size: Extent3d {
@@ -346,7 +385,7 @@ fn target(device: &RenderDevice, label: &'static str, (width, height): (u32, u32
         mip_level_count: 1,
         sample_count: 1,
         dimension: TextureDimension::D2,
-        format: CHAIN_FORMAT,
+        format,
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
@@ -362,19 +401,42 @@ fn target(device: &RenderDevice, label: &'static str, (width, height): (u32, u32
 fn prepare_retail_hdr_targets(
     mut commands: Commands,
     device: Res<RenderDevice>,
-    views: Query<(Entity, &ViewTarget, &RetailHdr, Option<&RetailHdrTargets>)>,
+    mut views: Query<(
+        Entity,
+        &ViewTarget,
+        &RetailHdr,
+        Option<&mut RetailHdrTargets>,
+    )>,
+    mut reported_format: Local<bool>,
 ) {
-    for (entity, view, settings, existing) in &views {
+    for (entity, view, settings, existing) in &mut views {
         let texture = view.main_texture();
+        let format = chain_format(settings, device.features());
         let key = (
             texture.width(),
             texture.height(),
             settings.multiple_luminance_references(),
+            format,
         );
-        if existing.is_some_and(|targets| targets.key == key) {
+        if let Some(mut targets) = existing.filter(|targets| targets.key == key) {
+            if targets.generation != settings.output.z {
+                targets.generation = settings.output.z;
+                targets.state.store(0, Ordering::Relaxed);
+            }
             continue;
         }
-        let (width, height, multiple) = key;
+        if !*reported_format {
+            if settings.output.x == 0 && format != PACKED_HDR_FORMAT {
+                // STAND-IN(#361): some adapters cannot render to the packed HDR format.
+                warn!(
+                    "Skyrim HDR intermediate targets use {format:?}; packed HDR targets are unavailable"
+                );
+            } else {
+                info!("Skyrim HDR intermediate targets use {format:?}");
+            }
+            *reported_format = true;
+        }
+        let (width, height, multiple, format) = key;
         let sizes = chain_sizes(width, height, multiple);
         let Some((&pair, intermediate)) = sizes.split_last() else {
             continue;
@@ -382,16 +444,23 @@ fn prepare_retail_hdr_targets(
         let bloom = bloom_size(width, height);
         commands.entity(entity).insert(RetailHdrTargets {
             key,
+            generation: settings.output.z,
             levels: intermediate
                 .iter()
-                .map(|&size| target(&device, "retail_hdr_level", size))
+                .map(|&size| target(&device, "retail_hdr_level", size, format))
                 .collect(),
             adapted: [
-                target(&device, "retail_hdr_adapted_a", pair),
-                target(&device, "retail_hdr_adapted_b", pair),
+                target(&device, "retail_hdr_adapted_a", pair, format),
+                target(&device, "retail_hdr_adapted_b", pair, format),
             ],
-            bloom_swap: target(&device, "retail_hdr_blur_swap", bloom),
-            bloom: target(&device, "retail_hdr_bloom", bloom),
+            bloom_swap: target(&device, "retail_hdr_blur_swap", bloom, format),
+            bloom: target(&device, "retail_hdr_bloom", bloom, format),
+            display: target(
+                &device,
+                "retail_hdr_display",
+                (width, height),
+                DISPLAY_FORMAT,
+            ),
             state: AtomicU32::new(0),
         });
     }
@@ -408,7 +477,13 @@ fn prepare_retail_hdr_pipelines(
 ) {
     for (entity, view, msaa) in &views {
         commands.entity(entity).insert(RetailHdrPipelineIds {
-            tonemap: tonemaps.specialize(&pipeline_cache, &tonemap, view.target_format),
+            tonemap: tonemaps.specialize(&pipeline_cache, &tonemap, OutputPass::Tonemap),
+            copy_display: tonemaps.specialize(&pipeline_cache, &tonemap, OutputPass::CopyDisplay),
+            present: tonemaps.specialize(
+                &pipeline_cache,
+                &tonemap,
+                OutputPass::Present(view.target_format),
+            ),
             saturate: saturates.specialize(
                 &pipeline_cache,
                 &saturate,
@@ -530,88 +605,121 @@ fn run_retail_hdr(
         &DynamicUniformIndex<RetailHdr>,
         &RetailHdrTargets,
         &RetailHdrPipelineIds,
+        &RetailHdr,
     )>,
     pipelines: Option<Res<RetailHdrPipelines>>,
     uniforms: Res<ComponentUniforms<RetailHdr>>,
     pipeline_cache: Res<PipelineCache>,
     mut ctx: RenderContext,
 ) {
-    let (target_view, index, targets, ids) = view.into_inner();
+    let (target_view, index, targets, ids, hdr) = view.into_inner();
     let Some(pipelines) = pipelines else {
         return;
     };
-    let chain: Vec<_> = pipelines
-        .chain
+    let chain_ids = if targets.key.3 == PACKED_HDR_FORMAT {
+        let Some(packed) = &pipelines.packed_chain else {
+            return;
+        };
+        packed
+    } else {
+        &pipelines.wide_chain
+    };
+    let chain: Vec<_> = chain_ids
         .iter()
         .filter_map(|id| pipeline_cache.get_render_pipeline(*id))
         .map(|pipeline| &**pipeline)
         .collect();
-    let (Ok(chain), Some(tonemap), Some(settings)) = (
+    let hdr_enabled = hdr.output.y == 0;
+    let display_id = if hdr_enabled {
+        ids.tonemap
+    } else {
+        ids.copy_display
+    };
+    let (Ok(chain), Some(display), Some(present), Some(settings)) = (
         <[&wgpu::RenderPipeline; PassKind::ALL.len()]>::try_from(chain),
-        pipeline_cache.get_render_pipeline(ids.tonemap),
+        pipeline_cache.get_render_pipeline(display_id),
+        pipeline_cache.get_render_pipeline(ids.present),
         uniforms.uniforms().binding(),
     ) else {
         // A pipeline is still compiling: the frame shows the untoned scene and the pair stays
         // unset.
         return;
     };
-    let state = targets.state.load(Ordering::Relaxed);
-    let current = usize::from(state == 2);
-    let plan = chain_plan(targets.levels.len() + 1, state != 0, current);
     let write = target_view.post_process_write();
     let offsets = [index.index()];
     let device = ctx.render_device().clone();
-    let gpu = ChainGpu {
-        layout: &pipeline_cache.get_bind_group_layout(&pipelines.chain_layout),
-        linear: &pipelines.linear,
-        nearest: &pipelines.nearest,
-        pipelines: chain,
-        uniform: settings.clone(),
-        offsets: &offsets,
-    };
-    encode_chain(
-        device.wgpu_device(),
-        ctx.command_encoder(),
-        &gpu,
-        &plan,
-        |id| match id {
-            ChainTarget::Scene => &**write.source,
-            ChainTarget::Level(level) => &*targets.levels[level].view,
-            ChainTarget::Adapted(pair) => &*targets.adapted[pair].view,
-            ChainTarget::BloomSwap => &*targets.bloom_swap.view,
-            ChainTarget::Bloom => &*targets.bloom.view,
-        },
-    );
+    let state = targets.state.load(Ordering::Relaxed);
+    let current = usize::from(state == 2);
     let next = 1 - current;
-    targets
-        .state
-        .store(if next == 1 { 2 } else { 1 }, Ordering::Relaxed);
-    let tonemap_group = device.create_bind_group(
-        "retail_hdr_tonemap",
-        &pipeline_cache.get_bind_group_layout(&tonemap_layout()),
-        &BindGroupEntries::sequential((
-            settings,
+    if hdr_enabled {
+        let plan = chain_plan(targets.levels.len() + 1, state != 0, current);
+        let gpu = ChainGpu {
+            layout: &pipeline_cache.get_bind_group_layout(&pipelines.chain_layout),
+            linear: &pipelines.linear,
+            nearest: &pipelines.nearest,
+            pipelines: chain,
+            uniform: settings.clone(),
+            offsets: &offsets,
+        };
+        encode_chain(
+            device.wgpu_device(),
+            ctx.command_encoder(),
+            &gpu,
+            &plan,
+            |id| match id {
+                ChainTarget::Scene => &**write.source,
+                ChainTarget::Level(level) => &*targets.levels[level].view,
+                ChainTarget::Adapted(pair) => &*targets.adapted[pair].view,
+                ChainTarget::BloomSwap => &*targets.bloom_swap.view,
+                ChainTarget::Bloom => &*targets.bloom.view,
+            },
+        );
+        targets
+            .state
+            .store(if next == 1 { 2 } else { 1 }, Ordering::Relaxed);
+    }
+    let layout = pipeline_cache.get_bind_group_layout(&tonemap_layout());
+    for (label, pipeline, source, destination) in [
+        (
+            "retail_hdr_display",
+            display,
             write.source,
-            &targets.bloom.view,
-            &targets.adapted[next].view,
-            &pipelines.linear,
-        )),
-    );
-    let descriptor = RenderPassDescriptor {
-        label: Some("retail_hdr_tonemap"),
-        color_attachments: &[Some(RenderPassColorAttachment {
-            view: write.destination,
-            depth_slice: None,
-            resolve_target: None,
-            ops: Operations::default(),
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    };
-    let mut pass = ctx.command_encoder().begin_render_pass(&descriptor);
-    pass.set_pipeline(tonemap);
-    pass.set_bind_group(0, &tonemap_group, &offsets);
-    pass.draw(0..3, 0..1);
+            &targets.display.view,
+        ),
+        (
+            "retail_hdr_present",
+            present,
+            &targets.display.view,
+            write.destination,
+        ),
+    ] {
+        let group = device.create_bind_group(
+            label,
+            &layout,
+            &BindGroupEntries::sequential((
+                settings.clone(),
+                source,
+                &targets.bloom.view,
+                &targets.adapted[next].view,
+                &pipelines.linear,
+            )),
+        );
+        let descriptor = RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: destination,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations::default(),
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        };
+        let mut pass = ctx.command_encoder().begin_render_pass(&descriptor);
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &group, &offsets);
+        pass.draw(0..3, 0..1);
+    }
 }

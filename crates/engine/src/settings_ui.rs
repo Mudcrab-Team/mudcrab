@@ -113,7 +113,7 @@ impl Plugin for SettingsPlugin {
                 Update,
                 (
                     menu_actions,
-                    mouse_sensitivity_slider,
+                    setting_sliders,
                     apply_render_settings,
                     refresh_menu,
                     style_rows,
@@ -188,10 +188,10 @@ struct SettingValue(usize);
 struct SettingMark(usize);
 /// Track accepting mouse sensitivity drag input; MenuAction supplies keyboard adjustment.
 #[derive(Component)]
-struct MouseSensitivitySlider;
+struct SettingSlider;
 /// The filled portion of the sensitivity track follows edits, file loads and Reset defaults.
 #[derive(Component)]
-struct MouseSensitivityFill;
+struct SettingSliderFill(usize);
 #[derive(Component)]
 struct StatusText;
 #[derive(Component)]
@@ -564,8 +564,11 @@ fn setting_row(
                     ("-", "+")
                 };
                 button(controls, less, MenuAction::Adjust(index, -1), 36.0);
-                if spec.label == "Mouse sensitivity (x)" {
-                    spawn_sensitivity_slider(controls, index);
+                if matches!(
+                    spec.label,
+                    "Mouse sensitivity (x)" | crate::settings::SKYRIM_BRIGHTNESS_LABEL
+                ) {
+                    spawn_setting_slider(controls, index);
                 }
                 controls.spawn((
                     SettingValue(index),
@@ -584,11 +587,11 @@ fn setting_row(
 }
 
 /// A focusable track complements the existing minus/plus buttons and numeric value.
-fn spawn_sensitivity_slider(parent: &mut ChildSpawnerCommands, index: usize) {
+fn spawn_setting_slider(parent: &mut ChildSpawnerCommands, index: usize) {
     parent
         .spawn((
             Button,
-            MouseSensitivitySlider,
+            SettingSlider,
             RelativeCursorPosition::default(),
             MenuAction::Adjust(index, 0),
             TabIndex(0),
@@ -605,7 +608,7 @@ fn spawn_sensitivity_slider(parent: &mut ChildSpawnerCommands, index: usize) {
         .with_children(|track| {
             track
                 .spawn((
-                    MouseSensitivityFill,
+                    SettingSliderFill(index),
                     Node {
                         position_type: PositionType::Absolute,
                         top: Val::Px(14.0),
@@ -637,44 +640,52 @@ fn sensitivity_at_position(min: f64, max: f64, step: f64, fraction: f64) -> f64 
     (min + ((value - min) / step).round() * step).clamp(min, max)
 }
 
-/// Drags the sensitivity track while Controls owns input and refreshes its fill after any edit.
+/// Drags the active settings track and refreshes its fill after any edit.
 #[allow(clippy::too_many_arguments)] // Bevy supplies each input resource and track query independently.
-fn mouse_sensitivity_slider(
+fn setting_sliders(
     menu: Res<SettingsMenuState>,
     console: Option<Res<ConsoleState>>,
     mouse: Res<ButtonInput<MouseButton>>,
     tracks: Query<
         (Entity, &Interaction, &RelativeCursorPosition, &MenuAction),
-        With<MouseSensitivitySlider>,
+        With<SettingSlider>,
     >,
-    mut fills: Query<&mut Node, With<MouseSensitivityFill>>,
+    mut fills: Query<(&SettingSliderFill, &mut Node)>,
     mut settings: ResMut<RenderingSettings>,
     mut file: ResMut<SettingsFile>,
     mut dragging: Local<Option<Entity>>,
 ) {
     if !menu.open
         || menu.closing
-        || menu.page != SettingsPage::Controls
         || console.is_some_and(|console| console.open || console.closing)
         || !mouse.pressed(MouseButton::Left)
     {
         *dragging = None;
     } else {
         for (entity, interaction, cursor, action) in &tracks {
+            let MenuAction::Adjust(index, _) = action else {
+                continue;
+            };
+            let spec = &SETTING_SPECS[*index];
+            if spec.page != menu.page || spec.requires.is_some_and(|enabled| !enabled(&settings)) {
+                continue;
+            }
             if *interaction == Interaction::Pressed {
                 *dragging = Some(entity);
             }
-            if *dragging != Some(entity) {
-                continue;
-            }
-            if let (Some(position), MenuAction::Adjust(index, _)) = (cursor.normalized, action)
+            if *dragging == Some(entity)
+                && let Some(position) = cursor.normalized
                 && position.x.is_finite()
             {
-                let spec = &SETTING_SPECS[*index];
                 let SettingKind::Number { min, max, step } = spec.kind else {
                     continue;
                 };
-                let value = sensitivity_at_position(min, max, step, f64::from(position.x) + 0.5);
+                let fraction = f64::from(position.x) + 0.5;
+                let value = if spec.label == crate::settings::SKYRIM_BRIGHTNESS_LABEL {
+                    fraction.clamp(0.0, 1.0)
+                } else {
+                    sensitivity_at_position(min, max, step, fraction)
+                };
                 if ((spec.read)(&settings) - value).abs() > 1.0e-6 {
                     (spec.write)(&mut settings, value);
                     file.status = "Changed for this session. Choose Save to keep settings.".into();
@@ -691,7 +702,7 @@ fn mouse_sensitivity_slider(
             continue;
         };
         let percent = (((spec.read)(&settings) - min) / (max - min) * 100.0).clamp(0.0, 100.0);
-        for mut node in &mut fills {
+        for (_, mut node) in fills.iter_mut().filter(|(fill, _)| fill.0 == *index) {
             let width = Val::Percent(percent as f32);
             if node.width != width {
                 node.width = width;
@@ -734,11 +745,10 @@ fn spawn_settings(
             note(body, text);
         }
     };
-    for (index, spec) in SETTING_SPECS
-        .iter()
-        .enumerate()
-        .filter(|(_, spec)| spec.page == page)
-    {
+    for (index, spec) in SETTING_SPECS.iter().enumerate().filter(|(_, spec)| {
+        spec.page == page
+            && (settings.running_skyrim || spec.label != crate::settings::SKYRIM_BRIGHTNESS_LABEL)
+    }) {
         if current != Some(spec.group) {
             close_group(body, current);
             group_heading(body, spec.group);
@@ -1687,7 +1697,7 @@ mod tests {
         app.world_mut().resource_mut::<SettingsMenuState>().page = SettingsPage::Controls;
         let slider = app
             .world_mut()
-            .query_filtered::<Entity, With<MouseSensitivitySlider>>()
+            .query_filtered::<Entity, With<SettingSlider>>()
             .single(app.world())
             .unwrap();
         app.world_mut().entity_mut(slider).insert((
@@ -1784,7 +1794,7 @@ mod tests {
         );
         let fill = app
             .world_mut()
-            .query_filtered::<&Node, With<MouseSensitivityFill>>()
+            .query_filtered::<&Node, With<SettingSliderFill>>()
             .single(app.world())
             .unwrap();
         assert!(matches!(fill.width, Val::Percent(value) if (value - 6.25).abs() < 1.0e-4));

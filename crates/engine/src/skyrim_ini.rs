@@ -147,17 +147,28 @@ fn expected_range(section: &str, key: &str) -> Option<String> {
             Some("a distance of 0 or more".into())
         }
         ("general", "fflickeringlightdistance") => Some("a distance above 0".into()),
-        ("display", "busefilmiccurve") | ("display", "busemultipleluminancereferences") => {
-            Some("0 or 1".into())
-        }
+        ("display", "busefilmiccurve")
+        | ("display", "buse64bitshdrrendertarget")
+        | ("display", "busemultipleluminancereferences")
+        | ("display", "bsaoenable")
+        | ("display", "bsaoapplyfog")
+        | ("general", "bcompensateunstableframetime") => Some("0 or 1".into()),
+        ("general", "ifpsclamp") => Some("a whole number from 0 to 65535".into()),
+        ("general", "iunstableframetimehistorysize") => Some("a whole number of at least 3".into()),
         ("display", "freinhardwhitescale")
         | ("display", "ffilmicwhitescale")
         | ("display", "fglobaleyeadaptspeedscale")
         | ("display", "fglobaleyeadaptstrengthscale")
+        | ("display", "fconsthdradapttimerformenu")
+        | ("display", "fgammamin")
+        | ("display", "fgammamax")
         | ("display", "fgamma") => Some("a positive number".into()),
         ("display", "fglobalsaturationboost")
         | ("display", "fglobalbrightnessboost")
         | ("display", "fglobalcontrastboost")
+        | ("display", "fglobalmapbrightnessboost")
+        | ("display", "fglobalmapcontrastboost")
+        | ("display", "fglobalmapbloomthresholdboost")
         | ("display", "fglobalbloomthresholdboost") => Some("a number".into()),
         _ => None,
     }
@@ -194,17 +205,30 @@ fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
             Some(parse_fov(raw).is_some())
         }
         ("display", "fneardistance") => Some(parse_near_distance(raw).is_some()),
-        ("display", "busefilmiccurve") | ("display", "busemultipleluminancereferences") => {
-            Some(parse_flag(raw).is_some())
+        ("display", "busefilmiccurve")
+        | ("display", "buse64bitshdrrendertarget")
+        | ("display", "busemultipleluminancereferences")
+        | ("display", "bsaoenable")
+        | ("display", "bsaoapplyfog")
+        | ("general", "bcompensateunstableframetime") => Some(parse_flag(raw).is_some()),
+        ("general", "ifpsclamp") => Some(raw.parse::<u16>().is_ok()),
+        ("general", "iunstableframetimehistorysize") => {
+            Some(raw.parse::<usize>().is_ok_and(|value| value >= 3))
         }
         ("display", "freinhardwhitescale")
         | ("display", "ffilmicwhitescale")
         | ("display", "fglobaleyeadaptspeedscale")
         | ("display", "fglobaleyeadaptstrengthscale")
+        | ("display", "fconsthdradapttimerformenu")
+        | ("display", "fgammamin")
+        | ("display", "fgammamax")
         | ("display", "fgamma") => Some(parse_positive(raw).is_some()),
         ("display", "fglobalsaturationboost")
         | ("display", "fglobalbrightnessboost")
         | ("display", "fglobalcontrastboost")
+        | ("display", "fglobalmapbrightnessboost")
+        | ("display", "fglobalmapcontrastboost")
+        | ("display", "fglobalmapbloomthresholdboost")
         | ("display", "fglobalbloomthresholdboost") => {
             Some(raw.parse::<f32>().is_ok_and(f32::is_finite))
         }
@@ -357,6 +381,42 @@ impl SkyrimIni {
             }
         }
         let hdr = &mut config.retail_hdr;
+        for (section, key, setting) in [
+            (
+                "Display",
+                "bUse64bitsHDRRenderTarget",
+                &mut hdr.use_64_bit_hdr_targets,
+            ),
+            (
+                "General",
+                "bCompensateUnstableFrameTime",
+                &mut hdr.compensate_unstable_frame_time,
+            ),
+            ("Display", "bSAOEnable", &mut hdr.sao_enabled),
+            ("Display", "bSAOApplyFog", &mut hdr.sao_apply_fog),
+        ] {
+            if let Some(raw) = self.get(section, key) {
+                match parse_flag(raw) {
+                    Some(value) => *setting = value,
+                    None => eprintln!("warning: ignoring {key}={raw:?}; expected 0 or 1"),
+                }
+            }
+        }
+        if let Some(raw) = self.get("General", "iFPSClamp") {
+            match raw.parse::<u16>() {
+                Ok(value @ 1..=199) => hdr.fps_clamp = u8::try_from(value).unwrap_or_default(),
+                Ok(_) => hdr.fps_clamp = 0,
+                Err(_) => eprintln!("warning: ignoring iFPSClamp={raw:?}; expected a whole number"),
+            }
+        }
+        if let Some(raw) = self.get("General", "iUnstableFrameTimeHistorySize") {
+            match raw.parse::<usize>() {
+                Ok(value) if value >= 3 => hdr.frame_time_history_size = value,
+                _ => eprintln!(
+                    "warning: ignoring iUnstableFrameTimeHistorySize={raw:?}; expected a whole number of at least 3"
+                ),
+            }
+        }
         for (key, setting) in [
             ("fReinhardWhiteScale", &mut hdr.reinhard_white_scale),
             ("fFilmicWhiteScale", &mut hdr.filmic_white_scale),
@@ -366,6 +426,9 @@ impl SkyrimIni {
                 &mut hdr.eye_adapt_strength_scale,
             ),
             ("fGamma", &mut hdr.gamma),
+            ("fGammaMin", &mut hdr.gamma_min),
+            ("fGammaMax", &mut hdr.gamma_max),
+            ("fConstHDRAdaptTimerForMenu", &mut hdr.menu_adapt_timer),
         ] {
             let Some(raw) = self.get("Display", key) else {
                 continue;
@@ -375,11 +438,23 @@ impl SkyrimIni {
                 None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
             }
         }
+        if hdr.gamma_min > hdr.gamma_max {
+            eprintln!("warning: ignoring Skyrim gamma slider range; fGammaMin exceeds fGammaMax");
+            let defaults = crate::retail_hdr::RetailHdrConfig::default();
+            hdr.gamma_min = defaults.gamma_min;
+            hdr.gamma_max = defaults.gamma_max;
+        }
         for (key, setting) in [
             ("fGlobalSaturationBoost", &mut hdr.saturation_boost),
             ("fGlobalBrightnessBoost", &mut hdr.brightness_boost),
             ("fGlobalContrastBoost", &mut hdr.contrast_boost),
             ("fGlobalBloomThresholdBoost", &mut hdr.bloom_threshold_boost),
+            ("fGlobalMapBrightnessBoost", &mut hdr.map_brightness_boost),
+            ("fGlobalMapContrastBoost", &mut hdr.map_contrast_boost),
+            (
+                "fGlobalMapBloomThresholdBoost",
+                &mut hdr.map_bloom_threshold_boost,
+            ),
         ] {
             let Some(raw) = self.get("Display", key) else {
                 continue;
@@ -780,6 +855,40 @@ mod tests {
         )
         .retail_hdr;
         assert_eq!(bad, defaults);
+    }
+
+    #[test]
+    fn hdr_formats_timers_gamma_bounds_and_map_boosts_take_the_ini() {
+        let config = apply(
+            "[General]\niFPSClamp=60\nbCompensateUnstableFrameTime=0\n\
+             iUnstableFrameTimeHistorySize=5\n\
+             [Display]\nbUse64bitsHDRRenderTarget=1\nfConstHDRAdaptTimerForMenu=0.2\n\
+             fGammaMin=0.7\nfGammaMax=1.5\nfGlobalMapBrightnessBoost=0.5\n\
+             fGlobalMapContrastBoost=-0.2\nfGlobalMapBloomThresholdBoost=0.4\n\
+             bSAOEnable=0\nbSAOApplyFog=0\n",
+        )
+        .retail_hdr;
+        assert!(config.use_64_bit_hdr_targets);
+        assert_eq!(config.fps_clamp, 60);
+        assert!(!config.compensate_unstable_frame_time);
+        assert_eq!(config.frame_time_history_size, 5);
+        assert_eq!(config.menu_adapt_timer, 0.2);
+        assert_eq!(config.gamma_min, 0.7);
+        assert_eq!(config.gamma_max, 1.5);
+        assert_eq!(config.map_brightness_boost, 0.5);
+        assert_eq!(config.map_contrast_boost, -0.2);
+        assert_eq!(config.map_bloom_threshold_boost, 0.4);
+        assert!(!config.sao_enabled);
+        assert!(!config.sao_apply_fog);
+
+        for raw in ["NaN", "0", "-1", "infinity", "abc"] {
+            let settings = apply(&format!("[Display]\nfGammaMin={raw}\nfGammaMax={raw}\n"));
+            assert_eq!(settings.retail_hdr.gamma_min, 0.6);
+            assert_eq!(settings.retail_hdr.gamma_max, 1.4);
+        }
+        let reversed = apply("[Display]\nfGammaMin=1.5\nfGammaMax=0.7\n").retail_hdr;
+        assert_eq!(reversed.gamma_min, 0.6);
+        assert_eq!(reversed.gamma_max, 1.4);
     }
 
     #[test]

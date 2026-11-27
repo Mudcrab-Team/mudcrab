@@ -1,7 +1,7 @@
 // The passes of retail's HDR chain before the tonemap (NEEDS 18 D4 and NEEDS 27, reviewed):
 // the 4-tap downsample, the luminance steps down to the 2 by 2 adapted pair, the adaptation and
 // the bloom. `retail_hdr.rs` orders them. Every pass is one full-screen triangle into a
-// Rgba16Float target. `retail_hdr.rs` holds the same arithmetic as a CPU reference.
+// packed or wide HDR target. `retail_hdr.rs` holds the same arithmetic as a CPU reference.
 //
 // Tap offsets are in source texels around the source position of the destination texel centre.
 // The 4-tap table is (+-1, +-1) with weight 1/4. The 16-tap table is -1.5, -0.5, 0.5 and 1.5 in
@@ -20,6 +20,16 @@ fn texel() -> vec2<f32> {
     return 1.0 / vec2<f32>(textureDimensions(source));
 }
 
+// Keep overflow out of the unsigned 11/11/10-bit targets. Their maximum finite
+// values differ by channel. The wide variant retains signed half-float values.
+fn store_hdr(value: vec3<f32>) -> vec4<f32> {
+    var colour = finite(value);
+    if hdr.output.x == 0u {
+        colour = clamp(colour, vec3<f32>(0.0), vec3<f32>(65024.0, 65024.0, 64512.0));
+    }
+    return vec4<f32>(colour, 1.0);
+}
+
 // The average of the 4-tap table, with bilinear samples.
 fn average4(uv: vec2<f32>) -> vec3<f32> {
     let step = texel();
@@ -35,18 +45,29 @@ fn average4(uv: vec2<f32>) -> vec3<f32> {
 
 // The luminance average of the 16-tap table. The adapt pass samples bilinearly, the luminance
 // steps sample the nearest texel.
-fn average16(uv: vec2<f32>, use_linear: bool) -> f32 {
+fn average16(uv: vec2<f32>, use_linear: bool, source_is_colour: bool) -> f32 {
     let step = texel();
     var sum = 0.0;
     for (var j = 0; j < 4; j++) {
         for (var i = 0; i < 4; i++) {
             let offset = vec2<f32>(f32(i) - 1.5, f32(j) - 1.5);
             let at = uv + offset * step;
+            var sample: vec3<f32>;
             if use_linear {
-                sum += luminance(finite(textureSampleLevel(source, linear_clamp, at, 0.0).rgb));
+                sample = textureSampleLevel(source, linear_clamp, at, 0.0).rgb;
+                // Propagate an invalid measurement to the adaptation guard.
+                let bits = bitcast<vec3<u32>>(sample) & vec3<u32>(0x7fffffffu);
+                if bits.r > 0x7f800000u {
+                    return sample.r;
+                }
+                if source_is_colour && any(bits > vec3<u32>(0x7f800000u)) {
+                    return bitcast<f32>(0x7fc00000u);
+                }
+                sample = finite(sample);
             } else {
-                sum += luminance(finite(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb));
+                sample = finite(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb);
             }
+            sum += select(sample.r, luminance(sample), source_is_colour);
         }
     }
     return sum * 0.0625;
@@ -55,22 +76,22 @@ fn average16(uv: vec2<f32>, use_linear: bool) -> f32 {
 // The effect input to kHDR_DOWNSAMPLE0.
 @fragment
 fn downsample4(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(average4(in.uv), 1.0);
+    return store_hdr(average4(in.uv));
 }
 
 // The first luminance step: 4 taps, luminance in all three channels.
 @fragment
 fn luminance4(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let l = luminance(average4(in.uv));
-    return vec4<f32>(l, l, l, 1.0);
+    return store_hdr(vec3<f32>(l));
 }
 
 // A later luminance step, and the last step on a frame without an adapted pair: the pair then is
 // (n, n, n), so the tonemap ratio is 1.
 @fragment
 fn luminance16(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    let l = average16(in.uv, false);
-    return vec4<f32>(l, l, l, 1.0);
+    let l = average16(in.uv, false, false);
+    return store_hdr(vec3<f32>(l));
 }
 
 fn is_nan(value: f32) -> bool {
@@ -91,13 +112,23 @@ fn adapt_channel(previous_value: f32, measured: f32, rate: f32) -> f32 {
 
 // The adapt draw replaces the last luminance step: it takes the 16 taps itself and moves each
 // channel of the previous pair toward that average. R holds A.x and G holds A.y.
-@fragment
-fn adapt(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    let measured = average16(in.uv, true);
+fn adapt_pair(in: FullscreenVertexOutput, source_is_colour: bool) -> vec4<f32> {
+    let measured = average16(in.uv, true, source_is_colour);
     let old = finite(textureSampleLevel(previous, nearest_clamp, in.uv, 0.0).rgb).rg;
     let x = adapt_channel(old.x, measured, hdr.adapt.x);
     let y = adapt_channel(old.y, measured, hdr.adapt.y);
-    return vec4<f32>(x, y, 0.0, 1.0);
+    return store_hdr(vec3<f32>(x, y, 0.0));
+}
+
+@fragment
+fn adapt(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    return adapt_pair(in, false);
+}
+
+// The minimum-size chain adapts from its colour level, without an intermediate luminance target.
+@fragment
+fn adapt_colour(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    return adapt_pair(in, true);
 }
 
 fn weight(tap: i32) -> f32 {
@@ -119,7 +150,7 @@ fn bright_blur_vertical(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let colour = finite(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb);
         sum += weight(u) * max(colour / k_r - vec3<f32>(hdr.bloom.x), vec3<f32>(0.0));
     }
-    return vec4<f32>(finite(k_r * hdr.bloom.y * sum), 1.0);
+    return store_hdr(k_r * hdr.bloom.y * sum);
 }
 
 // Pass 1 of the bloom: the plain horizontal blur. k_r cancels.
@@ -132,5 +163,5 @@ fn blur_horizontal(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let at = in.uv + vec2<f32>(f32(u) / size.x, 0.0);
         sum += weight(u) * finite(textureSampleLevel(source, nearest_clamp, at, 0.0).rgb);
     }
-    return vec4<f32>(finite(sum), 1.0);
+    return store_hdr(sum);
 }

@@ -45,6 +45,8 @@ pub(crate) fn shadow_size_index(size: usize) -> usize {
                 .unwrap_or(SHADOW_SIZES.len() - 1)
         })
 }
+pub(crate) const SKYRIM_BRIGHTNESS_LABEL: &str = "Screen brightness";
+
 pub const WINDOW_SIZES: [(u32, u32); 4] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)];
 
 #[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,6 +93,11 @@ pub struct RenderingSettings {
     pub depth_prepass: bool,
     pub msaa: usize,
     pub exposure_ev100: f32,
+    /// Saved gamma from the Skyrim brightness control. None uses the INI gamma.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skyrim_gamma: Option<f32>,
+    #[serde(skip)]
+    skyrim_hdr_config: crate::retail_hdr::RetailHdrConfig,
     pub tone_map: usize,
     /// Persisted grade mode; existing indices 0 through 4 remain stable.
     pub color_grade: usize,
@@ -195,6 +202,8 @@ impl Default for RenderingSettings {
             depth_prepass: true,
             msaa: 0,
             exposure_ev100: crate::color_pipeline::DEFAULT_SCENE_EV100,
+            skyrim_gamma: None,
+            skyrim_hdr_config: crate::retail_hdr::RetailHdrConfig::default(),
             tone_map: 6,
             color_grade: 3,
             visual_preset: 1,
@@ -250,8 +259,21 @@ impl RenderingSettings {
                 .index();
             defaults.visual_profile = crate::visual_profile::VisualProfile::Skyrim.index();
             defaults.running_skyrim = true;
+            defaults.skyrim_gamma = Some(crate::retail_hdr::GAMMA);
+            defaults.skyrim_hdr_config = self.skyrim_hdr_config;
         }
         defaults
+    }
+
+    fn skyrim_brightness_position(&self) -> f64 {
+        let mut config = self.skyrim_hdr_config;
+        config.gamma = self.skyrim_gamma.unwrap_or(config.gamma);
+        config.gamma_slider_position()
+    }
+
+    #[allow(clippy::cast_possible_truncation, reason = "the slider is in [0, 1]")]
+    fn set_skyrim_brightness_position(&mut self, position: f64) {
+        self.skyrim_gamma = Some(self.skyrim_hdr_config.gamma_for_slider(position as f32));
     }
 }
 
@@ -395,6 +417,15 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     toggle!("Culling and drawing", "Depth prepass", depth_prepass),
     choice!("Image", "MSAA", msaa, &["Off", "2x", "4x", "8x"]),
     number!(Graphics, "Image", "Exposure (EV100)", exposure_ev100; -5.0, 20.0, 0.25),
+    SettingSpec {
+        label: SKYRIM_BRIGHTNESS_LABEL,
+        page: SettingsPage::Graphics,
+        group: "Image",
+        kind: SettingKind::Number { min: 0.0, max: 1.0, step: 0.01 },
+        requires: Some(|settings| settings.running_skyrim),
+        read: RenderingSettings::skyrim_brightness_position,
+        write: RenderingSettings::set_skyrim_brightness_position,
+    },
     choice!(
         "Image",
         "Tone mapping",
@@ -646,6 +677,12 @@ impl RenderingSettings {
         }
         if self.grade_override_mask & !0xff != 0 {
             return Err("grade override mask contains unknown fields".into());
+        }
+        if self
+            .skyrim_gamma
+            .is_some_and(|gamma| !gamma.is_finite() || gamma <= 0.0)
+        {
+            return Err("Skyrim gamma must be positive and finite".into());
         }
         for spec in SETTING_SPECS {
             let grade_bit = grade_override_bit(spec.label);
@@ -1181,6 +1218,7 @@ pub(crate) fn prepare_settings_at(
         config.visual_profile = profile;
     }
     settings.running_skyrim = config.visual_profile == crate::visual_profile::VisualProfile::Skyrim;
+    settings.skyrim_hdr_config = config.retail_hdr;
     (settings, file)
 }
 
@@ -2237,6 +2275,24 @@ mod tests {
     }
 
     /// Automatic coverage replacing smaller saved radii retains Reset's default preference intent.
+    #[test]
+    fn skyrim_brightness_reset_stores_gamma_one_with_custom_bounds() {
+        let mut settings = RenderingSettings {
+            running_skyrim: true,
+            skyrim_hdr_config: crate::retail_hdr::RetailHdrConfig {
+                gamma_min: 0.5,
+                gamma_max: 2.5,
+                ..default()
+            },
+            ..default()
+        };
+        settings.set_skyrim_brightness_position(0.75);
+        assert_eq!(settings.skyrim_gamma, Some(2.0));
+        settings = settings.profile_defaults();
+        assert_eq!(settings.skyrim_gamma, Some(1.0));
+        assert_eq!(settings.skyrim_brightness_position(), 0.25);
+    }
+
     #[test]
     fn g3_grass_reset_defaults_saves_default_radii_from_narrow_preferences() {
         assert_grass_reset_saves_default_radii((4, 6), (8, 9));

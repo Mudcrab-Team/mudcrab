@@ -1,8 +1,6 @@
 //! SPEC-2 section 11, worked examples E0 to E3, through the engine's composite, bloom weights,
 //! adaptation and tonemap. All values are the specification's invented examples. Example E4 (the
 //! blend modes) is a test of `nif_depth::retail_blend_factors`.
-//!
-//! E0's image-space modifier has no engine input, so E0 checks the weather blend only.
 #![allow(
     clippy::excessive_precision,
     reason = "the expected values are the specification's printed six decimals"
@@ -13,7 +11,7 @@ use crate::{
     retail_hdr::{HdrBlock, MENU_ADAPT_TIMER, RetailHdr, RetailHdrConfig, adapt_rates, adapt_step},
     retail_hdr_chain::{bloom_radius, bloom_taps},
 };
-use bevy::prelude::{Vec3, Vec4};
+use bevy::prelude::{Vec3, Vec4, default};
 
 const TOLERANCE: f32 = 3.0e-6;
 
@@ -80,6 +78,7 @@ fn block(values: [f32; 16]) -> HdrBlock {
         contrast,
         tint_amount: amount,
         tint_rgb: [r, g, b],
+        depth_of_field: [0.0, 0.0, 0.0, 2.0],
     }
 }
 
@@ -130,6 +129,24 @@ fn example_e0_the_weather_block_is_the_weighted_sum_of_all_fields() {
     }
     close(mixed.tint_rgb, expected.tint_rgb, "tint");
     assert_eq!(bloom_radius(mixed.bloom_blur_radius), 4);
+    use crate::retail_image_space::{ImageSpaceModifier, WeightedColour, process_frame};
+    let mut modifier = ImageSpaceModifier {
+        weight: 0.5,
+        tint: WeightedColour {
+            amount: 0.4,
+            rgb: Vec3::new(0.2, 0.4, 1.0),
+        },
+        ..default()
+    };
+    modifier.multiply[9] = 0.5;
+    let (working, _) = process_frame(mixed, &[modifier]);
+    near(working.saturation, 0.798_75, "modified saturation");
+    near(working.tint_amount, 0.4, "maximum tint amount");
+    close(
+        working.tint_rgb,
+        [0.301_020, 0.447_755, 0.921_020],
+        "normalised tint",
+    );
 }
 
 /// The composite of one opaque pixel: `sat(k((1 - Fc) AO O + Fc Cfc))`.
@@ -229,7 +246,7 @@ fn example_e1_an_exterior_noon_pixel_to_bytes() {
     assert_eq!(to_bytes(filmic), [255, 199, 144]);
 
     let slider = RetailHdrConfig {
-        gamma: 1.2,
+        gamma: RetailHdrConfig::default().gamma_for_slider(0.75),
         ..config
     };
     let slider = pass(&slider).display_value(c, steady, flat);

@@ -747,7 +747,7 @@ impl SceneEnvironment {
                     .room_bounds(cell_id)
                     .iter()
                     .filter_map(|bound| {
-                        let template = catalog.lighting_template(bound.lighting_template)?;
+                        let template = catalog.lighting_template(bound.lighting_template?)?;
                         Some(RoomLighting::new(
                             bound,
                             render.with_room_template(template),
@@ -1945,7 +1945,7 @@ mod tests {
             crate::retail_lighting::sun_illuminance(
                 app.world()
                     .resource::<crate::retail_hdr::RetailImageSpace>()
-                    .0
+                    .block
                     .sunlight_scale
             )
         );
