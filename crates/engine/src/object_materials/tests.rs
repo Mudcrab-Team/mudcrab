@@ -968,14 +968,6 @@ fn unsupported_inputs_keep_the_model_material_and_say_why() {
         "{reported:?}"
     );
     assert!(reported.iter().any(|(base, _)| *base == 4));
-    app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
-    let raw = spawn(&mut app, &scene, catalog.get(1));
-    settle(&mut app, &[raw]);
-    assert_eq!(surface(&app, raw).1, surface(&app, control).1);
-    assert!(matches!(
-        app.world().get::<ObjectTextureSwapState>(raw),
-        Some(ObjectTextureSwapState::Unsupported(_))
-    ));
     app.insert_resource(crate::visual_profile::VisualProfile::Mudcrab);
     let old_scene = load_scene(&mut app, "old.glb");
     let old = spawn(&mut app, &old_scene, catalog.get(1));
@@ -984,6 +976,36 @@ fn unsupported_inputs_keep_the_model_material_and_say_why() {
         app.world().get::<ObjectTextureSwapState>(old),
         Some(ObjectTextureSwapState::Unsupported(_))
     ));
+}
+
+/// SPEC-1 section 2.1: under `skyrim` a swapped texture set is read raw, like the model's own.
+#[test]
+fn the_skyrim_profile_swaps_texture_sets_with_raw_colour_views() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let (conn, _) = database();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+    let scene = load_scene(&mut app, "shared.glb");
+    let pine = spawn(&mut app, &scene, catalog.get(PINE));
+    let control = spawn(&mut app, &scene, catalog.get(3));
+    settle(&mut app, &[pine]);
+    assert_eq!(
+        app.world().get::<ObjectTextureSwapState>(pine),
+        Some(&ObjectTextureSwapState::Applied {
+            textured: 1,
+            hidden: 0
+        })
+    );
+    let swapped = surface(&app, pine).1;
+    assert_ne!(swapped, surface(&app, control).1);
+    let material = material_of(&app, &swapped);
+    let images = app.world().resource::<Assets<Image>>();
+    for texture in [&material.base_color_texture, &material.normal_map_texture] {
+        let image = images.get(texture.as_ref().unwrap()).unwrap();
+        assert!(!image.texture_descriptor.format.is_srgb());
+    }
 }
 
 #[test]
