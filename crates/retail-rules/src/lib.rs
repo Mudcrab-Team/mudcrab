@@ -26,5 +26,7 @@
 //! the registry equals the retail game. Each module lists the assumptions that only a retail value
 //! table can settle.
 
+#![warn(clippy::wildcard_enum_match_arm)]
+
 pub mod placement;
 pub mod scale;
