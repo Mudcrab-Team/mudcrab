@@ -922,6 +922,10 @@ pub(crate) fn select_retail_image_space(
 }
 
 /// Writes the scene's image space and the adaptation rates into every camera's pass.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Bevy supplies the time, settings, and view system parameters separately"
+)]
 pub(crate) fn drive_retail_hdr(
     config_resource: Option<Res<EngineConfig>>,
     image_space: Option<Res<RetailImageSpace>>,
@@ -1123,9 +1127,10 @@ mod tests {
     fn gamma_command_preserves_the_value_when_the_input_is_invalid() {
         use crate::settings::RenderingSettings;
         let mut world = World::new();
-        let mut settings = RenderingSettings::default();
-        settings.running_skyrim = true;
-        world.insert_resource(settings);
+        world.insert_resource(RenderingSettings {
+            running_skyrim: true,
+            ..Default::default()
+        });
         let command = set_gamma_command();
         assert!((command.handler)(&mut world, &["1.2"]).is_ok());
         for raw in ["NaN", "inf", "-inf", "0", "-1", "invalid"] {

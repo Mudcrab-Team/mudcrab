@@ -83,6 +83,10 @@ fn block(values: [f32; 16]) -> HdrBlock {
 }
 
 #[test]
+#[expect(
+    clippy::approx_constant,
+    reason = "SPEC-2 example E0 gives the red tint as 0.301020"
+)]
 fn example_e0_the_weather_block_is_the_weighted_sum_of_all_fields() {
     let current_day = block([
         3.0, 5.0, 0.80, 0.90, 0.80, 1.00, 1.6, 1.0, 3.5, 1.10, 1.05, 1.10, 0.10, 1.0, 0.9, 0.8,
