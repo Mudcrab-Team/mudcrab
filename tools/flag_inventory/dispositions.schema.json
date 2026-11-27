@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Skyrim flag dispositions v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "dispositions"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "dispositions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "anchor"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "anchor": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "owner",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "respected",
+            "partial",
+            "dropped",
+            "system-not-implemented",
+            "format-not-read",
+            "record-not-read",
+            "not-applicable"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "issue": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
