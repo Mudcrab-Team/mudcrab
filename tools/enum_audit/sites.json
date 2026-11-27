@@ -1,0 +1,533 @@
+{
+  "format_version": 1,
+  "sites": [
+    {
+      "file": "crates/engine/src/grass/generation.rs",
+      "anchor": "match mode {",
+      "enum_id": "GRAS.DATA.UnitsFromWaterType",
+      "status": "catch-all-bug",
+      "issue": "#1061",
+      "reason": "Grass water comparison modes 6 and 7 (and >= 8) fall silently into `_ => true`."
+    },
+    {
+      "file": "crates/converter/src/esm/grass_cache.rs",
+      "anchor": "&& rule.water_comparison <= 7",
+      "enum_id": "GRAS.DATA.UnitsFromWaterType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/esm/grass_cache.rs",
+      "anchor": "rule.water_comparison = rule.water_comparison.min(7);",
+      "enum_id": "GRAS.DATA.UnitsFromWaterType",
+      "status": "catch-all-bug",
+      "issue": "#1061",
+      "reason": "`.min(7)` silently clamps out-of-range grass water comparison modes > 7 down to 7."
+    },
+    {
+      "file": "crates/shared/src/grass.rs",
+      "anchor": "|| rule.water_comparison > 7",
+      "enum_id": "GRAS.DATA.UnitsFromWaterType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/magic.rs",
+      "anchor": "let selected = match archetype {",
+      "enum_id": "MGEF.DATA.Archetype",
+      "status": "catch-all-allowed",
+      "reason": "Only 10 MGEF archetypes carry an associated FormID; the remaining 37 retail archetypes have an unused associated-item slot.",
+      "reference": "xedit@053da98/src/Core/wbDefinitionsTES5.pas:1146 (wbMGEFAssocItemDecider)"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/perks.rs",
+      "anchor": "\"perks_effect_data\" => match effect_type {",
+      "enum_id": "PERK.PRKE.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/perks.rs",
+      "anchor": "match parameter_type {",
+      "enum_id": "PERK.EPFT.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/perks.rs",
+      "anchor": "2 if matches!(entry[1], 5 | 12 | 13 | 14) => \"actor_value_multiplier\",",
+      "enum_id": "PERK.DATA.EntryPoint",
+      "status": "catch-all-allowed",
+      "reason": "Under EPFT == 2, only EntryPoints 5, 12, 13, and 14 select actor_value_multiplier; all other 88 retail entry points use float_pair.",
+      "reference": "xedit@053da98/src/Core/wbDefinitionsTES5.pas:1220 (wbEPFDDecider)"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/conditions.rs",
+      "anchor": "match selector {",
+      "enum_id": "CTDA.Param.VATSValueFunction",
+      "status": "catch-all-allowed",
+      "reason": "Only 12 GetVATSValue selectors carry a typed parameter; the remaining 9 retail selectors (4, 7, 8, 11..=14, 16, 17) carry a 4-byte Unknown slot.",
+      "reference": "xedit@053da98/src/Core/wbDefinitionsTES5.pas:3845 (wbConditionVATSValueParameters)"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/conditions.rs",
+      "anchor": "\"condition_reference\" => match word(parent, 20) {",
+      "enum_id": "CTDA.RunOn",
+      "status": "catch-all-allowed",
+      "reason": "Only RunOn == 2 (Reference) uses the CTDA Reference FormID; all other 7 retail RunOn values leave the reference slot unused.",
+      "reference": "xedit@053da98/src/Core/wbDefinitionsTES5.pas:3997 (wbConditionReferenceDecider)"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/conditions.rs",
+      "anchor": "let (first, second) = function_parameters(index).unwrap_or((\"unknown\", \"unknown\"));",
+      "enum_id": "CTDA.Function",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`function_parameters(index).unwrap_or((\"unknown\", \"unknown\"))` silently defaults unmapped `CTDA.Function` indices instead of flagging unknown indices."
+    },
+    {
+      "file": "crates/converter/src/records/deciders/world_extras.rs",
+      "anchor": "match bytes[island_at] {",
+      "enum_id": "NAVI.NVMI.HasIslandData",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/ai.rs",
+      "anchor": "return Err(format!(\"unknown package location kind {kind}\"));",
+      "enum_id": "PACK.PLDT.LocationType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/ai.rs",
+      "anchor": "return Err(format!(\"unknown package target kind {kind}\"));",
+      "enum_id": "PACK.PTDA.TargetType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/ai.rs",
+      "anchor": "let kind = discriminator(context, 8)?;",
+      "enum_id": "PDTO.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/deciders/actors.rs",
+      "anchor": "if !(0..=12).contains(&discriminator) {",
+      "enum_id": "FACT.PLVD.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/vmad.rs",
+      "anchor": "if !matches!(format, 1 | 2) {",
+      "enum_id": "VMAD.Header.ObjectFormat",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/vmad.rs",
+      "anchor": "let (link_offset, alias_offset, unused_offset) = match format {",
+      "enum_id": "VMAD.Header.ObjectFormat",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/vmad.rs",
+      "anchor": "match kind {",
+      "enum_id": "VMAD.Property.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/records/vmad.rs",
+      "anchor": "let minimum = match scalar_kind {",
+      "enum_id": "VMAD.Property.Type",
+      "status": "catch-all-allowed",
+      "reason": "Guarded on the preceding line by `(11..=15).contains(&kind)`, so `scalar_kind` is in 1..=5 and `_ => 1` covers only Bool (5, 1 byte).",
+      "reference": "crates/converter/src/records/vmad.rs:185; xedit@053da98/src/Core/wbDefinitionsCommon.pas"
+    },
+    {
+      "file": "crates/converter/src/esm/records/record_type/vmad.rs",
+      "anchor": "let (form_id, alias_id) = if obj_format == 1 {",
+      "enum_id": "VMAD.Header.ObjectFormat",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`if obj_format == 1 ... else ...` in `parse_object_property` silently treats invalid `obj_format` (0 or >= 3) as format 2 without prior validation in `parse_vmad`."
+    },
+    {
+      "file": "crates/converter/src/esm/records/record_type/vmad.rs",
+      "anchor": "let (input, value) = match property_type {",
+      "enum_id": "VMAD.Property.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/esm/records/record_type/vmad.rs",
+      "anchor": "matches!(object_format, 1 | 2),",
+      "enum_id": "VMAD.Header.ObjectFormat",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/esm/records/record_type/vmad.rs",
+      "anchor": "1 => remap_object(data, &mut cursor, object_format, &mut remap)?,",
+      "enum_id": "VMAD.Property.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/esm/records/record_type/vmad.rs",
+      "anchor": "let offset = if object_format == 1 { 0 } else { 4 };",
+      "enum_id": "VMAD.Header.ObjectFormat",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/engine/src/papyrus_host.rs",
+      "anchor": "Ok(match scalar_kind {",
+      "enum_id": "VMAD.Property.Type",
+      "status": "catch-all-allowed",
+      "reason": "Property type 0 (None) maps to `PropertyValue::None`; converter validates property types in 0..=5 | 11..=15 at ESM parse time.",
+      "reference": "crates/converter/src/esm/records/record_type/vmad.rs:230; xedit@053da98/src/Core/wbDefinitionsCommon.pas"
+    },
+    {
+      "file": "crates/converter/src/esm/rooms.rs",
+      "anchor": "if u32_at(xprm, 28) != Some(SHAPE_BOX) {",
+      "enum_id": "REFR.XPRM.Type",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/esm/rooms/occluders.rs",
+      "anchor": "&& match shape {",
+      "enum_id": "REFR.XPRM.Type",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`_ => false` silently drops `XPRM` primitive types outside {1, 3} without recording an omission or error."
+    },
+    {
+      "file": "crates/engine/src/room_culling/occlusion.rs",
+      "anchor": "let shape = match shape {",
+      "enum_id": "REFR.XPRM.Type",
+      "status": "catch-all-allowed",
+      "reason": "Reads from SQLite `room_occluders` constrained by `CHECK(shape IN (1, 3))`, so only Box (1) and Plane (3) reach runtime.",
+      "reference": "crates/converter/src/esm/exporter.rs (room_occluders table CHECK constraint)"
+    },
+    {
+      "file": "crates/converter/src/esm/grass_cache/selection.rs",
+      "anchor": "if quadrant >= 4 {",
+      "enum_id": "LAND.BTXT_ATXT.Quadrant",
+      "status": "catch-all-allowed",
+      "reason": "Valid retail LAND quadrants are 0..=3; values >= 4 increment the explicit `omitted` counter and skip the layer.",
+      "reference": "xedit@053da98/src/Core/wbDefinitionsTES5.pas (BTXT/ATXT Quadrant 0..=3)"
+    },
+    {
+      "file": "crates/converter/src/esm/cell_cache.rs",
+      "anchor": "if data.len() < minimum || data[4] >= 4 {",
+      "enum_id": "LAND.BTXT_ATXT.Quadrant",
+      "status": "catch-all-allowed",
+      "reason": "Valid retail LAND quadrants are 0..=3; values >= 4 or short subrecords increment the explicit `omitted` counter.",
+      "reference": "xedit@053da98/src/Core/wbDefinitionsTES5.pas (BTXT/ATXT Quadrant 0..=3)"
+    },
+    {
+      "file": "crates/converter/src/esm/cell_cache.rs",
+      "anchor": "if quadrant >= 4 {",
+      "enum_id": "LAND.BTXT_ATXT.Quadrant",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`if quadrant >= 4` on `ATXT` silently skips out-of-range quadrants without incrementing `omitted` or returning an error."
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "Ok(match value {",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "if !matches!(",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "let environment = matches!(",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "let glow = matches!(shader_type, LightingShaderType::Glow) || flags_2 & SLSF2_GLOW_MAP != 0;",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "let height = matches!(",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "let facegen = matches!(shader_type, LightingShaderType::FaceTint);",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "let (NifShaderFamily::Lighting, Some(shader_type @ LightingShaderType::SkinTint)) =",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/mesh.rs",
+      "anchor": "let tree_or_lod = material.shader_flags_2 & (1 << 29) != 0",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "vendor/project-wormhole-nif/src/nif_block.rs",
+      "anchor": "match shader_type {",
+      "enum_id": "NIF.BSLightingShaderProperty.ShaderType",
+      "status": "catch-all-allowed",
+      "reason": "Only 7 BSLightingShaderProperty shader types (1, 5, 6, 7, 11, 14, 16) have trailing type-specific fields; `LightingShaderType::try_from` validates 0..=20 in the converter.",
+      "reference": "nifxml@970a623/src/nif.xml (BSLightingShaderProperty); crates/converter/src/material.rs:66"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "texture_clamp_mode: match property.texture_clamp_mode {",
+      "enum_id": "NIF.Shader_TexDesc.ClampMode",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/material.rs",
+      "anchor": "texture_clamp_mode: property.texture_clamp_mode & 3,",
+      "enum_id": "NIF.Shader_TexDesc.ClampMode",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`property.texture_clamp_mode & 3` silently clears high bits >= 4 on `BSEffectShaderProperty` instead of validating `TexClampMode` (0..=3)."
+    },
+    {
+      "file": "crates/shared/src/texture_aliases.rs",
+      "anchor": "pub fn wrap_texture_suffix(clamp: u8) -> Option<&'static str> {",
+      "enum_id": "NIF.Shader_TexDesc.ClampMode",
+      "status": "catch-all-allowed",
+      "reason": "TexClampMode 3 (WRAP_S_WRAP_T) is the default glTF sampler requiring no texture alias suffix; BSLightingShaderProperty validates clamp <= 3.",
+      "reference": "nifxml@970a623/src/nif.xml (TexClampMode); crates/converter/src/material.rs:1310"
+    },
+    {
+      "file": "vendor/project-wormhole-nif/src/nif_block.rs",
+      "anchor": "match key_type {",
+      "enum_id": "NIF.KeyGroup.Interpolation",
+      "status": "exhaustive"
+    },
+    {
+      "file": "vendor/project-wormhole-nif/src/nif_header.rs",
+      "anchor": "match endian_type {",
+      "enum_id": "NIF.Header.EndianType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/mesh.rs",
+      "anchor": "endian_type == 1,",
+      "enum_id": "NIF.Header.EndianType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/engine/src/nif_depth.rs",
+      "anchor": "match (source, destination) {",
+      "enum_id": "NIF.NiAlphaProperty.BlendFunction",
+      "status": "catch-all-allowed",
+      "reason": "Maps 6 specialized retail blend pairs and falls back to [6, 7] (SrcAlpha, InvSrcAlpha) standard alpha blending; `pass_audit.rs` records unexpected pairs.",
+      "reference": "crates/engine/src/nif_material/pass_audit.rs:216; nifxml@970a623/src/nif.xml (NiAlphaProperty BlendFunction)"
+    },
+    {
+      "file": "crates/engine/src/nif_depth.rs",
+      "anchor": "Some(match value {",
+      "enum_id": "NIF.NiAlphaProperty.BlendFunction",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/engine/src/nif_material/pass_audit.rs",
+      "anchor": "match (alpha.source_factor, alpha.destination_factor) {",
+      "enum_id": "NIF.NiAlphaProperty.BlendFunction",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "if motion != MOTION_SYSTEM_FIXED",
+      "enum_id": "NIF.bhkRigidBodyCInfo2010.MotionSystem",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "|| !matches!(quality, 0 | QUALITY_TYPE_FIXED)",
+      "enum_id": "NIF.bhkRigidBodyCInfo2010.QualityType",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "if layer == 15 {",
+      "enum_id": "NIF.HavokFilter.SkyrimLayer",
+      "status": "catch-all-bug",
+      "issue": "#1054",
+      "reason": "Collision layer whitelist rejects valid physical Skyrim layers (6, 8, 14, 19, 20, 29, 50, 51) via catch-all error."
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "if SIMULATED_MOTION_SYSTEMS.contains(&motion_system)",
+      "enum_id": "NIF.bhkRigidBodyCInfo2010.MotionSystem",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`SIMULATED_MOTION_SYSTEMS.contains(&motion_system)` silently classifies `0` (`MO_SYS_INVALID`), `9` (`MO_SYS_CHARACTER`), and `>= 10` as `BodyKind::Fixed`."
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "&& MOVING_QUALITY_TYPES.contains(&quality_type)",
+      "enum_id": "NIF.bhkRigidBodyCInfo2010.QualityType",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`MOVING_QUALITY_TYPES.contains(&quality_type)` silently classifies `2` (`MO_QUAL_KEYFRAMED`) and `7..=9` as `BodyKind::Fixed`."
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "if layers[material] != 15 && tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {",
+      "enum_id": "NIF.HavokFilter.SkyrimLayer",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "if layers[material] != 15 {\n                for i in 0..length - 2 {",
+      "enum_id": "NIF.HavokFilter.SkyrimLayer",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "if layers[material] != 15 {\n            for tail in indices[used..].as_chunks::<3>().0 {",
+      "enum_id": "NIF.HavokFilter.SkyrimLayer",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/collision.rs",
+      "anchor": "!matches!(response, 2 | 3),",
+      "enum_id": "NIF.bhkRigidBodyCInfo2010.CollisionResponse",
+      "status": "catch-all-bug",
+      "issue": "",
+      "reason": "`!matches!(response, 2 | 3)` silently admits `0` (`RESPONSE_INVALID`) and unknown values >= 4 as colliding rigid bodies."
+    },
+    {
+      "file": "crates/engine/src/streaming.rs",
+      "anchor": "|| body.havok.collision_layer != 1",
+      "enum_id": "NIF.HavokFilter.SkyrimLayer",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/animation/spline.rs",
+      "anchor": "0 => Self::Polar32,",
+      "enum_id": "HKX.hkaSplineCompressedAnimation.RotationQuantization",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/animation/spline.rs",
+      "anchor": "0 => Self::Bits8,",
+      "enum_id": "HKX.hkaSplineCompressedAnimation.ScalarQuantization",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/animation/spline.rs",
+      "anchor": "fn read_quat(cursor: &mut Cursor<'_>, quantization: RotationQuantization) -> Result<[f32; 4]> {",
+      "enum_id": "HKX.hkaSplineCompressedAnimation.RotationQuantization",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/animation/glb.rs",
+      "anchor": "clip.blend_hint == 0,",
+      "enum_id": "HKX.hkaAnimationBinding.blendHint",
+      "status": "catch-all-bug",
+      "issue": "#1060",
+      "reason": "Standalone animation export rejects `blendHint == 1` (Additive) via `clip.blend_hint == 0` guard."
+    },
+    {
+      "file": "crates/converter/src/pipeline/authored_actor_idle.rs",
+      "anchor": "clip.blend_hint == 0,",
+      "enum_id": "HKX.hkaAnimationBinding.blendHint",
+      "status": "catch-all-bug",
+      "issue": "#1060",
+      "reason": "Authored actor-idle export rejects `blendHint == 1` (Additive) via `clip.blend_hint == 0` guard."
+    },
+    {
+      "file": "crates/converter/src/esm/binary.rs",
+      "anchor": "let next_worldspace = match group.group_type {",
+      "enum_id": "unnamed",
+      "status": "catch-all-allowed",
+      "reason": "Only ESM GRUP group_type 1 (World Children) introduces a worldspace FormID; all other valid group types (0, 2..=9) inherit `current_worldspace`.",
+      "reference": "xedit@053da98/src/Core/wbDefinitionsTES5.pas (GRUP group_type)"
+    },
+    {
+      "file": "crates/converter/src/mesh.rs",
+      "anchor": "matches!(bethesda_version, 83 | 100),",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/script.rs",
+      "anchor": "match last.opcode {",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/script.rs",
+      "anchor": "match ins.opcode {",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/script.rs",
+      "anchor": "Ok(match self.u8()? {",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/archive/ba2.rs",
+      "anchor": "matches!(version, 1 | 2 | 3 | 7 | 8),",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/archive/ba2.rs",
+      "anchor": "let (records_offset, compression) = match version {",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/archive/ba2.rs",
+      "anchor": "let compression = match u32_at(bytes, 32)? {",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/archive/bsa.rs",
+      "anchor": "matches!(version, 104 | 105),",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/archive/bsa.rs",
+      "anchor": "let block_size = match (descriptor >> 4) & 7 {",
+      "enum_id": "unnamed",
+      "status": "catch-all-allowed",
+      "reason": "LZ4 Frame Format defines block max size IDs 4..=7; reserved nibble values 0..=3 return 0 buffer preallocation before `lz4_flex` validates the frame.",
+      "reference": "LZ4 Frame Format specification (FLG/BD descriptor bits 4..=6)"
+    },
+    {
+      "file": "crates/converter/src/texture.rs",
+      "anchor": "return Some(match dxgi {",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/texture.rs",
+      "anchor": "Some(D3DFormat::DXT1) if !srgb => Some(Vk::BC1_RGBA_UNORM_BLOCK),",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/texture.rs",
+      "anchor": "let size = match dxgi {",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    },
+    {
+      "file": "crates/converter/src/texture.rs",
+      "anchor": "Some(D3DFormat::DXT1) => Ok(8),",
+      "enum_id": "unnamed",
+      "status": "exhaustive"
+    }
+  ]
+}
