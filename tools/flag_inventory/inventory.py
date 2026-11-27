@@ -77,8 +77,9 @@ def validate_dispositions(root, catalog_by_id, doc):
     """Validate dispositions.json against catalog_by_id and repository files."""
     if not isinstance(doc, dict):
         raise ValueError("dispositions.json must be a JSON object")
-    if doc.get("format_version") != 1:
-        raise ValueError(f"unsupported dispositions format_version: {doc.get('format_version')!r}")
+    fmt = doc.get("format_version")
+    if isinstance(fmt, bool) or fmt != 1:
+        raise ValueError(f"unsupported dispositions format_version: {fmt!r}")
     extra_top = sorted(set(doc) - {"format_version", "dispositions"})
     if extra_top:
         raise ValueError(f"unexpected top-level keys in dispositions.json: {', '.join(extra_top)}")
@@ -88,7 +89,6 @@ def validate_dispositions(root, catalog_by_id, doc):
 
     _common.validate_id_coverage(set(catalog_by_id), set(entries), item_label="flag")
 
-    allowed = set(ALLOWED_DISPOSITIONS)
     file_cache = {}
     counts = Counter()
 
@@ -109,7 +109,7 @@ def validate_dispositions(root, catalog_by_id, doc):
     return {disp: counts.get(disp, 0) for disp in ALLOWED_DISPOSITIONS}
 
 
-def check_inventory(root, catalog_path, dispositions_path, baseline_path):
+def check_inventory(root, catalog_path, dispositions_path, baseline_path, *, base_baseline=None, base_ref=None):
     """Run all flag-inventory checks and return a summary dictionary."""
     catalog = load_json(catalog_path, "catalog")
     catalog_by_id = validate_catalog(catalog)
@@ -117,11 +117,20 @@ def check_inventory(root, catalog_path, dispositions_path, baseline_path):
     counts = validate_dispositions(root, catalog_by_id, dispositions_doc)
     baseline_doc = load_json(baseline_path, "baseline")
     dropped_plus_partial, baseline = validate_baseline(baseline_doc, counts)
+    base_baseline_limit, base_note = _common.validate_base_ceiling(
+        root,
+        baseline_path,
+        baseline_doc,
+        base_baseline_path=base_baseline,
+        base_ref=base_ref,
+    )
     return {
         "total": len(catalog_by_id),
         "counts": counts,
         "dropped_plus_partial": dropped_plus_partial,
         "baseline": baseline,
+        "base_baseline": base_baseline_limit,
+        "base_note": base_note,
     }
 
 
@@ -131,8 +140,7 @@ def update_baseline(root, catalog_path, dispositions_path, baseline_path):
     catalog_by_id = validate_catalog(catalog)
     dispositions_doc = load_json(dispositions_path, "dispositions")
     counts = validate_dispositions(root, catalog_by_id, dispositions_doc)
-    current = counts["dropped"] + counts["partial"]
-    write_json(baseline_path, {"format_version": 1, "dropped_plus_partial": current})
+    current = _common.update_baseline_file(baseline_path, counts, RATCHET_DISPOSITIONS)
     return current, counts
 
 

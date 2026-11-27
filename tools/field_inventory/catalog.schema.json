@@ -65,13 +65,15 @@
         "type": [
           "integer",
           "null"
-        ]
+        ],
+        "minimum": 0
       },
       "size_bytes": {
         "type": [
           "integer",
           "null"
-        ]
+        ],
+        "minimum": 0
       },
       "conditional": {
         "type": [

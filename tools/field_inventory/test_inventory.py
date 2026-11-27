@@ -259,10 +259,140 @@ class FieldInventoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, here, _ = make_fixture(directory)
             catalog = json.loads((here / "catalog.json").read_text(encoding="utf-8"))
-            catalog[0]["source"] = "/Users/taylor/xedit/wbDefinitionsTES5.pas:10"
+            for bad_source in (
+                "/Users/taylor/xedit/wbDefinitionsTES5.pas:10",
+                "xEdit 053da98 C:/work/wbDefinitionsTES5.pas",
+                "xEdit 053da98 /tmp/wbDefinitionsTES5.pas",
+            ):
+                catalog[0]["source"] = bad_source
+                (here / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, r"source must not contain local paths"):
+                    run_check(root, here)
+
+    def test_negative_occurrences_and_size_bytes_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_fixture(directory)
+            catalog = json.loads((here / "catalog.json").read_text(encoding="utf-8"))
+            catalog[0]["occurrences"] = 0
+            catalog[0]["size_bytes"] = 0
             (here / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, r"source must not contain local paths"):
+            self.assertEqual(run_check(root, here)["total"], 1)
+
+            catalog[0]["occurrences"] = -1
+            (here / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"invalid occurrences"):
                 run_check(root, here)
+
+            catalog[0]["occurrences"] = None
+            catalog[0]["size_bytes"] = -4
+            (here / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"invalid size_bytes"):
+                run_check(root, here)
+
+    def test_boolean_format_version_rejected_in_dispositions_and_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_fixture(directory)
+            disp_doc = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            disp_doc["format_version"] = True
+            (here / "dispositions.json").write_text(json.dumps(disp_doc), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"unsupported dispositions format_version: True"):
+                run_check(root, here)
+
+            disp_doc["format_version"] = 1
+            (here / "dispositions.json").write_text(json.dumps(disp_doc), encoding="utf-8")
+            base_doc = json.loads((here / "baseline.json").read_text(encoding="utf-8"))
+            base_doc["format_version"] = True
+            (here / "baseline.json").write_text(json.dumps(base_doc), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"unsupported baseline format_version: True"):
+                run_check(root, here)
+
+    def test_signature_group_requires_non_empty_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_fixture(directory, grouped_sni=True)
+            doc = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            doc["system_not_implemented_by_signature"]["UNIM"]["evidence"] = []
+            (here / "dispositions.json").write_text(json.dumps(doc), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"must cite at least one evidence anchor"):
+                run_check(root, here)
+
+    def test_update_baseline_never_raises_ceiling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_fixture(directory, disposition="dropped", issue="#1062", reason="", extra_field=True)
+            # Lower stored ceiling to 1 while dispositions currently have 2 dropped fields.
+            (here / "baseline.json").write_text(
+                json.dumps({"format_version": 1, "dropped_plus_partial": 1}) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, r"refusing to raise baseline from 1 to 2"):
+                run_check(root, here, "update-baseline")
+            self.assertEqual(
+                json.loads((here / "baseline.json").read_text(encoding="utf-8"))["dropped_plus_partial"], 1
+            )
+
+    def test_base_ceiling_check_requires_issue_linked_raise_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_fixture(directory, disposition="dropped", issue="#1062", reason="")
+            base_file = root / "base_baseline.json"
+            base_file.write_text(json.dumps({"format_version": 1, "dropped_plus_partial": 0}), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, r"without a non-empty raise_reason naming an issue"):
+                run_check(root, here, "check", "--base-baseline", str(base_file))
+
+            (here / "baseline.json").write_text(
+                json.dumps({"format_version": 1, "dropped_plus_partial": 1, "raise_reason": "no issue"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, r"without a non-empty raise_reason naming an issue"):
+                run_check(root, here, "check", "--base-baseline", str(base_file))
+
+            (here / "baseline.json").write_text(
+                json.dumps(
+                    {
+                        "format_version": 1,
+                        "dropped_plus_partial": 1,
+                        "raise_reason": "Reclassified by enum audit (#1061).",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = run_check(root, here, "check", "--base-baseline", str(base_file))
+            self.assertEqual(result["base_baseline"], 0)
+            self.assertIn("#1061", result["base_note"])
+
+    def test_base_ref_with_git_show_handles_initial_and_raised_baselines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_fixture(directory, disposition="dropped", issue="#1062", reason="")
+            subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "crates"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "initial without baseline"], check=True, capture_output=True)
+
+            # Initial baseline absent at HEAD passes with notice.
+            initial_result = run_check(root, here, "check", "--base-ref", "HEAD")
+            self.assertIsNone(initial_result["base_baseline"])
+            self.assertIn("initial baseline", initial_result["base_note"])
+
+            # Commit baseline=0, then raise working tree to 1 without raise_reason -> fails.
+            (here / "baseline.json").write_text(json.dumps({"format_version": 1, "dropped_plus_partial": 0}), encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "tools"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "add baseline"], check=True, capture_output=True)
+            (here / "baseline.json").write_text(json.dumps({"format_version": 1, "dropped_plus_partial": 1}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"rose from base 0 to 1"):
+                run_check(root, here, "check", "--base-ref", "HEAD")
+
+    def test_explicit_root_overrides_caller_injected_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as real_dir:
+            temp_root, here, temp_src = make_fixture(temp_dir)
+            real_root = Path(real_dir)
+            real_src = real_root / "crates/engine/src/example.rs"
+            real_src.parent.mkdir(parents=True)
+            real_src.write_text("pub const EXAMPLE_FIELD: u32 = 1;\n", encoding="utf-8")
+            # Break the anchor in temp_root so passing --root real_root only passes if --root is honored.
+            temp_src.write_text("pub const BROKEN: u32 = 0;\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"broken evidence anchor"):
+                run_check(temp_root, here, "check")
+            result = run_check(temp_root, here, "check", "--root", str(real_root))
+            self.assertEqual(result["total"], 1)
 
     def test_cli_returns_nonzero_on_failure(self):
         with tempfile.TemporaryDirectory() as directory:

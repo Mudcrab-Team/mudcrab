@@ -90,7 +90,7 @@ def validate_catalog(catalog):
             raise ValueError(f"catalog {field_id} has invalid offset: {offset!r}")
         for int_or_none in ("occurrences", "size_bytes"):
             val = item.get(int_or_none)
-            if isinstance(val, bool) or (val is not None and not isinstance(val, int)):
+            if isinstance(val, bool) or (val is not None and (not isinstance(val, int) or val < 0)):
                 raise ValueError(f"catalog {field_id} has invalid {int_or_none}: {val!r}")
         cond = item.get("conditional")
         if cond is not None and not isinstance(cond, str):
@@ -105,8 +105,9 @@ def validate_dispositions(root, catalog_by_id, doc):
     """Validate dispositions.json against catalog_by_id and repository files."""
     if not isinstance(doc, dict):
         raise ValueError("dispositions.json must be a JSON object")
-    if doc.get("format_version") != 1:
-        raise ValueError(f"unsupported dispositions format_version: {doc.get('format_version')!r}")
+    fmt = doc.get("format_version")
+    if isinstance(fmt, bool) or fmt != 1:
+        raise ValueError(f"unsupported dispositions format_version: {fmt!r}")
     allowed_top = {"format_version", "dispositions", "system_not_implemented_by_signature"}
     extra_top = sorted(set(doc) - allowed_top)
     if extra_top:
@@ -155,6 +156,8 @@ def validate_dispositions(root, catalog_by_id, doc):
             if not isinstance(group[req_str], str) or not group[req_str].strip():
                 raise ValueError(f"signature group {sig}: {req_str} must be a non-empty string")
         validate_evidence_refs(root, f"signature group {sig}", group["evidence"], file_cache)
+        if not group["evidence"]:
+            raise ValueError(f"signature group {sig}: must cite at least one evidence anchor")
         field_ids = group["field_ids"]
         if not isinstance(field_ids, list) or not field_ids:
             raise ValueError(f"signature group {sig}: field_ids must be a non-empty list")
@@ -177,7 +180,7 @@ def validate_dispositions(root, catalog_by_id, doc):
     return {disp: counts.get(disp, 0) for disp in ALLOWED_DISPOSITIONS}
 
 
-def check_inventory(root, catalog_path, dispositions_path, baseline_path):
+def check_inventory(root, catalog_path, dispositions_path, baseline_path, *, base_baseline=None, base_ref=None):
     """Run all field-inventory checks and return a summary dictionary."""
     catalog = load_json(catalog_path, "catalog")
     catalog_by_id = validate_catalog(catalog)
@@ -185,11 +188,20 @@ def check_inventory(root, catalog_path, dispositions_path, baseline_path):
     counts = validate_dispositions(root, catalog_by_id, dispositions_doc)
     baseline_doc = load_json(baseline_path, "baseline")
     dropped_plus_partial, baseline = validate_baseline(baseline_doc, counts)
+    base_baseline_limit, base_note = _common.validate_base_ceiling(
+        root,
+        baseline_path,
+        baseline_doc,
+        base_baseline_path=base_baseline,
+        base_ref=base_ref,
+    )
     return {
         "total": len(catalog_by_id),
         "counts": counts,
         "dropped_plus_partial": dropped_plus_partial,
         "baseline": baseline,
+        "base_baseline": base_baseline_limit,
+        "base_note": base_note,
     }
 
 
@@ -199,8 +211,7 @@ def update_baseline(root, catalog_path, dispositions_path, baseline_path):
     catalog_by_id = validate_catalog(catalog)
     dispositions_doc = load_json(dispositions_path, "dispositions")
     counts = validate_dispositions(root, catalog_by_id, dispositions_doc)
-    current = counts["dropped"] + counts["partial"]
-    write_json(baseline_path, {"format_version": 1, "dropped_plus_partial": current})
+    current = _common.update_baseline_file(baseline_path, counts, RATCHET_DISPOSITIONS)
     return current, counts
 
 
