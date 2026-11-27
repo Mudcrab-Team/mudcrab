@@ -112,6 +112,7 @@ pub(super) fn material_values(
     published
         .or_else(|| {
             let block = extras.pointer("/openSkyrim/shaderBlock")?.as_u64()?;
+            // silent-ok: a block index past `u32` names no sidecar entry.
             sidecar?.get(mesh, u32::try_from(block).ok()?)
         })
         .filter(MaterialValues::is_finite)
@@ -125,6 +126,7 @@ fn environment_slot(source: &Material<'_>, semantic: &str) -> Option<usize> {
         .as_array()?
         .iter()
         .find(|slot| slot.get("semantic").and_then(|value| value.as_str()) == Some(semantic))?;
+    // silent-ok: an index past `usize` names no image, as an absent one.
     usize::try_from(slot.get("texture")?.as_u64()?).ok()
 }
 
