@@ -72,7 +72,7 @@ jobs:
           if LC_ALL=C grep -zqE '^vendor/' "$changed_paths"; then
             echo "check_rust=true" >> "$GITHUB_OUTPUT"
           fi
-          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^tools/flag_inventory/|^tools/enum_audit/|^docs/data-inventory/|^crates/(converter|shared|retail-rules)/|^crates/engine/src/|^vendor/project-wormhole-nif/|^docs/research/lod-acceptance-20261005/|^scripts/stand_in_baseline\.json$|^\.github/workflows/(run_tests|pr_size|milestone)\.yml$)'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^tools/flag_inventory/|^tools/enum_audit/|^tools/defaults_ratchet/|^docs/data-inventory/|^crates/(converter|shared|retail-rules)/|^crates/engine/src/|^vendor/project-wormhole-nif/|^docs/research/lod-acceptance-20261005/|^scripts/stand_in_baseline\.json$|^\.github/workflows/(run_tests|pr_size|milestone)\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_flag_inventory" '^(tools/flag_inventory/|crates/(converter|shared|retail-rules)/|crates/engine/src/|vendor/project-wormhole-nif/|docs/specs/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
@@ -83,6 +83,7 @@ jobs:
           check_pattern "check_unwrap_ratchet" '^(crates/.*\.rs|tools/unwrap_ratchet/.*|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_silent_failure_ratchet" '^(crates/.*\.rs|tools/silent_failure_ratchet/.*|tools/unwrap_ratchet/unwrap_ratchet\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_enum_audit" '^(crates/.*\.rs|vendor/project-wormhole-nif/src/.*\.rs|tools/enum_audit/.*|tools/unwrap_ratchet/unwrap_ratchet\.py|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_defaults_ratchet" '^(crates/.*\.rs|vendor/project-wormhole-nif/src/.*\.rs|tools/defaults_ratchet/.*|tools/unwrap_ratchet/unwrap_ratchet\.py|tools/silent_failure_ratchet/silent_failure_ratchet\.py|scripts/check_retail_claims\.py|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -96,6 +97,7 @@ jobs:
       check_unwrap_ratchet: ${{ steps.filter.outputs.check_unwrap_ratchet }}
       check_silent_failure_ratchet: ${{ steps.filter.outputs.check_silent_failure_ratchet }}
       check_enum_audit: ${{ steps.filter.outputs.check_enum_audit }}
+      check_defaults_ratchet: ${{ steps.filter.outputs.check_defaults_ratchet }}
 
   format:
     needs: [orchestrate]
@@ -226,6 +228,9 @@ jobs:
 
       - name: Test the retail enum audit gate
         run: python3 -B -m unittest discover -s tools/enum_audit -p 'test_*.py' -v
+
+      - name: Test the retail defaults ratchet gate
+        run: python3 -B -m unittest discover -s tools/defaults_ratchet -p 'test_*.py' -v
 
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
@@ -464,6 +469,45 @@ jobs:
             python3 -B tools/enum_audit/enum_audit.py --check --base origin/main
           else
             python3 -B tools/enum_audit/enum_audit.py --check --base "$base"
+          fi
+
+  defaults_ratchet:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_defaults_ratchet == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test the defaults ratchet script
+        run: python3 -B -m unittest discover -s tools/defaults_ratchet -p 'test_*.py' -v
+
+      - name: Verify retail defaults baseline and added lines
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$(git rev-parse HEAD^1)"
+          else
+            base="$PUSH_BEFORE"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            # No usable push base (for example the first push of a branch): scan against
+            # the default branch so added invented defaults are still checked.
+            git fetch --no-tags --depth=350 origin main
+            python3 -B tools/defaults_ratchet/defaults_ratchet.py --check --base origin/main
+          else
+            python3 -B tools/defaults_ratchet/defaults_ratchet.py --check --base "$base"
           fi
 
   clippy:
@@ -842,6 +886,7 @@ jobs:
       - unwrap_ratchet
       - silent_failure_ratchet
       - enum_audit
+      - defaults_ratchet
       - clippy
       - test_build
       - jump_replay
@@ -874,6 +919,7 @@ jobs:
           check_result "unwrap_ratchet" "$RESULT_UNWRAP_RATCHET"
           check_result "silent_failure_ratchet" "$RESULT_SILENT_FAILURE_RATCHET"
           check_result "enum_audit" "$RESULT_ENUM_AUDIT"
+          check_result "defaults_ratchet" "$RESULT_DEFAULTS_RATCHET"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test_build" "$RESULT_TEST_BUILD"
           check_result "jump_replay" "$RESULT_JUMP_REPLAY"
@@ -906,6 +952,7 @@ jobs:
           RESULT_UNWRAP_RATCHET: ${{ needs.unwrap_ratchet.result }}
           RESULT_SILENT_FAILURE_RATCHET: ${{ needs.silent_failure_ratchet.result }}
           RESULT_ENUM_AUDIT: ${{ needs.enum_audit.result }}
+          RESULT_DEFAULTS_RATCHET: ${{ needs.defaults_ratchet.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST_BUILD: ${{ needs.test_build.result }}
           RESULT_JUMP_REPLAY: ${{ needs.jump_replay.result }}
