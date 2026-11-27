@@ -6478,7 +6478,8 @@ mod tests {
     /// the shared 256-node bound. The pinned hashes come from the converter before that bound,
     /// except that both single-shape cases also carry the `mudcrabGeometryIndex` primitive tag
     /// that `object-texture-swap-geometry-index-v1` adds; each case asserts that tag below.
-    /// Exclude newer room metadata and the explicit absence of a NIF alpha property.
+    /// Exclude newer room metadata, the published material values and the explicit absence of a
+    /// NIF alpha property.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -6526,6 +6527,10 @@ mod tests {
                 assert_eq!(
                     extras.remove("alphaProperty"),
                     Some(serde_json::Value::Null)
+                );
+                assert!(
+                    extras.remove("materialValues").is_some(),
+                    "{name}: a lighting material publishes its values"
                 );
             }
             assert_eq!(
