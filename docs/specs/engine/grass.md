@@ -159,10 +159,10 @@ retail's units: it divides the scene sun by `SUNLIGHT_SCALE` (retail grass takes
 the Lighting techniques take `diffuse * SunlightScale`; the scene sun stands for the second) and
 multiplies the ambient by pi, which cancels the shader's 1/pi (RF-GRASS-004; skyrim-research
 NEEDS 18 question 3; static reading, unverified at run time). The `mudcrab` profile keeps the
-scene's own values. A Bevy standard material gets about 0.4524 of the raw ambient
-(`EnvBRDFApprox` at full roughness), so near meshes are darker in shade than retail and than
-grass; that is a defect of the near path (#1010). Authored blade normals and normal maps do not
-enter the lighting sum.
+scene's own values. Under `skyrim` grass takes the mean of the directional ambient cube that the
+near meshes read by normal (`visual-profiles.md`, #1010), at the same brightness, with no
+`EnvBRDFApprox` scale on either side. Authored blade normals and normal maps do not enter the
+lighting sum.
 Flag masks are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
 the audited official grasses use `0x06`. Retail lights every vertex on the instance normal,
 so the Vertex Lighting flag does not change the lighting path.

@@ -51,7 +51,9 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    - `crate::sun::update_sun` skips the sun while `ExteriorSunState` holds it.
 6. **Ambient**: `GlobalAmbientLight.color` is the mean of the six DALC colours, with the same
    averaging as `WeatherLighting::mean_ambient`. Brightness stays `AMBIENT_ILLUMINANCE`. XCLL
-   ambient is not a Lighting-shader input (RF-LIGHT-GPU-002) and is reported only.
+   ambient is not a Lighting-shader input (RF-LIGHT-GPU-002) and is reported only. Under `skyrim`
+   the near meshes read the whole DALC cube by normal instead, from the raw record bytes
+   (`visual-profiles.md`, #1010).
 7. **Fog**: Bevy linear fog from the resolved near and far and the near colour. Fog max is a cap:
    Bevy multiplies its ramp by the colour alpha, so the engine sets alpha = max and ends the ramp
    at `near + max * (far - near)`, which gives `min(ramp, max)`. Max 0 draws no fog.
@@ -86,7 +88,6 @@ Use Sky Lighting, the sky mode, and the applied values (`cell_render`).
 ## Open items
 
 - Interior directional shadows (RF-LIGHT-GPU-010).
-- The per-normal DALC ambient term in the shader (RF-LIGHT-CPU-002, RF-LIGHT-GPU-001/003).
 - The Show Sky dome indoors, worldspace templates (`WRLD` `0x20`, Blackreach), the reference
   image space override (RF-IMGS-001 extra `0x77`), and fog power and far colour.
 - **UNVERIFIED: the world sign of the key light.** RF-LIGHT-CPU-012 settles the local rotation

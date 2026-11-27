@@ -672,6 +672,7 @@ fn update_grass_uniforms(
     fogs: Query<(), (With<StreamingCamera>, With<bevy::pbr::DistanceFog>)>,
     tuning: Option<Res<crate::grass_tuning::GrassTuningState>>,
     ambient: Option<Res<GlobalAmbientLight>>,
+    cube: Option<Res<bevy::pbr::DirectionalAmbientCube>>,
     profile: Option<Res<crate::visual_profile::VisualProfile>>,
     mut light_units: Option<ResMut<GrassLightUnits>>,
     batches: Query<(&GrassBatch, Option<&GrassAttached>)>,
@@ -745,8 +746,10 @@ fn update_grass_uniforms(
             if fade.enabled { 0.0 } else { 1.0 },
         );
         if let Some(ambient) = &ambient {
-            primitive.uniform.ambient =
-                units.ambient(ambient.color.to_linear().to_f32_array(), ambient.brightness);
+            primitive.uniform.ambient = units.ambient(
+                grass_ambient_colour(ambient, cube.as_deref().filter(|_| units.retail)),
+                ambient.brightness,
+            );
         }
         all_drawn &= primitive.suppress_draw
             || primitive.culled.load(Ordering::Acquire)
@@ -1049,6 +1052,22 @@ fn prepared_grass_sun(
     })
 }
 
+/// The ambient colour grass takes before [`GrassLightUnits::ambient`]. Under `skyrim` the near
+/// meshes read the directional ambient cube (#1010), and grass takes the same cube's mean, so grass
+/// and the near meshes use one ambient in one unit. Without an enabled cube (the `mudcrab`
+/// profile, or a record that lacks the lighting) it is the flat `GlobalAmbientLight` colour, as
+/// before. Grass has no normal in retail's grass shader that matches the cube's by-normal form
+/// (unverified), so it takes the mean.
+fn grass_ambient_colour(
+    ambient: &GlobalAmbientLight,
+    cube: Option<&bevy::pbr::DirectionalAmbientCube>,
+) -> [f32; 4] {
+    match cube {
+        Some(cube) if cube.enabled => cube.mean.extend(1.0).to_array(),
+        _ => ambient.color.to_linear().to_f32_array(),
+    }
+}
+
 /// Which light units the grass shader's sun and ambient uniforms are in.
 ///
 /// Under `skyrim` they are retail's grass units: the raw sun and the raw ambient (see
@@ -1095,11 +1114,9 @@ impl GrassLightUnits {
     /// so grass gets the raw ambient. The factor sits in the uniform, not in the shader, so the
     /// `mudcrab` profile stays byte-identical and the pinned shader fixture is unchanged.
     ///
-    /// Retail grass is the reference here, not the near meshes. A Bevy standard material gets
-    /// `EnvBRDFApprox(albedo, F_AB(1, NdotV)) * ambient`, about `0.4524 * albedo * ambient` at
-    /// full roughness, so near meshes get less ambient than retail. That is a defect of the
-    /// near path, tracked in #1010. It is not copied into grass. Until it is fixed, grass is
-    /// brighter in shade than the terrain under it. Whether retail's grass `NiLight.ambient` is
+    /// The near meshes take the same unit: under `skyrim` their ambient term adds
+    /// `albedo * ambient` from the directional cube with no `EnvBRDFApprox` scale (#1010), and grass
+    /// takes the cube's mean ([`grass_ambient_colour`]). Whether retail's grass `NiLight.ambient` is
     /// the same value as the near Lighting ambient is unverified.
     pub(crate) fn ambient(self, colour: [f32; 4], brightness: f32) -> Vec4 {
         let factor = if self.retail {
@@ -1643,6 +1660,75 @@ mod tests {
                 !units.retail,
                 "only skyrim changes the ambient: {profile:?}"
             );
+        }
+    }
+
+    /// Grass and the near meshes use one ambient in one unit under `skyrim` (#1010, #1011). The
+    /// near ambient term adds `cube.mean * brightness` to the diffuse sum before the view
+    /// exposure, with no other scale (`pbr_ambient.wgsl`; the render pixel test
+    /// `ambient_pixel_tests` pins that). The grass shader divides its lit sum by pi and the
+    /// uniform carries a factor of pi, so grass adds the same `cube.mean * brightness`. This test
+    /// runs the call site with an enabled cube and checks the uniform against the near term.
+    /// `mudcrab` keeps its flat ambient even if a cube exists.
+    #[test]
+    fn grass_and_near_meshes_take_the_same_ambient_under_skyrim() {
+        use crate::visual_profile::VisualProfile;
+        let ambient = GlobalAmbientLight {
+            // The flat, decoded colour: not what the cube holds.
+            color: Color::linear_rgb(0.1, 0.1, 0.1),
+            brightness: 400.0,
+            ..default()
+        };
+        let cube = bevy::pbr::DirectionalAmbientCube {
+            enabled: true,
+            mean: Vec3::new(0.5, 0.4, 0.3),
+            slope_x: Vec3::new(0.1, 0.0, 0.0),
+            ..default()
+        };
+        for profile in [VisualProfile::Mudcrab, VisualProfile::Skyrim] {
+            let mut app = App::new();
+            app.insert_resource(GrassFade {
+                enabled: true,
+                start: 1000.0,
+                end: 2000.0,
+            })
+            .insert_resource(GrassModels::default())
+            .insert_resource(GrassRenderMetrics::default())
+            .init_resource::<GrassLightUnits>()
+            .insert_resource(ambient.clone())
+            .insert_resource(cube)
+            .insert_resource(profile)
+            .add_systems(Update, update_grass_uniforms);
+            app.world_mut()
+                .spawn((StreamingCamera, GlobalTransform::IDENTITY));
+            let entity = app
+                .world_mut()
+                .spawn((primitive(), GlobalTransform::IDENTITY))
+                .id();
+            app.update();
+            let uniform = app
+                .world()
+                .get::<GrassPrimitive>(entity)
+                .unwrap()
+                .uniform
+                .ambient;
+            // What the grass shader adds: the uniform divided by its `1 / pi`.
+            let grass_adds = uniform.truncate() / std::f32::consts::PI;
+            // What the near ambient term adds for a normal-less surface: the cube mean at the
+            // scene brightness.
+            let near_adds = cube.evaluate(Vec3::ZERO) * ambient.brightness;
+            if profile == VisualProfile::Skyrim {
+                assert!(
+                    (grass_adds - near_adds).abs().max_element() < 1.0e-3,
+                    "grass adds {grass_adds}, near meshes add {near_adds}"
+                );
+            } else {
+                let flat = Vec3::splat(0.1) * ambient.brightness;
+                assert!(
+                    (uniform.truncate() - flat).abs().max_element() < 1.0e-3,
+                    "mudcrab grass keeps the flat ambient"
+                );
+            }
         }
     }
 

@@ -36,8 +36,11 @@ impl TimeOfDay {
     }
 }
 
-/// A directional ambient block (`DALC`): colours along X+, X-, Y+, Y-, Z+, and Z-.
-/// Specular colour and scale are optional. Colours are 8-bit sRGB.
+/// A directional ambient block (`DALC`): six colours in file order, F0 to F5. The field names in
+/// the converter schema (`x_pos`, `x_neg`, ...) follow the editor's labels and are unverified. The
+/// retail shader applies them as F0 on -X, F1 on +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z,
+/// in Creation axes (NEEDS 41, reviewed). Specular colour and scale are optional. Colours are
+/// 8-bit sRGB.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
 pub struct DirectionalAmbient {
     pub colors: [[u8; 3]; 6],

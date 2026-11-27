@@ -15,7 +15,8 @@ use super::{DirectionalAmbient, EnvironmentCatalog, Lighting, RoomBound};
 use crate::streaming::{ActiveSpace, creation_rotation_to_bevy, creation_to_bevy};
 use crate::world::components::StreamingCamera;
 use bevy::{
-    pbr::{DistanceFog, FogFalloff},
+    ecs::system::SystemParam,
+    pbr::{DirectionalAmbientCube, DistanceFog, FogFalloff},
     prelude::*,
     transform::TransformSystems,
 };
@@ -580,6 +581,18 @@ impl InteriorRender {
         }
         .mean_ambient()
     }
+
+    /// The whole cell cube for the `skyrim` profile's ambient term (#1010): the six faces, as
+    /// [`crate::sky::WeatherLighting::directional_ambient`] reads them (raw bytes divided by 255),
+    /// so a surface reads the ambient of its own normal. A room lighting template has already
+    /// replaced the faces (`with_room_template`).
+    pub(crate) fn directional_ambient(&self) -> DirectionalAmbientCube {
+        crate::sky::WeatherLighting {
+            sunlight: Color::BLACK,
+            ambient_cube: self.ambient_faces.map(|[r, g, b]| Color::srgb_u8(r, g, b)),
+        }
+        .directional_ambient()
+    }
 }
 
 /// A room marker box with a lighting template, in engine axes.
@@ -772,6 +785,17 @@ fn select_environment(
     }
 }
 
+/// The ambient that `apply_interior_lighting` writes: Bevy's flat colour, and the `skyrim`
+/// profile's directional cube (#1010).
+#[derive(SystemParam)]
+struct AmbientTargets<'w, 's> {
+    ambient: Option<ResMut<'w, GlobalAmbientLight>>,
+    cube: Option<ResMut<'w, DirectionalAmbientCube>>,
+    profile: Option<Res<'w, crate::visual_profile::VisualProfile>>,
+    /// Whether this system wrote the cube for the cell the player is in.
+    cube_indoors: Local<'s, bool>,
+}
+
 /// Applies sky modes 1 and 2 to the [`WorldSun`], `GlobalAmbientLight` and [`InteriorFog`]
 /// (verify-report "The rule", steps 2-8):
 /// - Key light: colour `srgb_u8(directional)`, [`interior_key_illuminance`], and the
@@ -802,9 +826,9 @@ fn apply_interior_lighting(
         ),
         With<WorldSun>,
     >,
-    ambient: Option<ResMut<GlobalAmbientLight>>,
     mut fog: ResMut<InteriorFog>,
     mut saved_ambient: Local<Option<Color>>,
+    lights: AmbientTargets,
     mut commands: Commands,
 ) {
     let camera = cameras.iter().next().map(|transform| transform.translation);
@@ -871,6 +895,30 @@ fn apply_interior_lighting(
                 commands.entity(entity).remove::<ExteriorSunState>();
             }
             (None, None) => {}
+        }
+    }
+    let AmbientTargets {
+        ambient,
+        cube,
+        profile,
+        mut cube_indoors,
+    } = lights;
+    // The directional ambient is the `skyrim` profile only (#1010): `mudcrab` keeps its flat
+    // ambient. Outside, `crate::sky::drive_exterior_lighting` writes the exterior cube, in the
+    // frame this system hands the ambient back, so leaving the cell only switches it off here.
+    if let Some(mut cube) = cube {
+        let skyrim =
+            profile.is_some_and(|profile| *profile == crate::visual_profile::VisualProfile::Skyrim);
+        match wanted {
+            Some(render) if skyrim => {
+                cube.set_if_neq(render.directional_ambient());
+                *cube_indoors = true;
+            }
+            None if *cube_indoors => {
+                cube.set_if_neq(DirectionalAmbientCube::default());
+                *cube_indoors = false;
+            }
+            _ => {}
         }
     }
     let Some(mut ambient) = ambient else {
@@ -1637,6 +1685,68 @@ mod tests {
         ));
         // The directional fade (0.0 here) is reported, never applied.
         assert_eq!(selected(&app).lighting.directional_fade, Some(0.0));
+    }
+
+    /// Under `skyrim` the cell's whole DALC cube reaches the render resource (#1010). Alvor's
+    /// template faces are the ones the flat-ambient test above uses. The cube is the raw bytes
+    /// divided by 255 (the object LOD material's rows): the mean of the six and the half
+    /// differences of the stored pairs. `mudcrab` keeps the flat ambient: the resource stays off.
+    /// Leaving the cell switches it off again.
+    #[test]
+    fn the_skyrim_profile_gives_the_cell_cube_to_the_ambient_term() {
+        use crate::visual_profile::VisualProfile;
+        // Raw bytes divided by 255, no sRGB decode (the object LOD material's rows).
+        let linear = |faces: [[u8; 3]; 6], face: usize| {
+            let [r, g, b] = faces[face];
+            Vec3::new(f32::from(r), f32::from(g), f32::from(b)) / 255.0
+        };
+        let faces = [
+            [49, 48, 50],
+            [40, 48, 45],
+            [45, 50, 48],
+            [45, 45, 48],
+            [21, 22, 21],
+            [68, 73, 74],
+        ];
+        for profile in [VisualProfile::Skyrim, VisualProfile::Mudcrab] {
+            let mut app = app(rule_catalog());
+            app.insert_resource(profile)
+                .init_resource::<DirectionalAmbientCube>();
+            let _sun = spawn_world_sun(&mut app);
+            enter(&mut app, Some(ALVOR));
+            app.update();
+            let cube = *app.world().resource::<DirectionalAmbientCube>();
+            if profile == VisualProfile::Mudcrab {
+                assert_eq!(cube, DirectionalAmbientCube::default());
+                continue;
+            }
+            assert!(cube.enabled);
+            let raw_mean = (0..6).map(|face| linear(faces, face)).sum::<Vec3>() / 6.0;
+            assert!(
+                (cube.mean - raw_mean).abs().max_element() < 1.0e-6,
+                "the cube's mean is the raw bytes divided by 255"
+            );
+            let expected_x = (linear(faces, 1) - linear(faces, 0)) * 0.5;
+            let expected_y = (linear(faces, 3) - linear(faces, 2)) * 0.5;
+            let expected_z = (linear(faces, 5) - linear(faces, 4)) * 0.5;
+            assert!((cube.slope_x - expected_x).abs().max_element() < 1.0e-6);
+            assert!((cube.slope_y - expected_y).abs().max_element() < 1.0e-6);
+            assert!((cube.slope_z - expected_z).abs().max_element() < 1.0e-6);
+            assert!(
+                cube.slope_z.min_element() > 0.01,
+                "Alvor's up and down faces differ, so the cell is lit from above"
+            );
+            // A quiet frame leaves the resource's change tick alone.
+            app.update();
+            assert!(
+                !app.world()
+                    .resource_ref::<DirectionalAmbientCube>()
+                    .is_changed()
+            );
+            // Leaving the cell hands the ambient back to the exterior driver: off here.
+            enter(&mut app, None);
+            assert!(!app.world().resource::<DirectionalAmbientCube>().enabled);
+        }
     }
 
     #[test]

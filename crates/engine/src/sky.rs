@@ -24,7 +24,8 @@ use bevy::{
     light::NotShadowCaster,
     mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology},
     pbr::{
-        DistanceFog, FogFalloff, Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin,
+        DirectionalAmbientCube, DistanceFog, FogFalloff, Material, MaterialPipeline,
+        MaterialPipelineKey, MaterialPlugin,
     },
     prelude::*,
     render::render_resource::{
@@ -189,6 +190,36 @@ impl WeatherLighting {
     /// the mean of the six faces. Bevy has one ambient colour per view, not a cube.
     pub fn mean_ambient(&self) -> Color {
         Color::LinearRgba(self.ambient_toward(Vec3::ZERO))
+    }
+
+    /// The whole cube as the render resource the `skyrim` profile's ambient term reads (#1010,
+    /// #653 open point 4): the mean and the three half differences in Creation axes, from the
+    /// raw colour bytes divided by 255, with no sRGB decode. Retail's Lighting shader adds the
+    /// record colours without a decode, the `skyrim` profile samples textures raw, and the object
+    /// LOD material takes the same raw rows (`lod_object_material.rs`). Face order and axes are
+    /// the object LOD path's too: slope X is `(face 1 - face 0) / 2`, Y is `(face 3 - face 2) / 2`
+    /// and Z is `(face 5 - face 4) / 2`, applied to `(n.x, -n.z, n.y)` of the engine normal. NEEDS 41
+    /// (reviewed) gives the same face order and axes. The record's type names (`x_pos` and so on in
+    /// the converter schema, `max` and `min` in the type) are labels: this code uses the file order
+    /// F0 to F5 and the slope formula only.
+    ///
+    /// The cube's mean is therefore not [`Self::mean_ambient`], which decodes sRGB for the flat
+    /// ambient of the `mudcrab` profile. The result is enabled. Use
+    /// [`DirectionalAmbientCube::default`] to switch the term off.
+    pub fn directional_ambient(&self) -> DirectionalAmbientCube {
+        // F0 to F5 in file order. Their record names are labels: the first of each pair is the
+        // negative-side colour (NEEDS 41, reviewed), so the slopes follow the formula.
+        let [f0, f1, f2, f3, f4, f5] = self.ambient_cube.map(|face| {
+            let raw = face.to_srgba();
+            Vec3::new(raw.red, raw.green, raw.blue)
+        });
+        DirectionalAmbientCube {
+            enabled: true,
+            mean: (f0 + f1 + f2 + f3 + f4 + f5) * (1.0 / 6.0),
+            slope_x: (f1 - f0) * 0.5,
+            slope_y: (f3 - f2) * 0.5,
+            slope_z: (f5 - f4) * 0.5,
+        }
     }
 }
 
@@ -763,6 +794,9 @@ fn drive_sky_palette(
 /// with it: the interior system owns both until the player returns outside. Values are written
 /// only when they differ, so a frozen clock leaves both change ticks quiet.
 ///
+/// Under `skyrim` the ambient is also the whole `DALC` cube ([`DirectionalAmbientCube`]), so a surface
+/// reads the ambient of its own normal.
+///
 /// The settings' sun colour and ambient colour controls have no lasting effect under `skyrim`,
 /// because this system rewrites both when the hour changes (#1006). The start-up note says so.
 pub(crate) fn drive_exterior_lighting(
@@ -776,6 +810,7 @@ pub(crate) fn drive_exterior_lighting(
         ),
     >,
     ambient: Option<ResMut<GlobalAmbientLight>>,
+    cube: Option<ResMut<DirectionalAmbientCube>>,
 ) {
     let (Some(clock), Some(source)) = (clock, source) else {
         return;
@@ -802,6 +837,12 @@ pub(crate) fn drive_exterior_lighting(
         if ambient.color != color {
             ambient.color = color;
         }
+    }
+    // The near ambient is the whole `DALC` cube by normal, not its mean (#1010; retail's Lighting
+    // shader, NEEDS 26). This is the `skyrim` profile only: the check above returned for `mudcrab`,
+    // whose resource stays disabled. Indoors the interior system writes the cube of the cell.
+    if outside && let Some(mut cube) = cube {
+        cube.set_if_neq(lighting.directional_ambient());
     }
 }
 
@@ -2259,6 +2300,7 @@ mod tests {
                 brightness: crate::lights::AMBIENT_ILLUMINANCE,
                 ..default()
             })
+            .init_resource::<DirectionalAmbientCube>()
             .add_systems(Update, drive_exterior_lighting);
         let sun = app
             .world_mut()
@@ -2352,6 +2394,219 @@ mod tests {
             app.world().get::<DirectionalLight>(sun).unwrap().color,
             WeatherLighting::default().sunlight
         );
+    }
+
+    /// Under `skyrim` the exterior ambient is the whole cube, not its mean (#1010). The fixture's
+    /// faces are all equal, so every slope is zero. The cube's mean is the raw bytes divided by
+    /// 255, the object LOD material's rows, and not the sRGB-decoded flat colour.
+    #[test]
+    fn the_skyrim_profile_enables_the_directional_ambient_outside() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, _) = lighting_app(VisualProfile::Skyrim, 12.0);
+        app.update();
+        let cube = *app.world().resource::<DirectionalAmbientCube>();
+        assert!(cube.enabled);
+        // The day slot of the fixture is the bytes (120, 121, 122).
+        assert!(
+            (cube.mean - Vec3::new(120.0, 121.0, 122.0) / 255.0)
+                .abs()
+                .max_element()
+                < EPSILON
+        );
+        let flat = app
+            .world()
+            .resource::<GlobalAmbientLight>()
+            .color
+            .to_linear();
+        assert!(
+            cube.mean.x > flat.red * 2.0,
+            "the raw mean is not the decoded flat colour: raw {}, decoded {}",
+            cube.mean.x,
+            flat.red
+        );
+        assert_eq!(
+            [cube.slope_x, cube.slope_y, cube.slope_z],
+            [Vec3::ZERO; 3],
+            "equal faces have no slope"
+        );
+        // A frozen clock leaves the resource's change tick quiet.
+        app.update();
+        assert!(
+            !app.world()
+                .resource_ref::<DirectionalAmbientCube>()
+                .is_changed()
+        );
+        // The cube follows the hour with the same weights as the flat colour.
+        app.world_mut().resource_mut::<crate::sun::GameClock>().hour = 0.0;
+        app.update();
+        let night = app.world().resource::<DirectionalAmbientCube>().mean;
+        assert!(night.y < cube.mean.y * 0.2);
+    }
+
+    /// `mudcrab` never enables the directional ambient, so its ambient stays the flat colour. A
+    /// `skyrim` run with a record that lacks the lighting keeps the flat colour too.
+    #[test]
+    fn the_mudcrab_profile_never_enables_the_directional_ambient() {
+        use crate::visual_profile::VisualProfile;
+        let (mut app, _) = lighting_app(VisualProfile::Mudcrab, 12.0);
+        app.update();
+        app.update();
+        assert_eq!(
+            *app.world().resource::<DirectionalAmbientCube>(),
+            DirectionalAmbientCube::default()
+        );
+        assert!(!app.world().resource::<DirectionalAmbientCube>().enabled);
+        let (mut app, _) = lighting_app(VisualProfile::Skyrim, 12.0);
+        app.insert_resource(
+            crate::color_pipeline::SceneGradeSource::default()
+                .with_weather(VisualProfile::Skyrim, None),
+        );
+        app.update();
+        assert!(!app.world().resource::<DirectionalAmbientCube>().enabled);
+    }
+
+    /// Six faces with a different value on every face and channel, so a swapped face, axis or sign
+    /// shows. Values are raw colour values (a `Color::srgb` colour is not decoded by the cube). Worked by hand:
+    /// the mean is (2.5, 2.0, 3.1) / 6 = (0.416667, 0.333333, 0.516667), slope X is
+    /// (face 1 - face 0) / 2 = (-0.2, 0.3, -0.3), slope Y is (face 3 - face 2) / 2 =
+    /// (0.3, -0.2, -0.2) and slope Z is (face 5 - face 4) / 2 = (0.25, -0.1, 0.15).
+    fn six_known_faces() -> WeatherLighting {
+        let face = |r, g, b| Color::srgb(r, g, b);
+        WeatherLighting {
+            sunlight: Color::BLACK,
+            ambient_cube: [
+                face(0.6, 0.1, 0.8),
+                face(0.2, 0.7, 0.2),
+                face(0.3, 0.4, 0.5),
+                face(0.9, 0.0, 0.1),
+                face(0.0, 0.5, 0.6),
+                face(0.5, 0.3, 0.9),
+            ],
+        }
+    }
+
+    /// The retail form `mean + N . slopes` for the six axes and two diagonals, with the colour
+    /// worked by hand for each. The engine's +X is Creation +X (stored face 1 side), the engine's
+    /// up (+Y) is Creation +Z (face 5 side) and the engine's -Z is Creation +Y (face 3 side).
+    #[test]
+    fn the_directional_ambient_reads_six_known_faces_by_normal() {
+        let cube = six_known_faces().directional_ambient();
+        assert!(cube.enabled);
+        let cases: [(&str, Vec3, [f32; 3]); 8] = [
+            ("+X", Vec3::X, [0.216_667, 0.633_333, 0.216_667]),
+            ("-X", Vec3::NEG_X, [0.616_667, 0.033_333, 0.816_667]),
+            ("+Y up", Vec3::Y, [0.666_667, 0.233_333, 0.666_667]),
+            ("-Y down", Vec3::NEG_Y, [0.166_667, 0.433_333, 0.366_667]),
+            ("-Z", Vec3::NEG_Z, [0.716_667, 0.133_333, 0.316_667]),
+            ("+Z", Vec3::Z, [0.116_667, 0.533_333, 0.716_667]),
+            // Creation (0.6, 0.8, 0).
+            (
+                "diagonal in the ground plane",
+                Vec3::new(0.6, 0.0, -0.8),
+                [0.536_667, 0.353_333, 0.176_667],
+            ),
+            // Creation (2/7, -6/7, 3/7).
+            (
+                "diagonal on all three axes",
+                Vec3::new(2.0, 3.0, 6.0) / 7.0,
+                [0.209_524, 0.547_619, 0.666_667],
+            ),
+        ];
+        for (name, normal, expected) in cases {
+            let got = cube.evaluate(normal).to_array();
+            for channel in 0..3 {
+                assert!(
+                    (got[channel] - expected[channel]).abs() < 1.0e-5,
+                    "{name}: channel {channel} is {}, expected {}",
+                    got[channel],
+                    expected[channel]
+                );
+            }
+        }
+        assert!(
+            (cube.mean - Vec3::new(0.416_667, 0.333_333, 0.516_667))
+                .abs()
+                .max_element()
+                < 1.0e-5
+        );
+    }
+
+    /// NEEDS 41 (reviewed): the six `DALC` colours F0 to F5 in file order apply as F0 on -X, F1 on
+    /// +X, F2 on -Y, F3 on +Y, F4 on -Z and F5 on +Z, in Creation axes, with `ambient = mean +
+    /// N . slope` and `slope = (F+ - F-) / 2` per axis. The engine's axes are Creation's
+    /// `(x, y, z) -> (x, z, -y)`: Creation +Y is the engine's -Z and Creation +Z is the engine's
+    /// up. Greys F0..F5 = 0, 0.6, 0.1, 0.9, 0.2, 0.3 give mean 0.35 and slopes 0.3, 0.4, 0.05, so
+    /// each reading below is worked by hand.
+    #[test]
+    fn the_cube_applies_f0_to_f5_on_the_axes_needs_41_names() {
+        let lighting = WeatherLighting {
+            sunlight: Color::BLACK,
+            ambient_cube: [0.0, 0.6, 0.1, 0.9, 0.2, 0.3].map(|g| Color::srgb(g, g, g)),
+        };
+        let cube = lighting.directional_ambient();
+        // (Creation normal, expected grey). Engine normal = (cx, cz, -cy).
+        for (name, creation, expected) in [
+            ("Creation +X (F1)", Vec3::X, 0.65),
+            ("Creation -X (F0)", Vec3::NEG_X, 0.05),
+            ("Creation +Y (F3)", Vec3::Y, 0.75),
+            ("Creation -Y (F2)", Vec3::NEG_Y, -0.05),
+            ("Creation +Z (F5, up)", Vec3::Z, 0.40),
+            ("Creation -Z (F4, down)", Vec3::NEG_Z, 0.30),
+        ] {
+            let engine = Vec3::new(creation.x, creation.z, -creation.y);
+            let got = cube.evaluate(engine);
+            for channel in [got.x, got.y, got.z] {
+                assert!(
+                    (channel - expected).abs() < 1.0e-5,
+                    "{name}: reads {channel}, NEEDS 41 gives {expected}"
+                );
+            }
+        }
+    }
+
+    /// The near cube and the object LOD material read one convention: the LOD material's CPU twin
+    /// is `AmbientCube::from_dalc(..).ambient_at(creation_normal)` on the record's bytes
+    /// (`lod_object_material.rs`, `lod_object.wgsl`). For byte faces, with the engine normal turned
+    /// into Creation axes as `(n.x, -n.z, n.y)`, the two agree for every normal, so a face order or
+    /// axis change on one path fails here. NEEDS 41 (reviewed) gives the same face order and axes.
+    #[test]
+    fn the_near_cube_matches_the_object_lod_rows_by_normal() {
+        use crate::world::environment::{DirectionalAmbient, interior::AmbientCube};
+        let colors: [[u8; 3]; 6] = [
+            [153, 26, 204],
+            [51, 179, 51],
+            [77, 102, 128],
+            [230, 0, 26],
+            [0, 128, 153],
+            [128, 77, 230],
+        ];
+        let lighting = WeatherLighting {
+            sunlight: Color::BLACK,
+            ambient_cube: colors.map(|[r, g, b]| Color::srgb_u8(r, g, b)),
+        };
+        let near = lighting.directional_ambient();
+        let lod = AmbientCube::from_dalc(&DirectionalAmbient {
+            colors,
+            ..Default::default()
+        });
+        for normal in [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+            Vec3::new(2.0, 3.0, 6.0) / 7.0,
+            Vec3::new(-0.6, -0.48, 0.64),
+        ] {
+            let creation = Vec3::new(normal.x, -normal.z, normal.y);
+            let expected = Vec3::from_array(lod.ambient_at(creation));
+            assert!(
+                (near.evaluate(normal) - expected).abs().max_element() < 1.0e-5,
+                "normal {normal}: near {:?}, object LOD {expected:?}",
+                near.evaluate(normal)
+            );
+        }
     }
 
     /// A weather record without sun colours and DALC blocks gives no lighting: nothing is filled in.

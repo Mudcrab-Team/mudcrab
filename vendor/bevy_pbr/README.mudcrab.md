@@ -33,6 +33,7 @@ so a still actor also keeps the base shape.
 | Add `FogFalloff::PowerRamp` (fog mode 5): `s = saturate((d - start) / (end - start))`, intensity `min(s^power, max)` with max in the fog colour's alpha, and a fog colour that runs from a near colour (`bi`) to the far colour by the intensity. It draws the weather record's exterior fog (#891) | **Mudcrab's own addition, not a Bevy change** | `src/fog.rs`, `src/render/fog.rs`, `src/render/fog.wgsl`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_functions.wgsl` |
 | Add `FogFalloff::PowerRampBlended` (fog mode 6): the same ramp and uniform as mode 5, except that `main_pass_post_lighting_processing` does not fog a draw in the opaque or alpha-mask pass whose `specular_transmission` is 0. The `skyrim` profile fogs those draws in one full-screen pass (`crates/engine/src/retail_fog.rs`, #891) | **Mudcrab's own addition, not a Bevy change** | `src/fog.rs`, `src/render/fog.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_functions.wgsl` |
 | Add `RetailPointFalloff`, a marker component for a `PointLight`. The light gets the `RETAIL_FALLOFF` flag (bit 6 of the clustered light flags) and the shader attenuates it by `saturate(1 - d^2 / range^2)`, Skyrim's falloff, instead of `window(d) / d^2`. There is no `1 / d^2`, so `color x intensity / (4 pi^2)` is the radiance that an albedo-1 surface facing the light receives at its centre. Spot lights ignore the marker (#955) | **Mudcrab's own addition, not a Bevy change** | `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_lighting.wgsl` |
+| Add `DirectionalAmbientCube`: retail's directional ambient. With it enabled, the ambient term is `mean + slopes . N` per pixel normal (Creation axes, the object LOD shader's map) and its diffuse part is `albedo * ambient`, with no `EnvBRDFApprox` scale. With it disabled (the default) the shader is the original | **Mudcrab's own addition, not a Bevy change** | `src/directional_ambient_cube.rs`, `src/lib.rs`, `src/render/light.rs`, `src/render/mesh_view_types.wgsl`, `src/render/pbr_ambient.wgsl` |
 
 Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists the touched spots.
 
@@ -40,6 +41,6 @@ Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists
 
 Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` when a Bevy release
 that Mudcrab uses contains `bevyengine/bevy#26504`, `#26095` and `#26588`, or equivalent fixes (each can go on its own). If Bevy lands a different
-change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read. The power ramp fog is Mudcrab's own addition: keep it, since no Bevy release replaces it.
+change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read. The power ramp fog and the directional ambient are Mudcrab's own additions: keep them, since no Bevy release replaces them.
 After any change run `cargo test --locked -p engine` and the Metal shader-validation run in
 `vendor/BEVY_PATCHES.md`, and confirm it reports 0 out-of-bounds reads.
