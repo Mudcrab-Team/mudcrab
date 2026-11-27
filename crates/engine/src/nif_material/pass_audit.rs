@@ -28,6 +28,8 @@ const REFRACTION: u32 = 1 << 15;
 const TEMP_REFRACTION: u32 = 1 << 2;
 const DECAL: u32 = 1 << 26;
 const DYNAMIC_DECAL: u32 = 1 << 27;
+/// Property flag bit 18: with a decal and flag 32, a hair decal.
+const HAIR: u32 = 1 << 18;
 const DEPTH_TEST: u32 = 1 << 31;
 /// Property flags of the second word: flag `n` is bit `n - 32`.
 const DEPTH_WRITE: u32 = 1;
@@ -49,7 +51,6 @@ enum Open {
     BlendPair,
     TwoSided,
     DecalAlpha,
-    DecalTestWithBit41,
     DecalPrepass,
 }
 
@@ -77,9 +78,6 @@ impl Open {
             Self::TwoSided => "STAND-IN(#362): the two-sided flag does not change the pass",
             Self::DecalAlpha => {
                 "STAND-IN(#362): a decal with property alpha below one and no blend is not specified"
-            }
-            Self::DecalTestWithBit41 => {
-                "STAND-IN(#362): the alpha cut of a flag-41 decal depends on the unknown prepass"
             }
             Self::DecalPrepass => "STAND-IN(#362): a decal stays out of the depth prepass",
         }
@@ -245,13 +243,19 @@ fn rule(authored: &Authored) -> (Option<Pass>, BTreeSet<Open>) {
         if authored.property_alpha < 1.0 {
             open.insert(Open::DecalAlpha);
         }
-        if test && flags_2 & SPECULAR_BIT_41 != 0 {
-            open.insert(Open::DecalTestWithBit41);
-        }
         true
     } else {
         open.insert(Open::OpaqueDepth);
         flags_2 & DEPTH_WRITE != 0
+    };
+    // SPEC-1 section 6.3: a decal that does not blend is cut only with flag 41 clear. A hair
+    // decal (flags 32 and 18 on a lit surface) keeps its own cut.
+    let hair = authored.lighting && flags_1 & HAIR != 0 && flags_2 & DEPTH_WRITE != 0;
+    let uncut = authored.lighting && decal && flags_2 & SPECULAR_BIT_41 != 0 && !hair;
+    let (unblended, test) = if uncut {
+        (Shade::Opaque, false)
+    } else {
+        (unblended, test)
     };
     let pass = Pass {
         stage: Stage::First,
@@ -478,7 +482,6 @@ fn the_loader_draws_every_flag_combination_in_the_specified_pass() {
         Open::BlendPair,
         Open::TwoSided,
         Open::DecalAlpha,
-        Open::DecalTestWithBit41,
         Open::DecalPrepass,
     ] {
         assert!(

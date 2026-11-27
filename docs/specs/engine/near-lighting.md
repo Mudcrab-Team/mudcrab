@@ -164,7 +164,6 @@ open rules of that table, then the rules it gives that the engine does not follo
 | STAND-IN(#362): a blend pair outside the table draws as a plain alpha blend |
 | STAND-IN(#362): the two-sided flag does not change the pass |
 | STAND-IN(#362): a decal with property alpha below one and no blend is not specified |
-| STAND-IN(#362): the alpha cut of a flag-41 decal depends on the unknown prepass |
 | STAND-IN(#362): a decal stays out of the depth prepass |
 | STAND-IN(#362): a blended decal draws after the composite and applies it in its shader |
 | STAND-IN(#362): a blended surface with an alpha test and depth write draws as a cutout |

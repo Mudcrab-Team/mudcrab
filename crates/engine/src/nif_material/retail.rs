@@ -91,6 +91,16 @@ pub(super) fn hair_decal(
     hair
 }
 
+/// Whether the surface is a decal whose colour pass makes no alpha test: flag 41 set, no blend
+/// and no hair decal rule (SPEC-1 section 6.3).
+fn uncut_decal(source: &Material<'_>, flags_1: u32, flags_2: u32) -> bool {
+    let hair = flags_1 & SLSF1_HAIR_BIT_18 != 0 && flags_2 & SLSF2_BIT_32 != 0;
+    flags_1 & SLSF1_ANY_DECAL != 0
+        && flags_2 & SLSF2_SPECULAR_BIT_41 != 0
+        && !hair
+        && super::authored_blend_factors(source).is_none()
+}
+
 /// Whether the converter published this material from a `BSLightingShaderProperty`.
 pub(super) fn is_lighting(material: &Material<'_>) -> bool {
     native_tag(material, "shaderFamily", "lighting")
@@ -232,6 +242,11 @@ pub(super) fn apply(
     }
     if let AlphaMode::Mask(cutoff) = material.alpha_mode {
         material.alpha_mode = AlphaMode::Mask(reference(cutoff));
+    }
+    // A decal that does not blend has the alpha test only with flag 41 clear (section 6.3). A
+    // hair decal keeps its own cut.
+    if uncut_decal(source, flags_1, flags_2) && matches!(material.alpha_mode, AlphaMode::Mask(_)) {
+        material.alpha_mode = AlphaMode::Opaque;
     }
 
     // Property flag bit 20 forces a black base map (section 5).
@@ -407,6 +422,23 @@ mod tests {
             let extra = format!(r#","lightingShaderType":"{kind}""#);
             assert!(!check(0, &extra, &empty), "{kind}");
         }
+    }
+
+    /// SPEC-1 section 6.3: a decal that does not blend is cut only with flag 41 clear. A hair
+    /// decal keeps its own cut.
+    #[test]
+    fn a_decal_with_flag_41_is_not_cut() {
+        let cut = |material: StandardMaterial| matches!(material.alpha_mode, AlphaMode::Mask(_));
+        assert!(cut(applied(SLSF1_ANY_DECAL, 0, "")));
+        let uncut = applied(SLSF1_ANY_DECAL, SLSF2_SPECULAR_BIT_41, "");
+        assert_eq!(uncut.alpha_mode, AlphaMode::Opaque);
+        assert!(cut(applied(
+            SLSF1_ANY_DECAL | SLSF1_HAIR_BIT_18,
+            SLSF2_SPECULAR_BIT_41 | SLSF2_BIT_32,
+            ""
+        )));
+        // A surface that is not a decal keeps its test.
+        assert!(cut(applied(0, SLSF2_SPECULAR_BIT_41 | SLSF2_BIT_32, "")));
     }
 
     /// SPEC-1 section 2.8: the NIF floats load unscaled, with the term of flag bit 41 too.
