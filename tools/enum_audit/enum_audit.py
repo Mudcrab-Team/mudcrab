@@ -65,7 +65,7 @@ EXPLICIT_REJECT_RE = re.compile(
     r"\b(?:Err\b|bail\s*!|ensure\s*!|unreachable\s*!|panic\s*!|nom::Err\b|ok_or\b)"
 )
 INT_MIN_CLAMP_RE = re.compile(
-    r"\.(?:min|clamp)\(\s*(?:-?\d+|0x[0-9a-fA-F_]+)(?!\.)\s*(?:,\s*(?:-?\d+|0x[0-9a-fA-F_]+)(?!\.)\s*)?\)"
+    r"\.(?:min|clamp)\(\s*(?:-?\d+|0x[0-9a-fA-F_]+)(?!\.)\s*(?:,\s*(?:-?\d+|0x[0-9a-fA-F_]+)(?!\.)\s*)?(?:,\s*)?\)"
 )
 SMALL_MASK_RE = re.compile(r"&\s*(0x[0-9a-fA-F_]+|\d+)\b(?!\s*[!=]=)")
 UNWRAP_STR_DEFAULT_RE = re.compile(r'\.unwrap_or\([^)]*"(?:unknown|unused|default)"')
@@ -252,12 +252,13 @@ def validate_sites(root: Path, data: dict) -> tuple[list[str], dict[str, int]]:
             target = root / rel
             if not target.is_file():
                 errors.append(f"sites[{idx}]: file does not exist: {rel}")
-                file_cache[rel] = ""
+                file_cache[rel] = None
                 continue
             file_cache[rel] = target.read_text(encoding="utf-8", errors="replace")
 
         text = file_cache[rel]
-        if text:
+        # An empty file that exists is still checked: its anchors are missing.
+        if text is not None:
             occurrences = text.count(anchor)
             if occurrences == 0:
                 errors.append(
@@ -269,6 +270,27 @@ def validate_sites(root: Path, data: dict) -> tuple[list[str], dict[str, int]]:
                 )
 
     return errors, dict(counts)
+
+
+def catch_arm_text(masked_lines: list[str], line_no: int) -> str:
+    """Text of the match arm that starts on `line_no` (1-based): its line, plus a block or
+    the next line when the arm body continues past the `=>`."""
+    first = masked_lines[line_no - 1]
+    body = first.split("=>", 1)[1] if "=>" in first else ""
+    parts = [first]
+    balance = body.count("{") - body.count("}")
+    idx = line_no
+    if not body.strip() and idx < len(masked_lines):
+        nxt = masked_lines[idx]
+        parts.append(nxt)
+        balance = nxt.count("{") - nxt.count("}")
+        idx += 1
+    while balance > 0 and idx < len(masked_lines):
+        line = masked_lines[idx]
+        parts.append(line)
+        balance += line.count("{") - line.count("}")
+        idx += 1
+    return "\n".join(parts)
 
 
 def scan_file_for_catch_alls(rel_path: str, raw_text: str) -> list[tuple[str, int, str, str]]:
@@ -306,7 +328,9 @@ def scan_file_for_catch_alls(rel_path: str, raw_text: str) -> list[tuple[str, in
                 else:
                     cm = CATCH_ARM_RE.match(stripped)
                     if cm and cm.group(1) not in NON_BINDING_KEYWORDS:
-                        ctx = "\n".join(masked_lines[line_no - 1 : min(len(masked_lines), line_no + 6)])
+                        # Only the catch-all arm itself may show an explicit rejection; an
+                        # unrelated `Err` after the match must not exempt it.
+                        ctx = catch_arm_text(masked_lines, line_no)
                         if not EXPLICIT_REJECT_RE.search(ctx):
                             match_stack[-1][2].append((line_no, rl.strip()))
 
@@ -342,6 +366,23 @@ def scan_file_for_catch_alls(rel_path: str, raw_text: str) -> list[tuple[str, in
                                 findings.append((rel_path, c_line, "match-catch-all", c_snippet))
                 depth = max(0, depth - 1)
 
+    # A clamp call split across lines (for example `.clamp(\n 0,\n 7,\n)`) is matched on the
+    # whole masked text. Every line it spans is reported, so an added line anywhere in it counts.
+    line_starts = [0]
+    for ml in masked_lines:
+        line_starts.append(line_starts[-1] + len(ml) + 1)
+    seen = {(f[1], f[2]) for f in findings}
+    for m in INT_MIN_CLAMP_RE.finditer(masked):
+        if "\n" not in m.group(0):
+            continue  # single-line calls are reported by the line scan
+        first = next(n for n in range(len(line_starts) - 1) if line_starts[n + 1] > m.start()) + 1
+        last = next(n for n in range(len(line_starts) - 1) if line_starts[n + 1] > m.end() - 1) + 1
+        if in_test_line[first - 1] or has_exemption(first):
+            continue
+        for line_no in range(first, last + 1):
+            if (line_no, "integer-clamp") not in seen:
+                findings.append((rel_path, line_no, "integer-clamp", raw_lines[first - 1].strip()))
+                seen.add((line_no, "integer-clamp"))
     return findings
 
 

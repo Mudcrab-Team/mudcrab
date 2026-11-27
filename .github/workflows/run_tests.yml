@@ -458,7 +458,10 @@ jobs:
             base="$PUSH_BEFORE"
           fi
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            python3 -B tools/enum_audit/enum_audit.py --check
+            # No usable push base (for example the first push of a branch): scan against
+            # the default branch so added catch-alls are still checked.
+            git fetch --no-tags --depth=350 origin main
+            python3 -B tools/enum_audit/enum_audit.py --check --base origin/main
           else
             python3 -B tools/enum_audit/enum_audit.py --check --base "$base"
           fi

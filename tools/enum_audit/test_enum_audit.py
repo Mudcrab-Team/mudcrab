@@ -245,6 +245,50 @@ class EnumAuditTests(unittest.TestCase):
                 enum_audit.main(["--root", str(root), "--check", "--base", base_sha]), 0
             )
 
+    def test_empty_registered_file_fails_anchor_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_repo(Path(tmp))
+            (root / "crates" / "converter" / "src" / "esm" / "reader.rs").write_text(
+                "", encoding="utf-8"
+            )
+            self.assertEqual(enum_audit.main(["--root", str(root), "--check"]), 1)
+
+    def test_unrelated_error_after_match_does_not_exempt_catch_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_repo(Path(tmp))
+            base_sha = run_git(root, "rev-parse", "HEAD").strip()
+            target = root / "crates" / "converter" / "src" / "esm" / "new_mode.rs"
+            target.write_text(
+                "pub fn check_mode(mode: u32, ok: bool) -> Result<u32, String> {\n"
+                "    let value = match mode {\n"
+                "        0 => 4,\n"
+                "        _ => 1,\n"
+                "    };\n"
+                "    if !ok {\n"
+                "        return Err(String::from(\"bad\"));\n"
+                "    }\n"
+                "    Ok(value)\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            run_git(root, "add", ".")
+            run_git(root, "commit", "-m", "catch-all near unrelated error")
+            self.assertEqual(
+                enum_audit.main(["--root", str(root), "--check", "--base", base_sha]), 1
+            )
+
+    def test_multi_line_clamp_is_flagged(self):
+        hits = enum_audit.scan_file_for_catch_alls(
+            "crates/converter/src/esm/x.rs",
+            "pub fn f(mode: u8) -> u8 {\n"
+            "    mode.clamp(\n"
+            "        0, // minimum\n"
+            "        7, // maximum\n"
+            "    )\n"
+            "}\n",
+        )
+        self.assertTrue(any(h[2] == "integer-clamp" and h[1] in (2, 3, 4, 5) for h in hits), hits)
+
     def test_diff_flags_clamp_mask_and_unwrap_or(self):
         snippets = [
             "pub fn f(mode: u32) -> u32 { mode.min(7) }\n",
