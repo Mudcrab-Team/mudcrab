@@ -163,23 +163,54 @@ impl LightEvaluation {
         Some(PointLight {
             color: Color::linear_rgb(colour.x, colour.y, colour.z),
             intensity: units.point_intensity(self.retail_fade().abs()),
-            range: self.backend_range?,
+            range: self.retail_radius()?,
             shadow_maps_enabled: false,
             ..default()
         })
     }
 
     /// The fade the retail path scales the colour by: `FNAM` plus the reference offset, with no
-    /// clamp.
+    /// clamp (SPEC-1 section 2.6, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+    /// A negative `FNAM` stays, and the largest float in either value gives the largest float.
+    ///
+    /// STAND-IN(#362): the extra flag byte that stores fade 0 has no known file field.
     pub fn retail_fade(&self) -> f32 {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a sum of two f32 values, bounded by the f32 range below"
-        )]
-        let fade = self
-            .authored_fade
-            .clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32;
-        fade
+        let base = self
+            .source
+            .fade
+            .filter(|fade| fade.is_finite() && self.source.fade_status != Some(2))
+            // A record without a readable fade keeps the unit fade of `evaluate_light`.
+            .unwrap_or(1.0);
+        let offset = self
+            .source
+            .reference_data
+            .as_ref()
+            .filter(|data| [16, 20].contains(&data.data_size))
+            .and_then(|data| data.fade_offset)
+            .filter(|offset| offset.is_finite())
+            .unwrap_or(0.0);
+        if base == f32::MAX || offset == f32::MAX {
+            return f32::MAX;
+        }
+        (base + offset).clamp(f32::MIN, f32::MAX)
+    }
+
+    /// The radius of the retail path: the record radius plus the `XRDS` offset, `0.1` when the sum
+    /// is not above 0, with no upper bound (SPEC-1 section 2.6). `None` for an unreadable input.
+    pub fn retail_radius(&self) -> Option<f32> {
+        let offset = self.radius_offset.unwrap_or(0.0);
+        if self.source.radius_status == Some(2)
+            || !self.source.radius.is_finite()
+            || !offset.is_finite()
+        {
+            return None;
+        }
+        let radius = (self.source.radius + offset).min(f32::MAX);
+        Some(if radius <= 0.0 {
+            NATIVE_NONPOSITIVE_RADIUS
+        } else {
+            radius
+        })
     }
 }
 

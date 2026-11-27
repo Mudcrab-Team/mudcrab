@@ -11,7 +11,10 @@
 //! A surface whose reference names no source, or one the converter could not resolve, keeps the
 //! model's own emission.
 use crate::{
-    nif_depth::NifDepthMaterial, nif_material::ExternalEmittance, retail_lighting::LightUnits,
+    nif_depth::NifDepthMaterial,
+    nif_material::ExternalEmittance,
+    retail_lighting::LightUnits,
+    skin_material::{SkyrimSkinDepthMaterial, SkyrimSkinMaterial},
 };
 use bevy::{app::SceneSpawnerSystems, prelude::*};
 use std::collections::HashMap;
@@ -23,6 +26,9 @@ impl Plugin for EmittancePlugin {
     fn build(&self, app: &mut App) {
         register_emittance::<StandardMaterial>(app);
         register_emittance::<NifDepthMaterial>(app);
+        // A surface with model-space normals takes its source like any lit surface.
+        register_emittance::<SkyrimSkinMaterial>(app);
+        register_emittance::<SkyrimSkinDepthMaterial>(app);
         app.add_systems(Update, drive_emittance_by_hour);
     }
 }
@@ -100,12 +106,18 @@ fn drive_emittance_by_hour(
 }
 
 fn register_emittance<M: EmittingMaterial>(app: &mut App) {
+    // An app without a material's plugin has none of its surfaces.
     app.init_resource::<EmittanceMaterials<M>>()
         .add_systems(
             SpawnScene,
-            apply_reference_emittance::<M>.after(SceneSpawnerSystems::WorldInstanceSpawn),
+            apply_reference_emittance::<M>
+                .after(SceneSpawnerSystems::WorldInstanceSpawn)
+                .run_if(resource_exists::<Assets<M>>),
         )
-        .add_systems(Update, forget_freed_materials::<M>);
+        .add_systems(
+            Update,
+            forget_freed_materials::<M>.run_if(resource_exists::<Assets<M>>),
+        );
 }
 
 /// The colour a reference's `XEMI` source lends its model's `External_Emittance` surfaces, as
@@ -166,6 +178,18 @@ impl EmittingMaterial for NifDepthMaterial {
 
     fn uses_additive_source_colour(&self) -> bool {
         self.extension.state.uses_effect_emittance
+    }
+}
+
+impl EmittingMaterial for SkyrimSkinMaterial {
+    fn base_mut(&mut self) -> &mut StandardMaterial {
+        &mut self.base
+    }
+}
+
+impl EmittingMaterial for SkyrimSkinDepthMaterial {
+    fn base_mut(&mut self) -> &mut StandardMaterial {
+        &mut self.base.base
     }
 }
 
@@ -637,6 +661,45 @@ mod tests {
                 .unwrap()
                 .0,
             material
+        );
+    }
+
+    /// SPEC-1 section 2.7: a surface with model-space normals takes its reference's source too.
+    #[test]
+    fn a_model_space_normal_surface_takes_its_reference_source() {
+        use bevy::pbr::RetailSurface;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<SkyrimSkinMaterial>()
+            .init_resource::<EmittanceMaterials<SkyrimSkinMaterial>>()
+            .add_systems(Update, apply_reference_emittance::<SkyrimSkinMaterial>);
+        let mut material = SkyrimSkinMaterial::default();
+        material.base.retail_surface = Some(RetailSurface {
+            emissive_multiple: 2.0,
+            ..RetailSurface::MATTE
+        });
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<SkyrimSkinMaterial>>()
+            .add(material);
+        let surface = app
+            .world_mut()
+            .spawn((MeshMaterial3d(material), ExternalEmittance))
+            .id();
+        app.world_mut()
+            .spawn(ReferenceEmittance::of(LightUnits::Retail, [255, 51, 0]))
+            .add_child(surface);
+        app.update();
+        let drawn = &app
+            .world()
+            .get::<MeshMaterial3d<SkyrimSkinMaterial>>(surface)
+            .unwrap()
+            .0;
+        let assets = app.world().resource::<Assets<SkyrimSkinMaterial>>();
+        assert_eq!(
+            assets.get(drawn).unwrap().base.emissive,
+            LinearRgba::new(2.0, 0.4, 0.0, 1.0)
         );
     }
 

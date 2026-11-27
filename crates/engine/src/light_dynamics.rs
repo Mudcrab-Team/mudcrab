@@ -21,12 +21,18 @@
 //!   is built from table sines, and `fade = base x (1 - I + I n)`.
 //! - Flag `0x40` (Flicker Slow) alone gets no modulation.
 //! - Only lights within `fFlickeringLightDistance` of the camera advance; the others keep their
-//!   last factor.
-//! - A modulated fade below 0.05 turns the light off until it rises again.
+//!   last factor. Under `skyrim` the distance is the player's, when a player body exists.
+//! - A modulated fade below 0.05 turns the light off until it rises again. Under `skyrim` any
+//!   fade below 0.05 does.
+//! - Under `skyrim` (SPEC-1 section 2.6, [near-lighting.md](../../../docs/specs/engine/near-lighting.md))
+//!   the period is limited to `[0, 1]`, `dt` is the smoothed real frame time of
+//!   [`crate::retail_hdr_chain::FrameTimer`], and the pulse reads the 512-step table too.
 
 use crate::{
     config::EngineConfig,
     lights::{LightEvaluation, SkyrimLight},
+    physics::PlayerBody,
+    retail_hdr_chain::FrameTimer,
     retail_lighting::LightUnits,
     world::{
         components::StreamingCamera,
@@ -75,6 +81,12 @@ pub fn table_sin(angle: f32) -> f32 {
     (index * TAU / 512.0).sin()
 }
 
+/// A cosine from the same 512-step table.
+pub fn table_cos(angle: f32) -> f32 {
+    let index = (angle / TAU * 512.0).floor().rem_euclid(512.0);
+    (index * TAU / 512.0).cos()
+}
+
 /// The flicker noise `n` of the three phases, clamped to `[-1, 1]` (its range is `[-0.2, 0.5333]`).
 pub fn flicker_noise(a: f32, b: f32, c: f32) -> f32 {
     let n = ((table_sin(1.3 * b + 0.65) + 1.0) / 12.0) * (table_sin(1.1 * a + 1.87) + 1.0)
@@ -93,6 +105,16 @@ pub fn flicker_factor(noise: f32, intensity_amplitude: f32) -> f32 {
 pub fn pulse_factor(phase: f32, intensity_amplitude: f32) -> f32 {
     let i = 0.5 * intensity_amplitude;
     1.0 - i + i * phase.cos()
+}
+
+/// The retail pulse: the factor and the translation from the 512-step table.
+pub fn retail_pulse(phase: f32, intensity_amplitude: f32, movement_amplitude: f32) -> (f32, Vec3) {
+    let i = 0.5 * intensity_amplitude;
+    let (sin, cos) = (table_sin(phase), table_cos(phase));
+    (
+        1.0 - i + i * cos,
+        movement_amplitude * Vec3::new(cos, sin, sin * cos),
+    )
 }
 
 /// The pulse's local translation in Creation axes: `movement x (cos P, sin P, sin P cos P)`.
@@ -195,13 +217,15 @@ impl LightDynamics {
     /// [`Self::new`] for the `skyrim` profile (SPEC-1 section 2.6,
     /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): the base fade is the size of
     /// the unclamped authored fade (its sign sits on the colour), the intensity is in retail
-    /// units, a flicker's third phase starts at `16 / radius^2` and a flicker moves its light.
+    /// units, the period is limited to `[0, 1]`, a flicker's third phase starts at
+    /// `16 / radius^2` and a flicker moves its light.
     pub fn retail(evaluation: &LightEvaluation, seed: u32) -> Self {
         let mut dynamics = Self::new(evaluation, seed);
         dynamics.units = LightUnits::Retail;
         dynamics.base_fade = evaluation.retail_fade().abs();
+        dynamics.period = dynamics.period.clamp(0.0, 1.0);
         if dynamics.motion == LightMotion::Flicker
-            && let Some(radius) = evaluation.backend_range
+            && let Some(radius) = evaluation.retail_radius()
         {
             dynamics.phase[2] = FLICKER_START_ATTENUATION / (radius * radius);
         }
@@ -244,17 +268,28 @@ impl LightDynamics {
             }
             LightMotion::Pulse => {
                 self.phase[0] = wrap_once(self.phase[0] + dt * self.period);
-                self.factor = pulse_factor(self.phase[0], self.intensity_amplitude);
-                self.offset = pulse_offset(self.phase[0], self.movement_amplitude);
+                (self.factor, self.offset) = if self.units.is_retail() {
+                    retail_pulse(
+                        self.phase[0],
+                        self.intensity_amplitude,
+                        self.movement_amplitude,
+                    )
+                } else {
+                    (
+                        pulse_factor(self.phase[0], self.intensity_amplitude),
+                        pulse_offset(self.phase[0], self.movement_amplitude),
+                    )
+                };
             }
         }
     }
 
-    /// The modulated NiLight fade: base times the current factor, 0 below [`DETACH_FADE`] for a
-    /// modulated light, never negative.
+    /// The modulated NiLight fade: base times the current factor, never negative, and 0 below
+    /// [`DETACH_FADE`] for a modulated light. Under `skyrim` every light below it is off: retail
+    /// attaches no light with a smaller fade (SPEC-1 section 2.6).
     pub fn fade(&self) -> f32 {
         let fade = (self.base_fade * self.factor).max(0.0);
-        if self.motion != LightMotion::None && fade < DETACH_FADE {
+        if (self.motion != LightMotion::None || self.units.is_retail()) && fade < DETACH_FADE {
             0.0
         } else {
             fade
@@ -270,9 +305,12 @@ impl LightDynamics {
 /// Applies the dimmer, the flicker and the pulse to every spawned light. See the module doc.
 pub(crate) fn update_light_dynamics(
     time: Res<Time>,
+    real: Option<Res<Time<Real>>>,
+    mut retail_timer: Local<FrameTimer>,
     config: Option<Res<EngineConfig>>,
     scene: Option<Res<SceneEnvironment>>,
     camera: Query<&GlobalTransform, With<StreamingCamera>>,
+    player: Query<&GlobalTransform, With<PlayerBody>>,
     mut lights: Query<
         (
             &GlobalTransform,
@@ -283,12 +321,17 @@ pub(crate) fn update_light_dynamics(
         With<SkyrimLight>,
     >,
 ) {
-    // STAND-IN(#955): retail measures the flicker gate and the dimmer from the player. Mudcrab
-    // uses the streaming camera, so in a free or third-person camera the gate follows the camera.
+    // The smoothed time records every frame, as retail's timer does.
+    let retail_dt = retail_timer.push(
+        real.as_deref()
+            .map_or_else(|| time.delta_secs(), |real| real.delta_secs()),
+    );
     let Ok(camera) = camera.single() else {
         return;
     };
     let camera = camera.translation();
+    // `skyrim` gates the flicker by the player; a run without a player body uses the camera.
+    let player = player.single().map_or(camera, GlobalTransform::translation);
     let defaults = EngineConfig::default();
     let config = config.as_deref().unwrap_or(&defaults);
     let (start, range) = (config.light_lod_start_fade, config.light_lod_range);
@@ -309,7 +352,13 @@ pub(crate) fn update_light_dynamics(
     let dt = time.delta_secs();
     for (global, mut light, mut transform, mut dynamics) in &mut lights {
         let distance_squared = global.translation().distance_squared(camera);
-        if distance_squared <= flicker_distance_squared {
+        let (gate_squared, dt) = if dynamics.units.is_retail() {
+            (global.translation().distance_squared(player), retail_dt)
+        } else {
+            // STAND-IN(#955): `mudcrab` measures the flicker gate from the camera.
+            (distance_squared, dt)
+        };
+        if gate_squared <= flicker_distance_squared {
             dynamics.advance(dt);
         }
         let dimmer = distance_dimmer(
