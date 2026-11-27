@@ -99,8 +99,10 @@ pub struct Sequence {
 impl Sequence {
     /// The frames in order once `wanted` of them have arrived, or the first capture error.
     pub fn finished(&self, wanted: u32) -> Option<Result<Vec<FrameStats>, String>> {
-        let received = self.received.lock().ok()?;
-        if received.len() < usize::try_from(wanted).ok()? {
+        let Ok(received) = self.received.lock() else {
+            return Some(Err("a capture observer panicked".to_owned()));
+        };
+        if u32::try_from(received.len()).is_ok_and(|arrived| arrived < wanted) {
             return None;
         }
         let mut frames = Vec::with_capacity(received.len());
