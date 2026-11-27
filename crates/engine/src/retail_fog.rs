@@ -32,8 +32,8 @@ use bevy::{
         render_resource::{
             BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BlendComponent,
             BlendFactor, BlendOperation, BlendState, CachedRenderPipelineId, ColorTargetState,
-            ColorWrites, Extent3d, FragmentState, LoadOp, MultisampleState, Operations, PipelineCache,
-            PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor,
+            ColorWrites, Extent3d, FragmentState, LoadOp, MultisampleState, Operations,
+            PipelineCache, PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor,
             RenderPipelineDescriptor, ShaderStages, ShaderType, SpecializedRenderPipeline,
             SpecializedRenderPipelines, TextureDescriptor, TextureDimension, TextureFormat,
             TextureSampleType, TextureUsages,
@@ -316,10 +316,12 @@ fn init_retail_fog_pipeline(
 }
 
 fn retail_fog_layout(samples: u32) -> BindGroupLayoutDescriptor {
-    let depth = || if samples > 1 {
-        texture_depth_2d_multisampled()
-    } else {
-        texture_depth_2d()
+    let depth = || {
+        if samples > 1 {
+            texture_depth_2d_multisampled()
+        } else {
+            texture_depth_2d()
+        }
     };
     BindGroupLayoutDescriptor::new(
         "retail_fog_layout",
@@ -950,8 +952,8 @@ mod tests {
             for depth in [near, 0.1 * far, 0.5 * far, 0.99 * far, far] {
                 let d = far * (depth - near) / ((far - near) * depth);
                 let remapped = 1.01 * d - 0.01;
-                let expected = 2.0 * near * far /
-                    ((near + far) - (2.0 * remapped - 1.0) * (far - near));
+                let expected =
+                    2.0 * near * far / ((near + far) - (2.0 * remapped - 1.0) * (far - near));
                 let stable = depth / (1.01 - 0.01 * depth / far);
                 assert!((stable - expected).abs() < expected * 1.0e-11);
                 let sky_edge = near * far / (near + (far - near) * 0.000001);
