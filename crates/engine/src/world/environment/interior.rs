@@ -3064,13 +3064,22 @@ mod tests {
         let mut blend = RoomBlend::default();
         blend.snap(Some(7), None);
         blend.step(Some(4), 0.5);
-        assert_eq!(scene.current_render(Some(&blend), None).unwrap().key_color, [9; 3]);
         assert_eq!(
-            scene.current_render(None, Some(Vec3::ZERO)).unwrap().key_color,
+            scene.current_render(Some(&blend), None).unwrap().key_color,
             [9; 3]
         );
         assert_eq!(
-            scene.current_render(None, Some(Vec3::splat(1000.0))).unwrap().key_color,
+            scene
+                .current_render(None, Some(Vec3::ZERO))
+                .unwrap()
+                .key_color,
+            [9; 3]
+        );
+        assert_eq!(
+            scene
+                .current_render(None, Some(Vec3::splat(1000.0)))
+                .unwrap()
+                .key_color,
             [1; 3]
         );
     }
