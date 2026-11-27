@@ -70379,9 +70379,9 @@
       "spec": "SPEC-1 2.1-b, 9.2-d, 9.2-f"
     },
     "TXST.TX04.height": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to texture_sets and converted. Alternate-texture swaps refuse a set that fills this slot (object_materials.rs UNAPPLIED_SLOTS).",
+      "reason": "An alternate-texture swap applies this slot under skyrim as the height map of a parallax surface. Missing: mudcrab refuses such a set, and no other consumer reads the slot from a texture set.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -70401,11 +70401,11 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "const UNAPPLIED_SLOTS: [(usize, &str); 3] = [(3, \"height\"), (6, \"specular\"), (7, \"detail\")];"
+          "anchor": "let mut refused = unapplied.clone();"
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "let mut refused = unapplied.clone();"
+          "anchor": "standard.depth_map = Some(image(paths.retail.height).unwrap_or_else(|| {"
         }
       ],
       "spec": "SPEC-1 2.1-b, 9.2-d, 9.2-f"
@@ -70465,7 +70465,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "const UNAPPLIED_SLOTS: [(usize, &str); 3] = [(3, \"height\"), (6, \"specular\"), (7, \"detail\")];"
+          "anchor": "const UNAPPLIED_SLOTS: [(usize, &str); 2] = [(6, \"specular\"), (7, \"detail\")];"
         },
         {
           "path": "crates/engine/src/object_materials.rs",
@@ -70497,7 +70497,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "const UNAPPLIED_SLOTS: [(usize, &str); 3] = [(3, \"height\"), (6, \"specular\"), (7, \"detail\")];"
+          "anchor": "const UNAPPLIED_SLOTS: [(usize, &str); 2] = [(6, \"specular\"), (7, \"detail\")];"
         },
         {
           "path": "crates/engine/src/object_materials.rs",

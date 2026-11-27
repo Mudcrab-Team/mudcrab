@@ -141,8 +141,40 @@ pbr_input.material.uv_transform = uv_transform;
     var uv_b = uv;
 #endif
 
+    // mudcrab: retail's parallax technique (SPEC-1 section 9.2, technique 3): one step,
+    // `uv' = uv + V.xy (0.08 t3.r - 0.04)`, with `V` in the shape's model space. A retail surface
+    // with a depth map holds retail's height map there.
+#ifdef VERTEX_UVS_A
+#ifndef MESHLET_MESH_MATERIAL_PASS
+    if ((flags & pbr_types::STANDARD_MATERIAL_FLAGS_DEPTH_MAP_BIT) != 0u
+        && (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u) {
+        // The mesh stores its affine transform as three rows, so this sum is the transpose of the
+        // rotation applied to the world view vector. A uniform scale drops out in the normalise.
+        let rows = mesh[in.instance_index].world_from_local;
+        let model_view = normalize(rows[0].xyz * pbr_input.V.x + rows[1].xyz * pbr_input.V.y
+            + rows[2].xyz * pbr_input.V.z);
+        let height = textureSampleBias(
+#ifdef BINDLESS
+            bindless_textures_2d[material_indices[slot].depth_map_texture],
+            bindless_samplers_filtering[material_indices[slot].depth_map_sampler],
+#else   // BINDLESS
+            pbr_bindings::depth_map_texture,
+            pbr_bindings::depth_map_sampler,
+#endif  // BINDLESS
+            uv,
+            bias.mip_bias,
+        ).r;
+        uv += model_view.xy * (0.08 * height - 0.04);
+#ifndef VERTEX_UVS_B
+        uv_b = uv;
+#endif
+    }
+#endif  // MESHLET_MESH_MATERIAL_PASS
+#endif  // VERTEX_UVS_A
+
 #ifdef VERTEX_TANGENTS
-    if ((flags & pbr_types::STANDARD_MATERIAL_FLAGS_DEPTH_MAP_BIT) != 0u) {
+    if ((flags & pbr_types::STANDARD_MATERIAL_FLAGS_DEPTH_MAP_BIT) != 0u
+        && (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u) {
         let V = pbr_input.V;
         let TBN = pbr_functions::calculate_tbn_mikktspace(in.world_normal, in.world_tangent);
         let T = TBN[0];

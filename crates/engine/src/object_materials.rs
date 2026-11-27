@@ -17,10 +17,11 @@
 //! section 2.1, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): TX00 gets no
 //! sRGB view there. A lit surface with an authored depth state ([`NifDepthMaterial`]) is swapped
 //! like a plain one. That profile also applies the glow map (NIF slot 2) to a surface that reads
-//! one, and the environment cube and mask (slots 4 and 5) to an environment surface (section 9.2).
+//! one, the height map (slot 3) to a parallax surface, and the environment cube and mask (slots 4
+//! and 5) to an environment surface (section 9.2).
 //!
-//! Limits, reported rather than guessed: a TXST that fills the height, specular or detail slot is
-//! not applied and the shape keeps its model material. `mudcrab` applies TX00 (diffuse) and TX01
+//! Limits, reported rather than guessed: a TXST that fills the specular or detail slot is not
+//! applied and the shape keeps its model material. `mudcrab` applies TX00 (diffuse) and TX01
 //! (normal) only. STAND-IN(#490): the glow map reaches a surface only when its model has one.
 //! Directional MATO layers and a general TXST shader remain with their own owners.
 
@@ -67,6 +68,7 @@ enum SwapKind {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RetailSlots<T> {
     glow: Option<T>,
+    height: Option<T>,
     environment: Option<T>,
     mask: Option<T>,
 }
@@ -75,6 +77,7 @@ impl RetailSlots<String> {
     fn borrowed(&self) -> RetailSlots<&str> {
         RetailSlots {
             glow: self.glow.as_deref(),
+            height: self.height.as_deref(),
             environment: self.environment.as_deref(),
             mask: self.mask.as_deref(),
         }
@@ -86,6 +89,7 @@ impl<T: Copy> RetailSlots<T> {
     fn filled(&self) -> impl Iterator<Item = (&'static str, T)> {
         [
             ("glow", self.glow),
+            ("height", self.height),
             ("environment", self.environment),
             ("mask", self.mask),
         ]
@@ -188,7 +192,7 @@ impl ObjectTextureCatalog {
 /// The `texture_sets` columns no profile applies, with their place in the query above: diffuse,
 /// normal, glow, height, environment, mask, specular and detail (the projection of TX02 to TX07
 /// in `db-schema.md`).
-const UNAPPLIED_SLOTS: [(usize, &str); 3] = [(3, "height"), (6, "specular"), (7, "detail")];
+const UNAPPLIED_SLOTS: [(usize, &str); 2] = [(6, "specular"), (7, "detail")];
 
 fn filled(slot: &Option<String>) -> Option<&str> {
     slot.as_deref().filter(|path| !path.is_empty())
@@ -203,11 +207,12 @@ fn set_kind(slots: &[Option<String>]) -> SwapKind {
                 .ok_or_else(|| format!("unusable texture path {path:?}")),
         }
     };
-    let converted: Result<Vec<_>, String> = [0, 1, 2, 4, 5]
+    let converted: Result<Vec<_>, String> = [0, 1, 2, 3, 4, 5]
         .map(|column| convert(&slots[column]))
         .into_iter()
         .collect();
-    let [diffuse, normal, glow, environment, mask] = match converted.map(<[_; 5]>::try_from) {
+    let [diffuse, normal, glow, height, environment, mask] = match converted.map(<[_; 6]>::try_from)
+    {
         Ok(Ok(converted)) => converted,
         Ok(Err(_)) => return SwapKind::Missing("unusable texture set row".into()),
         Err(reason) => return SwapKind::Missing(reason),
@@ -222,6 +227,7 @@ fn set_kind(slots: &[Option<String>]) -> SwapKind {
         normal,
         retail: RetailSlots {
             glow,
+            height,
             environment,
             mask,
         },
@@ -471,6 +477,15 @@ fn bind_swapped<M: SwappedMaterial>(
                 .retail_surface
                 .is_some_and(|surface| surface.environment_scale != 0.0);
             let image = |path: Option<&str>| path.map(|path| handles[path].clone());
+            // A parallax surface reads the new height map, and an empty slot is black.
+            // `retail_environment` makes the view read the stored bytes.
+            if standard.retail_surface.is_some() && standard.depth_map.is_some() {
+                standard.depth_map = Some(image(paths.retail.height).unwrap_or_else(|| {
+                    images.add(crate::nif_material::texel_image(
+                        crate::nif_material::EMPTY_HEIGHT_TEXEL,
+                    ))
+                }));
+            }
             standard.retail_environment_cube = None;
             standard.retail_environment_mask = None;
             standard.retail_environment_cube_source =

@@ -67,6 +67,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 7 | output tail, `k`, `B`, `B2` | `render/pbr_retail.wgsl`, object LOD `lod_object.wgsl` |
 | 8 | fog property, composite records 53 and 49, clear colour (corrected by SPEC-4, below) | `sky.rs`, `retail_fog.rs`, `interior::FogFields` |
 | 9.2 | model-space normals, face, face tint, hair, landscape | `shaders/skyrim_skin.wgsl`, terrain shaders |
+| 9.2 | parallax technique: one step on the height map, also from a swapped texture set | `nif_material/retail.rs`, vendored `pbr_fragment.wgsl`, `object_materials.rs` |
 | 9.2 | environment technique: cube, mask, scale | `nif_material/retail.rs`, `nif_material/retail_environment.rs`, vendored `pbr_fragment.wgsl` and `pbr_retail.wgsl` |
 | 8.1, 9.2, 9.3 | the pass of a surface: unblended lit surfaces and decals before the composite, blended surfaces after it | `NifDepthState::retail_first_stage`, `nif_material/retail.rs`, vendored `extended_material.rs`; table `nif_material/pass_audit.rs` |
 | 10 | image space, adaptation, bloom, tonemap | `retail_hdr*.rs` and `shaders/retail_hdr*.wgsl` |
@@ -133,7 +134,8 @@ changes the picture is unverified.
 | A pack without [material values](#material-values) keeps specular strength and colour clamped to `[0, 1]`, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
 | Only `XEMI` references take an emittance source, mixed by day part from the converter's table; an external emittance surface without a source is black | STAND-IN(#362): emittance source and membership |
 | The environment fade is 1 and the technique is not dropped at `fEnvmapLODFadeEnd`; the eye technique and a model-space reflection are not drawn; a swapped glow map reaches a surface only when its model has one; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
-| Parallax, projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
+| Projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
+| A parallax pass without specular, soft, rim, back or ambient specular takes the camera's view vector; what retail gives it is unverified | STAND-IN(#362): the parallax view constant |
 | Landscape specular is not drawn; layer weights stay normalised by their sum | STAND-IN(#547): the LTEX specular exponent per layer |
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
 | Terrain LOD takes the plain near sum | STAND-IN(#946): LOD techniques excluded |

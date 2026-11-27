@@ -39,7 +39,12 @@ use super::{
 };
 use crate::skin_material::{SkyrimSkinFlags, SkyrimSkinMaterial};
 use ::gltf::Material;
-use bevy::{pbr::RetailSurface, prelude::*};
+use bevy::{
+    asset::RenderAssetUsages,
+    pbr::RetailSurface,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
 use shared::material_values::{MaterialValues, MaterialValuesFile};
 
 /// Property flag bit 0: specular.
@@ -271,6 +276,11 @@ pub(super) fn apply(
             .filter(|handle| **handle != Handle::default())
             .cloned()
     };
+    // The parallax technique reads its height map in the shader (section 9.2). An empty height
+    // slot is black (section 5), which the loader binds.
+    material.depth_map = (technique(flags_1, flags_2) == Technique::Parallax)
+        .then(|| texture("height"))
+        .flatten();
     material.retail_environment_cube_source = environment.and_then(|_| texture("environment_cube"));
     material.retail_environment_mask_source = material
         .retail_environment_cube_source
@@ -310,6 +320,32 @@ pub(super) fn empty_base_slot(source: &Material<'_>, material: &StandardMaterial
         && flags_1 & SLSF1_BLACK_BASE == 0
         && !native_tag(source, "lightingShaderType", "skin_tint")
         && !native_tag(source, "lightingShaderType", "face_tint")
+}
+
+/// A one-texel image that reads its stored bytes.
+pub(crate) fn texel_image(texel: [u8; 4]) -> Image {
+    Image::new_fill(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &texel,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::default(),
+    )
+}
+
+/// The texel of an empty height slot (section 5).
+pub(crate) const EMPTY_HEIGHT_TEXEL: [u8; 4] = [0, 0, 0, 255];
+
+/// Whether a lit surface of the parallax technique has an empty height slot, so it samples
+/// [`EMPTY_HEIGHT_TEXEL`].
+pub(super) fn empty_height_slot(source: &Material<'_>, material: &StandardMaterial) -> bool {
+    // silent-ok: a lighting material without published flag words has every flag clear.
+    let (flags_1, flags_2) = native_depth_flags(source).unwrap_or_default();
+    material.depth_map.is_none() && technique(flags_1, flags_2) == Technique::Parallax
 }
 
 /// Whether a lit material has a refraction flag (flag 2 or 15): retail draws no `Lighting` pass
@@ -439,6 +475,27 @@ mod tests {
         )));
         // A surface that is not a decal keeps its test.
         assert!(cut(applied(0, SLSF2_SPECULAR_BIT_41 | SLSF2_BIT_32, "")));
+    }
+
+    /// SPEC-1 section 9.2: only the parallax technique (flag 11 without flag 28) reads a height
+    /// map, and its empty slot is black.
+    #[test]
+    fn only_the_parallax_technique_reads_a_height_map() {
+        let slots = r#"{"semantic":"height","texture":1}"#;
+        let textures = handles();
+        let (parallax, occlusion) = (1 << 11, 1 << 28);
+        let material = environment((parallax, 0), None, slots, &textures);
+        assert_eq!(material.depth_map.as_ref(), textures.get(1));
+        for flags in [parallax | occlusion, 0] {
+            let material = environment((flags, 0), None, slots, &textures);
+            assert!(material.depth_map.is_none(), "{flags:#x}");
+        }
+        let bare = StandardMaterial::default();
+        for (flags, empty) in [(parallax, true), (0, false)] {
+            let json = document(flags, 0, "", 1.0);
+            let source = json.materials().next().unwrap();
+            assert_eq!(empty_height_slot(&source, &bare), empty);
+        }
     }
 
     /// SPEC-1 section 2.8: the NIF floats load unscaled, with the term of flag bit 41 too.

@@ -49,6 +49,8 @@ pub(super) fn build(app: &mut App) {
         (
             bind::<StandardMaterial>.run_if(resource_exists::<Assets<StandardMaterial>>),
             bind::<NifDepthMaterial>.run_if(resource_exists::<Assets<NifDepthMaterial>>),
+            raw_height::<StandardMaterial>.run_if(resource_exists::<Assets<StandardMaterial>>),
+            raw_height::<NifDepthMaterial>.run_if(resource_exists::<Assets<NifDepthMaterial>>),
         ),
     );
 }
@@ -158,6 +160,48 @@ fn bind<M: EnvironmentSurface>(
     });
 }
 
+/// Makes a retail surface's height map read its stored bytes: the glTF load decodes it as sRGB,
+/// and a parallax step reads the stored value.
+fn raw_height<M: EnvironmentSurface>(
+    mut events: MessageReader<AssetEvent<M>>,
+    mut pending: Local<HashSet<AssetId<M>>>,
+    mut materials: ResMut<Assets<M>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    for event in events.read() {
+        if let AssetEvent::Added { id } | AssetEvent::Modified { id } = event {
+            pending.insert(*id);
+        }
+    }
+    pending.retain(|id| {
+        let Some(height) = materials
+            .get(*id)
+            .map(EnvironmentSurface::surface)
+            .filter(|surface| surface.retail_surface.is_some())
+            .and_then(|surface| surface.depth_map.clone())
+        else {
+            return false;
+        };
+        let decoded = images
+            .get(&height)
+            .is_some_and(|image| image.texture_descriptor.format.is_srgb());
+        match prepare(&mut images, &height, Role::Mask) {
+            Prepared::Loading => true,
+            Prepared::Unusable(reason) => {
+                warn_once!("parallax surface keeps its decoded height map: {reason}");
+                false
+            }
+            Prepared::Ready => {
+                // A write access prepares the material again, so it binds the new view.
+                if decoded && let Some(mut material) = materials.get_mut(*id) {
+                    material.surface_mut();
+                }
+                false
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +302,32 @@ mod tests {
             .unwrap();
         app.update();
         assert_eq!(bound(&app, &material), (true, false));
+    }
+
+    /// A parallax step reads the stored height, so the decoded view is replaced.
+    #[test]
+    fn a_retail_height_map_reads_its_stored_bytes() {
+        let mut app = app();
+        let height = add(&mut app, image(1, false, TextureFormat::Rgba8UnormSrgb));
+        let plain = add(&mut app, image(1, false, TextureFormat::Rgba8UnormSrgb));
+        for (map, retail_surface) in [
+            (height.clone(), Some(bevy::pbr::RetailSurface::MATTE)),
+            (plain.clone(), None),
+        ] {
+            app.world_mut()
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial {
+                    depth_map: Some(map),
+                    retail_surface,
+                    ..default()
+                });
+        }
+        app.update();
+        app.update();
+        let images = app.world().resource::<Assets<Image>>();
+        let format = |handle| images.get(handle).unwrap().texture_descriptor.format;
+        assert_eq!(format(&height), TextureFormat::Rgba8Unorm);
+        assert_eq!(format(&plain), TextureFormat::Rgba8UnormSrgb);
     }
 
     #[test]

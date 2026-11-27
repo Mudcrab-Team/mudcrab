@@ -10,7 +10,7 @@ use crate::{
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
 use bevy::{
-    asset::{AssetPath, LoadContext, RenderAssetUsages, embedded_asset},
+    asset::{AssetPath, LoadContext, embedded_asset},
     gltf::{
         DefaultGltfImageSampler, GltfMaterial,
         extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
@@ -20,7 +20,7 @@ use bevy::{
     light::NotShadowCaster,
     pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
-    render::render_resource::{AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat},
+    render::render_resource::{AsBindGroup, ShaderType},
     shader::{ShaderRef, load_shader_library},
 };
 use shared::material_values::{MATERIAL_VALUES_FILE, MaterialValuesFile};
@@ -35,6 +35,7 @@ use std::{
 mod retail;
 mod retail_environment;
 pub(crate) mod technique;
+pub(crate) use retail::{EMPTY_HEIGHT_TEXEL, texel_image};
 use technique::{Technique, technique};
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
@@ -423,8 +424,8 @@ struct NativeMaterialHandler {
     raw_colour_texels: bool,
     /// The pack's material values sidecar, read once under `skyrim`.
     material_values: Option<Arc<MaterialValuesFile>>,
-    /// The image of an empty base map slot, added to this load when a surface first needs it.
-    empty_base: Option<Handle<Image>>,
+    /// The images of empty texture slots, added to this load when a surface first needs one.
+    empty_slots: HashMap<[u8; 4], Handle<Image>>,
 }
 
 /// The sidecar at the root of the pack in `assets`, when the pack has one.
@@ -493,23 +494,15 @@ impl NativeMaterialHandler {
                 .is_none_or(|(flags_1, flags_2)| technique(flags_1, flags_2) == wanted)
     }
 
-    /// The one-texel image of [`retail::EMPTY_BASE_TEXEL`], stored bytes with no decode.
-    fn empty_base(&mut self, context: &mut LoadContext<'_>) -> Handle<Image> {
-        self.empty_base
-            .get_or_insert_with(|| {
+    /// The one-texel image an empty slot samples, stored bytes with no decode.
+    fn empty_slot(&mut self, context: &mut LoadContext<'_>, texel: [u8; 4]) -> Handle<Image> {
+        self.empty_slots
+            .entry(texel)
+            .or_insert_with(|| {
+                let [red, green, blue, alpha] = texel;
                 context.add_labeled_asset(
-                    "mudcrab/empty_base".to_owned(),
-                    Image::new_fill(
-                        Extent3d {
-                            width: 1,
-                            height: 1,
-                            depth_or_array_layers: 1,
-                        },
-                        TextureDimension::D2,
-                        &retail::EMPTY_BASE_TEXEL,
-                        TextureFormat::Rgba8Unorm,
-                        RenderAssetUsages::default(),
-                    ),
+                    format!("mudcrab/empty_slot_{red}_{green}_{blue}_{alpha}"),
+                    retail::texel_image(texel),
                 )
             })
             .clone()
@@ -892,7 +885,11 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             );
             retail::apply(source, &standard, values, &self.textures, &mut material);
             if retail::empty_base_slot(source, &material) {
-                material.base_color_texture = Some(self.empty_base(context));
+                material.base_color_texture =
+                    Some(self.empty_slot(context, retail::EMPTY_BASE_TEXEL));
+            }
+            if retail::empty_height_slot(source, &material) {
+                material.depth_map = Some(self.empty_slot(context, retail::EMPTY_HEIGHT_TEXEL));
             }
         }
         let mut depth = self.depth_state(source, material.alpha_mode);

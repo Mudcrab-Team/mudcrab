@@ -50,8 +50,9 @@ per-record materials or directional snow.
    authored depth state: base colour from TX00 and normal map from TX01, each with the original
    sampler; the emissive, specular, metallic-roughness and occlusion textures are dropped because
    the TXST does not supply them (RF-TEX-004). `mudcrab` views TX00 as sRGB. `skyrim` reads every
-   swapped texture raw, and also applies the glow map to a surface that reads one, and the
-   environment cube (TX05) and mask (TX02) to an environment surface. UV transforms, alpha mode, shader values and the shared mesh and
+   swapped texture raw, and also applies the glow map to a surface that reads one, the height map
+   (TX04) to a parallax surface, and the environment cube (TX05) and mask (TX02) to an
+   environment surface. UV transforms, alpha mode, shader values and the shared mesh and
    scene assets stay intact. Equal (source material, TXST) pairs share the derived material.
    Cache entries hold asset IDs rather than owning material handles.
 
@@ -86,8 +87,8 @@ read for this count.
 ## Deliberate limits
 
 - A TXST that fills a slot its profile does not apply is not applied, and its shape keeps the
-  model material: TX02 to TX07 under `mudcrab`, and the height (TX04), specular (TX07) and detail
-  (TX06) slots under `skyrim`.
+  model material: TX02 to TX07 under `mudcrab`, and the specular (TX07) and detail (TX06) slots
+  under `skyrim`.
 - STAND-IN(#490): the swapped glow map reaches a surface only when its model has a glow map.
 - The texture set flags (`DNAM`) are not read: SPEC-1 does not define their effect.
 - Models with a skin, a static fallback or

@@ -73,6 +73,14 @@ const RETAIL_SURFACE_LINKS: [(&str, &str); 32] = [
     ),
     (
         "src/render/pbr_fragment.wgsl",
+        "uv += model_view.xy * (0.08 * height - 0.04);",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
+        "&& (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) == 0u) { let V = pbr_input.V;",
+    ),
+    (
+        "src/render/pbr_fragment.wgsl",
         "vec3<f32>(reflected.x, -reflected.z, reflected.y),",
     ),
     ("src/pbr_material.rs", "const RETAIL_ALPHA_TEST = 1 << 22;"),
