@@ -829,30 +829,35 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
         }
         current = next;
     }
-    // A steady scene after the hazards: each frame shows the same, and not a solid frame.
+    // A steady scene after the hazards. The pair comes back from the largest values by its
+    // adaptation rates, so the screen may stay washed for a while; no single frame may flash,
+    // and the scene must be there at the end.
     upload(&first_scene);
-    let mut shown = Vec::new();
-    for _ in 0..24 {
-        run(true, current);
-        current = 1 - current;
-        shown.push(tonemapped(current));
-    }
     let mean = |pixels: &[[f32; 4]]| {
         pixels.iter().map(|pixel| pixel[1]).sum::<f32>() / pixels.len() as f32
     };
-    for pair in shown.windows(2) {
+    let mut means = Vec::new();
+    let mut last = Vec::new();
+    for _ in 0..600 {
+        run(true, current);
+        current = 1 - current;
+        last = tonemapped(current);
+        means.push(mean(&last));
+    }
+    for (frame, three) in means.windows(3).enumerate() {
         assert!(
-            (mean(&pair[1]) - mean(&pair[0])).abs() < 0.05,
-            "a steady scene flickers: {} then {}",
-            mean(&pair[0]),
-            mean(&pair[1])
+            (three[1] - three[0]).abs() < 0.05 || (three[2] - three[0]).abs() > 0.01,
+            "a flash at steady frame {frame}: {three:?}"
         );
     }
-    let last = &shown[shown.len() - 1];
+    for pair in means[means.len() - 60..].windows(2) {
+        assert!((pair[1] - pair[0]).abs() < 0.01, "not settled: {pair:?}");
+    }
+    let settled = mean(&last);
     assert!(
-        last.iter()
-            .any(|pixel| (pixel[1] - mean(last)).abs() > 0.05),
-        "the recovered frame is solid"
+        last.iter().any(|pixel| (pixel[1] - settled).abs() > 0.05),
+        "the recovered frame is solid, mean {settled}; pair {:?}",
+        read_texture(&device, &queue, &adapted[current].0, true)
     );
 
     let error = bevy::tasks::block_on(validation.pop());
