@@ -1,4 +1,6 @@
-//! Going through a load door: look at one, press E, fade to black, arrive at the other side.
+//! Going through a load door: look at one, press E, fade to black, arrive at the other side. An
+//! automatic door (`DOOR.FNAM` 0x02) needs no key: touching it starts the crossing. An
+//! inaccessible reference (header flag 0x100) is never a load door (`crate::doors::load_door`).
 //!
 //! One state machine per crossing, with a single crossing at a time:
 //!
@@ -199,6 +201,11 @@ struct Crossing {
 #[derive(Resource, Default, Debug)]
 pub struct DoorCrossing {
     active: Option<Crossing>,
+    /// Automatic doors that must not start a crossing again until the player has stood clear of
+    /// them: the door just used and the door the player arrived at, both of which the player
+    /// touches when a crossing ends (a failed landing puts the player back at the source door).
+    /// A door leaves the set the first frame it exists and is not touched.
+    suppressed: HashSet<u32>,
 }
 
 impl DoorCrossing {
@@ -293,10 +300,12 @@ impl DoorCrossing {
                 arrival_position: [0.0; 3],
                 arrival_rotation: [0.0; 3],
             },
+            flags: None,
         };
         let space = ActiveSpace::default();
         let target = landing_for(&door, &space, 0);
         Self {
+            suppressed: HashSet::new(),
             active: Some(Crossing {
                 door,
                 target,
@@ -396,6 +405,67 @@ pub(crate) fn ray_hits_door(
         }
     }
     Some(near)
+}
+
+/// Whether the player's capsule touches a door: some point of the capsule's axis is within the
+/// capsule radius, plus [`DOOR_BLOCKER_SLACK`] (the door's own collider and frame sit at its bounds,
+/// so a player stopped by them still touches), of the door's bounds.
+///
+/// `feet` is the player's feet in render space. The axis is sampled at its two ends and its middle;
+/// that spacing is under the capsule radius, so a bounds box cannot slip between samples. Using the
+/// door's converted model bounds for the automatic trigger volume is unverified against
+/// SkyrimSE.exe's trigger routine (`AutoLoadMarker01.nif` bounds are `[-700, 700]`).
+pub(crate) fn capsule_touches_door(
+    feet: Vec3,
+    tuning: &MovementTuning,
+    door: &GlobalTransform,
+    bounds: &ExpectedModelBounds,
+) -> bool {
+    let affine = door.affine();
+    let inverse = affine.inverse();
+    // As in `ray_hits_door`: a singular affine has no inverse, and such a door is not touchable.
+    if !inverse.is_finite() {
+        return false;
+    }
+    let reach = tuning.capsule_radius + DOOR_BLOCKER_SLACK;
+    let bottom = feet + Vec3::Y * tuning.capsule_radius;
+    let top = feet + Vec3::Y * (tuning.capsule_standing_height - tuning.capsule_radius).max(0.0);
+    [bottom, bottom.lerp(top, 0.5), top]
+        .into_iter()
+        .any(|point| {
+            let local = inverse.transform_point3(point);
+            let nearest = affine.transform_point3(local.clamp(bounds.min, bounds.max));
+            nearest.distance(point) <= reach
+        })
+}
+
+/// The automatic door the player touches, if any. Doors in `suppressed` that are not touched leave
+/// it, so a door the player has stepped away from works again; a touched suppressed door is skipped.
+fn automatic_door_touched<'a>(
+    doors: &'a Query<(&LoadDoor, &GlobalTransform, Option<&ExpectedModelBounds>)>,
+    feet: Vec3,
+    tuning: &MovementTuning,
+    suppressed: &mut HashSet<u32>,
+) -> Option<&'a LoadDoor> {
+    let mut touched: Option<(&LoadDoor, f32)> = None;
+    for (door, transform, bounds) in doors.iter() {
+        if !door.is_automatic() {
+            continue;
+        }
+        let bounds = bounds.copied().unwrap_or_else(fallback_bounds);
+        if !capsule_touches_door(feet, tuning, transform, &bounds) {
+            suppressed.remove(&door.ref_id);
+            continue;
+        }
+        if suppressed.contains(&door.ref_id) {
+            continue;
+        }
+        let distance = transform.translation().distance(feet);
+        if touched.is_none_or(|(_, nearest)| distance < nearest) {
+            touched = Some((door, distance));
+        }
+    }
+    touched.map(|(door, _)| door)
 }
 
 /// Whether a collider the camera ray met first hides a door `door_distance` away: it must be
@@ -736,45 +806,52 @@ fn drive_door_crossing(
             return;
         }
         // Idle: E at a door starts a crossing.
-        if !keyboard.just_pressed(KeyCode::KeyE) || *capture != CursorCapture::Captured {
-            return;
-        }
+        // An automatic door starts one when the player touches it, with no key.
         let Ok(view) = camera.single() else {
             return;
         };
-        let direction = view.forward().as_vec3();
-        let Some((door, distance)) = doors
-            .iter()
-            .filter_map(|(door, transform, bounds)| {
-                let bounds = bounds.copied().unwrap_or_else(fallback_bounds);
-                ray_hits_door(view.translation, direction, transform, &bounds, DOOR_REACH)
-                    .map(|distance| (door, distance))
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-        else {
-            return;
-        };
-        // The same camera-ray test the tankard grab uses: a door behind a wall is not reachable.
-        // Without a physics world (a run with no colliders) nothing can block.
-        if let Ok(physics) = physics.single() {
-            let filter = match player.single() {
-                Ok((player, _)) => QueryFilter::default().exclude_rigid_body(player),
-                Err(_) => QueryFilter::default(),
-            };
-            let nearest = physics
-                .cast_ray(view.translation, direction, DOOR_REACH, true, filter)
-                .map(|(_, distance)| distance);
-            if door_view_blocked(nearest, distance) {
-                return;
-            }
-        }
-        let (yaw, _, _) = view.rotation.to_euler(EulerRot::YXZ);
         let feet = crossing_feet(
             *mode == crate::physics::MoveMode::Walk,
             player.single().ok().map(|(_, body)| body.translation),
             view.translation,
             &tuning,
         );
+        let door = match automatic_door_touched(&doors, feet, &tuning, &mut crossing.suppressed) {
+            Some(door) => door,
+            None => {
+                if !keyboard.just_pressed(KeyCode::KeyE) || *capture != CursorCapture::Captured {
+                    return;
+                }
+                let direction = view.forward().as_vec3();
+                let Some((door, distance)) = doors
+                    .iter()
+                    .filter_map(|(door, transform, bounds)| {
+                        let bounds = bounds.copied().unwrap_or_else(fallback_bounds);
+                        ray_hits_door(view.translation, direction, transform, &bounds, DOOR_REACH)
+                            .map(|distance| (door, distance))
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                else {
+                    return;
+                };
+                // The same camera-ray test the tankard grab uses: a door behind a wall is not
+                // reachable. Without a physics world (a run with no colliders) nothing can block.
+                if let Ok(physics) = physics.single() {
+                    let filter = match player.single() {
+                        Ok((player, _)) => QueryFilter::default().exclude_rigid_body(player),
+                        Err(_) => QueryFilter::default(),
+                    };
+                    let nearest = physics
+                        .cast_ray(view.translation, direction, DOOR_REACH, true, filter)
+                        .map(|(_, distance)| distance);
+                    if door_view_blocked(nearest, distance) {
+                        return;
+                    }
+                }
+                door
+            }
+        };
+        let (yaw, _, _) = view.rotation.to_euler(EulerRot::YXZ);
         let restore = Restore {
             space: *space,
             camera_space: *camera_space,
@@ -787,6 +864,11 @@ fn drive_door_crossing(
             yaw,
         };
         let target = landing_for(door, &space, config.worldspace_id);
+        // The player stands at both ends of the crossing until they step away from them.
+        crossing.suppressed.insert(door.ref_id);
+        crossing
+            .suppressed
+            .insert(door.destination.destination_ref_id);
         debug!(
             door = format_args!("{:08X}", door.ref_id),
             "door crossing started"
@@ -1011,6 +1093,7 @@ mod tests {
         LoadDoor {
             ref_id: 0x10,
             destination,
+            flags: None,
         }
     }
 
@@ -1642,6 +1725,171 @@ mod tests {
         // E while it runs does not start another.
         press_e(&mut app);
         assert!(app.world().resource::<DoorCrossing>().is_active());
+    }
+
+    fn with_flags(mut door: LoadDoor, flags: u8) -> LoadDoor {
+        door.flags = Some(crate::doors::DoorFlags(flags));
+        door
+    }
+
+    fn move_camera(app: &mut App, translation: Vec3) {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<StreamingCamera>>();
+        query.single_mut(app.world_mut()).unwrap().translation = translation;
+    }
+
+    /// The camera that puts the player's capsule against the test door (a 100-unit cube centred
+    /// 150 units ahead of the origin), and one that leaves it well clear.
+    const TOUCHING: Vec3 = Vec3::new(0.0, 0.0, -80.0);
+
+    #[test]
+    fn touching_an_automatic_door_starts_a_crossing_without_e() {
+        let (mut app, _) = app_with(with_flags(
+            interior_door(),
+            crate::doors::DOOR_FLAG_AUTOMATIC,
+        ));
+        app.update();
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        move_camera(&mut app, TOUCHING);
+        app.update();
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+        run_until_black(&mut app);
+        assert_eq!(
+            app.world().resource::<ActiveSpace>().interior,
+            Some(77),
+            "the automatic crossing lands in the destination"
+        );
+    }
+
+    #[test]
+    fn touching_a_plain_hidden_or_unflagged_door_starts_nothing() {
+        let hidden_only = crate::doors::DOOR_FLAG_HIDDEN;
+        for flags in [
+            None,
+            Some(0x00),
+            Some(hidden_only),
+            Some(0x08 | 0x10 | 0x20),
+        ] {
+            let door = match flags {
+                Some(flags) => with_flags(interior_door(), flags),
+                None => interior_door(),
+            };
+            let (mut app, _) = app_with(door);
+            move_camera(&mut app, TOUCHING);
+            for _ in 0..3 {
+                app.update();
+            }
+            assert!(
+                !app.world().resource::<DoorCrossing>().is_active(),
+                "flags {flags:?} are not automatic"
+            );
+            // E still crosses a door that is not automatic, hidden or not: Hidden omits the door
+            // from the local map (<https://ck.uesp.net/wiki/Door>) and leaves E activation active.
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&mut Transform, With<StreamingCamera>>();
+            query.single_mut(app.world_mut()).unwrap().translation = Vec3::ZERO;
+            press_e(&mut app);
+            assert!(app.world().resource::<DoorCrossing>().is_active());
+        }
+    }
+
+    #[test]
+    fn touching_an_automatic_door_while_paused_starts_nothing() {
+        let (mut app, _) = app_with(with_flags(
+            interior_door(),
+            crate::doors::DOOR_FLAG_AUTOMATIC,
+        ));
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        move_camera(&mut app, TOUCHING);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+    }
+
+    #[test]
+    fn an_automatic_door_the_player_has_not_stepped_clear_of_does_not_fire_again() {
+        let (mut app, _) = app_with(with_flags(
+            interior_door(),
+            crate::doors::DOOR_FLAG_AUTOMATIC,
+        ));
+        app.world_mut()
+            .resource_mut::<DoorCrossing>()
+            .suppressed
+            .insert(0x10);
+        move_camera(&mut app, TOUCHING);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(
+            !app.world().resource::<DoorCrossing>().is_active(),
+            "a suppressed door stays quiet while it is touched"
+        );
+        move_camera(&mut app, Vec3::new(0.0, 0.0, 300.0));
+        app.update();
+        assert!(app.world().resource::<DoorCrossing>().suppressed.is_empty());
+        move_camera(&mut app, TOUCHING);
+        app.update();
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+    }
+
+    #[test]
+    fn a_crossing_suppresses_the_door_it_used_and_the_one_it_arrives_at() {
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        let crossing = app.world().resource::<DoorCrossing>();
+        assert!(crossing.is_active());
+        assert_eq!(crossing.suppressed, HashSet::from([0x10, 0x20]));
+    }
+
+    fn cube(half: f32) -> ExpectedModelBounds {
+        ExpectedModelBounds::new(Vec3::splat(-half), Vec3::splat(half)).unwrap()
+    }
+
+    #[test]
+    fn the_capsule_touches_a_door_within_its_radius_and_the_collider_slack() {
+        let tuning = MovementTuning::default();
+        let door = GlobalTransform::default();
+        let bounds = cube(50.0);
+        let reach = tuning.capsule_radius + DOOR_BLOCKER_SLACK;
+        let at = |x: f32| capsule_touches_door(Vec3::new(x, 0.0, 0.0), &tuning, &door, &bounds);
+        assert!(at(0.0), "standing inside the bounds");
+        assert!(at(50.0 + reach - 1.0));
+        assert!(!at(50.0 + reach + 1.0));
+        assert!(!at(-(50.0 + reach + 1.0)));
+        // Above the door: the capsule's axis starts a radius above the feet.
+        let above = Vec3::new(0.0, 50.0 + reach + 1.0, 0.0);
+        assert!(!capsule_touches_door(above, &tuning, &door, &bounds));
+        // A capsule standing on the door's floor and as tall as a person still reaches a high box.
+        let below = Vec3::new(0.0, -200.0, 0.0);
+        assert!(!capsule_touches_door(below, &tuning, &door, &bounds));
+    }
+
+    #[test]
+    fn the_touch_test_follows_the_door_rotation_and_rejects_singular_doors() {
+        let tuning = MovementTuning::default();
+        let bounds = ExpectedModelBounds::new(
+            Vec3::new(-10.0, -50.0, -100.0),
+            Vec3::new(10.0, 50.0, 100.0),
+        )
+        .unwrap();
+        // Turned a quarter about Y, the long axis (local Z) lies along world X.
+        let turned = GlobalTransform::from(Transform::from_rotation(Quat::from_rotation_y(
+            std::f32::consts::FRAC_PI_2,
+        )));
+        let along_x = Vec3::new(90.0, 0.0, 0.0);
+        let along_z = Vec3::new(0.0, 0.0, 90.0);
+        assert!(capsule_touches_door(along_x, &tuning, &turned, &bounds));
+        assert!(!capsule_touches_door(along_z, &tuning, &turned, &bounds));
+        let singular = GlobalTransform::from(Transform::from_scale(Vec3::ZERO));
+        assert!(!capsule_touches_door(
+            Vec3::ZERO,
+            &tuning,
+            &singular,
+            &bounds
+        ));
     }
 
     #[test]

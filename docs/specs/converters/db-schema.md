@@ -2026,6 +2026,11 @@ is not a placed `DOOR` reference in a stored cell (an exterior cell needs its gr
 record decides: an override that removes `XTEL` removes the link. The `XTEL` flags word is not
 projected; it stays in `records.data`.
 
+The table keeps every placed load door, including references flagged Inaccessible (`REFR` header
+bit 8, `0x100`) and doors whose base `DOOR.FNAM` is Automatic (`0x02`) or Hidden (`0x04`). The engine
+applies those flags at runtime from `references.header_flags` and the base record's `records.data`,
+so a metadata rebuild is not needed to respect them.
+
 A full load-order export clears and rebuilds the table on every conversion, like the grass and
 room tables. Placement edits refresh links to and from edited doors in the same transaction.
 When a plugin placement layer edits a door, the projection reads its effective fields from
@@ -2049,6 +2054,10 @@ it through a `LEFT JOIN` on `references`, only when the table exists with every 
 | Door without `XTEL`, or with a malformed one | no row | scenery |
 | Destination cell has no resolvable record | no row | scenery |
 | Row with a NULL arrival value | n/a | not a load door |
+| Reference flagged Inaccessible (`references.header_flags & 0x100`) | row kept | not a load door |
+| Old database without `references.header_flags` | n/a | door stays usable, logs once |
+| Base `DOOR` flags (`FNAM`) | stay in `records.data` | engine reads them: Automatic crosses on touch, Hidden is carried on `LoadDoor` for local-map visibility |
+| Old database without `records.data`, or an unreadable `DOOR` record | n/a | flags unknown: plain prompt door, logs once |
 
 ---
 
