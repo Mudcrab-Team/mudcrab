@@ -7,7 +7,14 @@
 //!
 //! [`ActorDrive`] is the only thing a caller sets. Every resolved actor starts at speed zero and
 //! keeps the idle clip until something drives it; no AI, navigation, or input feeds this module.
+//!
+//! An actor whose records resolve carries [`ActorMovementSpeeds`]: its race's `WKMV` and `RNMV`
+//! movement types and its `NPC_.ACBS` speed multiplier (#1065, #1066). [`ActorDrive::walking`]
+//! and [`ActorDrive::running`] take their speed from it, and the run clip starts at the actor's
+//! own run speed. An actor without those records keeps the stand-in [`MovementTuning`].
 
+use crate::actors::Actor;
+use crate::movement_speeds::ActorMovementSpeeds;
 use crate::streaming::PendingAssetProfile;
 use bevy::{
     animation::{
@@ -16,7 +23,7 @@ use bevy::{
     },
     prelude::*,
 };
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 /// The gait an actor plays, in ascending speed order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,11 +46,13 @@ impl Gait {
     }
 }
 
-/// Speed thresholds for [`gait_for`], in creation units per second.
+/// Stand-in speed thresholds for [`gait_for`], in creation units per second.
 ///
-/// The defaults are the plan's authored walk and run speeds, so each clip's cadence roughly
-/// matches the actor's ground speed. This is the actor's gait tuning, separate from the player's
-/// `crate::physics::MovementTuning`; nothing here reads the player's movement state.
+/// An actor with [`ActorMovementSpeeds`] does not use these: its own run speed is the run
+/// threshold. This is the gait tuning of an actor whose records did not resolve (a world
+/// database without movement types, or an actor whose movement type is missing from it). It is
+/// separate from the player's `crate::physics::MovementTuning`; nothing here reads the player's
+/// movement state.
 #[derive(Debug, Clone, Copy, Resource)]
 pub struct MovementTuning {
     /// Speeds below this are unambiguously walking.
@@ -54,6 +63,8 @@ pub struct MovementTuning {
 
 impl Default for MovementTuning {
     fn default() -> Self {
+        // STAND-IN(#1066): an actor without resolved record speeds has no run speed to compare
+        // with, so the earlier project thresholds stay for that actor only.
         Self {
             walk_below: 160.0,
             run_at_or_above: 300.0,
@@ -72,6 +83,16 @@ impl ActorDrive {
     pub fn new(speed: f32) -> Self {
         Self { speed }
     }
+
+    /// Drives the actor at its own record walk speed.
+    pub fn walking(speeds: &ActorMovementSpeeds) -> Self {
+        Self::new(speeds.walk)
+    }
+
+    /// Drives the actor at its own record run speed.
+    pub fn running(speeds: &ActorMovementSpeeds) -> Self {
+        Self::new(speeds.run)
+    }
 }
 
 /// The gait for `speed`.
@@ -84,6 +105,21 @@ pub fn gait_for(speed: f32, tuning: &MovementTuning) -> Gait {
         speed if !speed.is_finite() || speed <= 0.0 => Gait::Idle,
         speed if speed >= tuning.run_at_or_above => Gait::Run,
         speed if speed < tuning.walk_below => Gait::Walk,
+        _ => Gait::Walk,
+    }
+}
+
+/// The gait for `speed` when the actor's own record speeds are known.
+///
+/// Idle covers zero and every non-finite or negative speed. A speed at or above the actor's own
+/// run speed plays the run clip. Every other speed plays the walk clip.
+///
+/// STAND-IN(#1066): no record says which clip an actor plays at a speed between its walk and
+/// run speeds, so this keeps the earlier rule that only the run threshold changes the clip.
+pub fn gait_for_actor(speed: f32, speeds: &ActorMovementSpeeds) -> Gait {
+    match speed {
+        speed if !speed.is_finite() || speed <= 0.0 => Gait::Idle,
+        speed if speeds.run > 0.0 && speed >= speeds.run => Gait::Run,
         _ => Gait::Walk,
     }
 }
@@ -124,22 +160,58 @@ pub struct ActorGait(pub Gait);
 /// Crossfade length when the gait changes.
 pub const GAIT_TRANSITION: Duration = Duration::from_millis(200);
 
+type ActorGaitComponents<'a> = (
+    Entity,
+    Option<&'a Actor>,
+    &'a ActorDrive,
+    Option<&'a ActorMovementSpeeds>,
+    &'a mut ActorGait,
+    &'a ActorGaitNodes,
+    &'a mut AnimationPlayer,
+    &'a mut AnimationTransitions,
+);
+
 /// Selects the gait clip from [`ActorDrive::speed`] and crossfades only when the gait changes.
 ///
 /// Selecting the gait the actor already plays is a no-op, so equal-speed frames never restart the
 /// clip.
 fn select_actor_gait(
     tuning: Res<MovementTuning>,
-    mut actors: Query<(
-        &ActorDrive,
-        &mut ActorGait,
-        &ActorGaitNodes,
-        &mut AnimationPlayer,
-        &mut AnimationTransitions,
-    )>,
+    mut logged_zero_run: Local<HashSet<Entity>>,
+    mut actors: Query<ActorGaitComponents<'_>>,
 ) {
-    for (drive, mut gait, nodes, mut player, mut transitions) in &mut actors {
-        let wanted = gait_for(drive.speed, &tuning);
+    for (entity, actor, drive, record_speeds, mut gait, nodes, mut player, mut transitions) in
+        &mut actors
+    {
+        let wanted = match record_speeds {
+            Some(speeds) => {
+                if drive.speed.is_finite()
+                    && drive.speed > 0.0
+                    && speeds.run <= 0.0
+                    && logged_zero_run.insert(entity)
+                {
+                    if let Some(actor) = actor {
+                        warn!(
+                            entity = ?entity,
+                            base_form_id = format_args!("{:08X}", actor.base_form_id),
+                            race_id = format_args!("{:08X}", actor.race_id),
+                            speed = drive.speed,
+                            run_speed = speeds.run,
+                            "actor driven with non-positive record run speed; keeping walk gait"
+                        );
+                    } else {
+                        warn!(
+                            entity = ?entity,
+                            speed = drive.speed,
+                            run_speed = speeds.run,
+                            "actor driven with non-positive record run speed; keeping walk gait"
+                        );
+                    }
+                }
+                gait_for_actor(drive.speed, speeds)
+            }
+            None => gait_for(drive.speed, &tuning),
+        };
         if gait.0 == wanted {
             continue;
         }
@@ -232,6 +304,64 @@ mod tests {
         assert_eq!(gait_for(300.0 + f32::EPSILON, &tuning), Gait::Run);
         assert_eq!(gait_for(10_000.0, &tuning), Gait::Run);
         assert_eq!(gait_for(0.0, &tuning), Gait::Idle);
+    }
+
+    fn speeds(percent: u16) -> ActorMovementSpeeds {
+        ActorMovementSpeeds::new(
+            80.1,
+            370.0,
+            crate::movement_speeds::SpeedMultiplier::new(percent),
+        )
+    }
+
+    #[test]
+    fn an_actors_own_run_speed_is_its_run_threshold() {
+        let plain = speeds(100);
+        assert_eq!(gait_for_actor(0.0, &plain), Gait::Idle);
+        assert_eq!(gait_for_actor(f32::NAN, &plain), Gait::Idle);
+        assert_eq!(gait_for_actor(-1.0, &plain), Gait::Idle);
+        assert_eq!(gait_for_actor(plain.walk, &plain), Gait::Walk);
+        assert_eq!(gait_for_actor(369.9, &plain), Gait::Walk);
+        assert_eq!(gait_for_actor(plain.run, &plain), Gait::Run);
+        // The stand-in 300 threshold no longer decides: this actor runs at 370.
+        assert_eq!(gait_for_actor(300.0, &plain), Gait::Walk);
+
+        // A 150 percent actor runs at 555, so 400 is still a walk clip for it.
+        let fast = speeds(150);
+        assert_eq!(fast.run, 555.0);
+        assert_eq!(gait_for_actor(400.0, &fast), Gait::Walk);
+        assert_eq!(gait_for_actor(555.0, &fast), Gait::Run);
+
+        // A zero run speed does not turn a positive walk speed into a run clip.
+        let walk_only =
+            ActorMovementSpeeds::new(80.1, 0.0, crate::movement_speeds::SpeedMultiplier::NEUTRAL);
+        assert_eq!(gait_for_actor(0.0, &walk_only), Gait::Idle);
+        assert_eq!(gait_for_actor(80.1, &walk_only), Gait::Walk);
+    }
+
+    #[test]
+    fn walking_and_running_drives_take_the_actors_record_speeds() {
+        let fast = speeds(150);
+        assert_eq!(ActorDrive::walking(&fast).speed, fast.walk);
+        assert_eq!(ActorDrive::running(&fast).speed, fast.run);
+        assert_eq!(
+            gait_for_actor(ActorDrive::walking(&fast).speed, &fast),
+            Gait::Walk
+        );
+        assert_eq!(
+            gait_for_actor(ActorDrive::running(&fast).speed, &fast),
+            Gait::Run
+        );
+    }
+
+    #[test]
+    fn a_150_percent_actor_covers_one_and_a_half_times_the_distance() {
+        let mut slow = Transform::default();
+        let mut fast = Transform::default();
+        advance_actor(&mut slow, ActorDrive::running(&speeds(100)).speed, 1.0);
+        advance_actor(&mut fast, ActorDrive::running(&speeds(150)).speed, 1.0);
+        assert!((slow.translation.length() - 370.0).abs() < 0.01);
+        assert!((fast.translation.length() - 555.0).abs() < 0.01);
     }
 
     #[test]
@@ -427,6 +557,33 @@ mod tests {
         step(&mut app, 160.0, Gait::Walk);
         step(&mut app, 300.0, Gait::Run);
         step(&mut app, 0.0, Gait::Idle);
+    }
+
+    #[test]
+    fn record_speeds_replace_the_stand_in_run_threshold_in_the_graph() {
+        let (_directory, mut app) = fixture_app();
+        let actor = spawn_animated_actor(&mut app);
+        app.world_mut().entity_mut(actor).insert(speeds(100));
+        let gait_nodes = nodes(&app, actor);
+
+        let mut step = |speed: f32, gait: Gait| {
+            app.world_mut()
+                .entity_mut(actor)
+                .get_mut::<ActorDrive>()
+                .expect("the drive")
+                .speed = speed;
+            app.update();
+            assert_eq!(actor_gait(&app, actor), gait, "speed {speed}");
+            assert_eq!(
+                main_node(&app, actor),
+                gait_nodes.node(gait),
+                "speed {speed}"
+            );
+        };
+        step(0.0, Gait::Idle);
+        // 300 is the stand-in run threshold. This actor's own run speed is 370.
+        step(300.0, Gait::Walk);
+        step(370.0, Gait::Run);
     }
 
     #[test]

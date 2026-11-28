@@ -32709,7 +32709,7 @@
     "MOVT.SPED.back_run": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32725,11 +32725,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -32737,7 +32737,7 @@
     "MOVT.SPED.back_walk": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32753,11 +32753,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -32765,7 +32765,7 @@
     "MOVT.SPED.forward_run": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32781,11 +32781,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -32793,7 +32793,7 @@
     "MOVT.SPED.forward_walk": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32809,11 +32809,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -32821,7 +32821,7 @@
     "MOVT.SPED.left_run": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32837,11 +32837,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -32849,7 +32849,7 @@
     "MOVT.SPED.left_walk": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32865,11 +32865,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -32877,7 +32877,7 @@
     "MOVT.SPED.right_run": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32893,11 +32893,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -32905,7 +32905,7 @@
     "MOVT.SPED.right_walk": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported for all MOVTs and consumed for player WKMV/RNMV walk and run speeds in physics.rs, but unused for NPCs (actor_drive.rs hardcodes 160/300), sprint (SPMV uses hardcoded 1.5x), sneak, swim, and fly; also WKMV run columns and RNMV walk columns are never indexed.",
+      "reason": "Exported for all MOVTs. The walk slot's forward walk and the run slot's forward run feed the player and every actor's walk and run speed; the other directions of those two columns feed the player. Still unused: the walk slot's run column and the run slot's walk column (no retail rule says when they apply, docs/player-sprint-research.md), sprint (SPMV, #1067), sneak, swim and fly (no such movement state exists in the engine).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -32921,11 +32921,11 @@
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, FORWARD_WALK)?;"
         },
         {
-          "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
         }
       ],
       "issue": "#1066"
@@ -46821,24 +46821,31 @@
       ]
     },
     "NPC_.ACBS.speed_multiplier": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "NPC_/ACBS is read by actor_models and physics.rs, and movement speed tuning is implemented, but ACBS bytes 14..16 (speed_multiplier) are ignored so actors/player with speed_multiplier != 100 move at 100% speed.",
+      "reason": "NPC_/ACBS bytes 14..16 are read as a percentage (UESP NPC_ ACBS table; xEdit NPC_ ACBS Speed Multiplier; CommonLibSSE-NG TESActorBaseData::speedMult). The player's value scales every gait of MovementTuning::target_speed (including legacy databases when records holds Player NPC_ 00000007), and each resolved actor base follows TPLT Use Stats (0x0002) chains in NpcSpeedTable to scale walk and run speeds in ActorMovementSpeeds attached on spawn.",
       "evidence": [
         {
-          "path": "crates/converter/src/actor_models.rs",
-          "anchor": "fn npc_sex(view: &SubrecordView<'_>) -> (bool, bool) {"
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "pub struct SpeedMultiplier(u16);"
+        },
+        {
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn resolve_speed_multiplier(&self, npc: u32) -> std::result::Result<SpeedMultiplier, String> {"
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let acbs = player.required(b\"ACBS\", 24)?;"
+          "anchor": "fn player_speed_multiplier(conn: &Connection) -> Result<SpeedMultiplier> {"
         },
         {
           "path": "crates/engine/src/physics.rs",
-          "anchor": "let walk = load_race_movement_type(&conn, walk_link, \"WKMV\", &defaults, 4)?;"
+          "anchor": "self.unscaled_target_speed(strafe, slow, sprint) * self.speed_multiplier.factor()"
+        },
+        {
+          "path": "crates/engine/src/streaming.rs",
+          "anchor": "if let Some(speeds) = plan.movement {"
         }
-      ],
-      "issue": "#1065"
+      ]
     },
     "NPC_.ACBS.template_flags": {
       "disposition": "covered-by-flag-audit",
@@ -62007,9 +62014,9 @@
       "issue": "#1068"
     },
     "RACE.RNMV.base_movement_default_run": {
-      "disposition": "partial",
+      "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Remapped and exported to race_movement_links for all RACE records, and read by physics.rs for the player's race, but unused for NPCs (actor_drive.rs hardcodes 160/300).",
+      "reason": "Remapped and exported to race_movement_links for all RACE records. The player's race and every resolved actor base's race resolve the RNMV slot (an unset slot takes its default object) in physics.rs and movement_speeds.rs. Spawned actors carry ActorMovementSpeeds, and the actor's run speed and run-clip threshold come from it.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -62028,11 +62035,14 @@
           "anchor": "let (walk_link, run_link): (Option<u32>, Option<u32>) = conn"
         },
         {
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
+        },
+        {
           "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "anchor": "pub fn gait_for_actor(speed: f32, speeds: &ActorMovementSpeeds) -> Gait {"
         }
-      ],
-      "issue": "#1066"
+      ]
     },
     "RACE.SPED.back_run": {
       "disposition": "dropped",
@@ -62215,7 +62225,7 @@
     "RACE.WKMV.base_movement_default_walk": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Remapped and exported to race_movement_links for all RACE records, and read by physics.rs for the player's race, but unused for NPCs (actor_drive.rs hardcodes 160/300).",
+      "reason": "Remapped and exported to race_movement_links for all RACE records. The player's race resolves the WKMV slot (an unset slot takes DMWL) for player walking in physics.rs, and movement_speeds.rs resolves ActorMovementSpeeds::walk for every resolved actor base and attaches it on spawn. The run-clip threshold comes from RNMV instead, and no runtime AI drives NPCs with ActorDrive::walking yet.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -62234,8 +62244,12 @@
           "anchor": "let (walk_link, run_link): (Option<u32>, Option<u32>) = conn"
         },
         {
+          "path": "crates/engine/src/movement_speeds.rs",
+          "anchor": "fn race_walk_run("
+        },
+        {
           "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "#[derive(Debug, Clone, Copy, Resource)]"
+          "anchor": "pub fn walking(speeds: &ActorMovementSpeeds) -> Self {"
         }
       ],
       "issue": "#1066"

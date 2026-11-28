@@ -37,6 +37,9 @@ mod live_console;
 mod matched_route;
 pub mod mesh_preparation_retry;
 pub mod metrics;
+#[cfg(test)]
+mod movement_speed_guard_tests;
+pub mod movement_speeds;
 pub mod nif_depth;
 pub mod nif_material;
 pub mod object_materials;
