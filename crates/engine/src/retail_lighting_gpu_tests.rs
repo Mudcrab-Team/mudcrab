@@ -440,7 +440,8 @@ fn retail_pixel_example_b_exterior() {
             far_rgb: bytes([130, 160, 200]),
             ramp: [1000.0, 80_000.0, 0.5, 0.8],
             lit: [0.966_026, 0.680_193, 0.437_308],
-            input: [0.730_871, 0.562_637, 0.423_793],
+            // SPEC-2 §3 (packed copy): use the R11G11B10 scene colour before fog.
+            input: [0.727_941, 0.562_337, 0.418_580],
         },
         "B 12:00",
     );
@@ -461,7 +462,8 @@ fn retail_pixel_example_b_exterior() {
             far_rgb: at_18([130, 160, 200], [150, 110, 120]),
             ramp: [800.0, 64_000.0, 0.54, 0.84],
             lit: [0.401_255, 0.233_716, 0.159_762],
-            input: [0.379_016, 0.246_230, 0.199_329],
+            // SPEC-2 §3 (packed copy): use the R11G11B10 scene colour before fog.
+            input: [0.377_011, 0.245_161, 0.196_750],
         },
         "B 18:00",
     );

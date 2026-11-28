@@ -119,15 +119,52 @@ struct Frame {
     bloom: Plane,
 }
 
-fn cpu_frame(scene: &Plane, previous: Option<&Plane>, hdr: &RetailHdr) -> Frame {
+#[derive(Clone, Copy)]
+enum ChainPrecision {
+    Half,
+    PackedNearest,
+    PackedTruncated,
+}
+
+impl ChainPrecision {
+    fn store(self, size: (u32, u32), value: impl Fn(f32, f32) -> Colour) -> Plane {
+        Plane::from_fn(size, |u, v| {
+            let colour = value(u, v);
+            match self {
+                Self::Half => colour,
+                Self::PackedNearest | Self::PackedTruncated => {
+                    // These fixtures use finite nonnegative values within the packed range.
+                    std::array::from_fn(|channel| {
+                        let value = colour[channel];
+                        let exponent = ((value.to_bits() >> 23) & 0xff) as i32 - 127;
+                        let mantissa_bits = if channel == 2 { 5 } else { 6 };
+                        let step = 2.0_f32.powi(exponent.max(-14) - mantissa_bits);
+                        let units = value / step;
+                        step * match self {
+                            Self::PackedNearest => units.round_ties_even(),
+                            _ => units.floor(),
+                        }
+                    })
+                }
+            }
+        })
+    }
+}
+
+fn cpu_frame(
+    scene: &Plane,
+    previous: Option<&Plane>,
+    hdr: &RetailHdr,
+    precision: ChainPrecision,
+) -> Frame {
     let sizes = chain_sizes(scene.width, scene.height, true);
-    let first = Plane::from_fn(sizes[0], |u, v| average4(scene, u, v));
-    let second = Plane::from_fn(sizes[1], |u, v| {
+    let first = precision.store(sizes[0], |u, v| average4(scene, u, v));
+    let second = precision.store(sizes[1], |u, v| {
         let l = luminance(average4(&first, u, v));
         [l, l, l]
     });
     assert_eq!(sizes.len(), 3, "the test scene has one 16-tap step");
-    let pair = Plane::from_fn(sizes[2], |u, v| match previous {
+    let pair = precision.store(sizes[2], |u, v| match previous {
         None => {
             let l = average16(&second, u, v, false);
             [l, l, l]
@@ -146,7 +183,7 @@ fn cpu_frame(scene: &Plane, previous: Option<&Plane>, hdr: &RetailHdr) -> Frame 
     let weights = bloom_taps(RADIUS);
     let (threshold, scale, k_r) = (hdr.bloom.x, hdr.bloom.y, hdr.bloom.w);
     let k = RADIUS as i32;
-    let swap = Plane::from_fn(size, |u, v| {
+    let swap = precision.store(size, |u, v| {
         let mut sum = [0.0; 3];
         for tap in -k..=k {
             let sample = first.nearest(u, v + tap as f32 / size.1 as f32);
@@ -157,7 +194,7 @@ fn cpu_frame(scene: &Plane, previous: Option<&Plane>, hdr: &RetailHdr) -> Frame 
         }
         sum.map(|c| k_r * scale * c)
     });
-    let bloom = Plane::from_fn(size, |u, v| {
+    let bloom = precision.store(size, |u, v| {
         let mut sum = [0.0; 3];
         for tap in -k..=k {
             let sample = swap.nearest(u + tap as f32 / swap.width as f32, v);
@@ -630,36 +667,53 @@ fn verify_chain(format: wgpu::TextureFormat) {
         encode_chain(&device, &mut encoder, &chain_gpu, &plan, view);
         queue.submit([encoder.finish()]);
     };
-    let compare = |what: &str, actual: &[[f32; 4]], expected: &Plane, channels: usize| {
-        assert_eq!(actual.len(), expected.texels.len(), "{what} size");
-        for (index, (gpu, cpu)) in actual.iter().zip(&expected.texels).enumerate() {
-            for channel in 0..channels {
-                // Packed targets have 5 or 6 mantissa bits. The CPU reference uses half floats.
-                let tolerance = if wide { 3.0e-3 } else { 3.0e-2 } * cpu[channel].abs().max(1.0);
-                assert!(
-                    (gpu[channel] - cpu[channel]).abs() <= tolerance,
-                    "{what} texel {index} channel {channel}: GPU {} vs CPU {}",
-                    gpu[channel],
-                    cpu[channel]
-                );
+    let compare =
+        |what: &str, actual: &[[f32; 4]], lower: &Plane, upper: &Plane, channels: usize| {
+            assert_eq!(actual.len(), lower.texels.len(), "{what} size");
+            assert_eq!(actual.len(), upper.texels.len(), "{what} size");
+            for (index, gpu) in actual.iter().enumerate() {
+                let low = lower.texels[index];
+                let high = upper.texels[index];
+                for channel in 0..channels {
+                    // Allow shader arithmetic error in addition to the per-store precision.
+                    let tolerance = 3.0e-3 * high[channel].abs().max(1.0);
+                    assert!(
+                        (low[channel] - tolerance..=high[channel] + tolerance)
+                            .contains(&gpu[channel]),
+                        "{what} texel {index} channel {channel}: GPU {} vs CPU {}..={}",
+                        gpu[channel],
+                        low[channel],
+                        high[channel]
+                    );
+                }
             }
-        }
+        };
+    let (lower, upper) = if wide {
+        (ChainPrecision::Half, ChainPrecision::Half)
+    } else {
+        // Packed stores may truncate or round. Propagate both through the positive-weight passes.
+        (
+            ChainPrecision::PackedTruncated,
+            ChainPrecision::PackedNearest,
+        )
     };
 
     // Frame 1: no adapted pair, so the last step becomes the pair (A.x = A.y = n).
     let first_scene = scene_plane(1.0);
     upload(&first_scene);
     run(false, 0);
-    let first = cpu_frame(&first_scene, None, &hdr);
+    let first_low = cpu_frame(&first_scene, None, &hdr, lower);
+    let first_high = cpu_frame(&first_scene, None, &hdr, upper);
     let pair = read_texture(&device, &queue, &adapted[1].0);
-    compare("first pair", &pair, &first.pair, 3);
+    compare("first pair", &pair, &first_low.pair, &first_high.pair, 3);
     for texel in &pair {
         assert_eq!(texel[0], texel[1], "the first-frame ratio is exactly 1");
     }
     compare(
         "first bloom",
         &read_texture(&device, &queue, &bloom.0),
-        &first.bloom,
+        &first_low.bloom,
+        &first_high.bloom,
         3,
     );
 
@@ -667,16 +721,23 @@ fn verify_chain(format: wgpu::TextureFormat) {
     let second_scene = scene_plane(0.4);
     upload(&second_scene);
     run(true, 1);
-    let second = cpu_frame(&second_scene, Some(&first.pair), &hdr);
+    let second_low = cpu_frame(&second_scene, Some(&first_low.pair), &hdr, lower);
+    let second_high = cpu_frame(&second_scene, Some(&first_high.pair), &hdr, upper);
     let pair = read_texture(&device, &queue, &adapted[0].0);
-    compare("adapted pair", &pair, &second.pair, 2);
+    compare(
+        "adapted pair",
+        &pair,
+        &second_low.pair,
+        &second_high.pair,
+        2,
+    );
     assert!(
         pair.iter()
             .any(|texel| (texel[0] - texel[1]).abs() > 1.0e-3),
         "the two channels adapt at different rates"
     );
     assert!(
-        second.bloom.texels.iter().any(|c| c[0] > 0.01),
+        second_low.bloom.texels.iter().any(|c| c[0] > 0.01),
         "the test scene blooms"
     );
 
@@ -820,11 +881,12 @@ fn verify_chain(format: wgpu::TextureFormat) {
             );
             let gpu = pixels[(y * SIZE + x) as usize];
             for channel in 0..3 {
-                let expected = display[channel];
+                let expected = (display[channel].clamp(0.0, 1.0) * 255.0).round();
+                let actual = (gpu[channel] * 255.0).round();
+                // Shader arithmetic and texture filtering can move the result across a byte boundary.
                 assert!(
-                    (gpu[channel] - expected).abs() < 4.0e-3,
-                    "pixel ({x}, {y}) channel {channel}: GPU {} vs CPU {expected}",
-                    gpu[channel]
+                    (actual - expected).abs() <= 1.0,
+                    "pixel ({x}, {y}) channel {channel}: GPU byte {actual} vs CPU byte {expected}",
                 );
             }
         }
