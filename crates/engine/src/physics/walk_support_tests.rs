@@ -1019,6 +1019,7 @@ fn fuzz_walk_descent_slopes_stairs_walls_and_long_frame_times() {
 /// broad-phase BVH through `physics::rebase_rapier_bodies`. Calling
 /// `propagate_modified_body_positions_to_colliders` alone leaves BVH leaves at the old origin
 /// until `PhysicsSet::StepSimulation`, causing a one-tick collision dropout in `walk_movement_system`
+/// external-name: bevy_rapier3d `update_character_controls` system
 /// and `update_character_controls`.
 #[test]
 fn all_rapier_body_position_propagations_refresh_broad_phase() {

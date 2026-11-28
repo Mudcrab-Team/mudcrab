@@ -3281,6 +3281,7 @@ fn walk_camera_follow_system(
 /// `propagate_modified_body_positions_to_colliders` only updates `ColliderSet` poses; Rapier's
 /// `broad_phase` is otherwise not refreshed until `PhysicsSet::StepSimulation`. Without an
 /// immediate BVH update, the first `FixedUpdate` tick after a rebase runs `walk_movement_system`
+/// external-name: bevy_rapier3d `update_character_controls` system
 /// spatial queries and `update_character_controls` (`SyncBackend`) against stale AABBs 4096 units
 /// away, causing a one-tick collision dropout that can drop the player through thin terrain.
 pub(crate) fn rebase_rapier_bodies(
