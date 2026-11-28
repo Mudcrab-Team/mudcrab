@@ -127,6 +127,8 @@ pub fn mark_dirty_trees(
     #[cfg(feature = "multi_threaded")] mut traversal_channels: Local<
         bevy_utils::BufferedChannel<Entity>,
     >,
+    // mudcrab: which entities with a removed `ChildOf` still live (see the producer below).
+    #[cfg(feature = "multi_threaded")] live: &bevy_ecs::entity::Entities,
 ) {
     if !static_optimizations.is_enabled() {
         return;
@@ -267,6 +269,13 @@ pub fn mark_dirty_trees(
             // leaves to the consumer because it has already been sent here.
             let mut producer = move || {
                 for entity in orphaned.read() {
+                    // mudcrab: skip a despawned entity. `shared_bitset` is keyed by the entity
+                    // index alone, so its entry would mark a new entity that reuses the index as
+                    // visited. The climb from a new subtree then stops there, the root stays
+                    // clean, and the subtree keeps `GlobalTransform::IDENTITY` for good.
+                    if !live.contains_spawned(entity) {
+                        continue;
+                    }
                     let _ = traversal_tx.send_blocking(entity);
                     let _ = consumer_tx.send_blocking(entity);
                 }
