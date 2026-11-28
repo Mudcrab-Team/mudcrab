@@ -82,6 +82,13 @@ pub(super) fn unsupported_cast_hits(
         .is_some()
 }
 
+/// Result of [`drop_straight_down`]: how far the capsule dropped and whether a surface stopped it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct VerticalDrop {
+    pub distance: f32,
+    pub landed: bool,
+}
+
 /// RF-CC-014: how far the capsule can drop straight down, at most `distance`, before it is
 /// `PLAYER_CONTROLLER_OFFSET` above a surface. The 4 x gravity pull of a cast hit moves the body
 /// along the vertical only: a downward move sent through the collision slide would also push the
@@ -94,25 +101,35 @@ pub(super) fn drop_straight_down(
     capsule: &Collider,
     controller: &KinematicCharacterController,
     distance: f32,
-) -> f32 {
+) -> VerticalDrop {
     if distance <= 0.0 {
-        return 0.0;
+        return VerticalDrop {
+            distance: 0.0,
+            landed: false,
+        };
     }
-    context
-        .cast_shape(
-            body.translation,
-            body.rotation,
-            Vec3::NEG_Y,
-            &*capsule.raw,
-            ShapeCastOptions {
-                target_distance: PLAYER_CONTROLLER_OFFSET,
-                stop_at_penetration: false,
-                max_time_of_impact: distance,
-                compute_impact_geometry_on_penetration: true,
-            },
-            controller_filter(controller, entity),
-        )
-        .map_or(distance, |(_, hit)| hit.time_of_impact.clamp(0.0, distance))
+    match context.cast_shape(
+        body.translation,
+        body.rotation,
+        Vec3::NEG_Y,
+        &*capsule.raw,
+        ShapeCastOptions {
+            target_distance: PLAYER_CONTROLLER_OFFSET,
+            stop_at_penetration: false,
+            max_time_of_impact: distance,
+            compute_impact_geometry_on_penetration: true,
+        },
+        controller_filter(controller, entity),
+    ) {
+        Some((_, hit)) => VerticalDrop {
+            distance: hit.time_of_impact.clamp(0.0, distance),
+            landed: true,
+        },
+        None => VerticalDrop {
+            distance,
+            landed: false,
+        },
+    }
 }
 
 /// RF-CC-014: the vertical velocity after one step of an unsupported cast hit. The 4 x gravity is

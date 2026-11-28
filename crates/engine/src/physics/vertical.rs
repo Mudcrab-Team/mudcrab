@@ -115,18 +115,16 @@ impl VerticalMotion {
                 launched: true,
             };
         } else if !matches!(self.phase, Phase::Airborne { .. }) {
-            // Leaving support uses the same history law. This is the engine's
-            // falling policy; no new native ledge behavior is inferred.
-            let (maximum_y, velocity_havok) = match self.phase {
-                Phase::Supported { y } => (y, 0.0),
-                Phase::Gliding {
-                    y,
-                    velocity_creation,
-                } => (y, velocity_creation * CREATION_TO_HAVOK),
-                _ => (resolved.y, 0.0),
+            // Leaving support uses the same history law. RF-CC-013: an unsupported-cast miss
+            // requests InAir and zeroes vertical velocity when the OnGround state flag (+0x10)
+            // is set, so 4x-gravity glide pull never launches a free fall faster than 1.35x
+            // falling gravity allows.
+            let maximum_y = match self.phase {
+                Phase::Supported { y } | Phase::Gliding { y, .. } => y,
+                _ => resolved.y,
             };
             self.phase = Phase::Airborne {
-                velocity_havok,
+                velocity_havok: 0.0,
                 maximum_y,
                 launched: false,
             };
@@ -177,6 +175,10 @@ impl VerticalMotion {
             y,
             velocity_creation: super::walk_support::glide_vertical_velocity(previous_velocity, dt),
         };
+    }
+
+    pub(super) fn set_supported(&mut self, y: f32) {
+        self.phase = Phase::Supported { y };
     }
 
     pub(super) fn just_launched(&self) -> bool {

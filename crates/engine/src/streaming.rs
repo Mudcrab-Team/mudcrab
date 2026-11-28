@@ -5561,14 +5561,7 @@ fn update_render_origin(
     // Transform a second time and double the displacement. The teleport keeps its velocity.
     bodies.extend(clutter.iter());
     if let Ok(mut context) = physics.single_mut() {
-        for entity in bodies {
-            if let Some(handle) = context.entity2body().get(&entity).copied()
-                && let Some(body) = context.rigidbody_set.bodies.get_mut(handle)
-            {
-                body.set_translation(body.translation() - displacement, false);
-            }
-        }
-        context.propagate_modified_body_positions_to_colliders();
+        crate::physics::rebase_rapier_bodies(&mut context, bodies, displacement);
     }
     for (cell_grid, lod_grid, mut transform) in &mut roots {
         let Some(grid) = cell_grid
@@ -6624,8 +6617,16 @@ mod tests {
                 .abs()
                 < 0.01
         );
-        // Rebasing runs in Update, after the fixed physics step. The following fixed step
-        // refreshes Rapier's broad phase before spatial queries use the new collider bounds.
+        // Rebasing refreshes Rapier's broad-phase leaves immediately, so spatial queries see the
+        // shifted collider bounds before the next fixed physics step runs.
+        let (rebased_now, distance_now) =
+            hit(&mut app, 730.0 - CELL_SIZE).expect("rebased contact immediately after rebase");
+        assert_eq!(rebased_now, collider);
+        assert!((distance_now - 60.0).abs() < 0.01);
+        assert!(
+            hit(&mut app, 730.0).is_none(),
+            "stale collider at the old origin immediately after rebase"
+        );
         app.update();
         let (rebased, distance) = hit(&mut app, 730.0 - CELL_SIZE).expect("rebased contact");
         assert_eq!(rebased, collider);
@@ -8541,6 +8542,206 @@ mod tests {
             let (mut app, _directory) = welded_grass_test_app_on_path(90, Some(30.0), Some(valid));
             assert_welded_grass_water(&mut app);
         }
+    }
+
+    /// Cause (d) check: committing an adjacent exterior cell (with seam welding) and despawning a
+    /// distant retiring cell must never remove, replace, or re-disable a resident cell's active
+    /// `TerrainCollider`, and a grounded player standing on that cell must keep ground contact
+    /// on every tick.
+    #[test]
+    fn resident_terrain_collider_stays_active_during_neighbor_commit_weld_and_far_unload() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("world.db");
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES({});
+                 CREATE TABLE cells(id INTEGER,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
+                 INSERT INTO cells VALUES(41,3,0,0),(42,3,1,0);
+                 CREATE TABLE land(cell_id INTEGER); INSERT INTO land VALUES(41),(42);
+                 CREATE TABLE \"references\"(id INTEGER,cell_id INTEGER,base_form_id INTEGER,
+                   pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
+                 CREATE TABLE statics(id INTEGER,model_path TEXT,flags INTEGER,bounds_min_x REAL,bounds_min_y REAL,
+                   bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER);
+                 CREATE TABLE exterior_spatial(id INTEGER,worldspace_id INTEGER,minX REAL,minY REAL);",
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ))
+            .unwrap();
+        drop(connection);
+
+        // Cell (0, 0) sits at y = 200 (above the fixture floor at y = 0); neighbor (1, 0) differs
+        // by 24 units along the shared seam so committing it exercises real seam welding.
+        let mut resident = terrain_fixture(41, 200.0);
+        resident.layers.clear();
+        let mut arriving = terrain_fixture(42, 224.0);
+        arriving.layers.clear();
+        let cells = [&resident, &arriving].map(|terrain| shared::CachedLand {
+            cell_id: terrain.cell_id,
+            width: terrain.width,
+            height: terrain.height,
+            heights: terrain.heights.clone(),
+            normals: terrain.normals.clone(),
+            vertex_colors: terrain.vertex_colors.clone(),
+            layers: vec![],
+            water_height: None,
+            water_type_form_id: None,
+        });
+        let terrain_path = directory.path().join("cell_cache.rkyv");
+        std::fs::write(
+            &terrain_path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+                version: shared::CELL_CACHE_VERSION,
+                cells: cells.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut app = crate::physics::headless::fixture_app();
+        app.init_asset::<Image>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<ActiveSpace>()
+            .insert_resource(CellCache::open(&terrain_path).unwrap())
+            .insert_resource(WorldDatabase::open(&database_path).unwrap())
+            .init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .init_resource::<StreamingWorld>()
+            .init_resource::<StreamingCommitBudget>()
+            .init_resource::<TerrainContinuity>()
+            .init_resource::<VisualProfile>()
+            .init_resource::<lod::LodStreaming>()
+            .add_systems(
+                Update,
+                (
+                    reset_grass_commit_test_budget,
+                    collect_cells,
+                    track_merged_surface_readiness,
+                    despawn_cells,
+                )
+                    .chain(),
+            );
+        install_grass_test_merged_terrain(&mut app, directory.path(), &resident, &arriving, true);
+
+        // Commit cell (0, 0) and let `track_merged_surface_readiness` enable its terrain collider.
+        commit_grass_test_cell(&mut app, 41, 0);
+        app.update();
+        app.update();
+
+        let resident_collider = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(Entity, Option<&ColliderDisabled>), With<TerrainCollider>>();
+            let (entity, disabled) = query
+                .single(app.world())
+                .expect("exactly one resident TerrainCollider");
+            assert!(
+                disabled.is_none(),
+                "resident TerrainCollider must be enabled after readiness"
+            );
+            entity
+        };
+        let initial_handle = app
+            .world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().unwrap();
+                let handle = context
+                    .colliders
+                    .entity2collider()
+                    .get(&resident_collider)
+                    .copied()
+                    .expect("resident TerrainCollider registered in Rapier");
+                assert!(
+                    context.colliders.colliders[handle].is_enabled(),
+                    "resident Rapier collider must be enabled"
+                );
+                handle
+            })
+            .unwrap();
+
+        // Settle the player on top of cell (0, 0)'s y = 200 terrain collider.
+        crate::physics::headless::place_player(&mut app, Vec3::new(2048.0, 260.0, -2048.0));
+        for _ in 0..90 {
+            app.update();
+        }
+        let (settled_pose, settled_grounded) = crate::physics::headless::player_pose(&mut app);
+        assert!(settled_grounded, "player must be grounded on cell (0, 0)");
+        assert!(
+            settled_pose.y > 235.0,
+            "player must stand on the y=200 terrain, got y={}",
+            settled_pose.y
+        );
+
+        // Queue a distant cell for unload, then commit and seam-weld neighbor cell (1, 0).
+        let far_root = app
+            .world_mut()
+            .spawn((StreamedCellRoot, ExteriorCellGrid(IVec2::new(0, 12))))
+            .id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(
+                CellKey::Exterior {
+                    worldspace_id: 3,
+                    grid_x: 0,
+                    grid_y: 12,
+                },
+                CellStatus::Retiring { root: far_root },
+            );
+        commit_grass_test_cell(&mut app, 42, 1);
+
+        // Verify across 30 post-commit frames that cell (0, 0)'s collider entity, Rapier handle,
+        // enabled state, and player ground contact remain completely uninterrupted.
+        for frame in 0..30 {
+            app.update();
+            assert!(
+                app.world().get_entity(resident_collider).is_ok(),
+                "frame {frame}: resident TerrainCollider entity was despawned"
+            );
+            assert!(
+                app.world()
+                    .entity(resident_collider)
+                    .get::<ColliderDisabled>()
+                    .is_none(),
+                "frame {frame}: resident TerrainCollider regained ColliderDisabled"
+            );
+            app.world_mut()
+                .run_system_once(move |context: ReadRapierContext| {
+                    let context = context.single().unwrap();
+                    let handle = context
+                        .colliders
+                        .entity2collider()
+                        .get(&resident_collider)
+                        .copied()
+                        .expect("resident collider still mapped in Rapier");
+                    assert_eq!(
+                        handle, initial_handle,
+                        "frame {frame}: resident Rapier collider handle was replaced"
+                    );
+                    assert!(
+                        context.colliders.colliders[handle].is_enabled(),
+                        "frame {frame}: resident Rapier collider was disabled"
+                    );
+                })
+                .unwrap();
+            let (pose, grounded) = crate::physics::headless::player_pose(&mut app);
+            assert!(
+                grounded && pose.y > 235.0,
+                "frame {frame}: player lost ground contact during neighbor commit/unload: pose={pose:?}, grounded={grounded}"
+            );
+        }
+        let metrics = app.world().resource::<StreamingMetrics>();
+        assert_eq!(
+            metrics.terrain_seam_points_welded, 33,
+            "neighbor commit must have welded the shared seam"
+        );
+        assert!(
+            metrics.unloaded_cells >= 1,
+            "distant retiring cell must have unloaded"
+        );
     }
 
     /// The seam measured on real data - Tamriel (18,18) against (18,19), one point of the north
@@ -12952,3 +13153,585 @@ mod land_shadow_tests {
 
 #[cfg(test)]
 mod collision_placement_probe;
+
+#[cfg(test)]
+mod rebase_collision_tests {
+    use super::*;
+    use crate::physics::{MoveMode, PlayerBody, WalkIntent, WalkState, headless};
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy::time::TimeUpdateStrategy;
+    use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
+    use std::time::Duration;
+
+    /// Build a zero-thickness `TerrainCollider` trimesh for one exterior cell `(0, grid_y)` whose
+    /// height slopes down continuously toward north (`-Z` in Bevy, `+Y` in Creation) at
+    /// `slope_degrees`. This reproduces the terrain geometry of Tamriel cell `(0, 2)` at the
+    /// 2026-11-27 fall-through site.
+    fn spawn_sloped_terrain_cell(
+        app: &mut App,
+        grid_y: i32,
+        slope_degrees: f32,
+        origin_y: f32,
+    ) -> Entity {
+        let tan = slope_degrees.to_radians().tan();
+        let steps: u16 = 32;
+        let step_size = CELL_SIZE / f32::from(steps);
+        let cell_base_north = grid_y as f32 * CELL_SIZE;
+        let mut vertices = Vec::with_capacity(usize::from(steps + 1) * 2);
+        let mut triangles = Vec::with_capacity(usize::from(steps) * 2);
+        for i in 0..=steps {
+            let local_north = f32::from(i) * step_size;
+            let world_north = cell_base_north + local_north;
+            let height = origin_y - world_north * tan;
+            let local_z = -local_north;
+            vertices.push(Vec3::new(0.0, height, local_z));
+            vertices.push(Vec3::new(CELL_SIZE, height, local_z));
+        }
+        for i in 0..steps {
+            let base = u32::from(i) * 2;
+            triangles.push([base, base + 2, base + 1]);
+            triangles.push([base + 1, base + 2, base + 3]);
+        }
+        let collider = Collider::trimesh(vertices, triangles).expect("valid terrain trimesh");
+        let root = app
+            .world_mut()
+            .spawn((
+                ExteriorCellGrid(IVec2::new(0, grid_y)),
+                Transform::from_xyz(0.0, 0.0, -(grid_y as f32) * CELL_SIZE),
+            ))
+            .id();
+        app.world_mut().spawn((
+            TerrainCollider,
+            RigidBody::Fixed,
+            collider,
+            crate::physics::world_collision_groups(),
+            Transform::IDENTITY,
+            ChildOf(root),
+        ));
+        root
+    }
+
+    #[derive(Default, Resource)]
+    struct RebaseTickLog {
+        samples: Vec<(f32, f32, bool, f32)>,
+    }
+
+    fn record_rebase_tick(
+        origin: Res<RenderOrigin>,
+        mut log: ResMut<RebaseTickLog>,
+        player: Query<(&Transform, &WalkState), With<PlayerBody>>,
+    ) {
+        if let Ok((body, state)) = player.single() {
+            let world_north = origin.0.y as f32 * CELL_SIZE - body.translation.z;
+            log.samples.push((
+                world_north,
+                body.translation.y,
+                state.airborne,
+                state.vertical_velocity(),
+            ));
+        }
+    }
+
+    /// Regression for cause (c): running across multiple render-origin rebases over zero-thickness
+    /// downhill terrain trimeshes (at both 60 Hz and 155..193 ms frame times) must never drop the
+    /// player through the terrain or lose ground contact on the post-rebase tick.
+    #[test]
+    fn render_origin_rebase_over_downhill_trimesh_terrain_keeps_ground_contact_and_never_falls_through()
+     {
+        let slope_degrees = 26.6_f32;
+        let tan = slope_degrees.to_radians().tan();
+        let origin_y = 12_000.0_f32;
+
+        for (frame_ms, speed) in [
+            (16.667_f32, 370.0_f32),
+            (16.667, 555.0),
+            (154.7, 370.0),
+            (193.6, 555.0),
+        ] {
+            let mut app = headless::fixture_app();
+            app.insert_resource(EngineConfig::default())
+                .insert_resource(RenderOrigin(IVec2::ZERO))
+                .init_resource::<ActiveSpace>()
+                .init_resource::<RebaseTickLog>()
+                .add_systems(
+                    Update,
+                    update_render_origin.after(crate::physics::PlayerControlsSystems),
+                )
+                .add_systems(
+                    FixedUpdate,
+                    record_rebase_tick.after(bevy_rapier3d::prelude::PhysicsSet::Writeback),
+                );
+            for grid_y in -1..=4 {
+                spawn_sloped_terrain_cell(&mut app, grid_y, slope_degrees, origin_y);
+            }
+            app.update();
+            let start_north = 2048.0_f32;
+            let start_ground = origin_y - start_north * tan;
+            headless::place_player(
+                &mut app,
+                Vec3::new(1531.3, start_ground + 60.0, -start_north),
+            );
+            for _ in 0..120 {
+                app.update();
+            }
+            assert!(
+                headless::player_pose(&mut app).1,
+                "player failed to settle before rebase walk"
+            );
+            app.world_mut()
+                .resource_mut::<RebaseTickLog>()
+                .samples
+                .clear();
+
+            app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+                frame_ms / 1000.0,
+            )));
+            app.insert_resource(WalkIntent {
+                wish_dir: Vec3::NEG_Z,
+                target_speed: speed,
+                jump_pressed: false,
+            });
+            let target_north = 3.0 * CELL_SIZE + 500.0;
+            let mut reached = false;
+            for _ in 0..3500 {
+                app.update();
+                let origin = app.world().resource::<RenderOrigin>().0;
+                let (pose, _) = headless::player_pose(&mut app);
+                let world_north = origin.y as f32 * CELL_SIZE - pose.z;
+                if world_north >= target_north {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached, "frame_ms={frame_ms}, speed={speed}: walk stalled");
+            let rebases = app.world().resource::<StreamingMetrics>().origin_rebases;
+            assert!(
+                rebases >= 3,
+                "frame_ms={frame_ms}, speed={speed}: expected >= 3 rebases, got {rebases}"
+            );
+            let samples = &app.world().resource::<RebaseTickLog>().samples;
+            assert!(!samples.is_empty());
+            for &(world_north, y, airborne, vz) in samples {
+                let ground = origin_y - world_north * tan;
+                assert!(
+                    y >= ground + 35.0,
+                    "frame_ms={frame_ms}, speed={speed}: fell through terrain at north={world_north:.1}: y={y:.1}, ground={ground:.1}"
+                );
+                assert!(
+                    !airborne,
+                    "frame_ms={frame_ms}, speed={speed}: lost ground contact at north={world_north:.1} (y={y:.1}, ground={ground:.1})"
+                );
+                assert!(
+                    vz >= -300.0,
+                    "frame_ms={frame_ms}, speed={speed}: unexpected downward velocity {vz:.1} at north={world_north:.1}"
+                );
+            }
+        }
+    }
+
+    /// Regression for cause (c) while airborne: crossing a cell rebase border mid-fall onto a
+    /// zero-thickness `TerrainCollider` trimesh must land on top of the terrain across varied
+    /// border offsets (sweeping the rebase across the exact tick of impact at ~1000 u/s) instead
+    /// of tunneling on the post-rebase tick.
+    #[test]
+    fn render_origin_rebase_while_airborne_over_thin_trimesh_never_tunnels() {
+        let ground_y = 200.0_f32;
+        let drop_height = 600.0_f32;
+        // Capsule bottom clears ~540 u at 1.35 * 686.6 u/s^2 in ~1.08 s. Starting from rest in air
+        // accelerates horizontally up to sprint speed, covering ~450 u before impact, so sweeping
+        // offsets across 80..460 u spans early fall through the exact impact tick.
+        for border_offset in [80.0_f32, 180.0, 280.0, 360.0, 420.0, 460.0] {
+            let mut app = headless::fixture_app();
+            app.insert_resource(EngineConfig::default())
+                .insert_resource(RenderOrigin(IVec2::ZERO))
+                .init_resource::<ActiveSpace>()
+                .add_systems(
+                    Update,
+                    update_render_origin.after(crate::physics::PlayerControlsSystems),
+                );
+            for grid_y in 0..=2 {
+                spawn_sloped_terrain_cell(&mut app, grid_y, 0.0, ground_y);
+            }
+            app.update();
+            // Start south of the cell (0, 1) rebase boundary (-4096) and sprint north while falling.
+            headless::place_player(
+                &mut app,
+                Vec3::new(1531.3, ground_y + drop_height, -(CELL_SIZE - border_offset)),
+            );
+            app.insert_resource(MoveMode::Walk);
+            app.insert_resource(WalkIntent {
+                wish_dir: Vec3::NEG_Z,
+                target_speed: 555.0,
+                jump_pressed: false,
+            });
+            let mut landed = false;
+            for _ in 0..240 {
+                app.update();
+                let (pose, grounded) = headless::player_pose(&mut app);
+                assert!(
+                    pose.y >= ground_y + 35.0,
+                    "border_offset={border_offset}: tunneled through rebased thin terrain at y={}",
+                    pose.y
+                );
+                if grounded && pose.y < ground_y + 70.0 {
+                    landed = true;
+                    break;
+                }
+            }
+            assert!(
+                landed,
+                "border_offset={border_offset}: never landed on terrain (pose={:?})",
+                headless::player_pose(&mut app)
+            );
+            assert!(
+                app.world().resource::<StreamingMetrics>().origin_rebases >= 1,
+                "border_offset={border_offset}: test must cross a render-origin rebase"
+            );
+        }
+    }
+
+    /// Real-pack location audit for Tamriel cells `(0, 1)` and `(0, 2)` around the `Y = 8192`
+    /// border and `TundraPond01` (both 2026-11-27 fall-through reports):
+    /// 1. `cell_cache.rkyv` matches `skyrim_world.db` LAND VHGT to `< 1e-3` units across all
+    ///    `33 x 33` vertices of both cells, with `0.0` seam gap along `Y = 8192`.
+    /// 2. Every quadrant `TerrainCollider` has vertices and indices identical to its drawn mesh
+    ///    and hits vertical rays across the border with zero holes.
+    /// 3. Walking north from `(0, 1)` across the `Y = 8192` rebase border and over `TundraPond01`
+    ///    at both report X coordinates (`1531.3` and `2391.5`) at 60 Hz and 154.7 ms frames never
+    ///    falls through the world.
+    #[test]
+    #[ignore = "requires a converted Skyrim SE pack in MUDCRAB_FALL_BUG_ASSETS"]
+    fn real_tamriel_cell_0_1_and_0_2_border_colliders_match_land_and_support_rebase_walk() {
+        let Some(pack_dir) = std::env::var_os("MUDCRAB_FALL_BUG_ASSETS") else {
+            panic!("set MUDCRAB_FALL_BUG_ASSETS to a converted pack directory");
+        };
+        let pack = std::path::PathBuf::from(pack_dir);
+        let db = rusqlite::Connection::open_with_flags(
+            pack.join("skyrim_world.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open skyrim_world.db read-only");
+        let cache = CellCache::open(&pack.join("cell_cache.rkyv")).expect("open cell_cache.rkyv");
+
+        let decode_vhgt = |blob: &[u8]| -> Vec<f32> {
+            assert!(blob.len() >= 4 + 33 * 33, "truncated VHGT blob");
+            let offset = f32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
+            let mut heights = Vec::with_capacity(33 * 33);
+            let mut row_base = offset;
+            let mut idx = 4usize;
+            for _row in 0..33 {
+                let mut val = row_base;
+                for col in 0..33 {
+                    let delta = i8::from_le_bytes([blob[idx]]);
+                    idx += 1;
+                    val += f32::from(delta);
+                    if col == 0 {
+                        row_base = val;
+                    }
+                    heights.push(val * 8.0);
+                }
+            }
+            heights
+        };
+
+        let mut snapshots = Vec::new();
+        for grid_y in [1_i32, 2_i32] {
+            let (cell_id, vhgt): (u32, Vec<u8>) = db
+                .query_row(
+                    "SELECT c.id, l.heightmap FROM cells c JOIN land l ON l.cell_id = c.id \
+                     WHERE c.worldspace_id = 60 AND c.grid_x = 0 AND c.grid_y = ?1",
+                    [grid_y],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("query Tamriel LAND row");
+            let db_heights = decode_vhgt(&vhgt);
+            let terrain = cache
+                .terrain(cell_id)
+                .expect("cell_cache.rkyv must contain cell");
+            assert_eq!(terrain.heights.len(), 33 * 33);
+            for (i, (&cached, &raw)) in terrain.heights.iter().zip(&db_heights).enumerate() {
+                assert!(
+                    (cached - raw).abs() < 1e-3,
+                    "cell (0, {grid_y}) vertex {i}: cell_cache={cached} vs LAND VHGT={raw}"
+                );
+            }
+            snapshots.push((grid_y, terrain));
+        }
+
+        // Verify 0.0 seam gap between cell (0, 1) north edge (row 32) and cell (0, 2) south edge (row 0).
+        for col in 0..33usize {
+            let north_01 = snapshots[0].1.heights[32 * 33 + col];
+            let south_02 = snapshots[1].1.heights[col];
+            assert!(
+                (north_01 - south_02).abs() < 1e-3,
+                "Y=8192 seam mismatch at col {col}: (0,1)={north_01} vs (0,2)={south_02}"
+            );
+        }
+
+        // Load TundraPond01 authored collision from its converted GLB and DB reference pose.
+        let (pond_x, pond_y, pond_z, pond_rx, pond_ry, pond_rz, pond_scale): (
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+        ) = db
+            .query_row(
+                "SELECT r.pos_x, r.pos_y, r.pos_z, r.rot_x, r.rot_y, r.rot_z, r.scale \
+                 FROM \"references\" r JOIN statics s ON s.id = r.base_form_id \
+                 WHERE r.worldspace_id = 60 AND s.editor_id = 'TundraPond01Tundra01' \
+                 AND r.pos_y BETWEEN 8000 AND 10500",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .expect("TundraPond01 reference in cell (0, 2)");
+        let glb_bytes = std::fs::read(pack.join("meshes/landscape/tundra/tundrapond01.glb"))
+            .expect("read tundrapond01.glb");
+        let json_len = usize::try_from(u32::from_le_bytes([
+            glb_bytes[12],
+            glb_bytes[13],
+            glb_bytes[14],
+            glb_bytes[15],
+        ]))
+        .expect("glb json length");
+        let glb_json: serde_json::Value =
+            serde_json::from_slice(&glb_bytes[20..20 + json_len]).expect("parse glb json");
+        let collision_val = glb_json["scenes"][0]["extras"]["mudcrabCollision"].clone();
+        let pond_asset: CollisionAsset =
+            serde_json::from_value(collision_val).expect("parse TundraPond01 CollisionAsset");
+        let StaticCollisionDecision::Authored(pond_parts, _) = static_decision_from_asset(
+            fixed_collision_tier(Some("STAT"), "meshes/landscape/tundra/tundrapond01.glb")
+                .expect("STAT eligible"),
+            &pond_asset,
+        ) else {
+            panic!("TundraPond01 must produce authored collision");
+        };
+
+        // Exact barycentric triangle height matching `build_terrain_quadrant_mesh`'s triangulation
+        // `[a, b, c]` (`fx + fy <= 1`) and `[b, d, c]` (`fx + fy > 1`).
+        let triangle_land = |creation_x: f32, creation_y: f32| -> f32 {
+            let (grid_y, terrain) = if creation_y < 2.0 * CELL_SIZE {
+                (&snapshots[0].0, &snapshots[0].1)
+            } else {
+                (&snapshots[1].0, &snapshots[1].1)
+            };
+            let lx = (creation_x / 128.0).clamp(0.0, 31.999);
+            let ly = ((creation_y - (*grid_y as f32) * CELL_SIZE) / 128.0).clamp(0.0, 31.999);
+            let grid_index = |coord: f32| -> usize {
+                (0u8..32)
+                    .find(|&cell| f32::from(cell + 1) > coord)
+                    .map_or(31, usize::from)
+            };
+            let cx = grid_index(lx);
+            let cy = grid_index(ly);
+            let fx = lx - f32::from(u8::try_from(cx).unwrap());
+            let fy = ly - f32::from(u8::try_from(cy).unwrap());
+            let h00 = terrain.heights[cy * 33 + cx];
+            let h10 = terrain.heights[cy * 33 + cx + 1];
+            let h01 = terrain.heights[(cy + 1) * 33 + cx];
+            let h11 = terrain.heights[(cy + 1) * 33 + cx + 1];
+            if fx + fy <= 1.0 {
+                h00 + fx * (h10 - h00) + fy * (h01 - h00)
+            } else {
+                h11 + (1.0 - fx) * (h01 - h11) + (1.0 - fy) * (h10 - h11)
+            }
+        };
+
+        // 1. Verify terrain collider vertex/index identity with drawn mesh and zero raycast holes
+        //    across the entire Y = 8192 border.
+        {
+            let mut app = headless::fixture_app();
+            for (grid_y, terrain) in &snapshots {
+                let root = app
+                    .world_mut()
+                    .spawn((
+                        ExteriorCellGrid(IVec2::new(0, *grid_y)),
+                        Transform::from_xyz(0.0, 0.0, -(*grid_y as f32) * CELL_SIZE),
+                    ))
+                    .id();
+                for quadrant in 0..4u8 {
+                    let mesh =
+                        build_terrain_quadrant_mesh(terrain, quadrant).expect("quadrant mesh");
+                    let collider = terrain_collider_from_mesh(&mesh).expect("quadrant collider");
+                    let trimesh = collider.as_trimesh().expect("terrain trimesh");
+                    let VertexAttributeValues::Float32x3(positions) =
+                        mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+                    else {
+                        panic!("positions");
+                    };
+                    let Indices::U32(indices) = mesh.indices().unwrap() else {
+                        panic!("indices");
+                    };
+                    assert_eq!(trimesh.vertices().len(), positions.len());
+                    assert_eq!(trimesh.indices().len() * 3, indices.len());
+                    app.world_mut().spawn((
+                        TerrainCollider,
+                        RigidBody::Fixed,
+                        collider,
+                        crate::physics::world_collision_groups(),
+                        Transform::IDENTITY,
+                        ChildOf(root),
+                    ));
+                }
+            }
+            app.update();
+            app.update();
+
+            let mut probes: Vec<(f32, f32)> = Vec::new();
+            for xi in 0..32u16 {
+                let x = 64.0 + f32::from(xi) * 128.0;
+                for yi in 0..17u16 {
+                    let y = 8000.0 + f32::from(yi) * 64.0;
+                    probes.push((x, y));
+                }
+                probes.push((x, 8192.0));
+            }
+            probes.push((1531.3, 8557.7));
+            probes.push((2391.5, 8720.7));
+            for (cx, cy) in probes {
+                let expected = triangle_land(cx, cy);
+                let hit_y = app
+                    .world_mut()
+                    .run_system_once(move |context: ReadRapierContext| {
+                        let context = context.single().unwrap();
+                        let ray_origin = Vec3::new(cx, -4000.0, -cy);
+                        context
+                            .cast_ray(
+                                ray_origin,
+                                Vec3::NEG_Y,
+                                5000.0,
+                                true,
+                                QueryFilter::default(),
+                            )
+                            .map(|(_, toi)| ray_origin.y - toi)
+                    })
+                    .unwrap();
+                let hit_y = hit_y.unwrap_or_else(|| {
+                    panic!("terrain raycast hole at Creation ({cx:.1}, {cy:.1})")
+                });
+                assert!(
+                    (hit_y - expected).abs() <= 0.1,
+                    "terrain collider height mismatch at ({cx:.1}, {cy:.1}): hit={hit_y:.2}, land={expected:.2}"
+                );
+            }
+        }
+
+        // 2. Walk north across the Y = 8192 rebase border along both report X lines with both
+        //    real terrain colliders and TundraPond01's authored collider present.
+        for (x_line, frame_ms) in [
+            (1531.3_f32, 16.667_f32),
+            (1531.3, 154.7),
+            (2391.5, 16.667),
+            (2391.5, 154.7),
+        ] {
+            let mut app = headless::fixture_app();
+            app.insert_resource(EngineConfig::default())
+                .insert_resource(RenderOrigin(IVec2::new(0, 1)))
+                .init_resource::<ActiveSpace>()
+                .add_systems(
+                    Update,
+                    update_render_origin.after(crate::physics::PlayerControlsSystems),
+                );
+            let mut cell_02_root = Entity::PLACEHOLDER;
+            for (grid_y, terrain) in &snapshots {
+                let root = app
+                    .world_mut()
+                    .spawn((
+                        ExteriorCellGrid(IVec2::new(0, *grid_y)),
+                        Transform::from_xyz(0.0, 0.0, -((*grid_y - 1) as f32) * CELL_SIZE),
+                    ))
+                    .id();
+                if *grid_y == 2 {
+                    cell_02_root = root;
+                }
+                for quadrant in 0..4u8 {
+                    let mesh =
+                        build_terrain_quadrant_mesh(terrain, quadrant).expect("quadrant mesh");
+                    let collider = terrain_collider_from_mesh(&mesh).expect("quadrant collider");
+                    app.world_mut().spawn((
+                        TerrainCollider,
+                        RigidBody::Fixed,
+                        collider,
+                        crate::physics::world_collision_groups(),
+                        Transform::IDENTITY,
+                        ChildOf(root),
+                    ));
+                }
+            }
+            let pond_local = creation_to_bevy(Vec3::new(pond_x, pond_y - 2.0 * CELL_SIZE, pond_z));
+            let pond_entity = app
+                .world_mut()
+                .spawn((
+                    Transform::from_translation(pond_local)
+                        .with_rotation(creation_rotation_to_bevy([pond_rx, pond_ry, pond_rz]))
+                        .with_scale(Vec3::splat(pond_scale)),
+                    ChildOf(cell_02_root),
+                ))
+                .id();
+            let parts = pond_parts.clone();
+            app.world_mut()
+                .run_system_once(move |mut commands: Commands| {
+                    attach_authored_collision(&mut commands, pond_entity, &parts);
+                })
+                .unwrap();
+            app.update();
+            app.update();
+
+            let start_y = 7600.0_f32;
+            let start_ground = triangle_land(x_line, start_y);
+            headless::place_player(
+                &mut app,
+                Vec3::new(x_line, start_ground + 80.0, -(start_y - CELL_SIZE)),
+            );
+            for _ in 0..120 {
+                app.update();
+            }
+            assert!(
+                headless::player_pose(&mut app).1,
+                "failed to settle on cell (0, 1) at X={x_line}"
+            );
+            app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+                frame_ms / 1000.0,
+            )));
+            app.insert_resource(WalkIntent {
+                wish_dir: Vec3::NEG_Z,
+                target_speed: 370.0,
+                jump_pressed: false,
+            });
+            let mut reached = false;
+            for _ in 0..1200 {
+                app.update();
+                let origin = app.world().resource::<RenderOrigin>().0;
+                let (pose, _) = headless::player_pose(&mut app);
+                let world_north = origin.y as f32 * CELL_SIZE - pose.z;
+                let ground = triangle_land(pose.x, world_north);
+                assert!(
+                    pose.y >= ground + 20.0,
+                    "fell through real Tamriel (0,1)/(0,2) terrain at X={x_line}, frame_ms={frame_ms}, north={world_north:.1}: y={:.1}, land={ground:.1}",
+                    pose.y
+                );
+                if world_north >= 9200.0 {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached, "walk stalled at X={x_line}, frame_ms={frame_ms}");
+            assert!(
+                app.world().resource::<StreamingMetrics>().origin_rebases >= 1,
+                "walk across Y=8192 must trigger a render-origin rebase"
+            );
+        }
+    }
+}
