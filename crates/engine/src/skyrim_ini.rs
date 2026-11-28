@@ -661,9 +661,12 @@ fn parse_grass_value(key: &str, default: &Value, raw: &str) -> Result<Value, &'s
     if !value.is_finite() || value < 0.0 || value > f32::MAX as f64 {
         return Err("expected a finite, nonnegative f32-range number");
     }
-    if key == "fTexturePctThreshold" && value > 1.0 {
-        return Err("texture threshold must be between 0 and 1");
-    }
+    let value = if key == "fTexturePctThreshold" && value > 1.0 {
+        // Retail rule (RF-GRASS-016): a threshold above one is rewritten to 0.9.
+        0.9
+    } else {
+        value
+    };
     Ok(json!(if value == 0.0 { 0.0 } else { value }))
 }
 

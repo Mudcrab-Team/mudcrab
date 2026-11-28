@@ -1305,7 +1305,6 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
         };
         let valid = complete
             && id != 0
-            && rule.position_range >= 0.0
             && rule.water_comparison <= 7
             && [
                 rule.position_range,
@@ -1326,8 +1325,9 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
         }
         if !valid || without_model {
             rule.model_path.clear();
-            // Invalid scalars cannot be sampled safely. Negative spacing already
-            // yields no grid; water modes above five are unconstrained in spud.
+            // Invalid scalars cannot be sampled safely. Retail rule (RF-GRASS-012)
+            // places a negative range on the spacing-capped grid; water modes above
+            // five are unconstrained in spud.
             rule.water_comparison = rule.water_comparison.min(7);
             for value in [
                 &mut rule.position_range,

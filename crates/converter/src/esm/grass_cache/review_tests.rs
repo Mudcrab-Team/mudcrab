@@ -41,6 +41,21 @@ fn modelless_middle_species_keeps_authored_cap_slot() {
     }
 }
 
+/// Retail rule (RF-GRASS-012): a negative position range uses the spacing-capped grid; it is not
+/// an invalid rule.
+#[test]
+fn negative_position_range_is_retained_not_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = fixture(dir.path());
+    conn.execute("UPDATE grass_types SET position_range=-20 WHERE id=21", [])
+        .unwrap();
+    let (report, cache) = bake(&conn, dir.path(), None, "negative-range.rkyv");
+    assert_eq!((report.skipped_rules, report.first_invalid_rule), (0, None));
+    let rule = cache.types.iter().find(|rule| rule.form_id == 21).unwrap();
+    assert_eq!(rule.position_range, -20.0);
+    assert!(!rule.model_path.is_empty());
+}
+
 /// Bake the common fixture with an optional previous archive.
 fn bake(
     conn: &Connection,

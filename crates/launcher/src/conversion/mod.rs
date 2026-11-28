@@ -387,6 +387,9 @@ pub fn output_is_safe_target(output: &Path) -> Result<(), String> {
 pub enum OutputState {
     /// A complete conversion the engine can start on.
     Complete,
+    /// A complete conversion whose grass cache was written by an older producer. Play stays
+    /// enabled: the runtime warns and disables grass, and a metadata rebuild restores it.
+    CompleteWithOutdatedGrass { found: u32, expected: u32 },
     /// No conversion, or one that does not satisfy the runtime contract.
     Incomplete,
     /// A conversion file exists but cannot be read or parsed.
@@ -395,7 +398,10 @@ pub enum OutputState {
 
 impl OutputState {
     pub fn is_complete(&self) -> bool {
-        matches!(self, Self::Complete)
+        matches!(
+            self,
+            Self::Complete | Self::CompleteWithOutdatedGrass { .. }
+        )
     }
 
     /// One line for the panel. Names the unreadable file and why.
@@ -403,6 +409,12 @@ impl OutputState {
         match self {
             Self::Complete => format!(
                 "{} holds a complete conversion: Play is ready.",
+                output.display()
+            ),
+            Self::CompleteWithOutdatedGrass { found, expected } => format!(
+                "{} holds a complete conversion: Play is ready, but its grass cache is outdated \
+                 (producer {found}, expected {expected}). The runtime warns and disables grass; \
+                 rebuild metadata with --reuse-assets to refresh it.",
                 output.display()
             ),
             Self::Incomplete => format!(
@@ -487,11 +499,31 @@ pub fn output_state(output: &Path) -> OutputState {
         },
         None => None,
     };
-    if manifest_is_complete(output, &manifest, report.as_ref()) {
-        OutputState::Complete
-    } else {
-        OutputState::Incomplete
+    if !manifest_is_complete(output, &manifest, report.as_ref()) {
+        return OutputState::Incomplete;
     }
+    match outdated_grass_producer(&manifest) {
+        Some(found) => OutputState::CompleteWithOutdatedGrass {
+            found,
+            expected: shared::grass::GRASS_CACHE_VERSION,
+        },
+        None => OutputState::Complete,
+    }
+}
+
+/// The grass producer version recorded in the manifest, when it predates this converter's.
+///
+/// The manifest's `derived/grass-cache` entry carries `grass-producer:<version>`. An entry that
+/// is absent or unparseable is left alone: the launcher cannot tell what a hand-written or
+/// pre-grass manifest meant, and Play must not be blocked over a guess.
+fn outdated_grass_producer(manifest: &converter::cache::ConversionManifest) -> Option<u32> {
+    let entry = manifest.entries.get("derived/grass-cache")?;
+    let found = entry
+        .source_hash
+        .strip_prefix("grass-producer:")?
+        .parse()
+        .ok()?;
+    (found != shared::grass::GRASS_CACHE_VERSION).then_some(found)
 }
 
 fn manifest_is_complete(
@@ -2010,6 +2042,47 @@ pub(crate) mod tests {
         let output = complete_output("tri-state-valid");
         assert_eq!(output_state(&output), OutputState::Complete);
         assert!(output_state(&output).is_complete());
+    }
+
+    /// An old grass producer is a warning beside a usable output, never a reason to block Play.
+    #[test]
+    fn an_outdated_grass_producer_warns_without_blocking_play() {
+        let output = complete_output("outdated-grass");
+        let path = output.join(MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        manifest["entries"]["derived/grass-cache"] = serde_json::json!({
+            "source_hash": format!("grass-producer:{}", shared::grass::GRASS_CACHE_VERSION - 1),
+            "output": "grass_cache.rkyv",
+            "output_size": 4,
+            "output_hash": "h",
+        });
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let state = output_state(&output);
+        assert!(
+            state.is_complete(),
+            "an old grass cache must not block Play"
+        );
+        assert!(
+            matches!(
+                state,
+                OutputState::CompleteWithOutdatedGrass { found, expected }
+                    if found + 1 == expected
+            ),
+            "{state:?}"
+        );
+        let message = state.message(&output);
+        assert!(message.contains("outdated"), "{message}");
+        assert!(message.contains("--reuse-assets"), "{message}");
+
+        manifest["entries"]["derived/grass-cache"]["source_hash"] = serde_json::json!(format!(
+            "grass-producer:{}",
+            shared::grass::GRASS_CACHE_VERSION
+        ));
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(output_state(&output), OutputState::Complete);
+        std::fs::remove_dir_all(&output).unwrap();
     }
 
     #[test]

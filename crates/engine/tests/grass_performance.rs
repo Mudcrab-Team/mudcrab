@@ -100,7 +100,9 @@ fn grass_patch(base: &Path) -> Vec<u8> {
         let mut data = vec![0; 32];
         data[0] = 100;
         data[2] = 90;
-        for (offset, value) in [(12, 0.0f32), (16, 0.35), (20, 0.2), (24, 2.5)] {
+        // Position Range 1 keeps the minimum-spacing grid at every tested spacing; retail rule
+        // (RF-GRASS-012) places nothing for a range of exactly 0.
+        for (offset, value) in [(12, 1.0f32), (16, 0.35), (20, 0.2), (24, 2.5)] {
             data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
         data[28] = 5; // Vertex lighting and fit to slope; preserve authored nonuniform height.

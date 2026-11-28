@@ -403,9 +403,27 @@ fn position_range_controls_species_ratios_and_replay() {
                 .all(|instance| instance.candidate_slot() < a.slot_count)
         );
     }
-    assert_eq!(grid_side(0.0, 20.0), 12);
-    assert_eq!(grid_side(-20.0, 20.0), 0);
+    assert_eq!(grid_side(0.0, 20.0), 0);
+    assert_eq!(grid_side(-20.0, 20.0), 12);
     assert_eq!(grid_side(60.0, 20.0), 4);
+}
+
+/// Retail places no candidates for a layer whose authored range is zero.
+#[test]
+fn zero_position_range_places_no_candidates() {
+    let cache = mapped(vec![rule(7, 0.0)], cell(vec![layer(vec![7], 1.0, true)]));
+    let generated = generate(&cache, 42, &EngineConfig::default());
+    assert!(generated.batches.is_empty());
+}
+
+/// Retail rule (RF-GRASS-012): a negative range uses the spacing-capped grid instead of rejecting
+/// the layer.
+#[test]
+fn negative_position_range_places_the_spacing_cap_grid() {
+    let cache = mapped(vec![rule(7, -20.0)], cell(vec![layer(vec![7], 1.0, true)]));
+    let generated = generate(&cache, 42, &EngineConfig::default());
+    assert_eq!(generated.batches.len(), 1);
+    assert_eq!(generated.batches[0].instances.len(), 36864);
 }
 
 /// The shared stream responds to entry order, while the coordinate product determines its seed.

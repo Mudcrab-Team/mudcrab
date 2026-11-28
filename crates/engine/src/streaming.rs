@@ -8230,7 +8230,7 @@ mod tests {
                     max_slope,
                     units_from_water: 0,
                     water_comparison: 0,
-                    position_range: 0.0,
+                    position_range: 32.0,
                     height_range: 0.0,
                     color_range: 0.0,
                     wave_period: 0.0,
