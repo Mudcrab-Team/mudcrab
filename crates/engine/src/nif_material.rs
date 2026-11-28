@@ -35,7 +35,7 @@ use std::{
 mod retail;
 mod retail_environment;
 pub(crate) mod technique;
-pub(crate) use retail::{EMPTY_HEIGHT_TEXEL, texel_image};
+pub(crate) use retail::{EMPTY_BASE_TEXEL, EMPTY_HEIGHT_TEXEL, texel_image};
 use technique::{Technique, technique};
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
@@ -426,6 +426,29 @@ struct NativeMaterialHandler {
     material_values: Option<Arc<MaterialValuesFile>>,
     /// The images of empty texture slots, added to this load when a surface first needs one.
     empty_slots: HashMap<[u8; 4], Handle<Image>>,
+    /// Whether this load has logged a surface that the material values file does not cover.
+    reported_missing_values: bool,
+}
+
+/// What to log for a lit surface without NIF material values.
+#[derive(Debug, PartialEq, Eq)]
+enum MissingValues {
+    /// The pack has no material values file: one line for the whole run.
+    NoFile,
+    /// The file has no entry for this mesh: one line for the mesh.
+    NoEntry,
+    /// This mesh is already logged.
+    Logged,
+}
+
+fn missing_values(has_file: bool, mesh_logged: &mut bool) -> MissingValues {
+    if !has_file {
+        MissingValues::NoFile
+    } else if std::mem::replace(mesh_logged, true) {
+        MissingValues::Logged
+    } else {
+        MissingValues::NoEntry
+    }
 }
 
 /// The sidecar at the root of the pack in `assets`, when the pack has one.
@@ -883,14 +906,26 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 self.material_values.as_deref(),
                 &context.path().path().to_string_lossy(),
             );
-            // An older pack publishes no values and has no sidecar.
-            if values.is_none() && self.material_values.is_none() {
-                warn_once!(
-                    "no NIF material values for {}: lit surfaces without them keep the clamped \
-                     glTF specular and draw no reflection (`converter derive-material-values` \
-                     writes them for an existing pack)",
-                    context.path().path().display()
-                );
+            if values.is_none() {
+                match missing_values(
+                    self.material_values.is_some(),
+                    &mut self.reported_missing_values,
+                ) {
+                    // An older pack publishes no values and has no sidecar.
+                    MissingValues::NoFile => warn_once!(
+                        "no NIF material values for {}: lit surfaces without them keep the \
+                         clamped glTF specular and draw no reflection (`converter \
+                         derive-material-values` writes them for an existing pack)",
+                        context.path().path().display()
+                    ),
+                    // A derived file has no entry for a composed actor mesh, for example.
+                    MissingValues::NoEntry => warn!(
+                        "the material values file has no entry for a lit surface of {}: it keeps \
+                         the clamped glTF specular and draws no reflection",
+                        context.path().path().display()
+                    ),
+                    MissingValues::Logged => {}
+                }
             }
             retail::apply(source, &standard, values, &self.textures, &mut material);
             if retail::empty_base_slot(source, &material) {
@@ -1146,6 +1181,17 @@ mod tests {
         let asset_server = app.world().resource::<AssetServer>();
         let handle = asset_server.load::<A>(path);
         assert_eq!(asset_server.get_path(handle.id()), Some(path.into()));
+    }
+
+    /// One line for a pack without the file, and one for each mesh that the file leaves out.
+    #[test]
+    fn a_surface_without_material_values_is_logged_once_per_mesh() {
+        let mut logged = false;
+        assert_eq!(missing_values(false, &mut logged), MissingValues::NoFile);
+        assert_eq!(missing_values(true, &mut logged), MissingValues::NoEntry);
+        assert_eq!(missing_values(true, &mut logged), MissingValues::Logged);
+        // Bevy clones the handler for each glTF load, so the next mesh logs again.
+        assert_eq!(missing_values(true, &mut false), MissingValues::NoEntry);
     }
 
     #[test]

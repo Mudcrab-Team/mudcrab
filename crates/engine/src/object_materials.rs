@@ -495,6 +495,13 @@ fn bind_swapped<M: SwappedMaterial>(
             // empty; the model's own textures are dropped.
             let standard = derived.standard();
             standard.base_color_texture = textures.diffuse;
+            // An empty base slot of a retail surface samples the default texel (SPEC-1
+            // section 5). Without a texture a lit surface draws white.
+            if standard.retail_surface.is_some() && standard.base_color_texture.is_none() {
+                standard.base_color_texture = Some(images.add(crate::nif_material::texel_image(
+                    crate::nif_material::EMPTY_BASE_TEXEL,
+                )));
+            }
             standard.normal_map_texture = textures.normal;
             standard.emissive_texture = textures.glow;
             standard.specular_texture = None;

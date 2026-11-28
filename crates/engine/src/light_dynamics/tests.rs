@@ -359,6 +359,48 @@ mod system {
 
     /// SPEC-1 section 2.6: under `skyrim` the flicker gate measures from the player body, so a
     /// free camera next to a far light does not animate it.
+    /// The retail flicker counts game time: it stands while the console or a menu pauses the
+    /// game (RF-TIME-001).
+    #[test]
+    fn the_skyrim_flicker_stands_while_the_game_is_paused() {
+        let mut app = app_with(EngineConfig::default(), Vec3::ZERO);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(30),
+        ));
+        let evaluation = evaluate_light(&row(0x8, 1.0, 0.5, 8.0), None);
+        let light = evaluation.point_light_in(LightUnits::Retail, None).unwrap();
+        let entity = app
+            .world_mut()
+            .spawn((
+                light,
+                SkyrimLight {
+                    form_id: 1,
+                    cell_id: 2,
+                    shadow_flagged: false,
+                },
+                LightDynamics::retail(&evaluation, 1),
+                Transform::default(),
+                GlobalTransform::from(Transform::from_xyz(100.0, 0.0, 0.0)),
+            ))
+            .id();
+        let phase = |app: &App| app.world().get::<LightDynamics>(entity).unwrap().phase;
+        for _ in 0..10 {
+            app.update();
+        }
+        let running = phase(&app);
+        assert_ne!(running, [0.0; 3], "the light flickers");
+
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_eq!(phase(&app), running);
+
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        app.update();
+        assert_ne!(phase(&app), running);
+    }
+
     #[test]
     fn the_skyrim_flicker_gate_measures_from_the_player() {
         let config = EngineConfig {

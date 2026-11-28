@@ -18685,39 +18685,35 @@
       "reason": "SLSF1 bit 1 (Skinned) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
     },
     "NIF.SLSF1.bit10": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "pub shader_flags_1: Fallout4ShaderPropertyFlags1,",
-          "path": "vendor/project-wormhole-nif/src/nif_block.rs"
+          "anchor": "} else if has(10) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         },
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "fn native_depth_flags(material: &gltf::Material<'_>) -> Option<(u32, u32)> {",
+          "anchor": "let face = self.technique_allows(source, Technique::Face);",
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
       "issue": "#1041",
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 10 (Facegen_Detail_Map) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
+      "reason": "SLSF1 bit 10 (Facegen_Detail_Map): the engine reads it. Under skyrim it ranks the face technique (SPEC-1 section 9.1), which gates the face inputs of a surface. The inputs themselves still come from the NIF shader type, and mudcrab does not read the flag."
     },
     "NIF.SLSF1.bit11": {
-      "disposition": "not-applicable",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "<bitflags name=\"SkyrimShaderPropertyFlags1\" storage=\"uint\" prefix=\"SLSF1\" versions=\"#SKY# #SSE#\">",
-          "path": "vendor/project-wormhole-nif/src/nif_flags.rs"
+          "anchor": "} else if has(11) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         },
         {
-          "anchor": "| LightingShaderType::MultiLayerParallax",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "material.depth_map.is_none() && technique(flags_1, flags_2) == Technique::Parallax",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1_Parallax (bit 11) is unused in Skyrim SE (nif.xml marks 'Unused?'); parallax uses ShaderType 3 / 7."
+      "reason": "SLSF1 bit 11 (Parallax): the engine reads it. Under skyrim it selects the parallax technique, which binds the height map and takes the one-step offset of SPEC-1 sections 9.1 and 9.2. mudcrab does not read it."
     },
     "NIF.SLSF1.bit12": {
       "disposition": "respected",
@@ -18762,24 +18758,16 @@
       "reason": "SLSF1 bit 13 (Non_Projective_Shadows) is preserved in shaderFlags1 metadata, but the corresponding shader/render feature is not implemented in engine."
     },
     "NIF.SLSF1.bit14": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "pub shader_flags_1: Fallout4ShaderPropertyFlags1,",
-          "path": "vendor/project-wormhole-nif/src/nif_block.rs"
-        },
-        {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "fn native_depth_flags(material: &gltf::Material<'_>) -> Option<(u32, u32)> {",
-          "path": "crates/engine/src/nif_material.rs"
+          "anchor": "} else if has(14) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         }
       ],
       "issue": "#1041",
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 14 (Landscape) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
+      "reason": "SLSF1 bit 14 (Landscape): the engine reads it to rank the landscape technique over the other NIF techniques. A NIF surface takes no landscape shading from it; terrain comes from LAND records."
     },
     "NIF.SLSF1.bit15": {
       "disposition": "system-not-implemented",
@@ -18798,7 +18786,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 15 (Refraction): the skyrim profile draws no lit pass for a refraction surface, a refraction effect surface draws as a surface (Open::Refraction), and screen-space refraction distortion is not implemented."
+      "reason": "The engine reads it. SLSF1 bit 15 (Refraction): the skyrim profile draws no lit pass for a refraction surface, a refraction effect surface draws as a surface (Open::Refraction), and screen-space refraction distortion is not implemented."
     },
     "NIF.SLSF1.bit16": {
       "disposition": "system-not-implemented",
@@ -18815,16 +18803,12 @@
       "disposition": "system-not-implemented",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "\"shaderFlags1\": material.shader_flags_1,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "if has(17) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 17 (Eye_Environment_Mapping) is preserved in shaderFlags1 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF1 bit 17 (Eye_Environment_Mapping): the engine reads it only to rank the eye technique over the other techniques. Eye shading is not implemented (#490, #1082)."
     },
     "NIF.SLSF1.bit18": {
       "disposition": "partial",
@@ -18878,42 +18862,38 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 2 (Temp_Refraction): the skyrim profile draws no lit pass for a refraction surface, a refraction effect surface draws as a surface (Open::Refraction), and screen-space refraction distortion is not implemented."
+      "reason": "The engine reads it. SLSF1 bit 2 (Temp_Refraction): the skyrim profile draws no lit pass for a refraction surface, a refraction effect surface draws as a surface (Open::Refraction), and screen-space refraction distortion is not implemented."
     },
     "NIF.SLSF1.bit20": {
-      "disposition": "system-not-implemented",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "const SLSF1_BLACK_BASE: u32 = 1 << 20;",
+          "path": "crates/engine/src/nif_material/retail.rs"
         },
         {
-          "anchor": "\"shaderFlags1\": material.shader_flags_1,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "if flags_1 & SLSF1_BLACK_BASE != 0 {",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 20 (Localmap_Hide_Secret) is preserved in shaderFlags1 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF1 bit 20: the engine reads it. Under skyrim the surface takes a black base map (SPEC-1 section 5); the nif.xml name of the bit differs. mudcrab does not read it."
     },
     "NIF.SLSF1.bit21": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "pub shader_flags_1: Fallout4ShaderPropertyFlags1,",
-          "path": "vendor/project-wormhole-nif/src/nif_block.rs"
+          "anchor": "} else if has(21) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         },
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "fn native_depth_flags(material: &gltf::Material<'_>) -> Option<(u32, u32)> {",
+          "anchor": "if is_skin_tint(material) && self.technique_allows(material, Technique::FaceTint) {",
           "path": "crates/engine/src/nif_material.rs"
         }
       ],
       "issue": "#1041",
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 21 (FaceGen_RGB_Tint) is preserved in glTF extras/extension shaderFlags1 but never read (skinning uses BSTriShape.skin; FaceGen/SkinTint use ShaderType; terrain uses ESM LAND; MODS uses ObjectGeometryIndex)."
+      "reason": "SLSF1 bit 21 (FaceGen_RGB_Tint): the engine reads it. Under skyrim it ranks the face tint technique (SPEC-1 section 9.1), which gates the tint inputs of a surface. The inputs themselves still come from the NIF shader type, and mudcrab does not read the flag."
     },
     "NIF.SLSF1.bit22": {
       "disposition": "partial",
@@ -18939,16 +18919,12 @@
       "disposition": "system-not-implemented",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "\"shaderFlags1\": material.shader_flags_1,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "let snow = snows(flags_1, flags_2) && flags_1 & SLSF1_PROJECTED_UV == 0;",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 23 (Projected_UV) is preserved in shaderFlags1 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF1 bit 23 (Projected_UV): the engine reads it only to exclude the object snow rule and to rank the projected environment technique. The projection is not implemented."
     },
     "NIF.SLSF1.bit24": {
       "disposition": "dropped",
@@ -19050,16 +19026,12 @@
       "disposition": "system-not-implemented",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "\"shaderFlags1\": material.shader_flags_1,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "} else if has(28) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 28 (Parallax_Occlusion) is preserved in shaderFlags1 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF1 bit 28 (Parallax_Occlusion): the engine reads it to give no technique, as SPEC-1 section 9.1 states for the compiled setting bEnableParallaxOcclusion = 0. Parallax occlusion is not implemented."
     },
     "NIF.SLSF1.bit29": {
       "disposition": "respected",
@@ -19104,19 +19076,20 @@
       "reason": "SLSF1_Vertex_Alpha (bit 3) gates vertex alpha preservation in apply_vertex_color_contract (suppressed only for tree_or_lod); shaders multiply vertex color alpha."
     },
     "NIF.SLSF1.bit30": {
-      "disposition": "system-not-implemented",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags1\"] = serde_json::json!(material.shader_flags_1);",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "const SLSF1_SOFT_EFFECT: u32 = 1 << 30;",
+          "path": "crates/engine/src/nif_material/retail.rs"
         },
         {
-          "anchor": "\"shaderFlags1\": material.shader_flags_1,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "flags_2 & excluded == 0 && (snow || flags_1 & SLSF1_SOFT_EFFECT != 0)",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
+      "issue": "#435",
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1 bit 30 (Soft_Effect) is preserved in shaderFlags1 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF1 bit 30: the engine reads it. Under skyrim it turns the object snow rule on, so the surface adds no specular colour (SPEC-1 section 9.4). The snow rim and the composite snow term are not drawn."
     },
     "NIF.SLSF1.bit31": {
       "disposition": "respected",
@@ -19207,7 +19180,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF1_Environment_Mapping (bit 7) classifies texture slots 4/5 in the converter, and the skyrim profile draws the technique 1 cube reflection from published material values. The distance fade and the fEnvmapLODFadeEnd cut, model-space surfaces and the mudcrab profile are not implemented (#490)."
+      "reason": "The engine reads it. SLSF1_Environment_Mapping (bit 7) classifies texture slots 4/5 in the converter, and the skyrim profile draws the technique 1 cube reflection from published material values. The distance fade and the fEnvmapLODFadeEnd cut, model-space surfaces and the mudcrab profile are not implemented (#490)."
     },
     "NIF.SLSF1.bit8": {
       "disposition": "dropped",
@@ -19273,28 +19246,20 @@
       "reason": "SLSF2_ZBuffer_Write (bit 0) controls depth_write_enabled on unblended draws and retail cutout-vs-blend disambiguation."
     },
     "NIF.SLSF2.bit1": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags2\"] = serde_json::json!(material.shader_flags_2);",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "} else if has(33) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         },
         {
-          "anchor": "\"shaderFlags2\": material.shader_flags_2,",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "let tree_or_lod = material.shader_flags_2 & (1 << 29) != 0",
-          "path": "crates/converter/src/mesh.rs"
-        },
-        {
-          "anchor": "const LOD_LANDSCAPE: u32 = 1 << 1;",
-          "path": "crates/engine/src/nif_material/pass_audit.rs"
+          "anchor": "const SLSF2_LOD_AND_BLEND_BITS: u32 = (1 << 1) | (1 << 2) | (1 << 14) | (1 << 31);",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "issue": "#1041",
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF2 bit 1 (LOD_Landscape) is preserved in shaderFlags2 metadata (and bits 1/2 only checked in pass_audit.rs test diagnostic) without altering conversion or runtime rendering."
+      "reason": "SLSF2 bit 1 (LOD_Landscape, flag 33): the engine reads it to rank the LOD land noise technique and to exclude the object snow rule. It selects no further shading of a NIF surface."
     },
     "NIF.SLSF2.bit10": {
       "disposition": "system-not-implemented",
@@ -19369,16 +19334,16 @@
       "disposition": "system-not-implemented",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags2\"] = serde_json::json!(material.shader_flags_2);",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "} else if has(46) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         },
         {
-          "anchor": "\"shaderFlags2\": material.shader_flags_2,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "const SLSF2_LOD_AND_BLEND_BITS: u32 = (1 << 1) | (1 << 2) | (1 << 14) | (1 << 31);",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF2 bit 14 (No_LOD_Land_Blend) is preserved in shaderFlags2 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF2 bit 14 (No_LOD_Land_Blend, flag 46): the engine reads it only to rank the land LOD blend technique and to exclude the object snow rule. That technique is not drawn for a NIF surface."
     },
     "NIF.SLSF2.bit15": {
       "disposition": "system-not-implemented",
@@ -19465,28 +19430,20 @@
       "reason": "SLSF2_Premult_Alpha (bit 19) is exported into OPEN_SKYRIM_material.premultipliedAlpha at material.rs:761, but engine never reads it or uses premultiplied blend factors."
     },
     "NIF.SLSF2.bit2": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags2\"] = serde_json::json!(material.shader_flags_2);",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "} else if has(34) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         },
         {
-          "anchor": "\"shaderFlags2\": material.shader_flags_2,",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "let tree_or_lod = material.shader_flags_2 & (1 << 29) != 0",
-          "path": "crates/converter/src/mesh.rs"
-        },
-        {
-          "anchor": "const LOD_LANDSCAPE: u32 = 1 << 1;",
-          "path": "crates/engine/src/nif_material/pass_audit.rs"
+          "anchor": "const SLSF2_LOD_AND_BLEND_BITS: u32 = (1 << 1) | (1 << 2) | (1 << 14) | (1 << 31);",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "issue": "#1041",
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF2 bit 2 (LOD_Objects) is preserved in shaderFlags2 metadata (and bits 1/2 only checked in pass_audit.rs test diagnostic) without altering conversion or runtime rendering."
+      "reason": "SLSF2 bit 2 (LOD_Objects, flag 34): the engine reads it to rank the LOD objects technique and to exclude the object snow rule. It selects no further shading of a NIF surface."
     },
     "NIF.SLSF2.bit20": {
       "disposition": "system-not-implemented",
@@ -19557,16 +19514,12 @@
       "disposition": "system-not-implemented",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags2\"] = serde_json::json!(material.shader_flags_2);",
-          "path": "crates/converter/src/material.rs"
-        },
-        {
-          "anchor": "\"shaderFlags2\": material.shader_flags_2,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "} else if has(56) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF2 bit 24 (Multi_Layer_Parallax) is preserved in shaderFlags2 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF2 bit 24 (Multi_Layer_Parallax, flag 56): the engine reads it only to rank the multilayer parallax technique, which is not implemented."
     },
     "NIF.SLSF2.bit25": {
       "disposition": "system-not-implemented",
@@ -19614,15 +19567,16 @@
       "reason": "SLSF2 bit 27 (Back_Lighting) is preserved in shaderFlags2 metadata, but the corresponding shader/render feature is not implemented in engine."
     },
     "NIF.SLSF2.bit28": {
-      "disposition": "not-applicable",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "<bitflags name=\"SkyrimShaderPropertyFlags2\" storage=\"uint\" prefix=\"SLSF2\" versions=\"#SKY# #SSE#\">",
-          "path": "vendor/project-wormhole-nif/src/nif_flags.rs"
+          "anchor": "let snow = flags_2 & SLSF2_SNOW != 0 && flags_2 & SLSF2_TREE_ANIM == 0;",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
+      "issue": "#435",
       "owner": "Mudcrab maintainers",
-      "reason": "Unused/unknown bit 28 in SkyrimShaderPropertyFlags2."
+      "reason": "SLSF2 bit 28 (flag 60): the engine reads it. Under skyrim it turns the object snow rule on without the tree animation flag, so the surface adds no specular colour (SPEC-1 section 9.4). The snow rim and the composite snow term are not drawn."
     },
     "NIF.SLSF2.bit29": {
       "disposition": "partial",
@@ -19670,16 +19624,16 @@
       "disposition": "system-not-implemented",
       "evidence": [
         {
-          "anchor": "output[\"extras\"][\"openSkyrim\"][\"shaderFlags2\"] = serde_json::json!(material.shader_flags_2);",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "} else if has(63) {",
+          "path": "crates/engine/src/nif_material/technique.rs"
         },
         {
-          "anchor": "\"shaderFlags2\": material.shader_flags_2,",
-          "path": "crates/converter/src/material.rs"
+          "anchor": "const SLSF2_LOD_AND_BLEND_BITS: u32 = (1 << 1) | (1 << 2) | (1 << 14) | (1 << 31);",
+          "path": "crates/engine/src/nif_material/retail.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "SLSF2 bit 31 (HD_LOD_Objects) is preserved in shaderFlags2 metadata, but the corresponding shader/render feature is not implemented in engine."
+      "reason": "SLSF2 bit 31 (HD_LOD_Objects, flag 63): the engine reads it only to rank the HD LOD technique and to exclude the object snow rule. That technique is not drawn for a NIF surface."
     },
     "NIF.SLSF2.bit4": {
       "disposition": "respected",

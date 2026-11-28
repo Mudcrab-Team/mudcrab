@@ -220,6 +220,23 @@ pub struct LightFade {
 }
 
 impl LightFade {
+    /// The pair at weight `w` from `self` to `current`. Retail blends the squared begin and end
+    /// with the room colours (`RF-LIGHT-CPU-025`).
+    fn blended_toward(self, current: Self, w: f32) -> Self {
+        if w >= 1.0 {
+            return current;
+        }
+        let lerp = |a: f32, b: f32| a + (b - a) * w;
+        let begin_squared = lerp(self.begin_squared, current.begin_squared);
+        let end_squared = lerp(self.end_squared, current.end_squared);
+        Self {
+            begin: begin_squared.sqrt(),
+            end: end_squared.sqrt(),
+            begin_squared,
+            end_squared,
+        }
+    }
+
     pub fn new(begin: f32, end: f32) -> Self {
         Self {
             begin,
@@ -547,6 +564,8 @@ impl CellFog {
     }
 
     /// The no-ramp side of a blend: retail's clamped far, with `other`'s colours, power and max.
+    /// STAND-IN(#891): the colours, power and max of a side without a ramp are unverified; only
+    /// the far clamp has a registry row. Bevy's `mudcrab` fog alone reads this.
     fn without_ramp(other: &Self) -> Self {
         Self {
             near: FOG_NEAR_CLAMP_FRACTION * FOG_FAR_CLAMP,
@@ -644,9 +663,10 @@ impl InteriorRender {
     /// The blend of `self` (previous) toward `current` by `w`, as retail blends a room change
     /// (`RF-LIGHT-CPU-025`): the directional colour, the six DALC colours (their mean is the
     /// ambient) and the fog, for both profiles' fog. The rotation, the sunlight scale and the key
-    /// illuminance are the cell's and are not blended. The light fade pair is not in the blended
-    /// list, so it is the current side's. The room image space is not blended: `room_bounds`
-    /// carries no image-space data yet.
+    /// illuminance are the cell's and are not blended. The light fade squares blend too, in
+    /// [`SceneEnvironment::light_fade`], because they resolve with engine settings; the pair
+    /// here is the current side's. The room image space is not blended: `room_bounds` carries no
+    /// image-space data yet.
     fn blended_with(&self, current: &Self, w: f32) -> Self {
         let mut faces = [[0; 3]; 6];
         for (face, (from, to)) in faces
@@ -935,18 +955,37 @@ impl SceneEnvironment {
         )
     }
 
-    /// The current side of the blend, for the values the blend does not cover (the light fade
-    /// pair). Without a blend state it is the room the camera is in. `None` in mode 3.
-    pub(crate) fn current_render(
+    /// The light fade that the distance dimmer takes: the current side of the blend, or, while a
+    /// transition runs, the squared pair blended from the previous side (`RF-LIGHT-CPU-025`).
+    /// `start` and `range` replace stored zeros ([`resolve_light_fade`]). Without a blend state
+    /// the side is the room the camera is in. `None` where the side has no pair, which dims
+    /// nothing. A scene without room lighting (mode 3, or a pack without the lighting table)
+    /// takes the exterior pair.
+    pub(crate) fn light_fade(
         &self,
         blend: Option<&RoomBlend>,
         camera: Option<Vec3>,
-    ) -> Option<&InteriorRender> {
+        start: f32,
+        range: f32,
+    ) -> Option<LightFade> {
         let room = match blend {
             Some(blend) => blend.current,
             None => self.room_at(camera, None),
         };
-        self.render_of(room)
+        let Some(side) = self.render_of(room) else {
+            return Some(resolve_light_fade(None, start, range));
+        };
+        let current = resolve_light_fade(Some(side.light_fade?), start, range);
+        let running = blend.filter(|blend| blend.weight > 0.0);
+        // A previous side without a pair has no squares to start from: the current pair applies.
+        // What retail does there is unverified.
+        let previous = running.and_then(|blend| {
+            let pair = self.render_of(blend.previous)?.light_fade?;
+            Some((resolve_light_fade(Some(pair), start, range), blend.weight))
+        });
+        Some(previous.map_or(current, |(previous, weight)| {
+            previous.blended_toward(current, weight)
+        }))
     }
 
     /// The values to apply now, or `None` in mode 3: the current side of the blend, or the blend
@@ -973,9 +1012,13 @@ fn keep_or_first(holding: &[u32], last: Option<u32>) -> Option<u32> {
 
 /// `fRoomLightingTransitionDuration`: the seconds a switch between room lightings takes
 /// (`RF-LIGHT-CPU-024`: record `0x14209E7C0`, default 3.0, one reader `0x14041206C`, no ESM
-/// override found). The unit is the frame delta of the renderer's clock, which about 200 retail
-/// readers use as seconds per frame (medium confidence), so it is real time here.
+/// override found). It counts game time ([`RETAIL_FRAME_DELTA_CAP`]).
 pub(crate) const ROOM_LIGHTING_TRANSITION_SECONDS: f32 = 3.0;
+
+/// The longest frame delta of retail's clock, in seconds. RF-TIME-001, which `RF-LIGHT-CPU-024`
+/// cites: the delta has the slow-time scaling, this cap, and is 0 while the game is paused. Here
+/// that is Bevy's virtual time with this cap.
+pub(crate) const RETAIL_FRAME_DELTA_CAP: f32 = 1.0 / 6.0;
 
 /// The weight a started transition begins at (`RF-LIGHT-CPU-024`, `0x3727C5AC`, 1.0e-5). A weight
 /// above 0 is what marks a transition as running.
@@ -1170,7 +1213,7 @@ fn step_room_blend(
     graphs: Option<Res<RoomCullingState>>,
     roots: Query<&GlobalTransform, InteriorRoot>,
     mut blend: ResMut<RoomBlend>,
-    time: Option<Res<Time<Real>>>,
+    time: Option<Res<Time<Virtual>>>,
 ) {
     let point = cameras.iter().next().map(|(transform, near)| {
         near.map_or(transform.translation, |near| {
@@ -1199,8 +1242,8 @@ fn step_room_blend(
             (room, room)
         }
     };
-    // retail-default: not record data; a run without the real clock has no elapsed time.
-    let delta = time.map_or(0.0, |time| time.delta_secs());
+    // retail-default: not record data; a run without the game clock has no elapsed time.
+    let delta = time.map_or(0.0, |time| time.delta_secs().min(RETAIL_FRAME_DELTA_CAP));
     let mut next = blend.clone();
     if next.cell_id == cell_id {
         next.step(side, delta);
@@ -2800,7 +2843,10 @@ mod tests {
             .get_mut::<Transform>(camera)
             .unwrap()
             .translation = creation_to_bevy(Vec3::new(7936.0, -5015.0, -1900.0));
-        app.update();
+        // The room change blends over 3 s of game time, at most 1/6 s a frame.
+        for _ in 0..25 {
+            app.update();
+        }
         let light = sun_light(&app, sun);
         assert_eq!(light.color, Color::srgb_u8(68, 79, 81));
         assert_eq!(
@@ -2832,7 +2878,9 @@ mod tests {
             .get_mut::<Transform>(camera)
             .unwrap()
             .translation = Vec3::ZERO;
-        app.update();
+        for _ in 0..25 {
+            app.update();
+        }
         assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(44, 47, 48));
     }
 
@@ -3091,11 +3139,11 @@ mod tests {
         assert_eq!(cell.blended_with(&room, 1.0).fog_fields, room.fog_fields);
     }
 
-    /// The light fade pair is not blended: the current side of the blend gives it.
+    /// RF-LIGHT-CPU-025: the squared light fade pair blends between rooms with the colours.
     #[test]
-    fn the_current_render_is_the_current_side_of_the_blend() {
-        let render = |value: u8| InteriorRender {
-            key_color: [value; 3],
+    fn the_light_fade_squares_blend_between_rooms() {
+        let render = |pair| InteriorRender {
+            light_fade: pair,
             ..InteriorRender::new(&Lighting::default(), 1.0)
         };
         let room = RoomLighting::new(
@@ -3106,34 +3154,41 @@ mod tests {
                 half: [100.0; 3],
                 lighting_template: 1,
             },
-            render(9),
+            render(Some((3000.0, 4000.0))),
         );
-        let scene = SceneEnvironment {
-            cell_render: Some(render(1)),
+        let mut scene = SceneEnvironment {
+            cell_render: Some(render(Some((1000.0, 2000.0)))),
             rooms: vec![room],
             ..default()
         };
         let mut blend = RoomBlend::default();
         blend.snap(Some(7), None);
-        blend.step(Some(4), 0.5);
+        blend.step(Some(4), 0.0);
+        blend.weight = 0.5;
+        let fade = scene.light_fade(Some(&blend), None, 3500.0, 500.0).unwrap();
         assert_eq!(
-            scene.current_render(Some(&blend), None).unwrap().key_color,
-            [9; 3]
+            (fade.begin_squared, fade.end_squared),
+            (5_000_000.0, 10_000_000.0),
+            "half way between the squares"
         );
+        blend.weight = 0.0;
+        let done = scene.light_fade(Some(&blend), None, 3500.0, 500.0).unwrap();
+        assert_eq!((done.begin, done.end), (3000.0, 4000.0));
+        let entered = scene.light_fade(None, Some(Vec3::ZERO), 3500.0, 500.0);
+        assert_eq!(entered, Some(done), "without a blend state: the room");
+
+        // A previous side without a pair gives the current pair at once.
+        scene.cell_render = Some(render(None));
+        blend.weight = 0.5;
         assert_eq!(
-            scene
-                .current_render(None, Some(Vec3::ZERO))
-                .unwrap()
-                .key_color,
-            [9; 3]
+            scene.light_fade(Some(&blend), None, 3500.0, 500.0),
+            Some(done)
         );
-        assert_eq!(
-            scene
-                .current_render(None, Some(Vec3::splat(1000.0)))
-                .unwrap()
-                .key_color,
-            [1; 3]
-        );
+        // A scene without room lighting takes the exterior pair.
+        let exterior = SceneEnvironment::default()
+            .light_fade(None, None, 3500.0, 500.0)
+            .unwrap();
+        assert_eq!((exterior.begin, exterior.end), (3500.0, 4000.0));
     }
 
     /// The point stays in the room it is in while it is still inside, and only otherwise takes the
@@ -3174,8 +3229,9 @@ mod tests {
     #[test]
     fn a_room_crossing_blends_over_three_seconds_and_a_cell_change_does_not() {
         let mut app = app(rule_catalog());
+        // Shorter than retail's frame cap, so each update counts in full.
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-            0.5,
+            0.15,
         )));
         let sun = spawn_world_sun(&mut app);
         let camera = app
@@ -3195,26 +3251,29 @@ mod tests {
             .unwrap()
             .translation = creation_to_bevy(Vec3::new(7936.0, -5015.0, -1900.0));
         app.update();
-        // One 0.5 s frame: t = 1/6, w = 0.074, so red has moved about 2 of the 24 from 44 to 68.
+        // One 0.15 s frame: t = 0.05, w = 0.007, so red has barely moved from 44 toward 68.
         let start = sun_light(&app, sun).color.to_srgba().red * 255.0;
         assert!(
             (44.0..50.0).contains(&start),
             "the first frame is still near the cell's lighting: {start}"
         );
-        // 0.5 s per update: after six more the transition is at t = 1.
+        // 0.15 s per update: after nineteen more the transition is at t = 1.
         let mut weights = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..19 {
             app.update();
             let weight = app.world().resource::<RoomBlend>().weight;
             if weight == 0.0 {
                 break;
             }
             weights.push(weight);
-            assert_ne!(
-                sun_light(&app, sun).color,
-                room_color,
-                "not at the room's colour before the end"
-            );
+            // Near the end a colour byte can already round to the room's.
+            if weight < 0.9 {
+                assert_ne!(
+                    sun_light(&app, sun).color,
+                    room_color,
+                    "not at the room's colour before the end"
+                );
+            }
         }
         assert!(
             weights.len() >= 4 && weights.windows(2).all(|pair| pair[0] < pair[1]),
@@ -3238,6 +3297,40 @@ mod tests {
         enter(&mut app, Some(ALVOR));
         assert_eq!(app.world().resource::<RoomBlend>().weight, 0.0);
         assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(65, 70, 80));
+    }
+
+    /// A blend counts game time: it stands while the game is paused, and one long frame adds no
+    /// more than retail's frame cap (RF-TIME-001).
+    #[test]
+    fn a_room_blend_stands_while_the_game_is_paused() {
+        let mut app = app(rule_catalog());
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            0.2,
+        )));
+        spawn_world_sun(&mut app);
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::from_xyz(0.0, 5000.0, 0.0)))
+            .id();
+        enter(&mut app, Some(BLEAK_FALLS));
+        app.update();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = creation_to_bevy(Vec3::new(7936.0, -5015.0, -1900.0));
+        app.update();
+        let running = app.world().resource::<RoomBlend>().elapsed;
+        assert_eq!(running, RETAIL_FRAME_DELTA_CAP, "one 0.2 s frame is capped");
+
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        for _ in 0..40 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<RoomBlend>().elapsed, running);
+
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        app.update();
+        assert!(app.world().resource::<RoomBlend>().elapsed > running);
     }
 
     /// With a room graph, the graph names the rooms, at the camera plus its near distance

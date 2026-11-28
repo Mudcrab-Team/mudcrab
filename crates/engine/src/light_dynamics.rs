@@ -37,7 +37,8 @@ use crate::{
     world::{
         components::StreamingCamera,
         environment::interior::{
-            LightFade, RoomBlend, SceneEnvironment, point_light_fade_factor, resolve_light_fade,
+            LightFade, RETAIL_FRAME_DELTA_CAP, RoomBlend, SceneEnvironment,
+            point_light_fade_factor, resolve_light_fade,
         },
     },
 };
@@ -307,6 +308,7 @@ impl LightDynamics {
 pub(crate) fn update_light_dynamics(
     time: Res<Time>,
     real: Option<Res<Time<Real>>>,
+    game: Option<Res<Time<Virtual>>>,
     mut retail_timer: Local<FrameTimer>,
     config: Option<Res<EngineConfig>>,
     scene: Option<Res<SceneEnvironment>>,
@@ -323,11 +325,15 @@ pub(crate) fn update_light_dynamics(
         With<SkyrimLight>,
     >,
 ) {
-    // The smoothed time records every frame, as retail's timer does.
-    let retail_dt = retail_timer.push(
+    // The smoothed frame time records every frame, as retail's timer does. The speed of the
+    // game clock scales it and is 0 while the game is paused (SPEC-1 section 2.6, RF-TIME-001).
+    let smoothed = retail_timer.push(
         real.as_deref()
-            .map_or_else(|| time.delta_secs(), |real| real.delta_secs()),
+            .map_or_else(|| time.delta_secs(), |real| real.delta_secs())
+            .min(RETAIL_FRAME_DELTA_CAP),
     );
+    // retail-default: not record data; a run without the game clock runs at normal speed.
+    let retail_dt = smoothed * game.map_or(1.0, |game| game.effective_speed());
     let Ok(camera) = camera.single() else {
         return;
     };
@@ -337,18 +343,12 @@ pub(crate) fn update_light_dynamics(
     let defaults = EngineConfig::default();
     let config = config.as_deref().unwrap_or(&defaults);
     let (start, range) = (config.light_lod_start_fade, config.light_lod_range);
-    // The current room's pair, else the cell's, else the exterior's. A cell without lighting data
-    // has no pair: its lights are not dimmed. The room blend does not cover the pair, so it is
-    // the current side's. Unverified: `current_render` is also `None` for an
-    // interior in sky mode 3 and for a pack without the lighting table, and those scenes get the
-    // exterior pair here. The findings say nothing about them.
-    let fade = match scene
-        .as_deref()
-        .and_then(|scene| scene.current_render(room_blend.as_deref(), Some(camera)))
-    {
-        Some(render) => render
-            .light_fade
-            .map(|pair| resolve_light_fade(Some(pair), start, range)),
+    // The current room's pair, else the cell's, else the exterior's, blended while the room
+    // changes. A cell without lighting data has no pair: its lights are not dimmed. Unverified:
+    // an interior in sky mode 3 and a pack without the lighting table get the exterior pair
+    // here. The findings say nothing about them.
+    let fade = match scene.as_deref() {
+        Some(scene) => scene.light_fade(room_blend.as_deref(), Some(camera), start, range),
         None => Some(resolve_light_fade(None, start, range)),
     };
     let flicker_distance_squared = config.flickering_light_distance.powi(2);

@@ -197,6 +197,16 @@ fn one_source_declares_the_sign_and_the_frame() {
             shader.contains("color = color / divisor;") && shader.contains("/ divisor, vec3"),
             "{name} blends through the shared divisor"
         );
+        // A failed load is not an empty slot: the quadrant keeps its geometric normal. The
+        // merged terrain validates its arrays before a cell is committed, so only the quadrant
+        // shader has the case.
+        if name == "terrain.wgsl" {
+            assert!(
+                shader.contains("let normals_dropped = terrain.normal_layers_1.z > 0.5;")
+                    && shader.contains("if !normals_dropped && (retail ||"),
+                "{name} keeps the geometric normal of a quadrant whose normal map failed"
+            );
+        }
         // Section 5: a layer with no normal map is the black texel.
         assert!(
             shader.contains("retail_terrain_normal(vec3<f32>(0.0))"),

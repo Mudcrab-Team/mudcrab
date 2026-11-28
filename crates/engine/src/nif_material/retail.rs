@@ -308,7 +308,7 @@ fn snows(flags_1: u32, flags_2: u32) -> bool {
 
 /// The texel retail binds to an empty base map slot, the default of the normal map: (128, 128,
 /// 255, 255) as stored (section 5).
-pub(super) const EMPTY_BASE_TEXEL: [u8; 4] = [128, 128, 255, 255];
+pub(crate) const EMPTY_BASE_TEXEL: [u8; 4] = [128, 128, 255, 255];
 
 /// Whether a lit surface's base map slot is empty, so it samples [`EMPTY_BASE_TEXEL`]. Property
 /// flag 20 forces black instead. A skin or face tint surface takes its maps from its actor at run

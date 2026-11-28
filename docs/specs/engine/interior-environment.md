@@ -41,11 +41,14 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    read here says which template a joined room takes, so the master's applies (unverified). A room
    change blends over `fRoomLightingTransitionDuration` = 3.0 s with `w = (3 - 2t) t^2`
    (RF-LIGHT-CPU-024): directional colour, the six DALC colours, both fog colours and fog near,
-   far, power and max (RF-LIGHT-CPU-025). A room change while a blend runs waits for it to end. A
-   cell change (a door) applies the new cell at once. A side with no fog ramp stands for retail's
-   far clamp of 163,840, so fog fades in or out. Not blended: the key-light rotation (the cell's),
-   the light fade (reported only) and the room image space (`room_bounds` has no image-space column
-   yet). The record-to-extra-0x77 link is a medium-confidence name lead.
+   far, power and max (RF-LIGHT-CPU-025). The squares of the light fade pair blend with the same
+   weight (RF-LIGHT-CPU-025); a previous side without a pair takes the current one at once
+   (unverified). The blend counts game time: it stands while the game is paused, and one frame adds
+   at most 1/6 s (RF-TIME-001, cited by RF-LIGHT-CPU-024). A room change while a blend runs waits
+   for it to end. A cell change (a door) applies the new cell at once. A side with no fog ramp
+   stands for retail's far clamp of 163,840, so fog fades in or out. Not blended: the key-light
+   rotation (the cell's) and the room image space (`room_bounds` has no image-space column yet).
+   The record-to-extra-0x77 link is a medium-confidence name lead.
 5. **Key light**: the same `DirectionalLight` entity as the exterior sun (retail uses one light
    node, RF-LIGHT-CPU-011).
    - Colour `Color::srgb_u8(directional)`, the same conversion as the exterior sun.

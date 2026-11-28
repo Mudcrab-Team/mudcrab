@@ -1047,6 +1047,40 @@ fn the_skyrim_profile_swaps_texture_sets_with_raw_colour_views() {
     }
 }
 
+/// SPEC-1 section 5: a swapped set without a base map gives a retail surface the default texel,
+/// as an empty slot of the model does.
+#[test]
+fn a_swapped_set_without_a_base_map_takes_the_default_texel() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let (conn, mut records) = database();
+    records.insert(
+        101,
+        record(101, b"TXST", &[(b"TX01", b"blue.dds\0".to_vec())]),
+    );
+    export_to_db(&conn, &records).unwrap();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+    let scene = load_scene(&mut app, "shared.glb");
+    let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+    let models: Vec<_> = materials.ids().collect();
+    for id in models {
+        materials.get_mut(id).unwrap().retail_surface = Some(bevy::pbr::RetailSurface::MATTE);
+    }
+    let root = spawn(&mut app, &scene, catalog.get(1));
+    settle(&mut app, &[root]);
+    let material = material_of(&app, &surface(&app, root).1);
+    let images = app.world().resource::<Assets<Image>>();
+    let base = images
+        .get(material.base_color_texture.as_ref().expect("a base map"))
+        .unwrap();
+    assert_eq!(
+        base.data.as_deref(),
+        Some(crate::nif_material::EMPTY_BASE_TEXEL.as_slice())
+    );
+}
+
 /// SPEC-1 section 9.2: under `skyrim` an environment surface takes the swapped set's cube and
 /// mask, and a surface of another technique takes neither. A filled detail or specular slot does
 /// not stop the swap there. `mudcrab` refuses such a set.

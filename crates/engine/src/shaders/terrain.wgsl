@@ -32,7 +32,9 @@ struct TerrainSettings {
     // whose only layer is its base, which has no overlays for the field to hold.
     weight_source: vec4<f32>,
     // 1.0 where a layer has a normal map bound: layers 0-3 in `normal_layers_0`, 4-5 in
-    // `normal_layers_1.xy`. A layer without one keeps the geometric normal.
+    // `normal_layers_1.xy`. A layer without one keeps the geometric normal under `mudcrab` and
+    // takes the black texel under `skyrim` (SPEC-1 section 5). `normal_layers_1.z` is 1 when a
+    // normal map failed to load: the whole quadrant then keeps its geometric normal.
     normal_layers_0: vec4<f32>,
     normal_layers_1: vec4<f32>,
     weights: array<vec4<f32>, 365>,
@@ -271,7 +273,8 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.
     var specular_mask = 0.0;
-    if retail || dot(terrain.normal_layers_0, vec4<f32>(1.0)) + terrain.normal_layers_1.x + terrain.normal_layers_1.y > 0.5 {
+    let normals_dropped = terrain.normal_layers_1.z > 0.5;
+    if !normals_dropped && (retail || dot(terrain.normal_layers_0, vec4<f32>(1.0)) + terrain.normal_layers_1.x + terrain.normal_layers_1.y > 0.5) {
         var surface = layer_surface(normal_0, uv, terrain.normal_layers_0.x, retail) * weights[0];
         surface += layer_surface(normal_1, uv, terrain.normal_layers_0.y, retail) * weights[1];
         surface += layer_surface(normal_2, uv, terrain.normal_layers_0.z, retail) * weights[2];

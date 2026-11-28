@@ -81,6 +81,7 @@ pub(crate) fn technique(flags_1: u32, flags_2: u32) -> Technique {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     const fn words(numbers: &[u32]) -> (u32, u32) {
         let (mut first, mut second) = (0, 0);
@@ -116,6 +117,73 @@ mod tests {
         (&[38], Technique::Glow),
         (&[7], Technique::Environment),
     ];
+
+    /// The flag numbers that a source reads: `has(n)` calls, and the bits of the `SLSF1_` and
+    /// `SLSF2_` constants.
+    fn flags_read(source: &str, read: &mut BTreeSet<u32>) {
+        let code = source.split("#[cfg(test)]").next().unwrap_or(source);
+        for call in code.split("has(").skip(1) {
+            let digits: String = call.chars().take_while(char::is_ascii_digit).collect();
+            read.extend(digits.parse::<u32>().ok());
+        }
+        for line in code.lines().map(str::trim) {
+            let line = line.strip_prefix("pub(crate) ").unwrap_or(line);
+            let Some(rest) = line.strip_prefix("const SLSF") else {
+                continue;
+            };
+            let base = if rest.starts_with("2_") { 32 } else { 0 };
+            let Some((_, value)) = rest.split_once('=') else {
+                continue;
+            };
+            if value.trim() == "1;" {
+                read.insert(base);
+            }
+            for shifted in value.split("1 << ").skip(1) {
+                let digits: String = shifted.chars().take_while(char::is_ascii_digit).collect();
+                read.extend(digits.parse::<u32>().ok().map(|bit| base + bit));
+            }
+        }
+    }
+
+    /// The flag inventory may not deny a flag that the technique order or the retail surface
+    /// reads. The inventory's own check cannot see a read by flag number. This one covers the
+    /// three files below only.
+    #[test]
+    fn the_flag_inventory_does_not_deny_a_flag_read_here() {
+        let inventory: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../tools/flag_inventory/dispositions.json"
+        ))
+        .expect("the flag inventory is JSON");
+        let mut read = BTreeSet::new();
+        for source in [
+            include_str!("technique.rs"),
+            include_str!("retail.rs"),
+            include_str!("../nif_material.rs"),
+        ] {
+            flags_read(source, &mut read);
+        }
+        for known in [0, 10, 11, 20, 21, 29, 30, 33, 41, 60, 63] {
+            assert!(read.contains(&known), "the scan lost flag {known}");
+        }
+        let denied: Vec<_> = read
+            .into_iter()
+            .filter_map(|number| {
+                let key = format!("NIF.SLSF{}.bit{}", number / 32 + 1, number % 32);
+                let entry = &inventory["dispositions"][&key];
+                let reason = entry["reason"].as_str().unwrap_or_default();
+                let honest = match entry["disposition"].as_str() {
+                    Some("respected" | "partial") => true,
+                    Some("system-not-implemented") => reason.contains("reads it"),
+                    _ => false,
+                };
+                (!honest).then(|| format!("{key} (flag {number}): {}", entry["disposition"]))
+            })
+            .collect();
+        assert!(
+            denied.is_empty(),
+            "the engine reads these flags and the inventory does not say so: {denied:#?}"
+        );
+    }
 
     #[test]
     fn the_higher_technique_wins_for_every_pair_of_selectors() {

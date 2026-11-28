@@ -73,6 +73,12 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 10 | image space, adaptation, bloom, tonemap | `retail_hdr*.rs` and `shaders/retail_hdr*.wgsl` |
 | 11 | worked examples A to D | `retail_lighting_examples.rs` (CPU), `retail_lighting_gpu_tests.rs` (GPU) |
 
+The retail flicker counts game time: the smoothed frame time, capped at 1/6 s, times the speed
+of the game clock, which is 0 while the console or a menu pauses the game (SPEC-1 section 2.6,
+RF-TIME-001). A land normal map that fails to load is not an empty slot: the quadrant keeps its
+geometric normal and the engine logs the texture once. That is a Mudcrab rule, because SPEC-1
+defines no failed load.
+
 `retail_lighting.rs` is the CPU twin of the pixel formulas. Grass takes the raw sun (no
 `SunlightScale`) and the ambient cube's mean in the same units. Object LOD takes `SunlightScale`
 and the same output tail.

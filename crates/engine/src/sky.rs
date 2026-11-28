@@ -1619,8 +1619,8 @@ mod tests {
             )
             .unwrap();
         let mut app = App::new();
-        // The room blend reads the real clock; one update is longer than its three seconds, so a
-        // room crossing completes in the frame it happens in.
+        // The room blend counts game time and takes at most 1/6 s of a frame, so a room crossing
+        // below runs the frames its three seconds need.
         app.add_plugins(bevy::time::TimePlugin)
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_secs(4),
@@ -1681,12 +1681,15 @@ mod tests {
             .get_mut::<Transform>(camera)
             .unwrap()
             .translation = Vec3::new(1000.0, 0.0, 0.0);
-        app.update();
+        // A room change blends over 3 s of game time (RF-LIGHT-CPU-024), at most 1/6 s a frame.
+        for _ in 0..25 {
+            app.update();
+        }
         assert_eq!(
             linear(&app),
             // The room template supplies the fog distances too (RF-LIGHT-CPU-023).
             Some((Color::srgb_u8(7, 8, 9), 200.0, 3000.0)),
-            "room fog colour and distances in the crossing frame"
+            "room fog colour and distances after the blend"
         );
     }
 
