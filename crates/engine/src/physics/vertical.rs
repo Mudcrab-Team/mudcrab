@@ -115,10 +115,11 @@ impl VerticalMotion {
                 launched: true,
             };
         } else if !matches!(self.phase, Phase::Airborne { .. }) {
-            // Leaving support uses the same history law. RF-CC-013: an unsupported-cast miss
-            // requests InAir and zeroes vertical velocity when the OnGround state flag (+0x10)
-            // is set, so 4x-gravity glide pull never launches a free fall faster than 1.35x
-            // falling gravity allows.
+            // Leaving support uses the same history law. RF-CC-013 (0x1410c8549-0x1410c855e): an
+            // unsupported-cast miss requests InAir and zeroes vertical velocity when the OnGround
+            // state byte (+0x10) is set. Treating +0x10 as set here is inferred, unverified
+            // in-game; it ensures 4x-gravity glide pull never launches a free fall faster than
+            // 1.35x falling gravity allows (RF-CC-003).
             let maximum_y = match self.phase {
                 Phase::Supported { y } | Phase::Gliding { y, .. } => y,
                 _ => resolved.y,

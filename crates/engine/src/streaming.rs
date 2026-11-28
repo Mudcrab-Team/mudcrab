@@ -13218,8 +13218,249 @@ mod rebase_collision_tests {
     use crate::physics::{MoveMode, PlayerBody, WalkIntent, WalkState, headless};
     use bevy::ecs::system::RunSystemOnce;
     use bevy::time::TimeUpdateStrategy;
-    use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
+    use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext, Sensor, ShapeCastOptions};
     use std::time::Duration;
+
+    /// Regression / invariant guard for cause (c): immediately after `update_render_origin` runs
+    /// (with no intervening `FixedUpdate` or `StepSimulation`), Rapier's broad phase must be
+    /// coherent for every rebased collider kind:
+    /// - `TerrainCollider` (zero-thickness trimesh child of `ExteriorCellGrid`),
+    /// - single-part `StaticColliderSource::NifAuthored` trimesh,
+    /// - multi-part `StaticColliderSource::NifAuthored` with `ChildOf` collider,
+    /// - `StaticColliderSource::RenderProxy`,
+    /// - `Sensor` attached to a rebased static body,
+    /// - `DynamicClutter` dynamic body under a cell root,
+    /// - `DebugTankard` top-level dynamic participant, and
+    /// - `PlayerBody` kinematic capsule.
+    ///
+    /// Fails immediately if `broad_phase.set_aabb` is removed or if any rebased class is omitted.
+    #[test]
+    fn render_origin_rebase_immediately_refreshes_broad_phase_for_all_collider_kinds() {
+        let mut app = headless::fixture_app();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<ActiveSpace>()
+            .add_systems(Update, update_render_origin);
+
+        let cell_root = app
+            .world_mut()
+            .spawn((ExteriorCellGrid(IVec2::ZERO), Transform::IDENTITY))
+            .id();
+
+        let flat_trimesh = |y: f32| {
+            Collider::trimesh(
+                vec![
+                    Vec3::new(-40.0, y, -40.0),
+                    Vec3::new(40.0, y, -40.0),
+                    Vec3::new(40.0, y, 40.0),
+                    Vec3::new(-40.0, y, 40.0),
+                ],
+                vec![[0, 1, 2], [0, 2, 3]],
+            )
+            .expect("valid flat trimesh")
+        };
+
+        // Place each collider kind at its own X lane (well above the fixture floor at y = 0).
+        let terrain = app
+            .world_mut()
+            .spawn((
+                TerrainCollider,
+                RigidBody::Fixed,
+                flat_trimesh(0.0),
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(200.0, 300.0, -500.0),
+                ChildOf(cell_root),
+            ))
+            .id();
+        let nif_single = app
+            .world_mut()
+            .spawn((
+                StaticColliderSource::NifAuthored,
+                RigidBody::Fixed,
+                flat_trimesh(0.0),
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(400.0, 300.0, -500.0),
+                ChildOf(cell_root),
+            ))
+            .id();
+        let nif_multi_parent = app
+            .world_mut()
+            .spawn((
+                StaticColliderSource::NifAuthored,
+                RigidBody::Fixed,
+                Transform::from_xyz(600.0, 300.0, -500.0),
+                ChildOf(cell_root),
+            ))
+            .id();
+        let nif_multi_child = app
+            .world_mut()
+            .spawn((
+                Collider::cuboid(30.0, 10.0, 30.0),
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(0.0, 15.0, 0.0),
+                ChildOf(nif_multi_parent),
+            ))
+            .id();
+        let render_proxy = app
+            .world_mut()
+            .spawn((
+                StaticColliderSource::RenderProxy,
+                RigidBody::Fixed,
+                Collider::cuboid(30.0, 10.0, 30.0),
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(800.0, 300.0, -500.0),
+                ChildOf(cell_root),
+            ))
+            .id();
+        let sensor = app
+            .world_mut()
+            .spawn((
+                StaticColliderSource::NifAuthored,
+                RigidBody::Fixed,
+                Collider::cuboid(30.0, 10.0, 30.0),
+                Sensor,
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(1000.0, 300.0, -500.0),
+                ChildOf(cell_root),
+            ))
+            .id();
+        let clutter = app
+            .world_mut()
+            .spawn((
+                crate::physics::DynamicClutter,
+                RigidBody::Dynamic,
+                bevy_rapier3d::prelude::GravityScale(0.0),
+                Collider::cuboid(30.0, 10.0, 30.0),
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(1200.0, 300.0, -500.0),
+                ChildOf(cell_root),
+            ))
+            .id();
+        let tankard = app
+            .world_mut()
+            .spawn((
+                crate::physics::DebugTankard,
+                RigidBody::Dynamic,
+                bevy_rapier3d::prelude::GravityScale(0.0),
+                Collider::cuboid(30.0, 10.0, 30.0),
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(1400.0, 300.0, -500.0),
+            ))
+            .id();
+
+        let player = app
+            .world_mut()
+            .query_filtered::<Entity, With<PlayerBody>>()
+            .single(app.world())
+            .expect("fixture player");
+        headless::place_player(&mut app, Vec3::new(1600.0, 300.0, -500.0));
+        // Keep the player capsule stationary in Noclip while still enabled in Rapier.
+        app.insert_resource(MoveMode::Noclip);
+        app.update();
+        app.update();
+
+        let cases = [
+            ("terrain", terrain, 200.0_f32),
+            ("nif_single", nif_single, 400.0),
+            ("nif_multi_child", nif_multi_child, 600.0),
+            ("render_proxy", render_proxy, 800.0),
+            ("sensor", sensor, 1000.0),
+            ("dynamic_clutter", clutter, 1200.0),
+            ("debug_tankard", tankard, 1400.0),
+            ("player_capsule", player, 1600.0),
+        ];
+
+        // Sanity-check every collider hits at its pre-rebase Z = -500 pose.
+        for (label, expected, x) in cases {
+            let hit = app
+                .world_mut()
+                .run_system_once(move |context: ReadRapierContext| {
+                    context
+                        .single()
+                        .unwrap()
+                        .cast_ray(
+                            Vec3::new(x, 450.0, -500.0),
+                            Vec3::NEG_Y,
+                            250.0,
+                            true,
+                            QueryFilter::default(),
+                        )
+                        .map(|(entity, _)| entity)
+                })
+                .unwrap();
+            assert_eq!(hit, Some(expected), "{label}: pre-rebase raycast missed");
+        }
+
+        // Cross into cell (0, 1) and run ONLY the `Update` schedule (triggering
+        // `update_render_origin`) with no `FixedUpdate` / `StepSimulation` afterwards.
+        {
+            let mut cam_q = app
+                .world_mut()
+                .query_filtered::<&mut Transform, With<StreamingCamera>>();
+            cam_q.single_mut(app.world_mut()).unwrap().translation =
+                Vec3::new(200.0, 350.0, -(CELL_SIZE + 50.0));
+        }
+        app.world_mut().run_schedule(Update);
+        assert_eq!(
+            app.world().resource::<RenderOrigin>().0,
+            IVec2::new(0, 1),
+            "camera crossing -CELL_SIZE must trigger a render-origin rebase"
+        );
+
+        let rebased_z = -500.0 + CELL_SIZE;
+        let probe = Collider::ball(8.0);
+        for (label, expected, x) in cases {
+            let probe_clone = probe.clone();
+            app.world_mut()
+                .run_system_once(move |context: ReadRapierContext| {
+                    let context = context.single().unwrap();
+                    let new_ray = context
+                        .cast_ray(
+                            Vec3::new(x, 450.0, rebased_z),
+                            Vec3::NEG_Y,
+                            250.0,
+                            true,
+                            QueryFilter::default(),
+                        )
+                        .map(|(entity, _)| entity);
+                    assert_eq!(
+                        new_ray,
+                        Some(expected),
+                        "{label}: cast_ray missed at rebased pose immediately after update_render_origin"
+                    );
+                    let old_ray = context
+                        .cast_ray(
+                            Vec3::new(x, 450.0, -500.0),
+                            Vec3::NEG_Y,
+                            250.0,
+                            true,
+                            QueryFilter::default(),
+                        )
+                        .map(|(entity, _)| entity);
+                    assert_ne!(
+                        old_ray,
+                        Some(expected),
+                        "{label}: stale broad-phase leaf still present at old pose after rebase"
+                    );
+                    let new_shape = context
+                        .cast_shape(
+                            Vec3::new(x, 450.0, rebased_z),
+                            Quat::IDENTITY,
+                            Vec3::NEG_Y,
+                            &*probe_clone.raw,
+                            ShapeCastOptions::with_max_time_of_impact(250.0),
+                            QueryFilter::default(),
+                        )
+                        .map(|(entity, _)| entity);
+                    assert_eq!(
+                        new_shape,
+                        Some(expected),
+                        "{label}: cast_shape missed at rebased pose immediately after update_render_origin"
+                    );
+                })
+                .unwrap();
+        }
+    }
 
     /// Build a zero-thickness `TerrainCollider` trimesh for one exterior cell `(0, grid_y)` whose
     /// height slopes down continuously toward north (`-Z` in Bevy, `+Y` in Creation) at
@@ -13291,11 +13532,52 @@ mod rebase_collision_tests {
     }
 
     /// Regression for cause (c): running across multiple render-origin rebases over zero-thickness
-    /// downhill terrain trimeshes (at both 60 Hz and 155..193 ms frame times) must never drop the
-    /// player through the terrain or lose ground contact on the post-rebase tick.
+    /// downhill terrain trimeshes (at both 60 Hz and 155..193 ms frame times) must keep immediate
+    /// post-rebase broad-phase support on every rebase frame and never drop the player through the
+    /// terrain or lose ground contact.
+    ///
+    /// With cause (a) already fixed, a single stale post-rebase tick only drops the player by
+    /// `wish.y * dt` (~3-4 u), so checking only the final `airborne` flag caught only the fastest
+    /// (`193.6 ms / 555`) setup under a cause-(c)-only revert; asserting immediate post-rebase
+    /// broad-phase ground contact right after `update_render_origin` makes all four setups fail
+    /// deterministically when the BVH refresh is removed.
     #[test]
     fn render_origin_rebase_over_downhill_trimesh_terrain_keeps_ground_contact_and_never_falls_through()
      {
+        #[derive(Default, Resource)]
+        struct ImmediateRebaseCheck {
+            seen_rebases: u64,
+            verified_rebases: u64,
+        }
+
+        fn verify_ground_immediately_after_rebase(
+            metrics: Res<StreamingMetrics>,
+            mut check: ResMut<ImmediateRebaseCheck>,
+            player: Query<(Entity, &Transform), With<PlayerBody>>,
+            context: ReadRapierContext,
+        ) {
+            if metrics.origin_rebases == check.seen_rebases {
+                return;
+            }
+            check.seen_rebases = metrics.origin_rebases;
+            let (player_entity, body) = player.single().expect("player");
+            let context = context.single().expect("rapier context");
+            let hit = context.cast_ray(
+                body.translation,
+                Vec3::NEG_Y,
+                140.0,
+                true,
+                QueryFilter::default().exclude_rigid_body(player_entity),
+            );
+            assert!(
+                hit.is_some(),
+                "rebase #{}: terrain missing from Rapier broad phase immediately after update_render_origin at {:?}",
+                metrics.origin_rebases,
+                body.translation
+            );
+            check.verified_rebases += 1;
+        }
+
         let slope_degrees = 26.6_f32;
         let tan = slope_degrees.to_radians().tan();
         let origin_y = 12_000.0_f32;
@@ -13311,9 +13593,13 @@ mod rebase_collision_tests {
                 .insert_resource(RenderOrigin(IVec2::ZERO))
                 .init_resource::<ActiveSpace>()
                 .init_resource::<RebaseTickLog>()
+                .init_resource::<ImmediateRebaseCheck>()
                 .add_systems(
                     Update,
-                    update_render_origin.after(crate::physics::PlayerControlsSystems),
+                    (
+                        update_render_origin.after(crate::physics::PlayerControlsSystems),
+                        verify_ground_immediately_after_rebase.after(update_render_origin),
+                    ),
                 )
                 .add_systems(
                     FixedUpdate,
@@ -13367,6 +13653,13 @@ mod rebase_collision_tests {
                 rebases >= 3,
                 "frame_ms={frame_ms}, speed={speed}: expected >= 3 rebases, got {rebases}"
             );
+            assert_eq!(
+                app.world()
+                    .resource::<ImmediateRebaseCheck>()
+                    .verified_rebases,
+                rebases,
+                "frame_ms={frame_ms}, speed={speed}: every rebase must verify immediate BVH support"
+            );
             let samples = &app.world().resource::<RebaseTickLog>().samples;
             assert!(!samples.is_empty());
             for &(world_north, y, airborne, vz) in samples {
@@ -13387,18 +13680,46 @@ mod rebase_collision_tests {
         }
     }
 
-    /// Regression for cause (c) while airborne: crossing a cell rebase border mid-fall onto a
-    /// zero-thickness `TerrainCollider` trimesh must land on top of the terrain across varied
-    /// border offsets (sweeping the rebase across the exact tick of impact at ~1000 u/s) instead
-    /// of tunneling on the post-rebase tick.
+    /// Regression for cause (c) while airborne: measures the exact horizontal travel during a
+    /// 600-unit sprint fall, then places the cell rebase border across that landing window in
+    /// 6-unit steps (smaller than one 1/60 s tick at 555 u/s = 9.25 u). That guarantees a rebase
+    /// lands directly on the impact tick at ~1000 u/s (~17 u/tick downward), which tunnels through
+    /// the zero-thickness terrain trimesh if `broad_phase.set_aabb` is omitted.
     #[test]
     fn render_origin_rebase_while_airborne_over_thin_trimesh_never_tunnels() {
         let ground_y = 200.0_f32;
         let drop_height = 600.0_f32;
-        // Capsule bottom clears ~540 u at 1.35 * 686.6 u/s^2 in ~1.08 s. Starting from rest in air
-        // accelerates horizontally up to sprint speed, covering ~450 u before impact, so sweeping
-        // offsets across 80..460 u spans early fall through the exact impact tick.
-        for border_offset in [80.0_f32, 180.0, 280.0, 360.0, 420.0, 460.0] {
+
+        // Measure the exact horizontal travel from release to first ground contact away from any
+        // rebase boundary so the offsets below bracket the exact impact tick.
+        let impact_travel = {
+            let mut app = headless::fixture_app();
+            for grid_y in 0..=2 {
+                spawn_sloped_terrain_cell(&mut app, grid_y, 0.0, ground_y);
+            }
+            app.update();
+            let start_z = -1500.0_f32;
+            headless::place_player(&mut app, Vec3::new(1531.3, ground_y + drop_height, start_z));
+            app.insert_resource(MoveMode::Walk);
+            app.insert_resource(WalkIntent {
+                wish_dir: Vec3::NEG_Z,
+                target_speed: 555.0,
+                jump_pressed: false,
+            });
+            let mut travel = None;
+            for _ in 0..240 {
+                app.update();
+                let (pose, grounded) = headless::player_pose(&mut app);
+                if grounded && pose.y < ground_y + 70.0 {
+                    travel = Some(start_z - pose.z);
+                    break;
+                }
+            }
+            travel.expect("baseline fall must land")
+        };
+
+        for delta in [-36.0_f32, -30.0, -24.0, -18.0, -12.0, -6.0] {
+            let border_offset = (impact_travel + delta).max(16.0);
             let mut app = headless::fixture_app();
             app.insert_resource(EngineConfig::default())
                 .insert_resource(RenderOrigin(IVec2::ZERO))
@@ -13428,7 +13749,7 @@ mod rebase_collision_tests {
                 let (pose, grounded) = headless::player_pose(&mut app);
                 assert!(
                     pose.y >= ground_y + 35.0,
-                    "border_offset={border_offset}: tunneled through rebased thin terrain at y={}",
+                    "border_offset={border_offset:.1} (delta={delta}): tunneled through rebased thin terrain at y={}",
                     pose.y
                 );
                 if grounded && pose.y < ground_y + 70.0 {
@@ -13438,12 +13759,12 @@ mod rebase_collision_tests {
             }
             assert!(
                 landed,
-                "border_offset={border_offset}: never landed on terrain (pose={:?})",
+                "border_offset={border_offset:.1} (delta={delta}): never landed on terrain (pose={:?})",
                 headless::player_pose(&mut app)
             );
             assert!(
                 app.world().resource::<StreamingMetrics>().origin_rebases >= 1,
-                "border_offset={border_offset}: test must cross a render-origin rebase"
+                "border_offset={border_offset:.1} (delta={delta}): test must cross a render-origin rebase"
             );
         }
     }

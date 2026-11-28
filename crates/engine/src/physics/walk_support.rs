@@ -9,7 +9,9 @@
 //! 2. A hit keeps the walking state. There is no fall state, no fall start height and no landing
 //!    event. The step adds 4 x gravity to the vertical velocity as an acceleration
 //!    (`fUnsupportedGravMult`), and the collision step moves the body. RF-CC-013, RF-CC-014.
-//! 3. A miss starts the air state and stores the fall start height. RF-CC-013.
+//! 3. A miss starts the air state, stores the fall start height, and zeroes vertical velocity when
+//!    the state object's `+0x10` flag is set (`RF-CC-013`, `0x1410c8549`-`0x1410c855e`; whether
+//!    `+0x10` is set in retail OnGround is inferred, unverified in-game).
 //! 4. The first step with support ends the air state and sets the landing flag (0x80).
 //!    RF-CC-015.
 //!
@@ -25,9 +27,11 @@
 //! Mudcrab tunes the step-up probe (`walk_step_rise`, RF-CC-019) and uses a 28-unit capsule
 //! radius (retail uses about 18 units, RF-CC-020). The 900 units/s² gravity setting applies only
 //! to rigid bodies. The player controller uses retail world gravity (686.6 units/s², RF-CC-002).
-//! The glide rule assumes vertical velocity persists between steps (RF-CC-014). That persistence,
-//! the Havok proxy's support tolerance and keep distance (RF-CC-001), and the normal threshold
-//! at `0x141829400` (RF-CC-017) remain unverified in the binary.
+//! The glide rule persists vertical velocity across airborne glide ticks until a downward drop
+//! sweep hits a surface, where Mudcrab resets the controller to Supported (inferred stand-in for
+//! Havok's `hkpCharacterProxy::integrate` contact solve). Both cross-step persistence and contact
+//! velocity reset (RF-CC-014), the Havok proxy's support tolerance and keep distance (RF-CC-001),
+//! and the normal threshold at `0x141829400` (RF-CC-017) remain unverified in the binary.
 
 use super::{MovementTuning, PLAYER_CONTROLLER_OFFSET, carry::UNITS_PER_METRE};
 use bevy::prelude::*;

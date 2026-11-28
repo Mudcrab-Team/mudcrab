@@ -645,7 +645,7 @@ fn real_walkway_stairs15_descent_and_climb_stay_walking() {
 }
 
 /// Build a zero-thickness terrain-like trimesh strip in the XY plane extruded along Z, matching
-/// the single-sided `Collider::trimesh` representation used by streamed `TerrainCollider` cells.
+/// the zero-thickness `Collider::trimesh` representation used by streamed `TerrainCollider` cells.
 fn trimesh_profile(app: &mut App, points_xy: &[(f32, f32)], half_z: f32, z_center: f32) {
     let mut vertices = Vec::with_capacity(points_xy.len() * 2);
     let mut triangles = Vec::with_capacity((points_xy.len().saturating_sub(1)) * 2);
@@ -711,7 +711,7 @@ fn descending_stairs_bounds_vertical_velocity_and_cliff_stepoff_uses_normal_grav
             .fold(0.0_f32, f32::min);
         // Maximum vertical speed reachable within a single `fUnsupportCastLength` (69.99 u) drop
         // at 4 x gravity is sqrt(2 * 2746.4 * 69.99) + 45.8 = 665.8 u/s (when sprinting clears 2-3
-        // treads before landing). Before the fix this accumulated across all 30 treads to < -2000 u/s.
+        // treads before landing). Without the landed-drop reset, walk speed alone reached -1007 u/s.
         assert!(
             min_stair_v >= -700.0,
             "{name}: stair glide velocity ran away to {min_stair_v:.1} u/s"
@@ -784,7 +784,7 @@ fn downhill_trimesh_slope_and_convex_ridge_never_accumulate_fall_speed() {
             .map(|tick| tick.state.vertical_velocity())
             .fold(0.0_f32, f32::min);
         // Before the fix, `displacement.y = 0.0` wiped out the downhill slope wish and trapped
-        // the controller in `glide` for the entire hill, reaching < -5000 u/s.
+        // the controller in `glide` for the entire hill (measured at -35337.4 u/s before the fix).
         assert!(
             min_slope_v >= -200.0,
             "{name}: downhill trimesh slope built runaway glide velocity {min_slope_v:.1} u/s"
@@ -1015,18 +1015,21 @@ fn fuzz_walk_descent_slopes_stairs_walls_and_long_frame_times() {
     }
 }
 
-/// Permanent source guard: any direct Rapier rigid-body translation shift must refresh the
-/// broad-phase BVH through `physics::rebase_rapier_bodies`. Calling
-/// `propagate_modified_body_positions_to_colliders` alone leaves BVH leaves at the old origin
-/// until `PhysicsSet::StepSimulation`, causing a one-tick collision dropout in `walk_movement_system`
-/// external-name: bevy_rapier3d `update_character_controls` system
-/// and `update_character_controls`.
+/// Guard against stale broad-phase BVH leaves after rigid-body translation shifts:
+/// 1. Source lint: `propagate_modified_body_positions_to_colliders` may only be called inside
+///    `physics::rebase_rapier_bodies`.
+/// 2. Behaviour check: calling `physics::rebase_rapier_bodies` on a live Rapier world must make
+///    immediate `cast_ray` and `cast_shape` queries (with no intervening `StepSimulation`) hit the
+///    rebased collider at its new pose and miss at its old pose.
 #[test]
 fn all_rapier_body_position_propagations_refresh_broad_phase() {
+    use bevy::ecs::system::RunSystemOnce;
+
     let engine_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![engine_src];
     let mut callers = Vec::new();
-    let needle = concat!(".propagate_modified_body_", "positions_to_colliders(");
+    let method_needle = concat!(".propagate_modified_body_", "positions_to_colliders(");
+    let ufcs_needle = concat!("::propagate_modified_body_", "positions_to_colliders(");
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).expect("read engine src dir") {
             let path = entry.expect("dir entry").path();
@@ -1039,7 +1042,7 @@ fn all_rapier_body_position_propagations_refresh_broad_phase() {
                     if trimmed.starts_with("//") {
                         continue;
                     }
-                    if line.contains(needle) {
+                    if line.contains(method_needle) || line.contains(ufcs_needle) {
                         let rel = path
                             .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")))
                             .unwrap_or(&path)
@@ -1060,4 +1063,72 @@ fn all_rapier_body_position_propagations_refresh_broad_phase() {
         callers[0].starts_with("src/physics.rs:"),
         "unexpected caller: {callers:?}"
     );
+
+    // Behaviour guard: verify `rebase_rapier_bodies` refreshes the broad-phase BVH immediately,
+    // before any `StepSimulation` runs.
+    let mut app = headless::fixture_app();
+    let slab = app
+        .world_mut()
+        .spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(40.0, 10.0, 40.0),
+            world_collision_groups(),
+            Transform::from_xyz(0.0, 100.0, -300.0),
+        ))
+        .id();
+    app.update();
+    app.update();
+    let displacement = Vec3::new(0.0, 0.0, -4096.0);
+    app.world_mut()
+        .run_system_once(
+            move |mut physics: bevy_rapier3d::prelude::WriteRapierContext| {
+                let mut context = physics.single_mut().unwrap();
+                crate::physics::rebase_rapier_bodies(&mut context, [slab], displacement);
+            },
+        )
+        .unwrap();
+    let probe = Collider::ball(10.0);
+    app.world_mut()
+        .run_system_once(move |context: ReadRapierContext| {
+            let context = context.single().unwrap();
+            let new_z = -300.0 - displacement.z;
+            let ray_new = context.cast_ray(
+                Vec3::new(0.0, 200.0, new_z),
+                Vec3::NEG_Y,
+                150.0,
+                true,
+                QueryFilter::default(),
+            );
+            assert_eq!(
+                ray_new.map(|(entity, _)| entity),
+                Some(slab),
+                "cast_ray must hit the rebased body immediately before StepSimulation"
+            );
+            assert!(
+                context
+                    .cast_ray(
+                        Vec3::new(0.0, 200.0, -300.0),
+                        Vec3::NEG_Y,
+                        150.0,
+                        true,
+                        QueryFilter::default(),
+                    )
+                    .is_none(),
+                "stale BVH leaf remained at the old pose after rebase_rapier_bodies"
+            );
+            let shape_new = context.cast_shape(
+                Vec3::new(0.0, 200.0, new_z),
+                Quat::IDENTITY,
+                Vec3::NEG_Y,
+                &*probe.raw,
+                ShapeCastOptions::with_max_time_of_impact(150.0),
+                QueryFilter::default(),
+            );
+            assert_eq!(
+                shape_new.map(|(entity, _)| entity),
+                Some(slab),
+                "cast_shape must hit the rebased body immediately before StepSimulation"
+            );
+        })
+        .unwrap();
 }

@@ -2863,15 +2863,18 @@ pub fn walk_movement_system(
             ));
         }
         if drop.landed {
-            // The downward sweep reached a surface, which arrests the vertical pull. Leaving the
-            // old 4 x gravity speed in `Phase::Gliding` would accumulate unbounded fall speed
-            // across stair treads or downhill ticks while walking.
+            // Inferred Mudcrab stand-in (unverified in binary; see `walk_support` module doc):
+            // the downward sweep reached a surface, approximating Havok's proxy contact solve
+            // arresting downward velocity. Leaving the old 4 x gravity speed in `Phase::Gliding`
+            // would accumulate unbounded fall speed across stair treads or downhill ticks.
             state.vertical.set_supported(body.translation.y);
         }
     }
     // RF-CC-016, RF-CC-017: on a supported slope the wish lies in the support plane. A cast hit
     // runs the same walking step (RF-CC-014), so the surface below gives the normal there too
-    // (sampled after any glide drop so the ray reaches the surface just landed on).
+    // (sampled after any glide drop so the ray reaches the surface just landed on). While
+    // gliding without a landing, projecting the wish also adds `wish.y * dt` to the free drop
+    // (existing design choice, bounded by Rapier's collision step).
     let mut wish = state.horizontal_velocity;
     if (supported || glide)
         && !state.jump_active()
@@ -3281,9 +3284,10 @@ fn walk_camera_follow_system(
 /// `propagate_modified_body_positions_to_colliders` only updates `ColliderSet` poses; Rapier's
 /// `broad_phase` is otherwise not refreshed until `PhysicsSet::StepSimulation`. Without an
 /// immediate BVH update, the first `FixedUpdate` tick after a rebase runs `walk_movement_system`
+/// spatial queries against stale AABBs 4096 units away.
 /// external-name: bevy_rapier3d `update_character_controls` system
-/// spatial queries and `update_character_controls` (`SyncBackend`) against stale AABBs 4096 units
-/// away, causing a one-tick collision dropout that can drop the player through thin terrain.
+/// Likewise, `update_character_controls` (`SyncBackend`) runs before `PhysicsSet::StepSimulation`,
+/// causing a one-tick collision dropout that can drop the player through thin terrain.
 pub(crate) fn rebase_rapier_bodies(
     context: &mut bevy_rapier3d::prelude::RapierContextMut<'_>,
     entities: impl IntoIterator<Item = Entity>,
