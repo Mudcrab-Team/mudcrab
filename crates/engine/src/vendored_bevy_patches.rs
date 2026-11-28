@@ -1018,6 +1018,10 @@ fn the_vendored_transform_fix_is_present() {
     );
     let systems = required_source(&vendor("bevy_transform"), "src/systems.rs");
     assert!(
+        systems.contains("// mudcrab: skip a despawned entity."),
+        "src/systems.rs lost its `mudcrab:` marker comment"
+    );
+    assert!(
         code(&systems).contains("if !live.contains_spawned(entity) { continue; }"),
         "mark_dirty_trees no longer skips a despawned entity: re-port the vendored patch"
     );

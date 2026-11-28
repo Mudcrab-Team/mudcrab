@@ -23,7 +23,7 @@ crate and the `zstd` change in one commit: compare it with the published crate t
 | bevy#26588, GPU clustering staging-buffer leak | `bevy_pbr` | #802 | `d0d908d3` |
 | `zstd` requirement widened to `0.14.3` (Mudcrab-only) | `bevy_image` | #433 | `67e75c65` |
 | Retail point-light falloff (Mudcrab-only, #955) | `bevy_pbr` | #955 (this change) | not on `main` yet |
-| Dirty-tree marking skips despawned entities (Mudcrab-only) | `bevy_transform` | #1103 | not on `main` yet |
+| Dirty-tree marking skips despawned entities (Mudcrab-only) | `bevy_transform` | #1111 | not on `main` yet |
 
 Upstream states below are as of the date in the table.
 
