@@ -1157,9 +1157,13 @@ type RoomCameras<'w, 's> = Query<
 /// room at once, and a room crossing inside the cell starts or continues a blend.
 ///
 /// The room comes from the cell's portal graph ([`RoomCullingState::rooms_at`]), at retail's room
-/// point: the camera plus its near distance along the view direction (RF-ROOM-002). While the
-/// graph is read, the cell's own lighting applies and the first answer counts as the cell change.
-/// A cell without a usable graph takes the room boxes ([`SceneEnvironment::room_at`]).
+/// point: the camera plus its near distance along the view direction (RF-ROOM-002). The portal
+/// graph is named by SPEC-1 audit row 2.3-i; the SPEC-1 text does not define the room choice.
+/// While the graph is read, the cell's own lighting applies and the first answer counts as the
+/// cell change. A cell without a usable graph takes the room boxes
+/// ([`SceneEnvironment::room_at`]).
+///
+/// Unverified: a joined room group takes the template of its master room.
 fn step_room_blend(
     scene: Res<SceneEnvironment>,
     cameras: RoomCameras,

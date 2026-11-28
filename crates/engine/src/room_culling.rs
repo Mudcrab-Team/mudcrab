@@ -1420,7 +1420,8 @@ impl RoomCullingState {
 
     /// The rooms of an interior cell that hold a world point, by the lookup the portal walk
     /// starts from ([`RoomGraph::rooms_containing`]): an authored room group answers as its
-    /// master room.
+    /// master room. For lighting, which gives the group the master's template, this is
+    /// unverified.
     pub(crate) fn rooms_at(
         &self,
         cell_id: u32,
