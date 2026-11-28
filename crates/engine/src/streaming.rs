@@ -87,6 +87,13 @@ fn commit_budget_exceeded(elapsed_micros: u64, budget_micros: u64) -> bool {
 
 pub struct StreamingPlugin;
 
+/// The `Update` chain of the streamer. It plans the cell window around the camera and checks the
+/// resident cells against the camera in the same frame. A system that moves the camera in
+/// `Update` must be ordered against the whole chain: between the plan and the check, one move of
+/// several cells reads as resident cells out of range (#217).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct StreamingSystems;
+
 /// Ready terrain collider attached to the same streamed quadrant as its mesh.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct TerrainCollider;
@@ -218,7 +225,8 @@ impl Plugin for StreamingPlugin {
                     runtime::observe_streaming_ownership,
                 )
                     .chain()
-                    .after(PlayerControlsSystems),
+                    .after(PlayerControlsSystems)
+                    .in_set(StreamingSystems),
             )
             // Bevy instantiates every ready converted model in one unbudgeted pass inside
             // `SceneSpawnerSystems::WorldInstanceSpawn`; these two systems bracket that pass so the
