@@ -1390,7 +1390,12 @@ fn collect_cells(
         if let Some(runtime) = runtime.as_mut()
             && let Ok(payload) = &response.result
         {
-            let terrain = cache.terrain(payload.cell_id);
+            let mut terrain = cache.terrain(payload.cell_id);
+            // Reserve only the quadrants that spawn_cell draws. The cached snapshot does not
+            // carry the XCLC hide mask, so copy it from the payload as the commit below does.
+            if let Some(terrain) = &mut terrain {
+                terrain.land_hide_flags = payload.land_hide_flags;
+            }
             let paths = surface_costs::surface_resource_paths(terrain.as_ref(), true, &catalog);
             if !runtime.reserve_cell(response.key, config.interactive_world_physics())
                 || !runtime.reserve_cell_textures(response.key, paths)

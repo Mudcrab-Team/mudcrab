@@ -447,6 +447,14 @@ fn generate_field<const OBSERVE: bool>(
                             if quadrant_hidden {
                                 continue;
                             }
+                            // Binary16 root rounding can move a root onto the next quadrant's
+                            // border (local 2048). Also skip a root whose placed quadrant is
+                            // hidden. This check comes after the draws, so the stream is unchanged.
+                            let qx = usize::from(px >= 2048.0);
+                            let qy = usize::from(py >= 2048.0);
+                            if (land_hide_flags & (1 << (qx + 2 * qy))) != 0 {
+                                continue;
+                            }
                             let rounded_height = sampling::half_round(sample.height);
                             if !rounded_height.is_finite() {
                                 invalid_roots += 1;
@@ -459,8 +467,6 @@ fn generate_field<const OBSERVE: bool>(
                             if rule.model_path.is_empty() {
                                 continue;
                             }
-                            let qx = ((px / 2048.0) as usize).min(1);
-                            let qy = ((py / 2048.0) as usize).min(1);
                             let mask = &cell.quadrants[qx + 2 * qy];
                             let bit_x = (((px - qx as f32 * 2048.0) / 32.0) as usize).min(63);
                             let bit_y = (((py - qy as f32 * 2048.0) / 32.0) as usize).min(63);
