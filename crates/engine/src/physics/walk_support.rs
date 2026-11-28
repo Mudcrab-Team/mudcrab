@@ -9,7 +9,9 @@
 //! 2. A hit keeps the walking state. There is no fall state, no fall start height and no landing
 //!    event. The step adds 4 x gravity to the vertical velocity as an acceleration
 //!    (`fUnsupportedGravMult`), and the collision step moves the body. RF-CC-013, RF-CC-014.
-//! 3. A miss starts the air state and stores the fall start height. RF-CC-013.
+//! 3. A miss starts the air state, stores the fall start height, and zeroes vertical velocity when
+//!    the state object's `+0x10` flag is set (`RF-CC-013`, `0x1410c8549`-`0x1410c855e`; whether
+//!    `+0x10` is set in retail OnGround is inferred, unverified in-game).
 //! 4. The first step with support ends the air state and sets the landing flag (0x80).
 //!    RF-CC-015.
 //!
@@ -25,9 +27,12 @@
 //! Mudcrab tunes the step-up probe (`walk_step_rise`, RF-CC-019) and uses a 28-unit capsule
 //! radius (retail uses about 18 units, RF-CC-020). The 900 units/s² gravity setting applies only
 //! to rigid bodies. The player controller uses retail world gravity (686.6 units/s², RF-CC-002).
-//! The glide rule assumes vertical velocity persists between steps (RF-CC-014). That persistence,
-//! the Havok proxy's support tolerance and keep distance (RF-CC-001), and the normal threshold
-//! at `0x141829400` (RF-CC-017) remain unverified in the binary.
+//! The glide rule keeps the vertical velocity from one cast-hit step to the next only until the
+//! downward drop sweep of a step hits a surface. Mudcrab then resets the controller to Supported,
+//! so the vertical velocity is 0. This reset is an inferred stand-in for the contact solve of
+//! Havok's `hkpCharacterProxy::integrate`, tracked in #1108. The cross-step persistence
+//! (RF-CC-014), the contact reset, the Havok proxy's support tolerance and keep distance
+//! (RF-CC-001), and the normal threshold at `0x141829400` (RF-CC-017) are unverified in the binary.
 
 use super::{MovementTuning, PLAYER_CONTROLLER_OFFSET, carry::UNITS_PER_METRE};
 use bevy::prelude::*;
@@ -82,6 +87,13 @@ pub(super) fn unsupported_cast_hits(
         .is_some()
 }
 
+/// Result of [`drop_straight_down`]: how far the capsule dropped and whether a surface stopped it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct VerticalDrop {
+    pub distance: f32,
+    pub landed: bool,
+}
+
 /// RF-CC-014: how far the capsule can drop straight down, at most `distance`, before it is
 /// `PLAYER_CONTROLLER_OFFSET` above a surface. The 4 x gravity pull of a cast hit moves the body
 /// along the vertical only: a downward move sent through the collision slide would also push the
@@ -94,25 +106,35 @@ pub(super) fn drop_straight_down(
     capsule: &Collider,
     controller: &KinematicCharacterController,
     distance: f32,
-) -> f32 {
+) -> VerticalDrop {
     if distance <= 0.0 {
-        return 0.0;
+        return VerticalDrop {
+            distance: 0.0,
+            landed: false,
+        };
     }
-    context
-        .cast_shape(
-            body.translation,
-            body.rotation,
-            Vec3::NEG_Y,
-            &*capsule.raw,
-            ShapeCastOptions {
-                target_distance: PLAYER_CONTROLLER_OFFSET,
-                stop_at_penetration: false,
-                max_time_of_impact: distance,
-                compute_impact_geometry_on_penetration: true,
-            },
-            controller_filter(controller, entity),
-        )
-        .map_or(distance, |(_, hit)| hit.time_of_impact.clamp(0.0, distance))
+    match context.cast_shape(
+        body.translation,
+        body.rotation,
+        Vec3::NEG_Y,
+        &*capsule.raw,
+        ShapeCastOptions {
+            target_distance: PLAYER_CONTROLLER_OFFSET,
+            stop_at_penetration: false,
+            max_time_of_impact: distance,
+            compute_impact_geometry_on_penetration: true,
+        },
+        controller_filter(controller, entity),
+    ) {
+        Some((_, hit)) => VerticalDrop {
+            distance: hit.time_of_impact.clamp(0.0, distance),
+            landed: true,
+        },
+        None => VerticalDrop {
+            distance,
+            landed: false,
+        },
+    }
 }
 
 /// RF-CC-014: the vertical velocity after one step of an unsupported cast hit. The 4 x gravity is
