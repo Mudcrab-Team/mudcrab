@@ -77,6 +77,7 @@ fn fixture(output: &Path) {
         uv_scale: [1.0; 2],
         texture_clamp_mode: 0,
         tint_color: None,
+        environment_map_scale: None,
     };
     let mut document =
         serde_json::json!({"asset":{"version":"2.0"},"meshes":[{"primitives":[{}]}]});

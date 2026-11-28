@@ -120,6 +120,38 @@ pub fn check_clone(registry_path: &Path, clone_of: &str, target: &Path) -> Resul
     })
 }
 
+/// Refuse an `output` file inside a registered pack, for a command that creates one new file.
+/// The output's folder must exist.
+pub(crate) fn require_outside_registered_packs(registry_path: &Path, output: &Path) -> Result<()> {
+    let registry_bytes = fs::read(registry_path)
+        .wrap_err_with(|| format!("cannot read pack registry {}", registry_path.display()))?;
+    let registry: BTreeMap<String, RegisteredPack> = serde_json::from_slice(&registry_bytes)
+        .wrap_err_with(|| format!("pack registry {} is not valid", registry_path.display()))?;
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = fs::canonicalize(parent)
+        .wrap_err_with(|| format!("refused: the folder of {} does not exist", output.display()))?;
+    for (name, registered) in &registry {
+        let path = match fs::canonicalize(&registered.path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("refused: cannot resolve registered pack `{name}`"));
+            }
+        };
+        ensure!(
+            !parent.starts_with(&path),
+            "refused: {} is inside the registered pack `{name}` ({})",
+            output.display(),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Hold the same exclusive pack lock across both LOD derive commands.
 pub(crate) fn lock_for_derive(target: &Path) -> Result<AssetLock> {
     let path = asset_lock_path(target);

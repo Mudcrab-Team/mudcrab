@@ -23,14 +23,21 @@ use bevy::{
     render::render_resource::{AsBindGroup, ShaderType},
     shader::{ShaderRef, load_shader_library},
 };
+use shared::material_values::{MATERIAL_VALUES_FILE, MaterialValuesFile};
 use std::{
     collections::{HashMap, HashSet},
     convert::Infallible,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
 /// The retail inputs of a lighting material under `skyrim`.
 mod retail;
+mod retail_environment;
+pub(crate) use retail_environment::is_flat_image;
+pub(crate) mod technique;
+pub(crate) use retail::{EMPTY_BASE_TEXEL, EMPTY_HEIGHT_TEXEL, texel_image};
+use technique::{Technique, technique};
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
 pub struct NifMaterialPlugin;
@@ -71,6 +78,15 @@ impl Plugin for NifMaterialPlugin {
             .copied()
             .unwrap_or_default();
         let missing_alpha = app.world().resource::<MissingNifAlphaData>().clone();
+        let raw_colour_texels = !profile.decodes_colour_srgb();
+        let material_values = app
+            .world()
+            .get_resource::<crate::config::EngineConfig>()
+            .filter(|_| raw_colour_texels)
+            .and_then(|config| load_material_values(&config.assets_dir));
+        if raw_colour_texels {
+            retail_environment::build(app);
+        }
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
@@ -78,7 +94,8 @@ impl Plugin for NifMaterialPlugin {
             .push(Box::new(NativeMaterialHandler {
                 default_sampler,
                 missing_alpha,
-                raw_colour_texels: !profile.decodes_colour_srgb(),
+                raw_colour_texels,
+                material_values,
                 ..default()
             }));
     }
@@ -406,6 +423,59 @@ struct NativeMaterialHandler {
     /// The profile reads colour textures as authored bytes, so the materials built here must tell
     /// their shaders not to undo an sRGB decode that never happened.
     raw_colour_texels: bool,
+    /// The pack's material values sidecar, read once under `skyrim`.
+    material_values: Option<Arc<MaterialValuesFile>>,
+    /// The images of empty texture slots, added to this load when a surface first needs one.
+    empty_slots: HashMap<[u8; 4], Handle<Image>>,
+    /// Whether this load has logged a surface that the material values file does not cover.
+    reported_missing_values: bool,
+}
+
+/// What to log for a lit surface without NIF material values.
+#[derive(Debug, PartialEq, Eq)]
+enum MissingValues {
+    /// The pack has no material values file: one line for the whole run.
+    NoFile,
+    /// The file has no entry for this mesh: one line for the mesh.
+    NoEntry,
+    /// This mesh is already logged.
+    Logged,
+}
+
+fn missing_values(has_file: bool, mesh_logged: &mut bool) -> MissingValues {
+    if !has_file {
+        MissingValues::NoFile
+    } else if std::mem::replace(mesh_logged, true) {
+        MissingValues::Logged
+    } else {
+        MissingValues::NoEntry
+    }
+}
+
+/// The sidecar at the root of the pack in `assets`, when the pack has one.
+fn load_material_values(assets: &Path) -> Option<Arc<MaterialValuesFile>> {
+    let path = assets.join(MATERIAL_VALUES_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!("cannot read {}: {error}", path.display());
+            return None;
+        }
+    };
+    match MaterialValuesFile::parse(&bytes) {
+        Ok(file) => {
+            info!(
+                "read the material values of {} meshes from {MATERIAL_VALUES_FILE}",
+                file.meshes.len()
+            );
+            Some(Arc::new(file))
+        }
+        Err(error) => {
+            warn!("ignoring {}: {error:#}", path.display());
+            None
+        }
+    }
 }
 
 impl NativeMaterialHandler {
@@ -438,6 +508,30 @@ impl NativeMaterialHandler {
         load_linear_twin(context, self.textures.get(index)?, sampler)
     }
 
+    /// Whether the surface can take the inputs of technique `wanted`. Under `skyrim` one
+    /// technique draws a surface, selected by its property flags and not by the shader type the
+    /// NIF names (SPEC-1 section 9.1, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+    /// `mudcrab` and a pack without flag words follow the shader type alone.
+    fn technique_allows(&self, material: &gltf::Material<'_>, wanted: Technique) -> bool {
+        !self.raw_colour_texels
+            || native_depth_flags(material)
+                .is_none_or(|(flags_1, flags_2)| technique(flags_1, flags_2) == wanted)
+    }
+
+    /// The one-texel image an empty slot samples, stored bytes with no decode.
+    fn empty_slot(&mut self, context: &mut LoadContext<'_>, texel: [u8; 4]) -> Handle<Image> {
+        self.empty_slots
+            .entry(texel)
+            .or_insert_with(|| {
+                let [red, green, blue, alpha] = texel;
+                context.add_labeled_asset(
+                    format!("mudcrab/empty_slot_{red}_{green}_{blue}_{alpha}"),
+                    retail::texel_image(texel),
+                )
+            })
+            .clone()
+    }
+
     fn palette(&self, material: &gltf::Material<'_>) -> Option<(PaletteLookup, Handle<Image>)> {
         let lookup = palette_lookup(material)?;
         Some((lookup, self.textures.get(lookup.texture)?.clone()))
@@ -461,13 +555,15 @@ impl NativeMaterialHandler {
             .unwrap_or_else(ImageSamplerDescriptor::linear);
         let shader_flags_1 = native_depth_flags(source).map_or(0, |(flags_1, _)| flags_1);
         let holder = format!("{label}/skin_images");
+        let face = self.technique_allows(source, Technique::Face);
         let mut specular = None;
         let mut facegen = None;
         let Ok(_) = context.labeled_asset_scope(holder.clone(), |scope| {
             specular = specular_srgb
                 .as_ref()
                 .and_then(|srgb| load_linear_twin(scope, srgb, sampler));
-            facegen = facegen_texture_indices(source).and_then(|(tint, detail)| {
+            let maps = facegen_texture_indices(source).filter(|_| face);
+            facegen = maps.and_then(|(tint, detail)| {
                 Some(FacegenMaps {
                     tint: self.linear_texture(scope, tint)?,
                     detail: self.linear_texture(scope, detail)?,
@@ -804,15 +900,50 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             return;
         }
         // Reuse Bevy's fully constructed standard material instead of duplicating
-        // its field conversion. This handler registers after the stock PBR handler.
+        // its field conversion. This handler registers after the stock PBR handler. A copy, so
+        // the load context is free for the assets this handler adds.
         let standard = context
             .get_labeled(format!("{label}/std"))
             .and_then(|asset| asset.get::<StandardMaterial>())
-            .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
-        let mut material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+            .expect("NifMaterialPlugin requires the stock PBR glTF handler before it")
+            .clone();
+        let mut material = native_material(source, &standard).unwrap_or_else(|| standard.clone());
         // The raw colour space belongs to the `skyrim` profile, and so does the retail surface.
         if self.raw_colour_texels && retail::is_lighting(source) {
-            retail::apply(source, standard, &mut material);
+            let values = retail::material_values(
+                source,
+                self.material_values.as_deref(),
+                &context.path().path().to_string_lossy(),
+            );
+            if values.is_none() {
+                match missing_values(
+                    self.material_values.is_some(),
+                    &mut self.reported_missing_values,
+                ) {
+                    // An older pack publishes no values and has no sidecar.
+                    MissingValues::NoFile => warn_once!(
+                        "no NIF material values for {}: lit surfaces without them keep the \
+                         clamped glTF specular and draw no reflection (`converter \
+                         derive-material-values` writes them for an existing pack)",
+                        context.path().path().display()
+                    ),
+                    // A derived file has no entry for a composed actor mesh, for example.
+                    MissingValues::NoEntry => warn!(
+                        "the material values file has no entry for a lit surface of {}: it keeps \
+                         the clamped glTF specular and draws no reflection",
+                        context.path().path().display()
+                    ),
+                    MissingValues::Logged => {}
+                }
+            }
+            retail::apply(source, &standard, values, &self.textures, &mut material);
+            if retail::empty_base_slot(source, &material) {
+                material.base_color_texture =
+                    Some(self.empty_slot(context, retail::EMPTY_BASE_TEXEL));
+            }
+            if retail::empty_height_slot(source, &material) {
+                material.depth_map = Some(self.empty_slot(context, retail::EMPTY_HEIGHT_TEXEL));
+            }
         }
         let mut depth = self.depth_state(source, material.alpha_mode);
         if let Some(state) = depth
@@ -889,7 +1020,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 });
             }
             None => {
-                let hair_tint = nif_hair_tint(source).filter(|_| !has_model_space_normals(source));
+                let hair_tint = nif_hair_tint(source).filter(|_| {
+                    !has_model_space_normals(source)
+                        && self.technique_allows(source, Technique::Hair)
+                });
                 if let Some(state) = depth {
                     if let Some(tint) = hair_tint {
                         // Retail brows and hairlines are authored decals.
@@ -964,6 +1098,11 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         if has_external_emittance(material) {
             entity.insert(ExternalEmittance);
         }
+        // A refraction surface has no retail `Lighting` pass (SPEC-1 section 9.2). Its own
+        // frame effect is not drawn.
+        if self.raw_colour_texels && retail::refracts(material) {
+            entity.insert(Visibility::Hidden);
+        }
         if palette || self.needs_native(material) {
             let source = entity
                 .get::<MeshMaterial3d<StandardMaterial>>()
@@ -999,7 +1138,9 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                             "{label}/skin-depth"
                         )),
                     ));
-                    if is_skin_tint(material) {
+                    if is_skin_tint(material)
+                        && self.technique_allows(material, Technique::FaceTint)
+                    {
                         entity.insert(SkinTintSurface);
                     }
                 } else {
@@ -1019,7 +1160,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         context.get_label_handle::<SkyrimSkinMaterial>(format!("{label}/skin")),
                     ),
                 ));
-                if is_skin_tint(material) {
+                if is_skin_tint(material) && self.technique_allows(material, Technique::FaceTint) {
                     entity.insert(SkinTintSurface);
                 }
             } else {
@@ -1057,6 +1198,17 @@ mod tests {
         let asset_server = app.world().resource::<AssetServer>();
         let handle = asset_server.load::<A>(path);
         assert_eq!(asset_server.get_path(handle.id()), Some(path.into()));
+    }
+
+    /// One line for a pack without the file, and one for each mesh that the file leaves out.
+    #[test]
+    fn a_surface_without_material_values_is_logged_once_per_mesh() {
+        let mut logged = false;
+        assert_eq!(missing_values(false, &mut logged), MissingValues::NoFile);
+        assert_eq!(missing_values(true, &mut logged), MissingValues::NoEntry);
+        assert_eq!(missing_values(true, &mut logged), MissingValues::Logged);
+        // Bevy clones the handler for each glTF load, so the next mesh logs again.
+        assert_eq!(missing_values(true, &mut false), MissingValues::NoEntry);
     }
 
     #[test]
@@ -1889,6 +2041,44 @@ mod tests {
             .as_bytes(),
         )
         .unwrap()
+    }
+
+    /// SPEC-1 section 9.1: the property flags select the technique, whatever shader type the NIF
+    /// names. Hair is flag 18, face tint flag 21 and face flag 10; hair is the highest of them.
+    #[test]
+    fn the_skyrim_profile_selects_the_skin_inputs_by_property_flags() {
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        let mudcrab = NativeMaterialHandler::default();
+        let allowed = |handler: &NativeMaterialHandler, flags: u32, wanted| {
+            let document = first_material(serde_json::json!({"extras":{"openSkyrim":{
+                "shaderFamily":"lighting", "shaderFlags1": flags, "shaderFlags2": 0
+            }}}));
+            handler.technique_allows(&document.materials().next().unwrap(), wanted)
+        };
+        let (face, hair, tint) = (1 << 10, 1 << 18, 1 << 21);
+        for (flags, selected) in [
+            (face, Technique::Face),
+            (hair, Technique::Hair),
+            (tint, Technique::FaceTint),
+            (hair | tint, Technique::Hair),
+            (tint | face, Technique::FaceTint),
+        ] {
+            for wanted in [Technique::Face, Technique::Hair, Technique::FaceTint] {
+                assert_eq!(
+                    allowed(&skyrim, flags, wanted),
+                    wanted == selected,
+                    "flags {flags:#x}, {wanted:?}"
+                );
+                assert!(allowed(&mudcrab, flags, wanted));
+            }
+        }
+        // A pack without flag words follows the shader type.
+        let document = first_material(serde_json::json!({}));
+        let bare = document.materials().next().unwrap();
+        assert!(skyrim.technique_allows(&bare, Technique::Hair));
     }
 
     #[test]

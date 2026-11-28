@@ -2335,13 +2335,31 @@ async fn metadata_rebuild_replays_volcanic_prunes_with_legacy_and_scoped_source_
     }
 }
 
+/// Rewrites the GLB at `path` without the `materialValues` of its materials, which a package
+/// converted before that field existed does not have.
+fn remove_material_values(path: &Path) {
+    let bytes = fs::read(path).unwrap();
+    let mut container = gltf::binary::Glb::from_slice(&bytes).unwrap();
+    let mut document: serde_json::Value = serde_json::from_slice(&container.json).unwrap();
+    let mut removed = 0;
+    for material in document["materials"].as_array_mut().unwrap() {
+        let extras = material["extras"]["openSkyrim"].as_object_mut().unwrap();
+        removed += usize::from(extras.remove("materialValues").is_some());
+    }
+    assert!(removed > 0, "the fixture has a lighting material");
+    container.json = std::borrow::Cow::Owned(serde_json::to_vec(&document).unwrap());
+    fs::write(path, container.to_vec().unwrap()).unwrap();
+}
+
 #[tokio::test]
 async fn metadata_rebuild_v87_accepts_old_prune_hashes_only_after_exact_source_replay() {
-    for (corrupt, with_skeleton, with_vfs) in [
-        (false, false, true),
-        (true, false, true),
-        (false, true, true),
-        (false, false, false),
+    // The last case is a package converted before materials carried `materialValues`.
+    for (corrupt, with_skeleton, with_vfs, without_values) in [
+        (false, false, true, false),
+        (true, false, true, false),
+        (false, true, true, false),
+        (false, false, false, false),
+        (false, false, true, true),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
@@ -2379,10 +2397,14 @@ async fn metadata_rebuild_v87_accepts_old_prune_hashes_only_after_exact_source_r
         let candidate = directory.path().join("preprune/meshes/generated.glb");
         converter::mesh::MeshConverter::convert_nif_to_glb(data.join(key), candidate.clone())
             .unwrap();
+        if without_values {
+            remove_material_values(&candidate);
+            remove_material_values(&source.join("meshes/generated.glb"));
+        }
         let entry = manifest.entries.get_mut(key).unwrap();
         entry.output_hash = hash_file(&candidate).unwrap();
         entry.output_size = fs::metadata(&candidate).unwrap().len();
-        if !corrupt && !with_skeleton && with_vfs {
+        if !corrupt && !with_skeleton && with_vfs && !without_values {
             let mut historical = manifest.clone();
             historical.entries.get_mut(key).unwrap().output_size += 1;
             historical

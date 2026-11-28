@@ -996,12 +996,15 @@ impl TerrainExtension {
         self.settings.weight_source.x > 0.5
     }
 
-    /// Unbinds every layer's normal map, so the quadrant is lit by its geometric normal as a
-    /// quadrant without normal maps is. Used when a normal map fails to load: a normal map is
-    /// optional detail, and losing one must not hide the terrain its diffuse layers can draw.
+    /// Unbinds every layer's normal map and marks the quadrant, so it is lit by its geometric
+    /// normal in both profiles. Used when a normal map fails to load: a normal map is optional
+    /// detail, and losing one must not hide the terrain its diffuse layers can draw. The mark
+    /// keeps `skyrim` from reading the layers as authored without a map, which is the black
+    /// texel (SPEC-1 section 5).
     pub(crate) fn drop_normal_maps(&mut self) {
         let none: [Option<Handle<Image>>; 6] = Default::default();
         self.settings.set_normal_layers(&none);
+        self.settings.normal_layers_1.z = 1.0;
         [
             self.normal_0,
             self.normal_1,
@@ -1012,10 +1015,17 @@ impl TerrainExtension {
         ] = none;
     }
 
+    /// Whether a failed load unbound the normal maps ([`Self::drop_normal_maps`]).
+    #[cfg(test)]
+    pub(crate) fn normals_dropped(&self) -> bool {
+        self.settings.normal_layers_1.z > 0.5
+    }
+
     /// Whether any layer has a normal map bound.
     #[cfg(test)]
     pub(crate) fn has_normal_maps(&self) -> bool {
-        self.settings.normal_layers_0 != Vec4::ZERO || self.settings.normal_layers_1 != Vec4::ZERO
+        self.settings.normal_layers_0 != Vec4::ZERO
+            || self.settings.normal_layers_1.truncate().truncate() != Vec2::ZERO
     }
 }
 
@@ -3734,6 +3744,8 @@ mod tests {
         extension.drop_normal_maps();
 
         assert!(!extension.has_normal_maps());
+        // The shader's mark of a failed load: the quadrant keeps its geometric normal.
+        assert_eq!(extension.settings.normal_layers_1.z, 1.0);
         assert!(
             [
                 &extension.normal_0,

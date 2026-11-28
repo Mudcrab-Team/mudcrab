@@ -163,6 +163,12 @@ fn retail_lighting(in: pbr_types::PbrInput) -> vec4<f32> {
     let flags = in.material.flags;
     let two_stages = (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_SPECULAR_BIT) != 0u;
     let glossiness = in.material.retail_specular.w;
+    // A blended surface with the alpha test (SPEC-1 section 6.3): the alpha is the texel's
+    // times the property alpha times the vertex alpha.
+    if (flags & pbr_types::STANDARD_MATERIAL_FLAGS_RETAIL_ALPHA_TEST_BIT) != 0u
+        && in.material.base_color.a < in.material.alpha_cutoff {
+        discard;
+    }
     let receives_shadows = (in.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
     let position = in.world_position.xyz;
     let view_z = dot(vec4<f32>(
@@ -227,7 +233,9 @@ fn retail_lighting(in: pbr_types::PbrInput) -> vec4<f32> {
     }
 
     let sum = diffuse + ambient + in.material.emissive.rgb;
-    let lit = in.material.base_color.rgb * sum;
+    // The environment colour takes the light sum without the diffuse texel and vertex colour
+    // (section 9.2, technique 1).
+    let lit = in.material.base_color.rgb * sum + in.retail_environment * sum;
     // `Spec` has no diffuse texel and no vertex colour (section 6.2).
     // STAND-IN(#362): the specular distance fade `cb2[3].y` is 1; its distance input is open.
     // STAND-IN(#362): ambient specular (key bit 17) is not drawn; its predicate is not traced.

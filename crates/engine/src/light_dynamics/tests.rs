@@ -357,6 +357,126 @@ mod system {
         );
     }
 
+    /// The retail flicker counts game time: it stands while the console or a menu pauses the
+    /// game (RF-TIME-001).
+    #[test]
+    fn the_skyrim_flicker_stands_while_the_game_is_paused() {
+        let mut app = app_with(EngineConfig::default(), Vec3::ZERO);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(30),
+        ));
+        let evaluation = evaluate_light(&row(0x8, 1.0, 0.5, 8.0), None);
+        let light = evaluation.point_light_in(LightUnits::Retail, None).unwrap();
+        let entity = app
+            .world_mut()
+            .spawn((
+                light,
+                SkyrimLight {
+                    form_id: 1,
+                    cell_id: 2,
+                    shadow_flagged: false,
+                },
+                LightDynamics::retail(&evaluation, 1),
+                Transform::default(),
+                GlobalTransform::from(Transform::from_xyz(100.0, 0.0, 0.0)),
+            ))
+            .id();
+        let phase = |app: &App| app.world().get::<LightDynamics>(entity).unwrap().phase;
+        for _ in 0..10 {
+            app.update();
+        }
+        let running = phase(&app);
+        assert_ne!(running, [0.0; 3], "the light flickers");
+
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_eq!(phase(&app), running);
+
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        app.update();
+        assert_ne!(phase(&app), running);
+    }
+
+    /// The flicker reads the same frame timer as the eye adaptation, so the engine's frame
+    /// clamp (`iFPSClamp`) sets its step too: the measured frame time then has no effect.
+    #[test]
+    fn the_skyrim_flicker_takes_the_engine_frame_clamp() {
+        let phase_after = |fps_clamp: u16, millis: u64| {
+            let mut config = EngineConfig::default();
+            config.retail_hdr.fps_clamp = fps_clamp;
+            let mut app = app_with(config, Vec3::ZERO);
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(millis),
+            ));
+            let evaluation = evaluate_light(&row(0x8, 1.0, 0.5, 8.0), None);
+            let light = evaluation.point_light_in(LightUnits::Retail, None).unwrap();
+            let entity = app
+                .world_mut()
+                .spawn((
+                    light,
+                    SkyrimLight {
+                        form_id: 1,
+                        cell_id: 2,
+                        shadow_flagged: false,
+                    },
+                    LightDynamics::retail(&evaluation, 1),
+                    Transform::default(),
+                    GlobalTransform::from(Transform::from_xyz(100.0, 0.0, 0.0)),
+                ))
+                .id();
+            for _ in 0..10 {
+                app.update();
+            }
+            app.world().get::<LightDynamics>(entity).unwrap().phase
+        };
+        assert_eq!(phase_after(60, 30), phase_after(60, 150));
+        assert_ne!(phase_after(0, 30), phase_after(0, 150));
+    }
+
+    /// SPEC-1 section 2.6: under `skyrim` the flicker gate measures from the player body, so a
+    /// free camera next to a far light does not animate it.
+    #[test]
+    fn the_skyrim_flicker_gate_measures_from_the_player() {
+        let config = EngineConfig {
+            flickering_light_distance: 1024.0,
+            ..default()
+        };
+        let mut app = app_with(config, Vec3::ZERO);
+        app.world_mut().spawn((
+            crate::physics::PlayerBody,
+            GlobalTransform::from(Transform::from_xyz(5000.0, 0.0, 0.0)),
+        ));
+        let evaluation = evaluate_light(&row(0x8, 1.0, 0.5, 8.0), None);
+        let spawn = |app: &mut App, x: f32| {
+            let light = evaluation.point_light_in(LightUnits::Retail, None).unwrap();
+            app.world_mut()
+                .spawn((
+                    light,
+                    SkyrimLight {
+                        form_id: 1,
+                        cell_id: 2,
+                        shadow_flagged: false,
+                    },
+                    LightDynamics::retail(&evaluation, 1),
+                    Transform::default(),
+                    GlobalTransform::from(Transform::from_xyz(x, 0.0, 0.0)),
+                ))
+                .id()
+        };
+        let by_camera = spawn(&mut app, 100.0);
+        let by_player = spawn(&mut app, 5100.0);
+        let start = app.world().get::<LightDynamics>(by_camera).unwrap().phase;
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            app.update();
+        }
+        let phase = |e: Entity| app.world().get::<LightDynamics>(e).unwrap().phase;
+        assert_eq!(phase(by_camera), start);
+        assert_ne!(phase(by_player), start);
+    }
+
     #[test]
     fn an_unmodulated_light_in_range_keeps_the_retail_unit() {
         let mut app = app_with(EngineConfig::default(), Vec3::ZERO);
@@ -417,6 +537,59 @@ fn flicker_noise_has_its_table_sine_values() {
     // with each argument truncated to 2 pi / 512 steps.
     assert!((flicker_noise(0.0, 0.0, 0.0) - 0.416_371_5).abs() < 1.0e-5);
     assert!((flicker_noise(1.0, 2.0, 3.0) - -0.001_906_6).abs() < 1.0e-5);
+}
+
+/// SPEC-1 section 2.6 under `skyrim`: the period is limited to `[0, 1]`, the pulse reads the
+/// 512-step table, and any fade below 0.05 detaches the light.
+#[test]
+fn the_skyrim_dynamics_limit_the_period_read_the_table_and_detach_dim_lights() {
+    let evaluation = evaluate_light(&row(0x80, 7.5, 0.5, 8.0), None);
+    let mut light = LightDynamics::retail(&evaluation, 3);
+    assert_eq!(light.period, 1.0);
+    assert_eq!(LightDynamics::new(&evaluation, 3).period, 7.5);
+    let negative = evaluate_light(&row(0x80, -2.0, 0.5, 8.0), None);
+    assert_eq!(LightDynamics::retail(&negative, 3).period, 0.0);
+    // Between two table steps the factor holds the lower step's cosine.
+    light.advance(0.012);
+    let step = TAU / 512.0;
+    let (factor, offset) = retail_pulse(light.phase[0], 0.5, 8.0);
+    assert_eq!(light.fade(), 2.0 * factor);
+    assert_eq!(light.offset(), offset);
+    assert_eq!(table_cos(step * 3.9), (step * 3.0).cos());
+    let mut source = row(0x1, 1.0, 0.0, 0.0);
+    source.fade = Some(0.04);
+    let dim = evaluate_light(&source, None);
+    assert_eq!(LightDynamics::retail(&dim, 3).fade(), 0.0);
+    assert_eq!(LightDynamics::new(&dim, 3).fade(), 0.04);
+}
+
+/// SPEC-1 section 2.6 ([near-lighting.md](../../../../docs/specs/engine/near-lighting.md)): the
+/// retail fade keeps a negative `FNAM` and the largest float, and the retail radius has no upper
+/// bound.
+#[test]
+fn the_skyrim_fade_and_radius_keep_the_authored_values() {
+    use crate::world::database::ReferenceLightRow;
+    let reference = |offset: f32| ReferenceLightRow {
+        data_size: 16,
+        fov_offset: Some(0.0),
+        fade_offset: Some(offset),
+        end_distance_cap: Some(0.0),
+        shadow_depth_bias: Some(0.0),
+    };
+    let mut source = row(0x1, 1.0, 0.0, 0.0);
+    source.fade = Some(-1.5);
+    source.reference_data = Some(reference(0.5));
+    assert_eq!(evaluate_light(&source, None).retail_fade(), -1.0);
+    source.fade = Some(f32::MAX);
+    assert_eq!(evaluate_light(&source, None).retail_fade(), f32::MAX);
+    source.fade = Some(1.0);
+    source.reference_data = Some(reference(f32::MAX));
+    assert_eq!(evaluate_light(&source, None).retail_fade(), f32::MAX);
+    let outlier = evaluate_light(&source, Some(100_000.0));
+    assert_eq!(outlier.retail_radius(), Some(100_512.0));
+    assert_eq!(outlier.backend_range, Some(512.0), "mudcrab keeps its rule");
+    let negative = evaluate_light(&source, Some(-600.0));
+    assert_eq!(negative.retail_radius(), Some(0.1));
 }
 
 #[test]

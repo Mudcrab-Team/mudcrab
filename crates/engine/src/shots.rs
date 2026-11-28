@@ -658,11 +658,27 @@ impl Plugin for ShotsPlugin {
                 None,
             ));
         // In `Update`, so the pose is in the camera's `Transform` before `PostUpdate` reads it
-        // (the sky dome follows the camera there, and transforms propagate).
+        // (the sky dome follows the camera there, and transforms propagate). Before the
+        // streamer, so a new pose is planned in the frame it is set.
         app.insert_resource(self.run.clone())
             .insert_resource(ShotOutputImage(image))
-            .add_systems(Update, (select_shot_space, run_shots).chain());
+            .add_systems(
+                Update,
+                (select_shot_space, run_shots)
+                    .chain()
+                    .before(crate::streaming::StreamingSystems),
+            );
     }
+}
+
+/// The types of the systems that [`ShotsPlugin`] adds, for the schedule order test.
+#[cfg(test)]
+pub(crate) fn shot_system_types() -> [std::any::TypeId; 2] {
+    use bevy::ecs::system::System;
+    [
+        IntoSystem::into_system(select_shot_space).system_type(),
+        IntoSystem::into_system(run_shots).system_type(),
+    ]
 }
 
 /// Selects a pose's space before moving its camera. As with a load-door crossing, old cells

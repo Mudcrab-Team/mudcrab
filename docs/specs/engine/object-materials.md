@@ -4,8 +4,8 @@ Part of [#435](https://github.com/Mudcrab-Team/mudcrab/issues/435), with authore
 in [#264](https://github.com/Mudcrab-Team/mudcrab/issues/264) and fidelity accounting in
 [#498](https://github.com/Mudcrab-Team/mudcrab/issues/498).
 
-This implementation applies **STAT MODS alternate-texture entries the way the retail game applies
-them**. The rules come from a static trace of `SkyrimSE.exe` 1.7.104.0 (REA Q8,
+This implementation applies **the alternate-texture entries of a base record the way the retail
+game applies them**. The rules come from a static trace of `SkyrimSE.exe` 1.7.104.0 (REA Q8,
 `evidence/rea-20261114/q8-mods.md`; registry IDs RF-TEX-001 to RF-TEX-005). It does not complete
 per-record materials or directional snow.
 
@@ -21,8 +21,9 @@ per-record materials or directional snow.
 
 ## Consumer contract
 
-1. Both readers resolve the winning STAT and remap its MODS TXST FormIDs. The optional
-   `base_texture_swaps` table keeps **every entry** in record order with its signed 3D Index, its
+1. Both readers resolve the winning record of every base with a world model and remap its TXST
+   FormIDs: `MODS`, or for `ARMO` the `MO2S` of its male world model, else the `MO4S` of the
+   female one. The optional `base_texture_swaps` table keeps **every entry** in record order with its signed 3D Index, its
    TXST ID and a disposition: `texture_set` (a live TXST), `null_texture_set` (RF-TEX-005) or
    `missing_texture_set` (deleted, wrong type or absent). It has no one-entry, index, name or
    slot gate. Invalid array boundaries are warned and omitted.
@@ -45,10 +46,13 @@ per-record materials or directional snow.
    `texture_sets`. `streaming::spawn_cell` attaches each base's immutable input to its placed
    root. Missing tables preserve old-package behavior.
 4. After scene instantiation, `ObjectMaterialPlugin` matches each tagged shape's index to its
-   entry. A texture-set entry derives a material from the surface's own material: base colour
-   from TX00 (sRGB view) and normal map from TX01, each with the original sampler; the emissive,
-   specular, metallic-roughness and occlusion textures are dropped because the TXST does not
-   supply them (RF-TEX-004). UV transforms, alpha mode, shader values and the shared mesh and
+   entry. A texture-set entry derives a material from the surface's own material, plain or with an
+   authored depth state: base colour from TX00 and normal map from TX01, each with the original
+   sampler; the emissive, specular, metallic-roughness and occlusion textures are dropped because
+   the TXST does not supply them (RF-TEX-004). `mudcrab` views TX00 as sRGB. `skyrim` reads every
+   swapped texture raw, and also applies the glow map to a surface that reads one, the height map
+   (TX04) to a parallax surface, and the environment cube (TX05) and mask (TX02) to an
+   environment surface. UV transforms, alpha mode, shader values and the shared mesh and
    scene assets stay intact. Equal (source material, TXST) pairs share the derived material.
    Cache entries hold asset IDs rather than owning material handles.
 
@@ -82,26 +86,21 @@ read for this count.
 
 ## Deliberate limits
 
-- The `mudcrab` visual profile is supported. The `skyrim` profile reports unsupported pending
-  integration with #419's profile-owned raw UNORM material path. This change adds no profile,
-  lighting, grade or native shader equation.
-- A TXST that fills a slot other than TX00 and TX01 (TX02 to TX07) is not applied, and its shape
-  keeps the model material, because the engine has no verified mapping of those slots onto the
-  standard material. Ten retail entries are affected. Models with a skin, a static fallback or
+- Under `mudcrab` a TXST that fills TX02 to TX07 is not applied, and its shape keeps the model
+  material. Under `skyrim` the specular (TX07) and detail (TX06) slots are not sampled: the
+  specular slot is the mask of a model-space surface, the detail slot belongs to the face and
+  multilayer techniques, and a swap reaches neither a model-space nor a face surface.
+- STAND-IN(#490): the swapped glow map reaches a surface only when its model has a glow map.
+- The texture set flags (`DNAM`) are not read: SPEC-1 does not define their effect.
+- Models with a skin, a static fallback or
   an unprovable count carry no geometry tags. Shapes whose material needs the native effect or
-  emittance paths report `Unsupported`. Other model-bearing record types, extended materials,
-  external emittance and material playback integration remain open. #432/#437/#484 retain NIF
+  emittance paths report `Unsupported`. Extended materials, external emittance
+  and material playback integration remain open. #432/#437/#484 retain NIF
   geometry/material/playback ownership; cluster appearance/certification stays with
   #320/#336. No cluster admission rule changes here.
 - Retail behaviour for a MODS entry whose TXST link does not resolve was not traced (RF-TEX has no
   entry). The engine reports it and keeps the model's material.
 - The FormID 0x28 of the NullTextureSet is medium confidence (RF-TEX-005); the hide itself is high.
-- A tagged lighting shape that the NIF material plugin draws with a native depth material (a decal,
-  or a shape without depth test or depth write) is not swapped. `apply_swaps` reaches only
-  `StandardMaterial` surfaces. Its entry applies to nothing, and a model whose only tagged shapes
-  are such surfaces reports the "no geometry-index tags" reason. Retail swaps these shapes too
-  (RF-TEX-003). Examples: shape 0 of `Landscape\DirtCliffs\DirtCliffs01.nif` and of
-  `Landscape\Mountains\MountainTrim02.nif`, and shape 1 of `Landscape\Rocks\RockPileM02.nif`.
 - STAT DNAM's MATO link, maximum angle and SSE considered-snow flag, and MATO's projection,
   falloff, UV, colour and pass flags remain outside this implementation. #435's existing local
   prototype owns that continuation. No maximum-angle cutoff, snow colour or layer is invented.
@@ -112,7 +111,9 @@ read for this count.
 ## Rebuild and verification
 
 The table is additive; world schema stays unchanged. In-house adapter 14 and legacy projection 6
-identify the metadata change. `object-texture-swap-geometry-index-v1` enters the mesh output
+added it for `STAT`. Adapter 16 and legacy projection 7 add the rows of every other base with a
+world model. A pack converted earlier needs a metadata rebuild with `--reuse-assets` to get them;
+until then the engine applies the rows the pack has. `object-texture-swap-geometry-index-v1` enters the mesh output
 contract, so normal conversion invalidates old GLB reuse. `object-texture-swap-geometry-index-v2`
 changes only the `nif` proof again (the DDS and PEX proofs stay the same), so a pack converted
 under `-v1` needs a normal conversion of its meshes; a metadata rebuild with `--reuse-assets`

@@ -26,15 +26,19 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 15;
+pub const ADAPTER_VERSION: u32 = 16;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
 /// Version 5 changes database placement coverage.
 /// Version 6 projects STAT MODS alternate-texture entries (3D Index, TXST link) and remaps their TXST links.
+/// Version 7 projects the alternate textures of every base with a world model, and remaps their
+/// TXST links.
 /// Later LAND paint recovery shares version 6; reconvert to pick up recovered paint.
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 6;
+/// STAND-IN(#269): the legacy reader's record projection, which publishes only part of the
+/// decoded record data.
+pub const LEGACY_PROJECTION_VERSION: u32 = 7;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]

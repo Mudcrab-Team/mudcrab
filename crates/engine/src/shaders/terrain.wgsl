@@ -1,5 +1,5 @@
-#import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
-#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}
+#import engine::terrain_blend::{NearTerrainBlendSettings, noise_multiplier, noisy_land_colour, retail_land_alpha, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
+#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_blended_normal, terrain_tangent_normal, terrain_tbn}
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
@@ -32,7 +32,9 @@ struct TerrainSettings {
     // whose only layer is its base, which has no overlays for the field to hold.
     weight_source: vec4<f32>,
     // 1.0 where a layer has a normal map bound: layers 0-3 in `normal_layers_0`, 4-5 in
-    // `normal_layers_1.xy`. A layer without one keeps the geometric normal.
+    // `normal_layers_1.xy`. A layer without one keeps the geometric normal under `mudcrab` and
+    // takes the black texel under `skyrim` (SPEC-1 section 5). `normal_layers_1.z` is 1 when a
+    // normal map failed to load: the whole quadrant then keeps its geometric normal.
     normal_layers_0: vec4<f32>,
     normal_layers_1: vec4<f32>,
     weights: array<vec4<f32>, 365>,
@@ -115,8 +117,12 @@ fn vertex(in: Vertex) -> TerrainVertexOutput {
 // alpha, independently of diffuse alpha and the LTEX exponent: Community Shaders (GPL-3.0),
 // Lighting.hlsl at e53c0a1ffaa01199490c6097a7dabb559932a88e, lines 1192-1357 and 1968-1976.
 // Rebuild z as before; a missing map keeps the geometric normal and contributes no specular mask.
+// Under `skyrim` a missing map is the black texel (SPEC-1 section 5).
 fn layer_surface(map: texture_2d<f32>, uv: vec2<f32>, present: f32, retail: bool) -> vec4<f32> {
     if present < 0.5 {
+        if retail {
+            return vec4<f32>(retail_terrain_normal(vec3<f32>(0.0)), 0.0);
+        }
         return vec4<f32>(0.0, 0.0, 1.0, 0.0);
     }
     let sample = textureSample(map, layer_sampler, uv);
@@ -237,12 +243,23 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
     color += textureSample(layer_3, layer_sampler, uv) * weights[3];
     color += textureSample(layer_4, layer_sampler, uv) * weights[4];
     color += textureSample(layer_5, layer_sampler, uv) * weights[5];
-    color = color / total;
+    let retail =
+        (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u;
+    let divisor = terrain_blend_divisor(total, retail);
+    color = color / divisor;
     let seam_weight = terrain_blend_weight(in.seam_ramp, seam.atlas.w);
+    // Retail's landscape writes a target 0 alpha of 0, or the distant blend's.
+    var land_alpha = 0.0;
     if seam.atlas.w != 0.0 {
         let distant_uv = terrain_atlas_uv(in.uv, seam.atlas);
-        let distant = textureSample(seam_overlay, seam_overlay_sampler, distant_uv).rgb;
-        let noisy = noisy_land_colour(distant, seam_noise, seam_noise_sampler, distant_uv);
+        let distant = textureSample(seam_overlay, seam_overlay_sampler, distant_uv);
+        let noisy = noisy_land_colour(distant.rgb, seam_noise, seam_noise_sampler, distant_uv);
+        let red = textureSample(seam_noise, seam_noise_sampler, 3.0 * distant_uv).r;
+        var vertex_alpha = 1.0;
+#ifdef VERTEX_COLORS
+        vertex_alpha = in.color.a;
+#endif
+        land_alpha = retail_land_alpha(distant.a, noise_multiplier(distant.rgb, red), seam_weight, vertex_alpha);
         color = vec4<f32>(mix(color.rgb, noisy, seam_weight), color.a);
     }
     // Technique 19 order (skyrim_decomp#979): noise scales the distant sample before blending.
@@ -256,9 +273,8 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.
     var specular_mask = 0.0;
-    let retail =
-        (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_RETAIL_LIGHTING_BIT) != 0u;
-    if dot(terrain.normal_layers_0, vec4<f32>(1.0)) + terrain.normal_layers_1.x + terrain.normal_layers_1.y > 0.5 {
+    let normals_dropped = terrain.normal_layers_1.z > 0.5;
+    if !normals_dropped && (retail || dot(terrain.normal_layers_0, vec4<f32>(1.0)) + terrain.normal_layers_1.x + terrain.normal_layers_1.y > 0.5) {
         var surface = layer_surface(normal_0, uv, terrain.normal_layers_0.x, retail) * weights[0];
         surface += layer_surface(normal_1, uv, terrain.normal_layers_0.y, retail) * weights[1];
         surface += layer_surface(normal_2, uv, terrain.normal_layers_0.z, retail) * weights[2];
@@ -267,12 +283,15 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
         surface += layer_surface(normal_5, uv, terrain.normal_layers_1.y, retail) * weights[5];
         specular_mask = surface.w;
         let geometric = normalize(pbr_input.world_normal);
-        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(surface.xyz / total, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
+        pbr_input.N = normalize(terrain_tbn(geometric) * terrain_blended_normal(mix(surface.xyz / divisor, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
     }
     pbr_input.material.reflectance = terrain_reflectance(pbr_input.material.reflectance, specular_mask, total);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    if retail {
+        out.color.a = land_alpha;
+    }
     return out;
 }

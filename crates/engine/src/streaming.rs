@@ -87,6 +87,13 @@ fn commit_budget_exceeded(elapsed_micros: u64, budget_micros: u64) -> bool {
 
 pub struct StreamingPlugin;
 
+/// The `Update` chain of the streamer. It plans the cell window around the camera and checks the
+/// resident cells against the camera in the same frame. A system that moves the camera in
+/// `Update` must be ordered against the whole chain: between the plan and the check, one move of
+/// several cells reads as resident cells out of range (#217).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct StreamingSystems;
+
 /// Ready terrain collider attached to the same streamed quadrant as its mesh.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct TerrainCollider;
@@ -227,7 +234,8 @@ impl Plugin for StreamingPlugin {
                     runtime::observe_streaming_ownership,
                 )
                     .chain()
-                    .after(PlayerControlsSystems),
+                    .after(PlayerControlsSystems)
+                    .in_set(StreamingSystems),
             )
             // Bevy instantiates every ready converted model in one unbudgeted pass inside
             // `SceneSpawnerSystems::WorldInstanceSpawn`; these two systems bracket that pass so the
@@ -2197,9 +2205,12 @@ fn spawn_cell(
             let dynamics = evaluated_light
                 .as_ref()
                 .map(|evaluation| evaluation.dynamics_in(units, reference.form_id));
-            if let Some(light) = evaluated_light
-                .and_then(|evaluation| evaluation.point_light_in(units, reference.emittance))
-            {
+            if let Some(light) = evaluated_light.and_then(|evaluation| {
+                let source = reference
+                    .emittance
+                    .map(|bytes| Vec3::from_array(bytes.map(f32::from)) / 255.0);
+                evaluation.point_light_in(units, source)
+            }) {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
@@ -4183,6 +4194,7 @@ fn track_surface_readiness(
     mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    mut failed_normals: Local<HashSet<String>>,
 ) {
     metrics.pending_surface_instances = terrain.iter().count() + water.iter().count();
     let mut completed = 0usize;
@@ -4206,12 +4218,29 @@ fn track_surface_readiness(
                     // A normal map is optional detail: without it the quadrant is lit by its
                     // geometric normal, as a quadrant whose layers have none is.
                     SurfaceDependencyState::Failed(reason) => {
-                        warn!(
-                            cell = format_args!("{:08X}", pending.cell_id),
-                            quadrant = pending.quadrant,
-                            %reason,
-                            "terrain normal map failed; drawing the quadrant without normal maps"
+                        let texture = failed_normal_texture(
+                            &asset_server,
+                            &images,
+                            &pending.normals,
+                            profile.decodes_colour_srgb(),
                         );
+                        // One warning per texture: many quadrants share a layer.
+                        if failed_normals.insert(texture.clone()) {
+                            warn!(
+                                %texture,
+                                cell = format_args!("{:08X}", pending.cell_id),
+                                quadrant = pending.quadrant,
+                                %reason,
+                                "terrain normal map failed; the quadrant keeps its geometric normal"
+                            );
+                        } else {
+                            debug!(
+                                %texture,
+                                cell = format_args!("{:08X}", pending.cell_id),
+                                quadrant = pending.quadrant,
+                                "terrain normal map failed"
+                            );
+                        }
                         if let Some(mut material) =
                             material.and_then(|material| terrain_materials.get_mut(&material.0))
                         {
@@ -4424,6 +4453,34 @@ fn terrain_sampler_repeats(sampler: &ImageSampler) -> bool {
             if descriptor.address_mode_u == ImageAddressMode::Repeat
                 && descriptor.address_mode_v == ImageAddressMode::Repeat
     )
+}
+
+/// The path of the first normal map in `handles` that fails its dependency check, for the log.
+fn failed_normal_texture(
+    asset_server: &AssetServer,
+    images: &Assets<Image>,
+    handles: &[Handle<Image>],
+    colour_srgb: bool,
+) -> String {
+    handles
+        .iter()
+        .find(|handle| {
+            matches!(
+                validate_surface_dependencies(
+                    asset_server,
+                    images,
+                    std::slice::from_ref(*handle),
+                    SurfaceImageKind::TerrainNormal,
+                    colour_srgb,
+                ),
+                SurfaceDependencyState::Failed(_)
+            )
+        })
+        .and_then(|handle| handle.path())
+        .map_or_else(
+            || "a texture without a path".to_owned(),
+            ToString::to_string,
+        )
 }
 
 fn validate_surface_dependencies(
@@ -7947,6 +8004,63 @@ mod tests {
                     .before(validate_streaming_lifecycle),
             );
         (app, directory)
+    }
+
+    /// A land normal map that fails to load is not an empty slot: the quadrant is shown with the
+    /// mark that keeps its geometric normal under `skyrim`.
+    #[test]
+    fn a_failed_land_normal_map_keeps_the_geometric_normal() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(VisualProfile::Skyrim)
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<ProfilingState>()
+            .add_systems(Update, track_surface_readiness);
+        let normal: Handle<Image> = app
+            .world()
+            .resource::<AssetServer>()
+            .load("textures/mudcrab_missing_land_n.ktx2");
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<TerrainMaterial>>()
+            .add(TerrainMaterial {
+                base: StandardMaterial::default(),
+                extension: default(),
+            });
+        let quadrant = app
+            .world_mut()
+            .spawn((
+                MeshMaterial3d(material.clone()),
+                PendingTerrainProfile {
+                    cell_id: 1,
+                    quadrant: 0,
+                    images: Vec::new(),
+                    normals: vec![normal],
+                },
+            ))
+            .id();
+        for _ in 0..2_000 {
+            app.update();
+            if app.world().get::<TerrainSurfaceReady>(quadrant).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(
+            app.world().get::<TerrainSurfaceReady>(quadrant).is_some(),
+            "a failed normal map must not hide the quadrant"
+        );
+        let materials = app.world().resource::<Assets<TerrainMaterial>>();
+        assert!(
+            materials
+                .get(&material)
+                .unwrap()
+                .extension
+                .normals_dropped()
+        );
     }
 
     /// The radius-2 window around `center`, all resident.

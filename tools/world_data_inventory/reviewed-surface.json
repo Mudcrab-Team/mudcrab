@@ -31,6 +31,7 @@
     "crates/engine/src/object_materials.rs::prepare::1fbb03c179b6e4da::1": "842c2da0a552f151",
     "crates/engine/src/object_materials.rs::prepare::c74d4d43affb6228::1": "8c58625ec07dbbc9",
     "crates/engine/src/object_materials.rs::query_row::0117638460bd2ff7::1": "7d47d5c6bf784799",
+    "crates/engine/src/object_materials.rs::query_row::59bb2c022875d4f2::1": "62352631de527863",
     "crates/engine/src/object_materials.rs::query_row::9baa37c56861b864::1": null,
     "crates/engine/src/papyrus_host.rs::prepare::bf7a41145fa868a6::1": "de6336d08b4d3a9d",
     "crates/engine/src/papyrus_host.rs::prepare_cached::00b2f0a3d212f5c3::1": "c8c4b4b4f231471c",

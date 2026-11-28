@@ -71,6 +71,31 @@ const DIRT: u32 = 126810;
 const ROCKS: u32 = 126829;
 const NULL_TEXTURE_SET: u32 = 0x28;
 
+/// An older database is marked, so that the first lookup can log what it lacks.
+#[test]
+fn a_database_from_an_older_converter_is_marked() {
+    let connection = Connection::open_in_memory().unwrap();
+    let shortfall =
+        |connection: &Connection| ObjectTextureCatalog::read(connection).unwrap().shortfall;
+    assert_eq!(shortfall(&connection), Some(NO_SWAP_TABLE));
+    connection
+        .execute_batch(
+            "CREATE TABLE base_texture_swaps(base_id INTEGER, position INTEGER, shape_name TEXT,
+                 shape_index INTEGER, texture_set_id INTEGER, disposition TEXT);
+             CREATE TABLE formid_map(form_id INTEGER PRIMARY KEY, record_type TEXT);
+             INSERT INTO formid_map VALUES (1, 'STAT'), (2, 'MSTT');
+             INSERT INTO base_texture_swaps VALUES (1, 0, 'A', 0, 0, 'null_texture_set');",
+        )
+        .unwrap();
+    assert_eq!(shortfall(&connection), Some(STATIC_SWAPS_ONLY));
+    connection
+        .execute_batch(
+            "INSERT INTO base_texture_swaps VALUES (2, 0, 'A', 0, 0, 'null_texture_set');",
+        )
+        .unwrap();
+    assert_eq!(shortfall(&connection), None);
+}
+
 fn database() -> (Connection, HashMap<u32, RawRecord>) {
     let conn = Connection::open_in_memory().unwrap();
     create_tables(&conn).unwrap();
@@ -968,14 +993,6 @@ fn unsupported_inputs_keep_the_model_material_and_say_why() {
         "{reported:?}"
     );
     assert!(reported.iter().any(|(base, _)| *base == 4));
-    app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
-    let raw = spawn(&mut app, &scene, catalog.get(1));
-    settle(&mut app, &[raw]);
-    assert_eq!(surface(&app, raw).1, surface(&app, control).1);
-    assert!(matches!(
-        app.world().get::<ObjectTextureSwapState>(raw),
-        Some(ObjectTextureSwapState::Unsupported(_))
-    ));
     app.insert_resource(crate::visual_profile::VisualProfile::Mudcrab);
     let old_scene = load_scene(&mut app, "old.glb");
     let old = spawn(&mut app, &old_scene, catalog.get(1));
@@ -984,6 +1001,282 @@ fn unsupported_inputs_keep_the_model_material_and_say_why() {
         app.world().get::<ObjectTextureSwapState>(old),
         Some(ObjectTextureSwapState::Unsupported(_))
     ));
+}
+
+/// SPEC-1 section 2.1: under `skyrim` a swapped texture set is read raw, like the model's own.
+#[test]
+fn the_skyrim_profile_swaps_texture_sets_with_raw_colour_views() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let (conn, _) = database();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+    let scene = load_scene(&mut app, "shared.glb");
+    // The model's surfaces reflect a cube.
+    let cube = app.world().resource::<Assets<Image>>().reserve_handle();
+    let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+    let models: Vec<_> = materials.ids().collect();
+    for id in models {
+        materials
+            .get_mut(id)
+            .unwrap()
+            .retail_environment_cube_source = Some(cube.clone());
+    }
+    let pine = spawn(&mut app, &scene, catalog.get(PINE));
+    let control = spawn(&mut app, &scene, catalog.get(3));
+    settle(&mut app, &[pine]);
+    assert_eq!(
+        app.world().get::<ObjectTextureSwapState>(pine),
+        Some(&ObjectTextureSwapState::Applied {
+            textured: 1,
+            hidden: 0
+        })
+    );
+    let swapped = surface(&app, pine).1;
+    assert_ne!(swapped, surface(&app, control).1);
+    // The new set leaves the cube slot empty, so the swapped surface reflects nothing.
+    let kept = material_of(&app, &surface(&app, control).1);
+    assert!(kept.retail_environment_cube_source.is_some());
+    let material = material_of(&app, &swapped);
+    assert!(material.retail_environment_cube_source.is_none());
+    let images = app.world().resource::<Assets<Image>>();
+    for texture in [&material.base_color_texture, &material.normal_map_texture] {
+        let image = images.get(texture.as_ref().unwrap()).unwrap();
+        assert!(!image.texture_descriptor.format.is_srgb());
+    }
+}
+
+/// SPEC-1 section 5: a swapped set without a base map gives a retail surface the default texel,
+/// as an empty slot of the model does.
+#[test]
+fn a_swapped_set_without_a_base_map_takes_the_default_texel() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let (conn, mut records) = database();
+    records.insert(
+        101,
+        record(101, b"TXST", &[(b"TX01", b"blue.dds\0".to_vec())]),
+    );
+    export_to_db(&conn, &records).unwrap();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+    let scene = load_scene(&mut app, "shared.glb");
+    let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+    let models: Vec<_> = materials.ids().collect();
+    for id in models {
+        materials.get_mut(id).unwrap().retail_surface = Some(bevy::pbr::RetailSurface::MATTE);
+    }
+    let root = spawn(&mut app, &scene, catalog.get(1));
+    settle(&mut app, &[root]);
+    let material = material_of(&app, &surface(&app, root).1);
+    let images = app.world().resource::<Assets<Image>>();
+    let base = images
+        .get(material.base_color_texture.as_ref().expect("a base map"))
+        .unwrap();
+    assert_eq!(
+        base.data.as_deref(),
+        Some(crate::nif_material::EMPTY_BASE_TEXEL.as_slice())
+    );
+}
+
+/// SPEC-1 section 9.2: under `skyrim` an environment surface takes the swapped set's cube and
+/// mask, and a surface of another technique takes neither. A filled detail or specular slot does
+/// not stop the swap there. `mudcrab` refuses such a set.
+#[test]
+fn the_skyrim_profile_swaps_the_environment_cube_and_mask() {
+    for (skyrim, scale) in [(true, 2.0), (true, 0.0), (false, 2.0)] {
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path());
+        let (conn, mut records) = database();
+        records.insert(
+            101,
+            record(
+                101,
+                b"TXST",
+                &[
+                    (b"TX00", b"red.dds\0".to_vec()),
+                    (b"TX02", b"blue.dds\0".to_vec()),
+                    (b"TX05", b"cube.dds\0".to_vec()),
+                    // Slots that no technique a swap reaches samples; the files do not exist.
+                    (b"TX06", b"unread_detail.dds\0".to_vec()),
+                    (b"TX07", b"unread_specular.dds\0".to_vec()),
+                ],
+            ),
+        );
+        export_to_db(&conn, &records).unwrap();
+        let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+        let mut app = object_app(directory.path());
+        if skyrim {
+            app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+        }
+        let scene = load_scene(&mut app, "shared.glb");
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let models: Vec<_> = materials.ids().collect();
+        for id in models {
+            materials.get_mut(id).unwrap().retail_surface = Some(bevy::pbr::RetailSurface {
+                environment_scale: scale,
+                ..bevy::pbr::RetailSurface::MATTE
+            });
+        }
+        let root = spawn(&mut app, &scene, catalog.get(1));
+        settle(&mut app, &[root]);
+        let state = app.world().get::<ObjectTextureSwapState>(root).unwrap();
+        let material = material_of(&app, &surface(&app, root).1);
+        let path = |handle: &Option<Handle<Image>>| {
+            handle
+                .as_ref()
+                .and_then(|handle| handle.path())
+                .map(|path| path.to_string())
+        };
+        if !skyrim {
+            assert_eq!(
+                state,
+                &ObjectTextureSwapState::Applied {
+                    textured: 0,
+                    hidden: 0
+                }
+            );
+            assert!(material.retail_environment_cube_source.is_none());
+            continue;
+        }
+        assert_eq!(
+            state,
+            &ObjectTextureSwapState::Applied {
+                textured: 1,
+                hidden: 0
+            }
+        );
+        let wanted = |name: &str| (scale != 0.0).then(|| format!("textures/{name}.ktx2"));
+        assert_eq!(
+            path(&material.retail_environment_cube_source),
+            wanted("cube")
+        );
+        assert_eq!(
+            path(&material.retail_environment_mask_source),
+            wanted("blue")
+        );
+    }
+}
+
+/// A swap requests only the slots its surface reads: a missing file in another slot does not
+/// fail it, and a missing file in a slot the surface reads does.
+#[test]
+fn a_swap_requests_only_the_slots_its_surface_reads() {
+    for glows in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path());
+        let (conn, mut records) = database();
+        records.insert(
+            101,
+            record(
+                101,
+                b"TXST",
+                &[
+                    (b"TX00", b"red.dds\0".to_vec()),
+                    // Mask, glow, height and environment: none of these files exists.
+                    (b"TX02", b"absent_mask.dds\0".to_vec()),
+                    (b"TX03", b"absent_glow.dds\0".to_vec()),
+                    (b"TX04", b"absent_height.dds\0".to_vec()),
+                    (b"TX05", b"absent_cube.dds\0".to_vec()),
+                ],
+            ),
+        );
+        export_to_db(&conn, &records).unwrap();
+        let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+        let mut app = object_app(directory.path());
+        app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+        let scene = load_scene(&mut app, "shared.glb");
+        let glow = app.world().resource::<Assets<Image>>().reserve_handle();
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let models: Vec<_> = materials.ids().collect();
+        for id in models {
+            let mut material = materials.get_mut(id).unwrap();
+            material.retail_surface = Some(bevy::pbr::RetailSurface::MATTE);
+            material.emissive_texture = glows.then(|| glow.clone());
+        }
+        let root = spawn(&mut app, &scene, catalog.get(1));
+        settle(&mut app, &[root]);
+        let state = app.world().get::<ObjectTextureSwapState>(root).unwrap();
+        if glows {
+            assert!(
+                matches!(state, ObjectTextureSwapState::Failed(reason)
+                    if reason.contains("absent_glow")),
+                "{state:?}"
+            );
+        } else {
+            assert_eq!(
+                state,
+                &ObjectTextureSwapState::Applied {
+                    textured: 1,
+                    hidden: 0
+                }
+            );
+            let held = &app.world().get::<RequestedImages>(root).unwrap().0;
+            assert_eq!(held.keys().collect::<Vec<_>>(), ["textures/red.ktx2"]);
+        }
+    }
+}
+
+/// A swapped height map that is a cube cannot take the 2D binding: the surface keeps the
+/// model's height map and the rest of the swap applies.
+#[test]
+fn a_swapped_height_map_that_is_not_flat_is_not_bound() {
+    for (height, flat) in [("red.dds", true), ("cube.dds", false)] {
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path());
+        let (conn, mut records) = database();
+        records.insert(
+            101,
+            record(
+                101,
+                b"TXST",
+                &[
+                    (b"TX00", b"blue.dds\0".to_vec()),
+                    (b"TX04", format!("{height}\0").into_bytes()),
+                ],
+            ),
+        );
+        export_to_db(&conn, &records).unwrap();
+        let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+        let mut app = object_app(directory.path());
+        app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+        let scene = load_scene(&mut app, "shared.glb");
+        let model =
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(crate::nif_material::texel_image(
+                    crate::nif_material::EMPTY_HEIGHT_TEXEL,
+                ));
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let models: Vec<_> = materials.ids().collect();
+        for id in models {
+            let mut material = materials.get_mut(id).unwrap();
+            material.retail_surface = Some(bevy::pbr::RetailSurface::MATTE);
+            material.depth_map = Some(model.clone());
+        }
+        let root = spawn(&mut app, &scene, catalog.get(1));
+        settle(&mut app, &[root]);
+        assert_eq!(
+            app.world().get::<ObjectTextureSwapState>(root),
+            Some(&ObjectTextureSwapState::Applied {
+                textured: 1,
+                hidden: 0
+            }),
+            "{height}"
+        );
+        let material = material_of(&app, &surface(&app, root).1);
+        let bound = material.depth_map.as_ref().expect("a height map");
+        if flat {
+            assert_eq!(
+                bound.path().map(ToString::to_string).as_deref(),
+                Some("textures/red.ktx2")
+            );
+        } else {
+            assert_eq!(bound, &model);
+        }
+    }
 }
 
 #[test]
@@ -1023,7 +1316,7 @@ fn projection_rows_resolve_texture_sets_and_keep_other_txst_consumers() {
     let pine = catalog.get(PINE).unwrap();
     assert!(matches!(
         &pine.swaps[0].kind,
-        SwapKind::Textures { diffuse: Some(diffuse), normal: Some(normal), unapplied }
+        SwapKind::Textures { diffuse: Some(diffuse), normal: Some(normal), unapplied, .. }
             if diffuse == "textures/landscape/pineforest02.ktx2"
                 && normal == "textures/landscape/pineforest02_n.ktx2"
                 && unapplied.is_empty()

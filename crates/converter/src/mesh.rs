@@ -1070,6 +1070,42 @@ fn remap_texture_info(
 }
 
 fn rebuild_glb_with_document(original: &[u8], document: &serde_json::Value) -> Result<Vec<u8>> {
+    rebuild_glb_with_json(original, serde_json::to_vec(document)?)
+}
+
+/// `glb` as a converter wrote it before materials carried `materialValues`, or `None` when no
+/// material carries them. A legacy package records the hash of those bytes. The entries are cut
+/// from the JSON text, because reading and writing the document again can change a float's last
+/// digit.
+pub(crate) fn glb_without_material_values(glb: &[u8]) -> Result<Option<Vec<u8>>> {
+    const KEY: &[u8] = b"\"materialValues\":";
+    // This checks the container, so the JSON range below exists.
+    glb_json_from_bytes(glb)?;
+    let json_length = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
+    let mut json = glb[20..20 + json_length].trim_ascii_end().to_vec();
+    let mut removed = false;
+    while let Some(start) = json.windows(KEY.len()).position(|bytes| bytes == KEY) {
+        let value = start + KEY.len();
+        let mut values = serde_json::Deserializer::from_slice(&json[value..])
+            .into_iter::<serde::de::IgnoredAny>();
+        values
+            .next()
+            .ok_or_else(|| color_eyre::eyre::eyre!("materialValues has no value"))??;
+        let end = value + values.byte_offset();
+        // The writer sorts the keys, so `shaderFamily` follows in the same object.
+        ensure!(
+            json.get(end) == Some(&b','),
+            "materialValues is not followed by another material key"
+        );
+        json.drain(start..=end);
+        removed = true;
+    }
+    removed
+        .then(|| rebuild_glb_with_json(glb, json))
+        .transpose()
+}
+
+fn rebuild_glb_with_json(original: &[u8], mut json: Vec<u8>) -> Result<Vec<u8>> {
     let json_length = u32::from_le_bytes(
         original
             .get(12..16)
@@ -1083,7 +1119,6 @@ fn rebuild_glb_with_document(original: &[u8], document: &serde_json::Value) -> R
     let binary = original
         .get(json_end..)
         .ok_or_else(|| color_eyre::eyre::eyre!("truncated GLB JSON chunk"))?;
-    let mut json = serde_json::to_vec(document)?;
     while !json.len().is_multiple_of(4) {
         json.push(b' ');
     }
@@ -5325,6 +5360,7 @@ mod tests {
                         uv_scale: [1.0; 2],
                         texture_clamp_mode: 3,
                         tint_color: None,
+                        environment_map_scale: None,
                         shader_family: NifShaderFamily::Lighting,
                         lighting_shader_type: Some(LightingShaderType::Default),
                         shader_block: 0,
@@ -6477,7 +6513,8 @@ mod tests {
     /// the shared 256-node bound. The pinned hashes come from the converter before that bound,
     /// except that both single-shape cases also carry the `mudcrabGeometryIndex` primitive tag
     /// that `object-texture-swap-geometry-index-v1` adds; each case asserts that tag below.
-    /// Exclude newer room metadata and the explicit absence of a NIF alpha property.
+    /// Exclude newer room metadata, the published material values and the explicit absence of a
+    /// NIF alpha property.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -6526,6 +6563,10 @@ mod tests {
                     extras.remove("alphaProperty"),
                     Some(serde_json::Value::Null)
                 );
+                assert!(
+                    extras.remove("materialValues").is_some(),
+                    "{name}: a lighting material publishes its values"
+                );
             }
             assert_eq!(
                 crate::cache::hash_bytes(&rebuild_glb_with_document(&glb, &document).unwrap()),
@@ -6533,6 +6574,48 @@ mod tests {
                 "{name}: GLB bytes changed"
             );
         }
+    }
+
+    /// The entries are cut from the text, so every other byte stays: here a float that a second
+    /// serialisation would write differently.
+    #[test]
+    fn removing_material_values_keeps_every_other_byte() {
+        let glb = |json: &str| {
+            let mut json = json.as_bytes().to_vec();
+            json.resize(json.len().next_multiple_of(4), b' ');
+            let length = |bytes: usize| {
+                u32::try_from(bytes)
+                    .unwrap_or_else(|_| panic!("GLB length {bytes} does not fit in u32"))
+                    .to_le_bytes()
+            };
+            let mut glb = b"glTF".to_vec();
+            glb.extend_from_slice(&2_u32.to_le_bytes());
+            glb.extend_from_slice(&length(20 + json.len() + 12));
+            glb.extend_from_slice(&length(json.len()));
+            glb.extend_from_slice(b"JSON");
+            glb.extend_from_slice(&json);
+            glb.extend_from_slice(&4_u32.to_le_bytes());
+            glb.extend_from_slice(b"BIN\0\x01\x02\x03\x04");
+            glb
+        };
+        let material = |values: &str| {
+            format!(
+                r#"{{"extras":{{"openSkyrim":{{{values}"shaderFamily":"materialValues"}}}},"x":1.00000000000000000e-7}}"#
+            )
+        };
+        let values =
+            r#""materialValues":{"environmentMapScale":1.5,"specularColor":[1.0,2.0,3.0]},"#;
+        let with = format!(
+            r#"{{"materials":[{},{}]}}"#,
+            material(values),
+            material(values)
+        );
+        let without = format!(r#"{{"materials":[{},{}]}}"#, material(""), material(""));
+        assert_eq!(
+            glb_without_material_values(&glb(&with)).unwrap(),
+            Some(glb(&without))
+        );
+        assert_eq!(glb_without_material_values(&glb(&without)).unwrap(), None);
     }
 
     /// Inspection measures deep skeletons while every consuming entry point refuses them.

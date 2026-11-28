@@ -35,6 +35,9 @@ struct StandardMaterialBindings {
     specular_sampler: u32,              // 28
     specular_tint_texture: u32,         // 29
     specular_tint_sampler: u32,         // 30
+    // mudcrab: the retail environment cube and mask. They take the base colour sampler.
+    retail_environment_cube_texture: u32, // 31
+    retail_environment_mask_texture: u32, // 32
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<storage> material_indices: array<StandardMaterialBindings>;
@@ -85,5 +88,9 @@ struct StandardMaterialBindings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(29) var specular_tint_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(30) var specular_tint_sampler: sampler;
 #endif  // PBR_SPECULAR_TEXTURES_SUPPORTED
+
+// mudcrab: the retail environment cube and mask.
+@group(#{MATERIAL_BIND_GROUP}) @binding(31) var retail_environment_cube_texture: texture_cube<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(32) var retail_environment_mask_texture: texture_2d<f32>;
 
 #endif  // BINDLESS

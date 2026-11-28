@@ -1,6 +1,5 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 176
 expression: document
 ---
 {
@@ -113,6 +112,15 @@ expression: document
         "openSkyrim": {
           "alphaProperty": null,
           "lightingShaderType": "default",
+          "materialValues": {
+            "glossiness": 80.0,
+            "specularColor": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "specularStrength": 1.0
+          },
           "normalConvention": "directx",
           "shaderBlock": 2,
           "shaderFamily": "lighting",

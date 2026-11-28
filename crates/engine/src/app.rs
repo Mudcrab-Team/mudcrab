@@ -3188,7 +3188,10 @@ fn add_camera_and_capture_systems(app: &mut App) {
     app.init_resource::<AcceptanceCapture>().add_systems(
         Update,
         (
-            fly_camera.run_if(console_closed),
+            // Before the streamer, so it plans around the camera that it then checks.
+            fly_camera
+                .run_if(console_closed)
+                .before(crate::streaming::StreamingSystems),
             capture_acceptance_screenshot.run_if(console_closed),
         ),
     );
@@ -4492,6 +4495,86 @@ mod tests {
         app.world_mut()
             .spawn((Transform::default(), StreamingCamera));
         (app, directory)
+    }
+
+    /// The streamer plans the cell window from the camera and checks it in the same frame, so an
+    /// `Update` system that moves the camera must be ordered against the whole streaming chain.
+    /// Without an order the executor may run it between the two, and a long camera move then
+    /// logs the streaming invariant as an error (#217). The unordered control system shows that
+    /// this check finds such a system.
+    #[test]
+    fn camera_drivers_are_ordered_against_the_streaming_chain() {
+        use bevy::ecs::{schedule::NodeId, system::System};
+        use std::collections::{HashMap, HashSet};
+
+        fn unordered_driver(_: Query<&mut Transform, With<StreamingCamera>>) {}
+
+        let (mut app, _directory) = streaming_fixture_app();
+        let (mut file, _) = crate::matched_route::MatchedRoute::parse_for_test(include_str!(
+            "../../../scripts/profiling/fixtures/matched-route.json"
+        ));
+        file.shots.truncate(1);
+        let output = tempfile::tempdir().unwrap();
+        let run = crate::shots::ShotsRun::new(file, output.path().into(), 60);
+        add_camera_and_capture_systems(&mut app);
+        app.add_plugins(crate::shots::ShotsPlugin { run })
+            .add_systems(Update, unordered_driver);
+
+        let [select_space, run_shots] = crate::shots::shot_system_types();
+        let fly = IntoSystem::into_system(fly_camera).system_type();
+        let control = IntoSystem::into_system(unordered_driver).system_type();
+        app.world_mut().schedule_scope(Update, |world, schedule| {
+            schedule
+                .initialize(world)
+                .expect("the Update schedule builds");
+            let graph = schedule.graph();
+            let set = graph
+                .system_sets
+                .get_key(crate::streaming::StreamingSystems.intern())
+                .expect("the streaming set is scheduled");
+            let chain: HashSet<_> = graph
+                .hierarchy()
+                .graph()
+                .neighbors(NodeId::Set(set))
+                .filter_map(|node| match node {
+                    NodeId::System(key) => Some(key),
+                    NodeId::Set(_) => None,
+                })
+                .collect();
+            assert!(chain.len() > 10, "the streaming chain: {}", chain.len());
+            let keys: HashMap<_, _> = schedule
+                .systems()
+                .expect("the schedule is initialized")
+                .map(|(key, system)| (system.system_type(), key))
+                .collect();
+            let unordered = |driver| {
+                let key = keys[&driver];
+                graph
+                    .conflicting_systems()
+                    .0
+                    .iter()
+                    .filter(|(first, second, _)| {
+                        (*first == key && chain.contains(second))
+                            || (*second == key && chain.contains(first))
+                    })
+                    .count()
+            };
+            assert!(
+                unordered(control) > 0,
+                "the check finds an unordered driver"
+            );
+            for (name, driver) in [
+                ("select_shot_space", select_space),
+                ("run_shots", run_shots),
+                ("fly_camera", fly),
+            ] {
+                assert_eq!(
+                    unordered(driver),
+                    0,
+                    "{name} is unordered against the chain"
+                );
+            }
+        });
     }
 
     #[test]

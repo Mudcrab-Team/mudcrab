@@ -123,6 +123,9 @@ const CHECK_PROBLEM_LINES: usize = 20;
 /// Usage line of `derive-outfits`, printed by its help and its errors.
 const DERIVE_OUTFITS_USAGE: &str = "usage: converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]";
 
+/// Usage line of `derive-material-values`, printed by its help and its errors.
+const DERIVE_MATERIAL_VALUES_USAGE: &str = "usage: converter derive-material-values <pack> --registry <packs.json> --data <Skyrim Data> --output <new file>";
+
 /// Usage line of `derive-object-lod`, printed by its help and its errors.
 const DERIVE_OBJECT_LOD_USAGE: &str = "usage: converter derive-object-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--worldspace <EditorID>] [--force] [--converter-head <sha>]";
 
@@ -242,6 +245,9 @@ async fn main() -> Result<()> {
     if args.first().and_then(|argument| argument.to_str()) == Some("derive-object-lod") {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_object_lod(&args[1..], command_line);
+    }
+    if args.first().and_then(|argument| argument.to_str()) == Some("derive-material-values") {
+        return derive_material_values(&args[1..]);
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("reconcile") {
         return reconcile(&args[1..]);
@@ -1112,6 +1118,64 @@ fn derive_outfits(args: &[OsString], command_line: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// Parse `derive-material-values` options, write the sidecar and report what it left out.
+fn derive_material_values(args: &[OsString]) -> Result<()> {
+    let mut positional = Vec::new();
+    let (mut registry, mut data, mut output) = (None, None, None);
+    let mut args = args.iter().cloned();
+    while let Some(argument) = args.next() {
+        match argument.to_str() {
+            Some("--help" | "-h") => {
+                println!("{DERIVE_MATERIAL_VALUES_USAGE}");
+                return Ok(());
+            }
+            Some("--registry") => {
+                registry = Some(PathBuf::from(next_value(&mut args, "--registry")?));
+            }
+            Some("--data") => data = Some(PathBuf::from(next_value(&mut args, "--data")?)),
+            Some("--output") => output = Some(PathBuf::from(next_value(&mut args, "--output")?)),
+            Some(flag) if flag.starts_with('-') => {
+                bail!("unknown derive-material-values option {flag:?}")
+            }
+            _ => positional.push(PathBuf::from(argument)),
+        }
+    }
+    let (Ok([pack]), Some(registry), Some(data), Some(output)) =
+        (<[PathBuf; 1]>::try_from(positional), registry, data, output)
+    else {
+        bail!("{DERIVE_MATERIAL_VALUES_USAGE}");
+    };
+    let report = converter::derive_material_values::run(
+        &converter::derive_material_values::DeriveMaterialValuesOptions {
+            pack,
+            registry,
+            data,
+            output,
+        },
+    )?;
+    println!(
+        "Wrote the values of {} materials of {} meshes ({} with an environment map scale); the pack lists {} meshes",
+        report.materials, report.written_meshes, report.environment_materials, report.meshes
+    );
+    for (path, reason) in report.read_failures.iter().take(CHECK_PROBLEM_LINES) {
+        eprintln!("Warning: not read: {path}: {reason}");
+    }
+    if !report.missing_sources.is_empty() || !report.unreadable.is_empty() {
+        eprintln!(
+            "Warning: left out {} meshes whose recorded source bytes were not found and {} that did not parse",
+            report.missing_sources.len(),
+            report.unreadable.len()
+        );
+        for source in report.missing_sources.iter().take(CHECK_PROBLEM_LINES) {
+            eprintln!("  not found: {source}");
+        }
+        for (source, reason) in report.unreadable.iter().take(CHECK_PROBLEM_LINES) {
+            eprintln!("  not parsed: {source}: {reason}");
+        }
+    }
+    Ok(())
+}
+
 /// Parse `derive-object-lod` options, run it and report what it added and what it skipped.
 fn derive_object_lod(args: &[OsString], command_line: Vec<String>) -> Result<()> {
     if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
@@ -1647,6 +1711,7 @@ fn usage() -> &'static str {
        converter derive-terrain-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data> [--force] [--converter-head <sha>]
        converter derive-object-lod <target> --registry <packs.json> --clone-of <pack> --data <Skyrim Data>
                  [--worldspace <EditorID>] [--force] [--converter-head <sha>]
+       converter derive-material-values <pack> --registry <packs.json> --data <Skyrim Data> --output <new file>
        converter reconcile <Skyrim Data> <pack> [--json <path>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
@@ -1756,6 +1821,11 @@ derive-object-lod adds retail object LOD (level-16 .bto blocks and the object at
 to an APFS clone of a registered pack: object chunk files, the lod_object_chunks table, additive lod-manifest.json
 fields and a receipt. It reconverts no NIF or texture, refuses a target that is not an exact clone, refuses a pack
 that already has object chunks unless --force, and reports every skipped block with its reason.
+
+derive-material-values reads a pack's source NIFs from the Skyrim Data folder and writes one new file with the
+exact specular values and environment map scales of their lighting materials. A pack converted before those values
+were published takes them from material-values.json at its root. It changes no pack file, uses a NIF only when its
+bytes match the pack's manifest, reports every mesh it leaves out and never writes into a registered pack.
 
 reconcile reads the Skyrim Data folder and an existing pack, and writes to neither. For every worldspace and
 block level it counts retail terrain LOD meshes, colour maps and normal maps, object LOD blocks and atlases,

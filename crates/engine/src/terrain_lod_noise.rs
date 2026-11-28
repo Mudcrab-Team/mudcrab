@@ -209,6 +209,23 @@ mod tests {
         }
     }
 
+    /// SPEC-1 section 9.2: the distant blend's target 0 alpha is `Bd.a md s vc.a`, and 0 where
+    /// the blend weight is 0.
+    #[test]
+    fn the_retail_land_alpha_follows_the_distant_blend() {
+        for (s, expected) in [(0.0, 0.0), (0.5, 0.5 * 0.8 * 0.6 * 0.5)] {
+            let value = evaluate(
+                "retail_land_alpha",
+                &format!(
+                    "const distant_alpha: f32 = 0.5; const multiplier: f32 = 0.8; \
+                     const s: f32 = {s:?}; const vertex_alpha: f32 = 0.6;"
+                ),
+                "",
+            );
+            assert!((value - expected).abs() < 0.000002, "{s}: {value}");
+        }
+    }
+
     #[test]
     fn land_noise_uses_red_and_reduces_its_strength_on_brighter_terrain() {
         for (base, red, expected) in [

@@ -410,7 +410,8 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
   projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
   projectile/hazard placement and its base model (#498). Version 6 adds the STAT MODS alternate-texture
-  table (`base_texture_swaps`). The in-house adapter is version 14.
+  table (`base_texture_swaps`) for `STAT`; version 7 adds its rows for every other base with a world
+  model. The in-house adapter is version 16.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 
@@ -2374,7 +2375,11 @@ them.
 
 ### 20. Per-Base Texture Assignments (`base_texture_swaps`)
 
-Optional STAT MODS (alternate texture) projection; world schema version is unchanged.
+Optional alternate-texture projection of every base record with a world model; world schema
+version is unchanged. A record gives its `MODS` entries. `ARMO` gives the `MO2S` entries of its
+male world model, else the `MO4S` entries of its female one. Rows of bases other than `STAT` need
+in-house adapter 16 or legacy projection 7 (a metadata rebuild with `--reuse-assets`). A database
+without them keeps the base's own textures.
 
 ```sql
 CREATE TABLE base_texture_swaps (
@@ -2388,7 +2393,7 @@ CREATE TABLE base_texture_swaps (
 );
 ```
 
-IDs use the reader's resolved load-order numbering. Every MODS entry gets a row, in authored
+IDs use the reader's resolved load-order numbering. Every entry gets a row, in authored
 order (`position`); no entry is dropped or gated. `shape_index` is the signed 3D Index: retail
 keys entries by it, skips -1 and lets a later entry with the same index win (RF-TEX-001), and the
 index counts geometry leaves in a pre-order depth-first walk of the model (RF-TEX-002).

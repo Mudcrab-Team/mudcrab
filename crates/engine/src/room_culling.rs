@@ -290,7 +290,7 @@ impl RoomCullingNear {
         self.0
     }
 
-    fn world_point(self, view: &GlobalTransform) -> Vec3 {
+    pub(crate) fn world_point(self, view: &GlobalTransform) -> Vec3 {
         view.translation() + view.forward() * self.0
     }
 }
@@ -1339,7 +1339,19 @@ enum TableProbe {
 }
 
 /// A loaded interior cell root: a streamed cell without an exterior grid position.
-type InteriorRoot = (With<StreamedCellRoot>, Without<ExteriorCellGrid>);
+pub(crate) type InteriorRoot = (With<StreamedCellRoot>, Without<ExteriorCellGrid>);
+
+/// What the room graph of an interior cell says about a point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PointRooms {
+    /// The graph of the cell is not read yet.
+    Pending,
+    /// The graph cannot choose a room: the database has no room tables, the read failed, or an
+    /// authored room group has no unique master.
+    Unavailable,
+    /// `ref_id`s of the rooms that hold the point, in table order.
+    Holding(Vec<u32>),
+}
 
 /// What a background read of one cell's room graph found.
 type LoadResult = Result<Option<RoomGraph>, String>;
@@ -1404,6 +1416,51 @@ impl RoomCullingState {
     /// Loaded interior cells whose room graph could not be read; they are drawn whole.
     pub fn failed_reads(&self) -> usize {
         self.failed.len()
+    }
+
+    /// The rooms of an interior cell that hold a world point, by the lookup the portal walk
+    /// starts from ([`RoomGraph::rooms_containing`]): an authored room group answers as its
+    /// master room. For lighting, which gives the group the master's template, this is
+    /// unverified.
+    pub(crate) fn rooms_at(
+        &self,
+        cell_id: u32,
+        point: Vec3,
+        roots: &Query<&GlobalTransform, InteriorRoot>,
+    ) -> PointRooms {
+        let Some(loaded) = self.graphs.get(&cell_id) else {
+            return if self.active() && !self.failed.contains(&cell_id) {
+                PointRooms::Pending
+            } else {
+                PointRooms::Unavailable
+            };
+        };
+        let graph = &loaded.graph;
+        if graph
+            .authored
+            .as_ref()
+            .is_some_and(|authored| authored.masters.iter().any(Option::is_none))
+        {
+            return PointRooms::Unavailable;
+        }
+        // silent-ok: a root without a transform yet cannot place the point; the next frame can.
+        let Ok(root) = roots.get(loaded.root) else {
+            return PointRooms::Pending;
+        };
+        let local = root.affine().inverse().transform_point3(point);
+        PointRooms::Holding(
+            graph
+                .rooms_containing(local)
+                .into_iter()
+                .map(|index| graph.rooms[index].ref_id)
+                .collect(),
+        )
+    }
+
+    /// A state as [`RoomCullingPlugin`] starts it, for the tests of its readers.
+    #[cfg(test)]
+    pub(crate) fn unread() -> Self {
+        Self::new(PathBuf::new())
     }
 
     /// Registers a graph for a loaded cell root. Tests only: the loader goes through

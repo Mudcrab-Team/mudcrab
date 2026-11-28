@@ -28,7 +28,9 @@ use bevy::{
     render::{
         RenderPlugin,
         pipelined_rendering::PipelinedRenderingPlugin,
-        render_resource::{Extent3d, TextureDimension, TextureFormat},
+        render_resource::{
+            Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
+        },
         settings::RenderCreation,
         view::screenshot::{Screenshot, ScreenshotCaptured},
     },
@@ -199,6 +201,8 @@ fn spawn_surface(app: &mut App, specular: bool, alpha_mode: AlphaMode) -> Entity
                 glossiness: 30.0,
                 specular,
                 emissive_multiple: 0.0,
+                alpha_reference: 0.0,
+                environment_scale: 0.0,
             }),
             ..default()
         });
@@ -351,6 +355,103 @@ fn retail_pixel_example_a_interior() {
         });
         close(read_pixel(&mut app, &target, 12), expected, what);
     }
+}
+
+/// A 2 x 2 cube whose faces, in the order +X, -X, +Y, -Y, +Z, -Z, hold one colour each.
+fn cube(app: &mut App, faces: [[u8; 3]; 6]) -> Handle<Image> {
+    let mut image = Image::new(
+        Extent3d {
+            width: 2,
+            height: 2,
+            depth_or_array_layers: 6,
+        },
+        TextureDimension::D2,
+        faces
+            .iter()
+            .flat_map(|[r, g, b]| [[*r, *g, *b, 255]; 4])
+            .flatten()
+            .collect(),
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::default(),
+    );
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+    app.world_mut().resource_mut::<Assets<Image>>().add(image)
+}
+
+/// SPEC-1 section 9.2, technique 1: `L = A x Sum x vc + E x Sum`. A surface with a black diffuse
+/// map and a reflection of colour `c` draws the pixel of a plain surface of diffuse colour `c`
+/// with a white vertex colour: `E` takes no diffuse texel and no vertex colour. The surface
+/// faces up and is seen from above, so the reflection reads the cube's Creation +Z face.
+#[test]
+#[ignore = "needs a GPU adapter; run with MUDCRAB_RETAIL_PIXEL=1 and --ignored"]
+fn retail_pixel_environment_reflection() {
+    const COLOUR: [u8; 3] = [128, 64, 32];
+    // The common surface's normal alpha is 64, the mask when slot 5 is empty.
+    let scene = |environment: Option<(Option<u8>, f32)>| {
+        let mut app = app();
+        let entity = spawn_surface(&mut app, false, AlphaMode::Opaque);
+        let [r, g, b] = if environment.is_some() {
+            [0; 3]
+        } else {
+            COLOUR
+        };
+        let diffuse = texel(&mut app, [r, g, b, 255]);
+        let environment = environment.map(|(mask, scale)| {
+            let mut faces = [[0, 255, 0]; 6];
+            faces[4] = COLOUR;
+            (
+                cube(&mut app, faces),
+                mask.map(|mask| texel(&mut app, [mask, 0, 0, 255])),
+                scale,
+            )
+        });
+        if environment.is_none() {
+            let mesh = app.world().get::<Mesh3d>(entity).unwrap().0.clone();
+            app.world_mut()
+                .resource_mut::<Assets<Mesh>>()
+                .get_mut(&mesh)
+                .unwrap()
+                .insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0_f32; 4]; 4]);
+        }
+        let material = app
+            .world()
+            .get::<MeshMaterial3d<StandardMaterial>>(entity)
+            .unwrap()
+            .0
+            .clone();
+        {
+            let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            let mut material = materials.get_mut(&material).unwrap();
+            material.base_color_texture = Some(diffuse);
+            if let Some((cube, mask, scale)) = environment {
+                material.retail_environment_cube = Some(cube);
+                material.retail_environment_mask = mask;
+                material.retail_surface.as_mut().unwrap().environment_scale = scale;
+            }
+        }
+        spawn_sun(&mut app, [80, 90, 110], 2.0, Vec3::Z);
+        set_ambient(&mut app, [[60, 70, 90]; 6]);
+        let target = target(&mut app);
+        spawn_camera(&mut app, &target, overhead(500.0));
+        read_pixel(&mut app, &target, 12)
+    };
+    let plain = scene(None);
+    assert!(plain.min_element() > 0.02, "the scene is lit: {plain}");
+    // The mask slot's red, 128, times the scale is one.
+    close(
+        scene(Some((Some(128), 255.0 / 128.0))),
+        plain.to_array(),
+        "environment with its mask",
+    );
+    // Without slot 5 the normal map's alpha masks.
+    close(
+        scene(Some((None, 255.0 / 64.0))),
+        plain.to_array(),
+        "environment with the normal alpha",
+    );
 }
 
 /// Example B's scene at one hour: `(sun bytes' mix, SunlightScale, direction, DALC faces, fog

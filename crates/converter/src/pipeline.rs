@@ -2076,6 +2076,10 @@ fn reusable_manifest(
                             settings.schemas()?.as_ref(),
                             &settings.language,
                         ),
+                        crate::cache::inhouse_adapter15_reader_identity(
+                            settings.schemas()?.as_ref(),
+                            &settings.language,
+                        ),
                     ]
                     .into_iter()
                     .flatten()
@@ -2089,6 +2093,7 @@ fn reusable_manifest(
                     for identity in [
                         crate::cache::legacy_projection4_reader_identity(&settings.language),
                         crate::cache::legacy_projection5_reader_identity(&settings.language),
+                        crate::cache::legacy_projection6_reader_identity(&settings.language),
                     ]
                     .into_iter()
                     .flatten()
@@ -7582,8 +7587,10 @@ mod tests {
             (crate::config::RecordReader::Inhouse, 12),
             (crate::config::RecordReader::Inhouse, 13),
             (crate::config::RecordReader::Inhouse, 14),
+            (crate::config::RecordReader::Inhouse, 15),
             (crate::config::RecordReader::Legacy, 4),
             (crate::config::RecordReader::Legacy, 5),
+            (crate::config::RecordReader::Legacy, 6),
         ] {
             for language in ["english", "french"] {
                 let directory = tempfile::tempdir().unwrap();

@@ -28,6 +28,8 @@ const REFRACTION: u32 = 1 << 15;
 const TEMP_REFRACTION: u32 = 1 << 2;
 const DECAL: u32 = 1 << 26;
 const DYNAMIC_DECAL: u32 = 1 << 27;
+/// Property flag bit 18: with a decal and flag 32, a hair decal.
+const HAIR: u32 = 1 << 18;
 const DEPTH_TEST: u32 = 1 << 31;
 /// Property flags of the second word: flag `n` is bit `n - 32`.
 const DEPTH_WRITE: u32 = 1;
@@ -49,7 +51,6 @@ enum Open {
     BlendPair,
     TwoSided,
     DecalAlpha,
-    DecalTestWithBit41,
     DecalPrepass,
 }
 
@@ -60,9 +61,7 @@ impl Open {
                 "STAND-IN(#362): water, sky and other shader families keep their own passes"
             }
             Self::LodTechnique => "STAND-IN(#946): LOD techniques are outside the near rules",
-            Self::Refraction => {
-                "STAND-IN(#362): a refraction surface has no Lighting pass and draws as a surface"
-            }
+            Self::Refraction => "STAND-IN(#362): a refraction effect surface draws as a surface",
             Self::NoDepthTest => {
                 "STAND-IN(#362): the pass of a surface without a depth test is not specified"
             }
@@ -80,9 +79,6 @@ impl Open {
             Self::DecalAlpha => {
                 "STAND-IN(#362): a decal with property alpha below one and no blend is not specified"
             }
-            Self::DecalTestWithBit41 => {
-                "STAND-IN(#362): the alpha cut of a flag-41 decal depends on the unknown prepass"
-            }
             Self::DecalPrepass => "STAND-IN(#362): a decal stays out of the depth prepass",
         }
     }
@@ -94,7 +90,6 @@ impl Open {
 enum Gap {
     SortedDecal,
     CutoutWithBlend,
-    BlendWithoutCut,
 }
 
 impl Gap {
@@ -105,9 +100,6 @@ impl Gap {
             }
             Self::CutoutWithBlend => {
                 "STAND-IN(#362): a blended surface with an alpha test and depth write draws as a cutout"
-            }
-            Self::BlendWithoutCut => {
-                "STAND-IN(#362): a blended surface with an alpha test and no depth write is not cut"
             }
         }
     }
@@ -130,13 +122,6 @@ fn known_gap(authored: &Authored, retail: &Pass) -> Option<(Gap, Pass)> {
             blend: None,
         };
         return Some((Gap::CutoutWithBlend, pass));
-    }
-    if retail.alpha_test {
-        let pass = Pass {
-            alpha_test: false,
-            ..retail.clone()
-        };
-        return Some((Gap::BlendWithoutCut, pass));
     }
     decal.then(|| {
         let pass = Pass {
@@ -197,7 +182,10 @@ fn rule(authored: &Authored) -> (Option<Pass>, BTreeSet<Open>) {
         return (None, open);
     }
     if flags_1 & (REFRACTION | TEMP_REFRACTION) != 0 {
-        open.insert(Open::Refraction);
+        // A lit refraction surface has no `Lighting` pass, and the loader hides it.
+        if !authored.lighting {
+            open.insert(Open::Refraction);
+        }
         return (None, open);
     }
     if flags_1 & DEPTH_TEST == 0 {
@@ -256,13 +244,19 @@ fn rule(authored: &Authored) -> (Option<Pass>, BTreeSet<Open>) {
         if authored.property_alpha < 1.0 {
             open.insert(Open::DecalAlpha);
         }
-        if test && flags_2 & SPECULAR_BIT_41 != 0 {
-            open.insert(Open::DecalTestWithBit41);
-        }
         true
     } else {
         open.insert(Open::OpaqueDepth);
         flags_2 & DEPTH_WRITE != 0
+    };
+    // SPEC-1 section 6.3: a decal that does not blend is cut only with flag 41 clear. A hair
+    // decal (flags 32 and 18 on a lit surface) keeps its own cut.
+    let hair = authored.lighting && flags_1 & HAIR != 0 && flags_2 & DEPTH_WRITE != 0;
+    let uncut = authored.lighting && decal && flags_2 & SPECULAR_BIT_41 != 0 && !hair;
+    let (unblended, test) = if uncut {
+        (Shade::Opaque, false)
+    } else {
+        (unblended, test)
     };
     let pass = Pass {
         stage: Stage::First,
@@ -289,7 +283,8 @@ fn drawn(handler: &NativeMaterialHandler, source: &Material<'_>) -> Pass {
     };
     let mut material = stock.clone();
     if retail::is_lighting(source) {
-        retail::apply(source, &stock, &mut material);
+        // No value or texture changes a pass.
+        retail::apply(source, &stock, None, &[], &mut material);
     }
     let loaded = material.alpha_mode;
     let state = handler.depth_state(source, loaded);
@@ -305,7 +300,10 @@ fn drawn(handler: &NativeMaterialHandler, source: &Material<'_>) -> Pass {
     Pass {
         stage: if sorted { Stage::Sorted } else { Stage::First },
         shade,
-        alpha_test: shade == Shade::Cutout,
+        alpha_test: shade == Shade::Cutout
+            || material
+                .retail_surface
+                .is_some_and(|surface| surface.alpha_reference > 0.0),
         depth_write: state.map_or(shade != Shade::Blend, |state| state.depth_write),
         blend: (shade == Shade::Blend).then(|| {
             state
@@ -485,7 +483,6 @@ fn the_loader_draws_every_flag_combination_in_the_specified_pass() {
         Open::BlendPair,
         Open::TwoSided,
         Open::DecalAlpha,
-        Open::DecalTestWithBit41,
         Open::DecalPrepass,
     ] {
         assert!(
@@ -498,7 +495,7 @@ fn the_loader_draws_every_flag_combination_in_the_specified_pass() {
             open.label()
         );
     }
-    for gap in [Gap::SortedDecal, Gap::CutoutWithBlend, Gap::BlendWithoutCut] {
+    for gap in [Gap::SortedDecal, Gap::CutoutWithBlend] {
         assert!(gapped.contains(&gap), "{gap:?} is never reached");
         assert!(document.contains(gap.label()), "{}", gap.label());
     }

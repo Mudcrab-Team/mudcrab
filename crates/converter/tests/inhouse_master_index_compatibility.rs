@@ -66,7 +66,7 @@ fn export(data: &Path, names: &[&str], label: &str, signatures: &[[u8; 4]]) -> P
     let identity: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap();
     // The current adapter retains zero-ID GMST identities and master-index compatibility.
-    assert_eq!(identity["adapter_version"], 15);
+    assert_eq!(identity["adapter_version"], 16);
     output
 }
 

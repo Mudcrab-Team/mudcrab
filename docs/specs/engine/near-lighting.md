@@ -58,7 +58,7 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 2.5 | directional ambient | vendored `pbr_ambient.wgsl`, `DirectionalAmbientCube` (#1013) |
 | 2.6 | point lights, flicker, pulse, emittance | `LightEvaluation::point_light_in`, `light_dynamics.rs` |
 | 2.7 | emission, own-emit gate, external emittance by day part | `nif_material/retail.rs`, `emittance.rs` |
-| 2.8 | specular values, vertex colour | `nif_material/retail.rs`, `RetailSurface` |
+| 2.8 | specular values from the NIF floats, vertex colour | `shared::material_values`, `nif_material/retail.rs`, `RetailSurface` |
 | 3.2 | tangent frame and normals | Bevy's frame; no back-face flip; `terrain_normal.wgsl` (no Z rebuild) |
 | 3.3 | vertex fog | `pbr_retail.wgsl`, evaluated per pixel |
 | 6.1 | light sum, attenuation, no clamp | vendored `render/pbr_retail.wgsl` |
@@ -67,9 +67,17 @@ The camera exposure is exactly 1. The HDR chain has no input scale.
 | 7 | output tail, `k`, `B`, `B2` | `render/pbr_retail.wgsl`, object LOD `lod_object.wgsl` |
 | 8 | fog property, composite records 53 and 49, clear colour (corrected by SPEC-4, below) | `sky.rs`, `retail_fog.rs`, `interior::FogFields` |
 | 9.2 | model-space normals, face, face tint, hair, landscape | `shaders/skyrim_skin.wgsl`, terrain shaders |
+| 9.2 | parallax technique: one step on the height map, also from a swapped texture set | `nif_material/retail.rs`, vendored `pbr_fragment.wgsl`, `object_materials.rs` |
+| 9.2 | environment technique: cube, mask, scale | `nif_material/retail.rs`, `nif_material/retail_environment.rs`, vendored `pbr_fragment.wgsl` and `pbr_retail.wgsl` |
 | 8.1, 9.2, 9.3 | the pass of a surface: unblended lit surfaces and decals before the composite, blended surfaces after it | `NifDepthState::retail_first_stage`, `nif_material/retail.rs`, vendored `extended_material.rs`; table `nif_material/pass_audit.rs` |
 | 10 | image space, adaptation, bloom, tonemap | `retail_hdr*.rs` and `shaders/retail_hdr*.wgsl` |
 | 11 | worked examples A to D | `retail_lighting_examples.rs` (CPU), `retail_lighting_gpu_tests.rs` (GPU) |
+
+The retail flicker counts game time: the smoothed frame time, capped at 1/6 s, times the speed
+of the game clock, which is 0 while the console or a menu pauses the game (SPEC-1 section 2.6,
+RF-TIME-001). A land normal map that fails to load is not an empty slot: the quadrant keeps its
+geometric normal and the engine logs the texture once. That is a Mudcrab rule, because SPEC-1
+defines no failed load.
 
 `retail_lighting.rs` is the CPU twin of the pixel formulas. Grass takes the raw sun (no
 `SunlightScale`) and the ambient cube's mean in the same units. Object LOD takes `SunlightScale`
@@ -96,12 +104,30 @@ and the same output tail.
 
 - `retail_lighting_examples.rs`: examples A to D through the engine's weather mix, sun path, image
   space, composite and HDR functions.
-- `retail_lighting_gpu_tests.rs` (ignored; offscreen, no window): examples A, B and D as pixels.
+- `retail_lighting_gpu_tests.rs` (ignored; offscreen, no window): examples A, B and D and the
+  environment reflection as pixels.
   Run with `MUDCRAB_RETAIL_PIXEL=1` and `--ignored retail_pixel --test-threads=1`.
 - `retail_hdr_gpu_tests.rs` (ignored): the HDR chain against its CPU reference. This covers the
   adaptation and tonemap of example C. Example C's SAO factor has no engine input.
 - `retail_output_examples.rs`: SPEC-2 examples E0 to E3. Example E4 is a test in `nif_depth.rs`.
 - `vendored_bevy_patches.rs`: every link of the vendored path.
+
+## Material values
+
+A pack publishes the NIF's specular colour, strength, glossiness and environment map scale at
+`materials[].extras.openSkyrim.materialValues`. A pack converted before that takes them from
+`material-values.json` at its root. `converter derive-material-values <pack> --registry
+<packs.json> --data <Skyrim Data> --output <new file>` writes that file from the source NIFs
+without a reconversion. It uses a NIF only when its bytes match the pack's conversion manifest,
+and it never writes into the pack it reads or into a registered pack. Without either source a
+surface keeps the converter's clamped glTF specular and draws no reflection.
+
+To add the file to a registered pack, leave that pack unchanged:
+
+1. Run the command with an `--output` path outside every pack.
+2. Clone the pack. On APFS, `cp -c -R <pack> <clone>` shares the file data.
+3. Copy the output to `<clone>/material-values.json`.
+4. Run the engine with `--assets <clone>`.
 
 ## Stand-ins and gaps
 
@@ -118,11 +144,12 @@ changes the picture is unverified.
 | Blended decals without alpha test draw after the composite with the second-stage tail ([Pass rules](#pass-rules)) | STAND-IN(#362): decal stage order |
 | Additive term `cb1[8]` is 0; the specular distance fade is 1 | STAND-IN(#362): open run-time inputs |
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
-| Specular strength and colour are clamped to `[0, 1]` by the converter, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
-| Only `XEMI` references take an emittance source, mixed by day part from the converter's table; a surface without a source follows own-emit | STAND-IN(#362): emittance source and membership |
-| Environment and eye cubemaps are not drawn; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
-| Parallax, projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
-| Landscape specular is not drawn; layer weights stay normalised by their sum | STAND-IN(#547): the LTEX specular exponent per layer |
+| A pack without [material values](#material-values) keeps specular strength and colour clamped to `[0, 1]`, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
+| Only `XEMI` references take an emittance source, mixed by day part from the converter's table; an external emittance surface without a source is black | STAND-IN(#362): emittance source and membership |
+| The environment fade is 1 and the technique is not dropped at `fEnvmapLODFadeEnd`; the eye technique and a model-space reflection are not drawn; a swapped glow map reaches a surface only when its model has one; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
+| Projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
+| A parallax pass without specular, soft, rim, back or ambient specular takes the camera's view vector; what retail gives it is unverified | STAND-IN(#362): the parallax view constant |
+| Landscape specular is not drawn, because SPEC-1 does not give the source of the layer exponent | STAND-IN(#547): the LTEX specular exponent per layer |
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
 | Terrain LOD takes the plain near sum | STAND-IN(#946): LOD techniques excluded |
 | A short `XCLL` without fog power or max takes 1 | STAND-IN(#695): short cell data |
@@ -134,7 +161,6 @@ changes the picture is unverified.
 | The optional packed HDR chain can stall or bias upward eye adaptation on Metal. A positive step below the next representable value can truncate back to the previous value. Ultra uses the wide chain by default | SPEC-2 §5.3: retail rounding is unverified |
 | HDR-off copies into Mudcrab’s display target. Retail copy encoding is open | SPEC-2 §13 P11 |
 | A blend pair outside retail's table draws as a plain alpha blend | STAND-IN(#362): inherited blend modes |
-| The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): the player position as origin |
 | A palette effect surface does not take its reference's emittance colour; an additive effect decal takes it after the composite, unfogged | STAND-IN(#984): the effect shader's emittance, tint and fog |
 
 ## Pass rules
@@ -147,7 +173,7 @@ open rules of that table, then the rules it gives that the engine does not follo
 | --- |
 | STAND-IN(#362): water, sky and other shader families keep their own passes |
 | STAND-IN(#946): LOD techniques are outside the near rules |
-| STAND-IN(#362): a refraction surface has no Lighting pass and draws as a surface |
+| STAND-IN(#362): a refraction effect surface draws as a surface |
 | STAND-IN(#362): the pass of a surface without a depth test is not specified |
 | STAND-IN(#362): the effect shader's pass is specified only for a plain blended surface |
 | STAND-IN(#362): depth write of an unblended surface follows its flag |
@@ -155,11 +181,9 @@ open rules of that table, then the rules it gives that the engine does not follo
 | STAND-IN(#362): a blend pair outside the table draws as a plain alpha blend |
 | STAND-IN(#362): the two-sided flag does not change the pass |
 | STAND-IN(#362): a decal with property alpha below one and no blend is not specified |
-| STAND-IN(#362): the alpha cut of a flag-41 decal depends on the unknown prepass |
 | STAND-IN(#362): a decal stays out of the depth prepass |
 | STAND-IN(#362): a blended decal draws after the composite and applies it in its shader |
 | STAND-IN(#362): a blended surface with an alpha test and depth write draws as a cutout |
-| STAND-IN(#362): a blended surface with an alpha test and no depth write is not cut |
 
 Water and effect shaders are outside SPEC-1. Water keeps its own program and its decoded record
 colours, so its sky reflection does not match the retail sky exactly (unverified how far).

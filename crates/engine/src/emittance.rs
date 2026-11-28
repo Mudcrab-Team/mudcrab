@@ -11,7 +11,10 @@
 //! A surface whose reference names no source, or one the converter could not resolve, keeps the
 //! model's own emission.
 use crate::{
-    nif_depth::NifDepthMaterial, nif_material::ExternalEmittance, retail_lighting::LightUnits,
+    nif_depth::NifDepthMaterial,
+    nif_material::ExternalEmittance,
+    retail_lighting::LightUnits,
+    skin_material::{SkyrimSkinDepthMaterial, SkyrimSkinMaterial},
 };
 use bevy::{app::SceneSpawnerSystems, prelude::*};
 use std::collections::HashMap;
@@ -23,6 +26,9 @@ impl Plugin for EmittancePlugin {
     fn build(&self, app: &mut App) {
         register_emittance::<StandardMaterial>(app);
         register_emittance::<NifDepthMaterial>(app);
+        // A surface with model-space normals takes its source like any lit surface.
+        register_emittance::<SkyrimSkinMaterial>(app);
+        register_emittance::<SkyrimSkinDepthMaterial>(app);
         app.add_systems(Update, drive_emittance_by_hour);
     }
 }
@@ -33,22 +39,29 @@ impl Plugin for EmittancePlugin {
 pub struct EmittanceDayParts(pub [[u8; 3]; 4]);
 
 impl EmittanceDayParts {
-    /// The source's colour at these day-part weights: the weighted sum of the bytes, rounded to
-    /// a byte. Rounding keeps a running clock from making a new material every frame.
+    /// The source's colour at these day-part weights: the weighted sum of the bytes / 255, as a
+    /// point light takes it (SPEC-1 section 2.6,
+    /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+    pub fn colour(&self, weights: [f32; 4]) -> Vec3 {
+        let sum: Vec3 = self
+            .0
+            .iter()
+            .zip(weights)
+            .map(|(part, weight)| weight * Vec3::from_array(part.map(f32::from)))
+            .sum();
+        sum / 255.0
+    }
+
+    /// The same colour rounded to bytes, as an emitting surface takes it. Rounding keeps a running
+    /// clock from making a new material every frame.
     pub fn mixed(&self, weights: [f32; 4]) -> [u8; 3] {
-        std::array::from_fn(|channel| {
-            let sum: f32 = self
-                .0
-                .iter()
-                .zip(weights)
-                .map(|(part, weight)| weight * f32::from(part[channel]))
-                .sum();
+        self.colour(weights).to_array().map(|channel| {
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "a weighted mean of bytes, clamped to 0..=255"
             )]
-            let byte = sum.round().clamp(0.0, 255.0) as u8;
+            let byte = (channel * 255.0).round().clamp(0.0, 255.0) as u8;
             byte
         })
     }
@@ -62,6 +75,7 @@ fn drive_emittance_by_hour(
     clock: Option<Res<crate::sun::GameClock>>,
     config: Option<Res<crate::config::EngineConfig>>,
     catalog: Option<Res<crate::world::environment::EnvironmentCatalog>>,
+    space: Option<Res<crate::streaming::ActiveSpace>>,
     mut references: Query<(
         &EmittanceDayParts,
         &mut ReferenceEmittance,
@@ -73,8 +87,12 @@ fn drive_emittance_by_hour(
     let (Some(clock), Some(config), Some(catalog)) = (clock, config, catalog) else {
         return;
     };
+    // The climate of the worldspace the player is in, as the sun and the sky take it.
+    let worldspace = space.as_deref().map_or(config.worldspace_id, |space| {
+        space.exterior_worldspace(config.worldspace_id)
+    });
     let Some(timing) = catalog
-        .worldspace_climate(config.worldspace_id)
+        .worldspace_climate(worldspace)
         .and_then(|climate| catalog.sun_timing(climate))
     else {
         return;
@@ -86,7 +104,8 @@ fn drive_emittance_by_hour(
         let (Some(evaluation), Some(children)) = (evaluation, children) else {
             continue;
         };
-        let Some(wanted) = evaluation.point_light_in(LightUnits::Retail, Some(source)) else {
+        let colour = parts.colour(weights);
+        let Some(wanted) = evaluation.point_light_in(LightUnits::Retail, Some(colour)) else {
             continue;
         };
         for &child in children {
@@ -100,12 +119,18 @@ fn drive_emittance_by_hour(
 }
 
 fn register_emittance<M: EmittingMaterial>(app: &mut App) {
+    // An app without a material's plugin has none of its surfaces.
     app.init_resource::<EmittanceMaterials<M>>()
         .add_systems(
             SpawnScene,
-            apply_reference_emittance::<M>.after(SceneSpawnerSystems::WorldInstanceSpawn),
+            apply_reference_emittance::<M>
+                .after(SceneSpawnerSystems::WorldInstanceSpawn)
+                .run_if(resource_exists::<Assets<M>>),
         )
-        .add_systems(Update, forget_freed_materials::<M>);
+        .add_systems(
+            Update,
+            forget_freed_materials::<M>.run_if(resource_exists::<Assets<M>>),
+        );
 }
 
 /// The colour a reference's `XEMI` source lends its model's `External_Emittance` surfaces, as
@@ -166,6 +191,18 @@ impl EmittingMaterial for NifDepthMaterial {
 
     fn uses_additive_source_colour(&self) -> bool {
         self.extension.state.uses_effect_emittance
+    }
+}
+
+impl EmittingMaterial for SkyrimSkinMaterial {
+    fn base_mut(&mut self) -> &mut StandardMaterial {
+        &mut self.base
+    }
+}
+
+impl EmittingMaterial for SkyrimSkinDepthMaterial {
+    fn base_mut(&mut self) -> &mut StandardMaterial {
+        &mut self.base.base
     }
 }
 
@@ -641,6 +678,45 @@ mod tests {
         );
     }
 
+    /// SPEC-1 section 2.7: a surface with model-space normals takes its reference's source too.
+    #[test]
+    fn a_model_space_normal_surface_takes_its_reference_source() {
+        use bevy::pbr::RetailSurface;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<SkyrimSkinMaterial>()
+            .init_resource::<EmittanceMaterials<SkyrimSkinMaterial>>()
+            .add_systems(Update, apply_reference_emittance::<SkyrimSkinMaterial>);
+        let mut material = SkyrimSkinMaterial::default();
+        material.base.retail_surface = Some(RetailSurface {
+            emissive_multiple: 2.0,
+            ..RetailSurface::MATTE
+        });
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<SkyrimSkinMaterial>>()
+            .add(material);
+        let surface = app
+            .world_mut()
+            .spawn((MeshMaterial3d(material), ExternalEmittance))
+            .id();
+        app.world_mut()
+            .spawn(ReferenceEmittance::of(LightUnits::Retail, [255, 51, 0]))
+            .add_child(surface);
+        app.update();
+        let drawn = &app
+            .world()
+            .get::<MeshMaterial3d<SkyrimSkinMaterial>>(surface)
+            .unwrap()
+            .0;
+        let assets = app.world().resource::<Assets<SkyrimSkinMaterial>>();
+        assert_eq!(
+            assets.get(drawn).unwrap().base.emissive,
+            LinearRgba::new(2.0, 0.4, 0.0, 1.0)
+        );
+    }
+
     /// The fuzz of the decode fault behind the red Whiterun windows: every byte value, on every
     /// path a source colour takes into a surface or a light, in both profiles' colour spaces.
     #[test]
@@ -699,7 +775,8 @@ mod tests {
                 close(lit_by(&glow, colour).base.base_color.to_linear(), base);
                 if units.is_retail() {
                     close(lit_by(&lit_surface, colour).emissive, [multiple; 3]);
-                    let light = white.point_light_in(units, Some(rgb)).unwrap();
+                    let source = Vec3::from_array(rgb.map(f32::from)) / 255.0;
+                    let light = white.point_light_in(units, Some(source)).unwrap();
                     close(light.color.to_linear(), [1.0; 3]);
                 }
             }
@@ -731,6 +808,12 @@ mod tests {
         let parts = EmittanceDayParts([[200, 100, 0], [0, 0, 0], [100, 200, 40], [10, 20, 30]]);
         assert_eq!(parts.mixed([0.0, 1.0, 0.0, 0.0]), [0, 0, 0]);
         assert_eq!(parts.mixed([0.0, 0.2, 0.8, 0.0]), [80, 160, 32]);
+        // A light takes the sum with no rounding.
+        assert!(
+            parts
+                .colour([0.0, 0.999, 0.001, 0.0])
+                .abs_diff_eq(Vec3::new(0.1, 0.2, 0.04) / 255.0, 1.0e-7)
+        );
 
         let mut app = App::new();
         // Sunrise 5:00 to 7:00, sunset 17:00 to 19:00.
@@ -740,10 +823,15 @@ mod tests {
             crate::sun::SunTiming([30, 42, 102, 114]),
             [None; 5],
         );
+        // The configured worldspace has no climate; the one the player is in has.
         app.insert_resource(catalog)
             .insert_resource(crate::config::EngineConfig {
-                worldspace_id: 0x3C,
+                worldspace_id: 0x99,
                 ..default()
+            })
+            .insert_resource(crate::streaming::ActiveSpace {
+                worldspace_id: Some(0x3C),
+                interior: None,
             })
             .insert_resource(crate::sun::GameClock {
                 hour: 12.0,
@@ -755,7 +843,7 @@ mod tests {
             .world_mut()
             .spawn((
                 evaluation
-                    .point_light_in(LightUnits::Retail, Some([0, 0, 0]))
+                    .point_light_in(LightUnits::Retail, Some(Vec3::ZERO))
                     .unwrap(),
                 crate::lights::SkyrimLight {
                     form_id: 1,
@@ -783,9 +871,11 @@ mod tests {
             *app.world().get::<ReferenceEmittance>(reference).unwrap(),
             ReferenceEmittance::of(LightUnits::Retail, [80, 160, 32])
         );
-        assert_eq!(
-            colour(&app),
-            Color::linear_rgb(80.0 / 255.0, 160.0 / 255.0, 32.0 / 255.0)
+        let lit = colour(&app).to_linear();
+        assert!(
+            Vec3::new(lit.red, lit.green, lit.blue)
+                .abs_diff_eq(Vec3::new(80.0, 160.0, 32.0) / 255.0, 1.0e-5),
+            "{lit:?}"
         );
     }
 }

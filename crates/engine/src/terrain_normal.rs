@@ -179,7 +179,7 @@ fn one_source_declares_the_sign_and_the_frame() {
     ] {
         assert!(
             shader.contains(
-                "#import engine::terrain_normal::{retail_terrain_normal, terrain_tangent_normal, terrain_tbn}"
+                "#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_blended_normal, terrain_tangent_normal, terrain_tbn}"
             ),
             "{name} imports the shared normal module"
         );
@@ -192,6 +192,74 @@ fn one_source_declares_the_sign_and_the_frame() {
                 && shader.contains("retail_terrain_normal(sample.xyz)"),
             "{name} decodes normal samples through the shared functions"
         );
+        // SPEC-1 section 9.2: colour and normal take the same divisor, which is 1 for retail.
+        assert!(
+            shader.contains("color = color / divisor;") && shader.contains("/ divisor, vec3"),
+            "{name} blends through the shared divisor"
+        );
+        assert!(
+            shader.contains("terrain_tbn(geometric) * terrain_blended_normal(mix("),
+            "{name} normalises the blend through the guarded function"
+        );
+        // A failed load is not an empty slot: the quadrant keeps its geometric normal. The
+        // merged terrain validates its arrays before a cell is committed, so only the quadrant
+        // shader has the case.
+        if name == "terrain.wgsl" {
+            assert!(
+                shader.contains("let normals_dropped = terrain.normal_layers_1.z > 0.5;")
+                    && shader.contains("if !normals_dropped && (retail ||"),
+                "{name} keeps the geometric normal of a quadrant whose normal map failed"
+            );
+        }
+        // Section 5: a layer with no normal map is the black texel.
+        assert!(
+            shader.contains("retail_terrain_normal(vec3<f32>(0.0))"),
+            "{name} binds the black texel for a missing normal map"
+        );
+    }
+}
+
+/// SPEC-1 section 9.2: retail does not renormalise the layer weights, and its black texel decodes
+/// to -1 on every axis ([near-lighting.md](../../../docs/specs/engine/near-lighting.md)).
+#[test]
+fn retail_keeps_the_layer_weights_and_decodes_the_black_texel() {
+    for (retail, divisor) in [(true, 1.0), (false, 1.5)] {
+        let input = format!("const total = f32(1.5);\nconst retail = {retail};");
+        let found = evaluate("terrain_blend_divisor", 1.0, &input, "");
+        assert!((found - divisor).abs() < 1.0e-6, "{retail}: {found}");
+    }
+    for axis in ["x", "y", "z"] {
+        let black = evaluate(
+            "retail_terrain_normal",
+            1.0,
+            "const sample_rgb = vec3<f32>(0.0);",
+            &format!(".{axis}"),
+        );
+        assert!((black + 1.0).abs() < 1.0e-6, "{axis}: {black}");
+    }
+}
+
+/// A layer blend that cancels to zero keeps the geometric normal; any other blend is only
+/// normalised.
+#[test]
+fn a_blend_that_cancels_keeps_the_geometric_normal() {
+    for (blend, expected) in [
+        ([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ([0.0, 0.6, -0.8], [0.0, 0.6, -0.8]),
+        ([-2.0, -2.0, -1.0], [-2.0 / 3.0, -2.0 / 3.0, -1.0 / 3.0]),
+    ] {
+        let input = format!(
+            "const blend = vec3<f32>({:?}, {:?}, {:?});",
+            blend[0] as f32, blend[1] as f32, blend[2] as f32
+        );
+        let found = ["x", "y", "z"]
+            .map(|axis| evaluate("terrain_blended_normal", 1.0, &input, &format!(".{axis}")));
+        for (found, expected) in found.iter().zip(expected) {
+            assert!(
+                (found - expected).abs() < 1.0e-6,
+                "{blend:?}: {found} is not {expected}"
+            );
+        }
     }
 }
 

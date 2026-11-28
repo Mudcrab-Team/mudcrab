@@ -21,7 +21,8 @@ use crate::{deferred::DEFAULT_PBR_DEFERRED_LIGHTING_PASS_ID, *};
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(StandardMaterialKey)]
 #[data(0, StandardMaterialUniform, binding_array(10))]
-#[bindless(index_table(range(0..31)))]
+// mudcrab: 31 and 32 are the retail environment cube and mask.
+#[bindless(index_table(range(0..33)))]
 #[reflect(Default, Debug, Clone)]
 pub struct StandardMaterial {
     /// The color of the surface of the material before lighting.
@@ -103,6 +104,28 @@ pub struct StandardMaterial {
     ///
     /// [`RetailSurface`]: crate::RetailSurface
     pub retail_surface: Option<RetailSurface>,
+
+    /// mudcrab: the environment cube of a retail surface with
+    /// [`RetailSurface::environment_scale`]. It is sampled with the base colour sampler, as
+    /// stored: bind a view without an sRGB decode.
+    ///
+    /// [`RetailSurface::environment_scale`]: crate::RetailSurface::environment_scale
+    #[texture(31, dimension = "cube")]
+    #[dependency]
+    pub retail_environment_cube: Option<Handle<Image>>,
+
+    /// mudcrab: the environment mask of that surface. Without one the normal map's alpha masks.
+    #[texture(32)]
+    #[dependency]
+    pub retail_environment_mask: Option<Handle<Image>>,
+
+    /// mudcrab: the cube a loader asks for, before it is checked and bound. Not bound.
+    #[dependency]
+    pub retail_environment_cube_source: Option<Handle<Image>>,
+
+    /// mudcrab: the mask that goes with it. Not bound.
+    #[dependency]
+    pub retail_environment_mask_source: Option<Handle<Image>>,
 
     /// The UV channel to use for the [`StandardMaterial::emissive_texture`].
     ///
@@ -866,6 +889,10 @@ impl Default for StandardMaterial {
             emissive_exposure_weight: 0.0,
             // mudcrab: no retail surface by default.
             retail_surface: None,
+            retail_environment_cube: None,
+            retail_environment_mask: None,
+            retail_environment_cube_source: None,
+            retail_environment_mask_source: None,
             emissive_channel: UvChannel::Uv0,
             emissive_texture: None,
             // Matches Blender's default roughness.
@@ -1000,6 +1027,11 @@ bitflags::bitflags! {
         // mudcrab: the retail Lighting path (`RetailSurface`), and its specular term.
         const RETAIL_LIGHTING            = 1 << 20;
         const RETAIL_SPECULAR            = 1 << 21;
+        // mudcrab: a blended retail surface that also runs the alpha test.
+        const RETAIL_ALPHA_TEST          = 1 << 22;
+        // mudcrab: a retail surface with a bound environment cube, and with a bound mask.
+        const RETAIL_ENVIRONMENT         = 1 << 23;
+        const RETAIL_ENVIRONMENT_MASK    = 1 << 24;
         const ALPHA_MODE_RESERVED_BITS   = Self::ALPHA_MODE_MASK_BITS << Self::ALPHA_MODE_SHIFT_BITS; // ← Bitmask reserving bits for the `AlphaMode`
         const ALPHA_MODE_OPAQUE          = 0 << Self::ALPHA_MODE_SHIFT_BITS;                          // ← Values are just sequential values bitshifted into
         const ALPHA_MODE_MASK            = 1 << Self::ALPHA_MODE_SHIFT_BITS;                          //   the bitmask, and can range from 0 to 7.
@@ -1074,6 +1106,8 @@ pub struct StandardMaterialUniform {
     pub deferred_lighting_pass_id: u32,
     /// mudcrab: `RetailSurface`: specular colour times strength in `xyz`, glossiness in `w`.
     pub retail_specular: Vec4,
+    /// mudcrab: `RetailSurface`: the environment map scale in `x`.
+    pub retail_environment: Vec4,
 }
 
 impl AsBindGroupShaderType<StandardMaterialUniform> for StandardMaterial {
@@ -1191,12 +1225,26 @@ impl AsBindGroupShaderType<StandardMaterialUniform> for StandardMaterial {
 
         // mudcrab: the retail Lighting path (`RetailSurface`).
         let mut retail_specular = Vec4::ZERO;
+        let mut retail_environment = Vec4::ZERO;
         if let Some(surface) = self.retail_surface {
             flags |= StandardMaterialFlags::RETAIL_LIGHTING;
+            // mudcrab: the reflection, once its cube is bound.
+            if self.retail_environment_cube.is_some() && surface.environment_scale != 0.0 {
+                flags |= StandardMaterialFlags::RETAIL_ENVIRONMENT;
+                if self.retail_environment_mask.is_some() {
+                    flags |= StandardMaterialFlags::RETAIL_ENVIRONMENT_MASK;
+                }
+                retail_environment.x = surface.environment_scale;
+            }
             if surface.specular {
                 flags |= StandardMaterialFlags::RETAIL_SPECULAR;
             }
             retail_specular = surface.specular_color.extend(surface.glossiness);
+            // mudcrab: the cut of a blended surface travels in the unused mask cutoff.
+            if surface.alpha_reference > 0.0 && !matches!(self.alpha_mode, AlphaMode::Mask(_)) {
+                flags |= StandardMaterialFlags::RETAIL_ALPHA_TEST;
+                alpha_cutoff = surface.alpha_reference;
+            }
         }
 
         let mut emissive = self.emissive.to_vec4();
@@ -1231,6 +1279,7 @@ impl AsBindGroupShaderType<StandardMaterialUniform> for StandardMaterial {
             max_relief_mapping_search_steps: self.parallax_mapping_method.max_steps(),
             deferred_lighting_pass_id: self.deferred_lighting_pass_id as u32,
             retail_specular,
+            retail_environment,
             uv_transform: self.uv_transform.into(),
         }
     }

@@ -84,7 +84,7 @@ expression: manifest
     "pex": "a9bb6648b0b0c8336196718a7f00773a39e6bd08fb94a3e6b1f4e1d76319e50d"
   },
   "complete": true,
-  "configuration_hash": "f19ba84a7c0a5f2de94c62d7177b93221ec9fe746ba5fa05ffd36a585b5dcfdd",
+  "configuration_hash": "078085efae245b4d23597b24c1c050c78f61852138b48b8ec1dad9ecb20554de",
   "entries": {
     "derived/grass-cache": {
       "output": "grass_cache.rkyv",
@@ -95,7 +95,7 @@ expression: manifest
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 2560,
+      "output_size": 2652,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {
