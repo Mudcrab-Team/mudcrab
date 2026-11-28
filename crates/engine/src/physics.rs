@@ -2840,8 +2840,41 @@ pub fn walk_movement_system(
         state.airborne = true;
         state.fall_start_height = body.translation.y;
     }
+    if glide && let Some(context) = rapier.as_ref() {
+        // RF-CC-014: the 4 x gravity pull of a cast hit moves the body straight down. Resolve
+        // it from the glide velocity alone (separate from any downhill slope wish below), and
+        // override Rapier's query pose because the character controller runs before transform
+        // sync.
+        let glide_drop = (-state.vertical_velocity() * dt).max(0.0);
+        let drop = walk_support::drop_straight_down(
+            context,
+            entity,
+            &body,
+            capsule,
+            &controller,
+            glide_drop,
+        );
+        if drop.distance > 0.0 {
+            body.translation.y -= drop.distance;
+            controller.custom_shape = Some((
+                capsule.clone(),
+                body.rotation.inverse() * (Vec3::NEG_Y * drop.distance),
+                Quat::IDENTITY,
+            ));
+        }
+        if drop.landed {
+            // STAND-IN(#1108): inferred, unverified in the binary (see `walk_support` module doc):
+            // the downward sweep reached a surface, approximating Havok's proxy contact solve
+            // arresting downward velocity. Leaving the old 4 x gravity speed in `Phase::Gliding`
+            // would accumulate unbounded fall speed across stair treads or downhill ticks.
+            state.vertical.set_supported(body.translation.y);
+        }
+    }
     // RF-CC-016, RF-CC-017: on a supported slope the wish lies in the support plane. A cast hit
-    // runs the same walking step (RF-CC-014), so the surface below gives the normal there too.
+    // runs the same walking step (RF-CC-014), so the surface below gives the normal there too
+    // (sampled after any glide drop so the ray reaches the surface just landed on). While
+    // gliding without a landing, projecting the wish also adds `wish.y * dt` to the free drop
+    // (existing design choice, bounded by Rapier's collision step).
     let mut wish = state.horizontal_velocity;
     if (supported || glide)
         && !state.jump_active()
@@ -2851,28 +2884,15 @@ pub fn walk_movement_system(
     {
         wish = walk_support::slope_velocity(wish, normal, controller.max_slope_climb_angle.cos());
     }
-    let mut displacement = (wish + Vec3::Y * state.vertical_velocity()) * dt;
-    if glide && let Some(context) = rapier.as_ref() {
-        // RF-CC-014: the pull of a cast hit moves the body straight down. Rapier runs the
-        // controller before syncing transforms, so the query pose is overridden as for a step up.
-        let dropped = walk_support::drop_straight_down(
-            context,
-            entity,
-            &body,
-            capsule,
-            &controller,
-            -displacement.y,
-        );
-        if dropped > 0.0 {
-            body.translation.y -= dropped;
-            controller.custom_shape = Some((
-                capsule.clone(),
-                body.rotation.inverse() * (Vec3::NEG_Y * dropped),
-                Quat::IDENTITY,
-            ));
-        }
-        displacement.y = 0.0;
-    }
+    let mut displacement = if glide {
+        // The vertical glide pull was applied straight down above; preserve `wish.y * dt`
+        // (negative only when moving downhill on a walkable slope, zero on flat treads and when
+        // standing still) so Rapier follows the slope instead of stepping horizontally off it and
+        // looping back into `glide` every tick.
+        wish * dt
+    } else {
+        (wish + Vec3::Y * state.vertical_velocity()) * dt
+    };
     if supported
         && !state.jump_active()
         && let Some(context) = rapier.as_ref()
@@ -3256,6 +3276,47 @@ fn walk_camera_follow_system(
     follow.spring = Some(step.state);
     view.translation = target + step.lag;
     set_walk_camera_rotation(&mut view, body, look.pitch);
+}
+
+/// Shift Rapier rigid bodies by `-displacement` during a floating-origin rebase, propagate their
+/// new poses to attached colliders, and immediately refresh the broad-phase BVH leaves.
+///
+/// `propagate_modified_body_positions_to_colliders` only updates `ColliderSet` poses; Rapier's
+/// `broad_phase` is otherwise not refreshed until `PhysicsSet::StepSimulation`. Without an
+/// immediate BVH update, the first `FixedUpdate` tick after a rebase runs `walk_movement_system`
+/// spatial queries against stale AABBs 4096 units away.
+/// external-name: bevy_rapier3d `update_character_controls` system
+/// Likewise, `update_character_controls` (`SyncBackend`) runs before `PhysicsSet::StepSimulation`,
+/// causing a one-tick collision dropout that can drop the player through thin terrain.
+pub(crate) fn rebase_rapier_bodies(
+    context: &mut bevy_rapier3d::prelude::RapierContextMut<'_>,
+    entities: impl IntoIterator<Item = Entity>,
+    displacement: Vec3,
+) {
+    let mut moved_colliders = Vec::new();
+    for entity in entities {
+        if let Some(handle) = context.entity2body().get(&entity).copied()
+            && let Some(body) = context.rigidbody_set.bodies.get_mut(handle)
+        {
+            body.set_translation(body.translation() - displacement, false);
+            moved_colliders.extend_from_slice(body.colliders());
+        }
+    }
+    context.propagate_modified_body_positions_to_colliders();
+    let params = context.simulation.integration_parameters;
+    for handle in moved_colliders {
+        if let Some(collider) = context.colliders.colliders.get(handle)
+            && collider.is_enabled()
+        {
+            let aabb = collider.compute_broad_phase_aabb(&params, &context.rigidbody_set.bodies);
+            if aabb.mins.is_finite() && aabb.maxs.is_finite() {
+                context
+                    .simulation
+                    .broad_phase
+                    .set_aabb(&params, handle, aabb);
+            }
+        }
+    }
 }
 
 /// The displacement of the floating origin from `old` to `new`, in render-space units. The
