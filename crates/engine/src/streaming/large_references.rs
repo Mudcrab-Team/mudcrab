@@ -308,6 +308,7 @@ pub(super) fn update(
     mut commands: Commands,
     config: Res<EngineConfig>,
     catalog: Res<AssetCatalog>,
+    actor_catalog: Option<Res<ActorCatalog>>,
     database: Res<WorldDatabase>,
     space: Res<ActiveSpace>,
     origin: Res<RenderOrigin>,
@@ -421,6 +422,7 @@ pub(super) fn update(
                             &config,
                             &asset_server,
                             &catalog,
+                            actor_catalog.as_deref(),
                             origin.0,
                             key,
                             rows,
@@ -447,6 +449,7 @@ fn spawn_cell(
     config: &EngineConfig,
     asset_server: &AssetServer,
     catalog: &AssetCatalog,
+    actor_catalog: Option<&ActorCatalog>,
     origin: IVec2,
     key: CellKey,
     rows: LargeReferenceRows,
@@ -486,8 +489,9 @@ fn spawn_cell(
         .id();
     commands.entity(root).with_children(|parent| {
         for (reference, path) in placements {
+            let actor_model = actor_catalog.and_then(|actors| actors.get(reference.base_form_id));
             let (world_position, transform, model_bounds, bounds) =
-                super::reference_placement(key, &reference);
+                super::reference_placement(key, &reference, actor_model);
             let mut entity = parent.spawn((
                 Name::new(format!("Large reference {:08X}", reference.form_id)),
                 FormId(reference.form_id),

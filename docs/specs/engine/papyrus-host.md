@@ -115,6 +115,6 @@ Headless tests (`cargo test -p engine --lib papyrus`) drive each allowlisted scr
 with a fake world, and press E in a Bevy test app. Setting `MUDCRAB_PAPYRUS_SCRIPTS` to a pack's
 `scripts` folder runs the same assertions on the real converted scripts. Setting
 `MUDCRAB_PAPYRUS_PACK` to a pack folder reads every script property in its database and checks the
-alias and removed-property rules on vanilla records. In a live run, look for
+alias and removed-property rules on the records that #1051 and #1052 name. In a live run, look for
 `scripts on: attaching ...`, one `attached ... to <form id>` line per scripted reference, and
 `script disabled <form id>` after pressing E.

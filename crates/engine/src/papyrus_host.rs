@@ -2158,8 +2158,8 @@ return Script
     }
 
     /// The VMAD property rules on a real converted pack, which the test only reads. Set
-    /// `MUDCRAB_PAPYRUS_PACK` to a pack folder. The form ids are vanilla Skyrim SE records
-    /// named in #1051 and #1052.
+    /// `MUDCRAB_PAPYRUS_PACK` to a pack folder. The form ids come from #1051, #1052 and
+    /// that pack's database.
     #[test]
     fn real_pack_vmad_properties() {
         let Some(pack) = std::env::var_os("MUDCRAB_PAPYRUS_PACK") else {
@@ -3325,7 +3325,7 @@ return Script
         assert_eq!(hero.get::<i64>("__alias_id").unwrap(), 0);
         assert_eq!(boss.get::<i64>("__alias_id").unwrap(), 3);
         assert_eq!(hero.get::<String>("__name").unwrap(), "ReferenceAlias");
-        // Empty alias: GetReference gives None. Retail fills nothing the quest did not fill.
+        // Empty alias: GetReference gives None.
         assert!(matches!(get_reference(&host, &boss), Value::Nil));
         // The quest fills the alias later. The same property object now reads the new target.
         host.world().aliases.insert((QUEST, 3), MARKER);
