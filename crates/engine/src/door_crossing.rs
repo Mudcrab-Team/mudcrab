@@ -1580,14 +1580,11 @@ mod tests {
                         .run_system_once(
                             move |mut physics: bevy_rapier3d::prelude::WriteRapierContext| {
                                 let mut context = physics.single_mut().unwrap();
-                                for entity in [body, floor] {
-                                    let handle =
-                                        context.entity2body().get(&entity).copied().unwrap();
-                                    let body =
-                                        context.rigidbody_set.bodies.get_mut(handle).unwrap();
-                                    body.set_translation(body.translation() - displacement, false);
-                                }
-                                context.propagate_modified_body_positions_to_colliders();
+                                crate::physics::rebase_rapier_bodies(
+                                    &mut context,
+                                    [body, floor],
+                                    displacement,
+                                );
                             },
                         )
                         .unwrap();
