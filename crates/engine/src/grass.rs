@@ -37,16 +37,19 @@ struct GrassSurface {
     /// The retained colour plane participates in surface equality and pool accounting.
     samples: Box<[f32]>,
     water_height: Option<f32>,
+    /// Low nibble of the cell's `XCLC` land-hide flags (`bit q` hides quadrant `q`).
+    land_hide_flags: u8,
 }
 
 impl GrassTerrain {
     /// Retain the committed field once, without copying it during per-frame grass streaming.
     pub(crate) fn from_snapshot(terrain: &TerrainSnapshot) -> Self {
+        let land_hide_flags = terrain.land_hide_flags & 0x0F;
         // Streaming validates complete terrain before publishing this component.
         // Keep malformed programmatic fields unusable rather than interpreting a second
         // height plane as colour. Empty/malformed colours use the white fallback.
         if terrain.heights.len() != 33 * 33 {
-            return Self::new(Vec::new(), terrain.water_height);
+            return Self::with_hide_flags(Vec::new(), terrain.water_height, land_hide_flags);
         }
         let mut samples = terrain.heights.clone();
         if terrain.vertex_colors.len() == 33 * 33 * 3 {
@@ -56,7 +59,7 @@ impl GrassTerrain {
                     + 0.32 * (f32::from(rgb[2]) / 255.0)
             }));
         }
-        Self::new(samples, terrain.water_height)
+        Self::with_hide_flags(samples, terrain.water_height, land_hide_flags)
     }
 
     /// Build a worker-owned speculative surface before terrain has committed.
@@ -72,10 +75,16 @@ impl GrassTerrain {
     }
 
     /// Own the height and optional luminance planes in one accounted allocation.
+    #[cfg(test)]
     fn new(samples: Vec<f32>, water_height: Option<f32>) -> Self {
+        Self::with_hide_flags(samples, water_height, 0)
+    }
+
+    fn with_hide_flags(samples: Vec<f32>, water_height: Option<f32>, land_hide_flags: u8) -> Self {
         Self(Arc::new(GrassSurface {
             samples: samples.into_boxed_slice(),
             water_height,
+            land_hide_flags: land_hide_flags & 0x0F,
         }))
     }
 
@@ -96,7 +105,8 @@ impl GrassTerrain {
     /// Use pointer equality normally, and compare exact field bits once on a new root/source.
     fn same_surface(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
-            || (self.0.water_height.map(f32::to_bits) == other.0.water_height.map(f32::to_bits)
+            || (self.0.land_hide_flags == other.0.land_hide_flags
+                && self.0.water_height.map(f32::to_bits) == other.0.water_height.map(f32::to_bits)
                 && self.0.samples.len() == other.0.samples.len()
                 && self
                     .0
@@ -661,6 +671,7 @@ mod tests {
             layers: vec![],
             water_height: None,
             water_type_form_id: None,
+            land_hide_flags: 0,
         };
         let plain = GrassTerrain::new(snapshot.heights.clone(), snapshot.water_height);
         assert!(plain.same_surface(&GrassTerrain::new(vec![0.0; 1089], None)));

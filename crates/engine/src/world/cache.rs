@@ -15,6 +15,15 @@ pub struct TerrainSnapshot {
     pub layers: Vec<TerrainLayerSnapshot>,
     pub water_height: Option<f32>,
     pub water_type_form_id: Option<u32>,
+    /// Low nibble of the exterior `CELL` `XCLC` land-hide flags (`bit q` hides quadrant `q`).
+    pub land_hide_flags: u8,
+}
+
+impl TerrainSnapshot {
+    /// Whether `quadrant` (`0..4`) is hidden by the cell's `XCLC` land-hide bitmask.
+    pub fn is_quadrant_hidden(&self, quadrant: u8) -> bool {
+        quadrant < 4 && (self.land_hide_flags & (1 << quadrant)) != 0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +100,7 @@ impl CellCache {
                 .collect(),
             water_height: cell.water_height.as_ref().copied().map(Into::into),
             water_type_form_id: cell.water_type_form_id.as_ref().copied().map(Into::into),
+            land_hide_flags: 0,
         })
     }
 

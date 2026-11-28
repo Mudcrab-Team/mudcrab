@@ -1735,6 +1735,7 @@ fn terrain_water_fixture_snapshot() -> TerrainSnapshot {
         layers,
         water_height: Some(12.0),
         water_type_form_id: Some(1),
+        land_hide_flags: 0,
     }
 }
 
