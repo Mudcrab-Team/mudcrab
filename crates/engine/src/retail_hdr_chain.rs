@@ -6,7 +6,7 @@
 pub const MAX_FRAME_SECONDS: f32 = 1.0 / 6.0;
 /// The history of the timer, `iUnstableFrameTimeHistorySize` (compiled default 8).
 const HISTORY: usize = 8;
-/// STAND-IN(#362): bound frame-history storage and per-frame scan work.
+/// STAND-IN(#1114): bound frame-history storage and per-frame scan work.
 pub(crate) const MAX_FRAME_TIME_HISTORY: usize = 256;
 /// The value the timer's history starts with (NEEDS 27).
 const HISTORY_PREFILL: f32 = 0.016;
