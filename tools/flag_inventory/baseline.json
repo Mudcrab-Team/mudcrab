@@ -1,5 +1,5 @@
 {
   "format_version": 1,
-  "dropped_plus_partial": 307,
+  "dropped_plus_partial": 304,
   "raise_reason": "Grass water modes 6 and 7 reclassified from respected to dropped by the enum audit (#1061)."
 }
