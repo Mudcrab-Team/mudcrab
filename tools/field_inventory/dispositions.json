@@ -189,8 +189,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -256,7 +256,7 @@
     "ACHR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -272,7 +272,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -638,7 +638,7 @@
     "ACHR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -700,7 +700,7 @@
     "ACHR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -2116,7 +2116,7 @@
     "ACTI.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -2128,7 +2128,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -2546,7 +2546,7 @@
     "ACTI.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -2624,7 +2624,7 @@
     "ACTI.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -4184,7 +4184,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed ALCH references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed ALCH references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -4196,7 +4196,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -4515,7 +4515,7 @@
     "ALCH.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -4574,7 +4574,7 @@
     "ALCH.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -5533,7 +5533,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed AMMO references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed AMMO references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -5545,7 +5545,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -5864,7 +5864,7 @@
     "AMMO.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -5923,7 +5923,7 @@
     "AMMO.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -6871,7 +6871,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed APPA references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed APPA references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -6883,7 +6883,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -7202,7 +7202,7 @@
     "APPA.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -7261,7 +7261,7 @@
     "APPA.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -9660,15 +9660,15 @@
     "ARMO.VMAD.scripts_script_flags": {
       "disposition": "dropped",
       "owner": "Mudcrab maintainers",
-      "reason": "Parsed into scripts/script_properties status, but papyrus_host.rs never reads or honors script/property status flags (such as Removed status=3).",
+      "reason": "The converter keeps the script header flag only in the stored VMAD blob, and papyrus_host.rs does not apply it, so a removed script still attaches. The separate property status (script_properties.status) is read by the host.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
           "anchor": "let (input, status) = if version >= 4 {"
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -9737,7 +9737,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "VMAD primary scripts and properties are exported to scripts/script_properties/script_property_values and readable via base_form in papyrus_host.rs, but papyrus_plugin.rs:78 gates live attachment to SLICE_SCRIPTS and actor/armor scripts are not attached. The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "VMAD primary scripts and properties are exported to scripts/script_properties/script_property_values and readable via base_form in papyrus_host.rs, but papyrus_plugin.rs:78 gates live attachment to SLICE_SCRIPTS and actor/armor scripts are not attached. The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -9749,7 +9749,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -10128,7 +10128,7 @@
     "ARMO.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -10191,7 +10191,7 @@
     "ARMO.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -11687,7 +11687,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed BOOK references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed BOOK references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -11699,7 +11699,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -12018,7 +12018,7 @@
     "BOOK.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -12077,7 +12077,7 @@
     "BOOK.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -15185,7 +15185,7 @@
     "CONT.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -15197,7 +15197,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -15615,7 +15615,7 @@
     "CONT.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -15693,7 +15693,7 @@
     "CONT.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -17053,7 +17053,7 @@
     "DOOR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -17065,7 +17065,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -17483,7 +17483,7 @@
     "DOOR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -17561,7 +17561,7 @@
     "DOOR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -19145,7 +19145,7 @@
     "FLOR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -19157,7 +19157,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -19575,7 +19575,7 @@
     "FLOR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -19653,7 +19653,7 @@
     "FLOR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -21128,7 +21128,7 @@
     "FURN.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -21140,7 +21140,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -21558,7 +21558,7 @@
     "FURN.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -21636,7 +21636,7 @@
     "FURN.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -24940,7 +24940,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed INGR references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed INGR references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -24952,7 +24952,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -25271,7 +25271,7 @@
     "INGR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -25330,7 +25330,7 @@
     "INGR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -26330,7 +26330,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed KEYM references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed KEYM references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -26342,7 +26342,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -26661,7 +26661,7 @@
     "KEYM.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -26720,7 +26720,7 @@
     "KEYM.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -30049,7 +30049,7 @@
     "LIGH.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -30061,7 +30061,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -30479,7 +30479,7 @@
     "LIGH.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -30557,7 +30557,7 @@
     "LIGH.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -31880,7 +31880,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed MISC references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed MISC references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -31892,7 +31892,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -32211,7 +32211,7 @@
     "MISC.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -32270,7 +32270,7 @@
     "MISC.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -47456,15 +47456,15 @@
     "NPC_.VMAD.scripts_script_flags": {
       "disposition": "dropped",
       "owner": "Mudcrab maintainers",
-      "reason": "Parsed into scripts/script_properties status, but papyrus_host.rs never reads or honors script/property status flags (such as Removed status=3).",
+      "reason": "The converter keeps the script header flag only in the stored VMAD blob, and papyrus_host.rs does not apply it, so a removed script still attaches. The separate property status (script_properties.status) is read by the host.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
           "anchor": "let (input, status) = if version >= 4 {"
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -47533,7 +47533,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "VMAD primary scripts and properties are exported to scripts/script_properties/script_property_values and readable via base_form in papyrus_host.rs, but papyrus_plugin.rs:78 gates live attachment to SLICE_SCRIPTS and actor/armor scripts are not attached. The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "VMAD primary scripts and properties are exported to scripts/script_properties/script_property_values and readable via base_form in papyrus_host.rs, but papyrus_plugin.rs:78 gates live attachment to SLICE_SCRIPTS and actor/armor scripts are not attached. The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -47545,7 +47545,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -47924,7 +47924,7 @@
     "NPC_.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -47987,7 +47987,7 @@
     "NPC_.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -48763,8 +48763,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -48830,7 +48830,7 @@
     "PARW.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -48846,7 +48846,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -49212,7 +49212,7 @@
     "PARW.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -49274,7 +49274,7 @@
     "PARW.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -50017,8 +50017,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -50084,7 +50084,7 @@
     "PBAR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -50100,7 +50100,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -50466,7 +50466,7 @@
     "PBAR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -50528,7 +50528,7 @@
     "PBAR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -51271,8 +51271,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -51338,7 +51338,7 @@
     "PBEA.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -51354,7 +51354,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -51720,7 +51720,7 @@
     "PBEA.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -51782,7 +51782,7 @@
     "PBEA.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -52525,8 +52525,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -52592,7 +52592,7 @@
     "PCON.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -52608,7 +52608,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -52974,7 +52974,7 @@
     "PCON.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -53036,7 +53036,7 @@
     "PCON.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -53790,8 +53790,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -53857,7 +53857,7 @@
     "PFLA.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -53873,7 +53873,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -54239,7 +54239,7 @@
     "PFLA.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -54301,7 +54301,7 @@
     "PFLA.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -55044,8 +55044,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -55111,7 +55111,7 @@
     "PGRE.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -55127,7 +55127,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -55493,7 +55493,7 @@
     "PGRE.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -55555,7 +55555,7 @@
     "PGRE.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -56298,8 +56298,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -56365,7 +56365,7 @@
     "PHZD.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -56381,7 +56381,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -56747,7 +56747,7 @@
     "PHZD.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -56809,7 +56809,7 @@
     "PHZD.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -57552,8 +57552,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -57619,7 +57619,7 @@
     "PMIS.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -57635,7 +57635,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -58001,7 +58001,7 @@
     "PMIS.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -58063,7 +58063,7 @@
     "PMIS.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -62483,8 +62483,8 @@
           "anchor": "//! are retained. Native script order/status remain available in the unchanged VMAD."
         },
         {
-          "path": "crates/converter/src/esm/inhouse_script_properties.rs",
-          "anchor": "property.status,"
+          "path": "crates/converter/src/esm/records/record_type/vmad.rs",
+          "anchor": "pub fn parse_script_entry("
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -62550,7 +62550,7 @@
     "REFR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -62566,7 +62566,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -62932,7 +62932,7 @@
     "REFR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -62994,7 +62994,7 @@
     "REFR.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -65277,7 +65277,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed SCRL references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed SCRL references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -65289,7 +65289,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -65608,7 +65608,7 @@
     "SCRL.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -65667,7 +65667,7 @@
     "SCRL.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -67576,7 +67576,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed TACT references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed TACT references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -67588,7 +67588,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -67907,7 +67907,7 @@
     "TACT.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -67966,7 +67966,7 @@
     "TACT.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -69284,7 +69284,7 @@
     "TREE.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -69296,7 +69296,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -69714,7 +69714,7 @@
     "TREE.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -69792,7 +69792,7 @@
     "TREE.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -73141,7 +73141,7 @@
       "disposition": "partial",
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed WEAP references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed WEAP references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds a readable Edited (1) row unless a later Edited row replaces it and applies, and it does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -73153,7 +73153,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -73472,7 +73472,7 @@
     "WEAP.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v1_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",
@@ -73531,7 +73531,7 @@
     "WEAP.VMAD.scripts_script_properties_property_value_array_of_object_object_union_object_v2_alias": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None.",
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107).",
       "evidence": [
         {
           "path": "crates/converter/src/esm/inhouse_script_properties.rs",

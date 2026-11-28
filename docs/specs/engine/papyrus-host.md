@@ -25,10 +25,13 @@ first and the reference's override them. A script attaches only if its name is i
 
 **Property rows.** `script_properties.status` holds the VMAD property flag, which xEdit names
 1 (Edited) and 3 (Removed). The host seeds an Edited row. A Removed row sets nothing (#1052). When
-two Edited rows name one property, only the later one runs. Each type needs its own value column.
+two Edited rows name one property, the later one runs. The earlier one runs only if the later value
+cannot be built or the script's setter rejects it, and the host logs that. Each type needs its own
+value column.
 These make a property unreadable: a NULL or out-of-range column, a value count that does not match,
 a `value_index` that does not run from 0 with no gap, or an undefined status or type. The host logs
 it and does not set it (#1095). A Removed row's values are checked the same way and damage is logged.
+Row damage is logged when the rows are read, so a script that cannot attach reports it too.
 A `scripts` row that cannot be read is logged too. A stored 0, empty string or false is a value.
 `crates/engine/tests/sqlite_null_guard.rs` rejects a new NULL-to-literal coercion in the engine's
 SQLite readers.
@@ -48,7 +51,11 @@ These alias bindings give `None` and a `warn` line:
   binding that runs fixes the class. A replaced row does not run.
 
 The class change from `Alias` to a subtype assumes that no alias class sets instance fields. A
-converted alias class that sets one gives `None` and an `error` line.
+converted alias class that sets one gives `None` and an `error` line. A script that freezes a shared
+alias object (`table.freeze`) blocks the change in the same way.
+
+In an alias array, an element that cannot bind is `None`, and the array length can then be short
+(#1107).
 
 **Allowlist.** Four scripts: `defaultDisableSelfOnActivate`, `defaultUnlockOnLoad`,
 `dunDeadMensRotatingDoor` and `dunPOIDragonNoteScript`. Every other converted script stays detached

@@ -434,10 +434,9 @@ impl PapyrusHost {
                 if !properties.contains_key(&key) {
                     order.push(name.clone());
                 }
-                properties
-                    .entry(key)
-                    .or_default()
-                    .extend(self.forms.script_properties(*owner, &name));
+                let rows = self.forms.script_properties(*owner, &name);
+                self.note_row_faults(*owner, &name, &rows);
+                properties.entry(key).or_default().extend(rows);
             }
         }
         for fault in self.forms.take_faults() {
@@ -529,6 +528,27 @@ impl PapyrusHost {
         }
     }
 
+    /// Log each property whose rows are damaged. This runs when the rows are read, so a
+    /// script that cannot attach still reports them. A base record that many references
+    /// share logs its fault once.
+    fn note_row_faults(&self, owner: u32, script: &str, props: &[ScriptProperty]) {
+        for property in props {
+            let name = &property.name;
+            let fault = match &property.status {
+                PropertyStatus::Edited | PropertyStatus::Removed { fault: None } => continue,
+                PropertyStatus::Removed { fault: Some(fault) } => format!(
+                    "removed property {name} has damaged value rows ({fault}); a removed property is not set"
+                ),
+                PropertyStatus::Unreadable(reason) => {
+                    format!("property {name} is unreadable ({reason}); it is not set")
+                }
+            };
+            self.note_once("error", format!("script {script} on {owner:08X}: {fault}"));
+        }
+    }
+
+    /// Seed the properties of one script object. `props` lists the base record's rows
+    /// before the reference's rows.
     fn seed_properties(
         &self,
         object: &Table,
@@ -544,97 +564,110 @@ impl PapyrusHost {
             Ok(function) => function,
             Err(_) => return,
         };
-        for (position, property) in props.iter().enumerate() {
-            match &property.status {
-                // A later Edited row replaces this one (a reference over its base record).
-                // The replaced row must not run: its alias binding would fix the class of
-                // a shared alias object that no property holds.
-                PropertyStatus::Edited
-                    if props[position + 1..].iter().any(|later| {
-                        later.status == PropertyStatus::Edited
-                            && later.name.eq_ignore_ascii_case(&property.name)
-                    }) =>
-                {
-                    continue;
-                }
-                PropertyStatus::Edited => {}
-                // xEdit 053da98 `wbDefinitionsTES5.pas` names VMAD property flag 3
-                // `Removed`. A removed row sets nothing, so the script's own default stays
-                // (#1052). When the base record also sets the property, the base value
-                // stays; that merge is unverified against retail.
-                PropertyStatus::Removed { fault } => {
-                    if let Some(fault) = fault {
-                        self.note(
-                            "error",
-                            format!(
-                                "script {script} on {reference:08X}: removed property {} has damaged value rows ({fault}); a removed property is not set",
-                                property.name
-                            ),
-                        );
-                    }
-                    continue;
-                }
-                PropertyStatus::Unreadable(reason) => {
-                    self.note(
-                        "error",
-                        format!(
-                            "script {script} on {reference:08X}: property {} is unreadable ({reason}); it is not set",
-                            property.name
-                        ),
-                    );
-                    continue;
+        // Only an Edited row sets a value. xEdit 053da98 `wbDefinitionsTES5.pas` names VMAD
+        // property flag 3 `Removed`: such a row sets nothing, so the script's own default
+        // stays (#1052). When the base record also sets the property, the base value
+        // stays; that merge is unverified against retail.
+        let edited = || {
+            props
+                .iter()
+                .filter(|row| row.status == PropertyStatus::Edited)
+        };
+        let mut rows_by_name: HashMap<String, Vec<&ScriptProperty>> = HashMap::new();
+        for row in edited() {
+            rows_by_name
+                .entry(row.name.to_ascii_lowercase())
+                .or_default()
+                .push(row);
+        }
+        for property in edited() {
+            let rows = &rows_by_name[&property.name.to_ascii_lowercase()];
+            // The last Edited row of a name wins (a reference over its base record), at its
+            // own place in the order. An earlier row runs only if the later one is
+            // rejected, so a replaced alias binding never fixes the class of a shared
+            // alias object.
+            if !rows
+                .last()
+                .is_some_and(|last| std::ptr::eq(*last, property))
+            {
+                continue;
+            }
+            for row in rows.iter().rev() {
+                if self.apply_property(object, reference, script, row, &set, &find) {
+                    break;
                 }
             }
-            let setter: Value = find
-                .call((
-                    self.runtime.clone(),
-                    object.clone(),
-                    "",
-                    format!("set_{}", property.name),
-                ))
-                .unwrap_or(Value::Nil);
-            if matches!(setter, Value::Nil) {
+        }
+    }
+
+    /// Set one property from its row. `false` when the value cannot be built or the setter
+    /// rejects it, so an earlier row of the same property should apply instead.
+    fn apply_property(
+        &self,
+        object: &Table,
+        reference: u32,
+        script: &str,
+        property: &ScriptProperty,
+        set: &Function,
+        find: &Function,
+    ) -> bool {
+        let setter: Value = find
+            .call((
+                self.runtime.clone(),
+                object.clone(),
+                "",
+                format!("set_{}", property.name),
+            ))
+            .unwrap_or(Value::Nil);
+        if matches!(setter, Value::Nil) {
+            self.note(
+                "warn",
+                format!(
+                    "script {script} on {reference:08X} has no property {}; the attached value is ignored",
+                    property.name
+                ),
+            );
+            return true;
+        }
+        let declared = if property.value.has_alias_binding() {
+            self.declared_type(object, &property.name)
+        } else {
+            None
+        };
+        let value = match self.property_value(
+            &property.value,
+            script,
+            &property.name,
+            declared.as_deref(),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
                 self.note(
-                    "warn",
+                    "error",
                     format!(
-                        "script {script} on {reference:08X} has no property {}; the attached value is ignored",
+                        "script {script} on {reference:08X}: property {} could not be built: {error}",
                         property.name
                     ),
                 );
-                continue;
+                return false;
             }
-            let declared = if property.value.has_alias_binding() {
-                self.declared_type(object, &property.name)
-            } else {
-                None
-            };
-            match self.property_value(&property.value, script, &property.name, declared.as_deref())
-            {
-                Ok(value) => {
-                    if let Err(error) = set.call::<()>((
-                        self.runtime.clone(),
-                        object.clone(),
-                        property.name.clone(),
-                        value,
-                    )) {
-                        self.note(
-                            "error",
-                            format!(
-                                "script {script}: setting property {} failed: {error}",
-                                property.name
-                            ),
-                        );
-                    }
-                }
-                Err(error) => self.note(
-                    "error",
-                    format!(
-                        "script {script}: property {} could not be built: {error}",
-                        property.name
-                    ),
+        };
+        if let Err(error) = set.call::<()>((
+            self.runtime.clone(),
+            object.clone(),
+            property.name.clone(),
+            value,
+        )) {
+            self.note(
+                "error",
+                format!(
+                    "script {script} on {reference:08X}: setting property {} failed: {error}",
+                    property.name
                 ),
-            }
+            );
+            return false;
         }
+        true
     }
 
     /// The Papyrus type a script declares for an auto property, lowercase and without the
@@ -722,6 +755,13 @@ impl PapyrusHost {
                 return Ok(Some(object));
             }
             if self.inherits(declared, &held)? {
+                // A script can `table.freeze` a property it holds, and mlua panics when the
+                // metatable of a read-only table is set.
+                if object.is_readonly() {
+                    return Err(mlua::Error::runtime(format!(
+                        "the shared object of this alias is read-only, so it cannot take the class {declared}"
+                    )));
+                }
                 // The metatable swap is safe by the check in `new_alias_instance`.
                 object.set_metatable(Some(class));
                 return Ok(Some(object));
@@ -3800,6 +3840,147 @@ return Script
             logged
                 .iter()
                 .any(|m| m.contains("a script name of 00001000 cannot be read")),
+            "{logged:?}"
+        );
+    }
+
+    #[test]
+    fn a_rejected_reference_value_keeps_the_base_value() {
+        let dir = fixture_dir();
+        // A setter that refuses values above 6 before it stores them.
+        std::fs::write(
+            dir.path().join("picky.luau"),
+            class(
+                "picky",
+                "ObjectReference",
+                "",
+                "Script[\"get_level\"] = function(self) return self[\"::level_var\"] end\n\
+                 Script[\"set_level\"] = function(self, value) \
+                 if value > 6 then error(\"level too high\") end \
+                 self[\"::level_var\"] = value end\n",
+            ),
+        )
+        .unwrap();
+        let mut forms = base_forms();
+        forms.bases.insert(REFERENCE, 0x9000);
+        attach(
+            &mut forms,
+            0x9000,
+            "picky",
+            vec![ScriptProperty::edited("level", PropertyValue::Int(5))],
+        );
+        attach(
+            &mut forms,
+            REFERENCE,
+            "picky",
+            vec![ScriptProperty::edited("Level", PropertyValue::Int(7))],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        assert_eq!(level_of(&host), 5, "the base value stays");
+        let logged = errors(&host);
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(logged[0].contains("level too high"), "{logged:?}");
+    }
+
+    #[test]
+    fn a_reference_value_that_cannot_be_built_keeps_the_base_value() {
+        let dir = fixture_dir();
+        let path = dir.path().join("referencealias.luau");
+        let source = std::fs::read_to_string(&path).unwrap().replace(
+            "return self\nend",
+            "self[\"::count_var\"] = 0\n    return self\nend",
+        );
+        std::fs::write(&path, source).unwrap();
+        let mut forms = base_forms();
+        forms.bases.insert(REFERENCE, 0x9000);
+        // The base names a plain form. The reference's alias row fails, because the host
+        // refuses an alias class with an instance field.
+        attach(
+            &mut forms,
+            0x9000,
+            "aliasUser",
+            vec![alias_prop("Hero", MARKER, u16::MAX)],
+        );
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![alias_prop("Hero", QUEST, 5)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let hero: Table = host.object(REFERENCE).unwrap().get("::Hero_var").unwrap();
+        assert_eq!(hero.get::<u32>("__form_id").unwrap(), MARKER);
+        let logged = errors(&host);
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(logged[0].contains("could not be built"), "{logged:?}");
+    }
+
+    #[test]
+    fn damaged_rows_are_logged_even_when_the_script_cannot_attach() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        forms.bases.insert(REFERENCE, 0x9000);
+        forms.bases.insert(REFERENCE + 1, 0x9000);
+        // No converted script has this name.
+        attach(
+            &mut forms,
+            0x9000,
+            "noSuchScript",
+            vec![ScriptProperty::unreadable("level", "integer_value is NULL")],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        let report = host.attach_reference(REFERENCE);
+        assert_eq!(report.skipped.len(), 1, "{report:?}");
+        host.attach_reference(REFERENCE + 1);
+        let faults: Vec<String> = errors(&host)
+            .into_iter()
+            .filter(|line| line.contains("is unreadable"))
+            .collect();
+        assert_eq!(faults.len(), 1, "one base record logs once: {faults:?}");
+        assert!(
+            faults[0].contains("00009000") && faults[0].contains("integer_value is NULL"),
+            "{faults:?}"
+        );
+    }
+
+    #[test]
+    fn a_frozen_alias_object_is_reported_instead_of_a_panic() {
+        let dir = fixture_dir();
+        let mut forms = base_forms();
+        attach(
+            &mut forms,
+            REFERENCE,
+            "aliasUser",
+            vec![alias_prop("Anyone", QUEST, 5)],
+        );
+        attach(
+            &mut forms,
+            REFERENCE + 1,
+            "aliasUser",
+            vec![alias_prop("Hero", QUEST, 5)],
+        );
+        let mut host = host_with(dir.path(), forms, true);
+        host.attach_reference(REFERENCE);
+        let anyone: Table = host.object(REFERENCE).unwrap().get("::Anyone_var").unwrap();
+        // Script code in the sandbox can freeze a table it holds.
+        host.lua()
+            .load("local held = ... table.freeze(held)")
+            .call::<()>(anyone.clone())
+            .unwrap();
+        assert!(anyone.is_readonly());
+        // `Hero` asks for the subtype's class on the frozen object.
+        host.attach_reference(REFERENCE + 1);
+        let hero: Option<Table> = host
+            .object(REFERENCE + 1)
+            .unwrap()
+            .get("::Hero_var")
+            .unwrap();
+        assert!(hero.is_none());
+        let logged = errors(&host);
+        assert!(
+            logged.iter().any(|line| line.contains("read-only")),
             "{logged:?}"
         );
     }

@@ -39286,7 +39286,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -39298,7 +39298,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail."
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail."
     },
     "VMAD.Property.flag.removed": {
       "disposition": "respected",
@@ -39313,7 +39313,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed { fault } => {"
+          "anchor": ".filter(|row| row.status == PropertyStatus::Edited)"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -39325,7 +39325,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail."
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs. A readable Edited (1) row is seeded unless a later Edited row for the same property replaces it; the earlier row applies only if the later value cannot be built or the setter rejects it. Removed (3) is not set. Any other status makes the property unreadable, and the host logs it. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail."
     },
     "VMAD.Property.flag.val0": {
       "disposition": "not-applicable",
@@ -39476,7 +39476,7 @@
       ],
       "issue": "#1051",
       "owner": "Mudcrab maintainers",
-      "reason": "The engine binds ReferenceAlias, LocationAlias and Alias typed properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling, and properties typed as derived alias scripts stay None."
+      "reason": "The engine binds the elements of ReferenceAlias, LocationAlias and Alias typed array properties to quest alias objects and reads existing fills through ReferenceAlias.GetReference. Missing: quest alias filling. The property is still set to an array when an element cannot bind, such as one typed as a derived alias script: that element is None, and the array length can then be short (#1107)."
     },
     "VMAD.Property.type.array_of_string": {
       "disposition": "respected",
