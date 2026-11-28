@@ -9,6 +9,7 @@ collision-measure = []
 
 [dependencies]
 shared = { path = "../shared" }
+retail-rules = { path = "../retail-rules" }
 bevy = { workspace = true, features = ["mesh_picking"] }
 gltf = { version = "1.4", default-features = false, features = ["KHR_materials_emissive_strength"] }
 wgpu = { version = "=29.0.4", default-features = false }
