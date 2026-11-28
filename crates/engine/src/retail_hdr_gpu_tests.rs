@@ -242,8 +242,13 @@ fn half_to_f32(half: u16) -> f32 {
     }
 }
 
-fn module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
-    let naga = compose(source, label, HashMap::new()).unwrap_or_else(|error| panic!("{error}"));
+fn module(
+    device: &wgpu::Device,
+    label: &str,
+    source: &str,
+    definitions: HashMap<String, naga_oil::compose::ShaderDefValue>,
+) -> wgpu::ShaderModule {
+    let naga = compose(source, label, definitions).unwrap_or_else(|error| panic!("{error}"));
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Naga(Cow::Owned(naga)),
@@ -464,7 +469,8 @@ fn verify_chain(format: wgpu::TextureFormat) {
     };
     let config = RetailHdrConfig {
         gamma: 2.0,
-        use_64_bit_hdr_targets: wide,
+        // A packed request must not change wide stores on a device without packed support.
+        use_64_bit_hdr_targets: false,
         ..RetailHdrConfig::default()
     };
     let t = 1.0 / 30.0;
@@ -596,11 +602,20 @@ fn verify_chain(format: wgpu::TextureFormat) {
         &device,
         "retail_hdr_chain.wgsl",
         include_str!("shaders/retail_hdr_chain.wgsl"),
+        if wide {
+            HashMap::new()
+        } else {
+            HashMap::from([(
+                "RETAIL_HDR_PACKED".into(),
+                naga_oil::compose::ShaderDefValue::Bool(true),
+            )])
+        },
     );
     let tonemap_module = module(
         &device,
         "retail_hdr_tonemap.wgsl",
         include_str!("shaders/retail_hdr_tonemap.wgsl"),
+        HashMap::new(),
     );
     let chain_pipelines = PassKind::ALL
         .map(|kind| pipeline(&chain_module, kind.entry_point(), &chain_layout, format));
@@ -609,6 +624,13 @@ fn verify_chain(format: wgpu::TextureFormat) {
         "display_fragment",
         &tonemap_layout,
         display_target.0.format(),
+    );
+    let hazard_target = texture(&device, (SIZE, SIZE), WIDE_HDR_FORMAT, chain_usage);
+    let hazard_tonemap = pipeline(
+        &tonemap_module,
+        "display_fragment",
+        &tonemap_layout,
+        hazard_target.0.format(),
     );
     let present = pipeline(
         &tonemap_module,
@@ -698,6 +720,17 @@ fn verify_chain(format: wgpu::TextureFormat) {
         )
     };
 
+    let store_probe = Plane::from_fn((SIZE, SIZE), |_, _| [-1.0, 0.0, 64992.0]);
+    upload(&store_probe);
+    run(false, 0);
+    let stored = read_texture(&device, &queue, &levels[0].0);
+    let expected = if wide {
+        [-1.0, 0.0, 64992.0]
+    } else {
+        [0.0, 0.0, 64512.0]
+    };
+    assert!(stored.iter().all(|pixel| pixel[..3] == expected));
+
     // Frame 1: no adapted pair, so the last step becomes the pair (A.x = A.y = n).
     let first_scene = scene_plane(1.0);
     upload(&first_scene);
@@ -739,6 +772,14 @@ fn verify_chain(format: wgpu::TextureFormat) {
     assert!(
         second_low.bloom.texels.iter().any(|c| c[0] > 0.01),
         "the test scene blooms"
+    );
+
+    compare(
+        "frame-two bloom",
+        &read_texture(&device, &queue, &bloom.0),
+        &second_low.bloom,
+        &second_high.bloom,
+        3,
     );
 
     // Inject an invalid measurement after the upstream finite-input guards.
@@ -788,13 +829,16 @@ fn verify_chain(format: wgpu::TextureFormat) {
     }
 
     // Use the same display store and transfer as the render-world shaders.
-    let output = |pair: usize, first_pass: &wgpu::RenderPipeline| {
+    let output = |pair: usize, first_pass: &wgpu::RenderPipeline, float: bool| {
         let mut encoder = device.create_command_encoder(&Default::default());
-        for (pipeline, source, destination) in [
+        let passes = [
             (first_pass, &scene.1, &display_target.1),
             (&present, &display_target.1, &presentation.1),
             (&blit, &presentation.1, &target.1),
-        ] {
+        ];
+        let hazard_pass = [(first_pass, &scene.1, &hazard_target.1)];
+        let passes: &[_] = if float { &hazard_pass } else { &passes };
+        for &(pipeline, source, destination) in passes {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("retail_hdr_test_output"),
                 layout: &tonemap_layout,
@@ -842,11 +886,15 @@ fn verify_chain(format: wgpu::TextureFormat) {
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
-        read_texture(&device, &queue, &target.0)
+        read_texture(
+            &device,
+            &queue,
+            if float { &hazard_target.0 } else { &target.0 },
+        )
     };
-    let pixels = output(0, &tonemap);
+    let pixels = output(0, &tonemap, false);
     assert_eq!(pixels, read_texture(&device, &queue, &display_target.0));
-    let copied = output(0, &copy);
+    let copied = output(0, &copy, false);
     for (pixel, scene) in copied.iter().zip(&second_scene.texels) {
         for channel in 0..3 {
             let expected = (scene[channel].clamp(0.0, 1.0) * 255.0).round() / 255.0;
@@ -919,7 +967,7 @@ fn verify_chain(format: wgpu::TextureFormat) {
             extent((SIZE, SIZE)),
         );
     };
-    let tonemapped = |pair| output(pair, &tonemap);
+    let tonemapped = |pair| output(pair, &tonemap, false);
     // The first pair of the run is made from a NaN frame, then the pair adapts through the rest.
     let hazards = [
         NOT_A_NUMBER,
@@ -951,7 +999,7 @@ fn verify_chain(format: wgpu::TextureFormat) {
                 );
             }
         }
-        for pixel in tonemapped(next) {
+        for pixel in output(next, &hazard_tonemap, true) {
             assert!(
                 pixel[..3].iter().all(|value| (0.0..=1.0).contains(value)),
                 "frame {frame}, input {hazard:#06x}: the screen holds {pixel:?}"

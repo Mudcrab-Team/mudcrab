@@ -190,7 +190,11 @@ fn chain_pipeline_descriptor(
         multisample: MultisampleState::default(),
         fragment: Some(FragmentState {
             shader,
-            shader_defs: Vec::new(),
+            shader_defs: if format == PACKED_HDR_FORMAT {
+                vec!["RETAIL_HDR_PACKED".into()]
+            } else {
+                Vec::new()
+            },
             entry_point: Some(kind.entry_point().into()),
             targets: vec![Some(ColorTargetState {
                 format,
@@ -598,6 +602,24 @@ pub(crate) fn encode_chain<'a>(
     }
 }
 
+fn ready_chain<T>(
+    hdr_enabled: bool,
+    load: impl FnOnce() -> Result<T, ()>,
+) -> Result<Option<T>, ()> {
+    hdr_enabled.then(load).transpose()
+}
+
+#[cfg(test)]
+#[test]
+fn hdr_bypass_does_not_look_up_chain_pipelines() {
+    assert_eq!(
+        ready_chain::<()>(false, || panic!("chain lookup")),
+        Ok(None)
+    );
+    assert_eq!(ready_chain::<()>(true, || Err(())), Err(()));
+    assert_eq!(ready_chain(true, || Ok(())), Ok(Some(())));
+}
+
 /// The chain, then the tonemap, of one view.
 fn run_retail_hdr(
     view: ViewQuery<(
@@ -616,27 +638,28 @@ fn run_retail_hdr(
     let Some(pipelines) = pipelines else {
         return;
     };
-    let chain_ids = if targets.key.3 == PACKED_HDR_FORMAT {
-        let Some(packed) = &pipelines.packed_chain else {
-            return;
-        };
-        packed
-    } else {
-        &pipelines.wide_chain
-    };
-    let chain: Vec<_> = chain_ids
-        .iter()
-        .filter_map(|id| pipeline_cache.get_render_pipeline(*id))
-        .map(|pipeline| &**pipeline)
-        .collect();
     let hdr_enabled = hdr.output.y == 0;
+    let Ok(chain) = ready_chain(hdr_enabled, || {
+        let chain_ids = if targets.key.3 == PACKED_HDR_FORMAT {
+            pipelines.packed_chain.as_ref().ok_or(())?
+        } else {
+            &pipelines.wide_chain
+        };
+        let chain: Vec<_> = chain_ids
+            .iter()
+            .filter_map(|id| pipeline_cache.get_render_pipeline(*id))
+            .map(|pipeline| &**pipeline)
+            .collect();
+        <[&wgpu::RenderPipeline; PassKind::ALL.len()]>::try_from(chain).map_err(|_| ())
+    }) else {
+        return;
+    };
     let display_id = if hdr_enabled {
         ids.tonemap
     } else {
         ids.copy_display
     };
-    let (Ok(chain), Some(display), Some(present), Some(settings)) = (
-        <[&wgpu::RenderPipeline; PassKind::ALL.len()]>::try_from(chain),
+    let (Some(display), Some(present), Some(settings)) = (
         pipeline_cache.get_render_pipeline(display_id),
         pipeline_cache.get_render_pipeline(ids.present),
         uniforms.uniforms().binding(),
@@ -651,7 +674,7 @@ fn run_retail_hdr(
     let state = targets.state.load(Ordering::Relaxed);
     let current = usize::from(state == 2);
     let next = 1 - current;
-    if hdr_enabled {
+    if let Some(chain) = chain {
         let plan = chain_plan(targets.levels.len() + 1, state != 0, current);
         let gpu = ChainGpu {
             layout: &pipeline_cache.get_bind_group_layout(&pipelines.chain_layout),

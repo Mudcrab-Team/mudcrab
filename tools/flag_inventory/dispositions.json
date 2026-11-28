@@ -14090,7 +14090,7 @@
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Destination Blend Mode is decoded and applied to RGB blend state for blended draws, but dropped when AlphaMode::Mask (nif_depth.rs:73) and unmapped pairs use the explicit sorted-draw reset or inherit path. Supported modes set the alpha blend factors."
+      "reason": "Destination Blend Mode supplies the generic RGB factors for blended draws. The generic mask path drops those factors. The Skyrim sorted path selects RGB and alpha blend factors independently of mask discard. A masked [4,7] draw uses mode 3. Unmapped pairs use mode 1."
     },
     "NIF.AlphaFlags.editor_alpha_threshold": {
       "disposition": "not-applicable",
@@ -14145,7 +14145,7 @@
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Source Blend Mode is decoded and applied to RGB blend state for blended draws, but dropped when AlphaMode::Mask (nif_depth.rs:73) and unmapped pairs use the explicit sorted-draw reset or inherit path. Supported modes set the alpha blend factors."
+      "reason": "Source Blend Mode supplies the generic RGB factors for blended draws. The generic mask path drops those factors. The Skyrim sorted path selects RGB and alpha blend factors independently of mask discard. A masked [4,7] draw uses mode 3. Unmapped pairs use mode 1."
     },
     "NIF.AlphaFlags.test_func": {
       "disposition": "dropped",
@@ -14251,7 +14251,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 9 (INV_DEST_ALPHA) maps in blend_factor() and the retail path selects from the SPEC-2 sorted-draw mode table."
+      "reason": "BlendFunction 9 (INV_DEST_ALPHA) maps directly on the generic path. For Skyrim sorted draws with [6,9], SPEC-2 section 4.2 selects the retail table entry and mode 2 replaces OneMinusDstAlpha with One."
     },
     "NIF.AlphaFunction.inv_dest_color": {
       "disposition": "partial",
@@ -14305,7 +14305,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 0 (ONE) maps in blend_factor() and the retail path selects from the SPEC-2 sorted-draw mode table."
+      "reason": "BlendFunction 0 (ONE) maps directly on the generic path. For Skyrim sorted draws with [0,0], SPEC-2 section 4.2 selects the retail table entry and mode 2 replaces the source One with SrcAlpha."
     },
     "NIF.AlphaFunction.src_alpha": {
       "disposition": "respected",
@@ -14347,7 +14347,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 2 (SRC_COLOR) maps in blend_factor() and the retail path selects from the SPEC-2 sorted-draw mode table."
+      "reason": "BlendFunction 2 (SRC_COLOR) maps directly on the generic path. For Skyrim sorted draws with [1,2], SPEC-2 section 4.2 selects the retail table entry and mode 4 replaces the destination Src with Zero."
     },
     "NIF.AlphaFunction.zero": {
       "disposition": "respected",

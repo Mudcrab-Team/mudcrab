@@ -1,6 +1,6 @@
 //! Frame image-space modifiers, from SPEC-2 section 2.3.
 
-use crate::retail_hdr::HdrBlock;
+use crate::retail_hdr::{HdrBlock, ImageSpaceReport};
 use bevy::prelude::*;
 
 /// A sampled modifier instance. The producer resolves the instance's animation curves.
@@ -100,10 +100,12 @@ pub(crate) struct RoomImageSpace {
     previous: Option<u32>,
     current: Option<u32>,
     elapsed: f32,
+    displayed: Option<(HdrBlock, ImageSpaceReport)>,
+    interrupted: Option<(HdrBlock, ImageSpaceReport)>,
 }
 
 impl RoomImageSpace {
-    pub(crate) fn forms(
+    fn forms(
         &mut self,
         cell: Option<u32>,
         room: Option<u32>,
@@ -114,7 +116,14 @@ impl RoomImageSpace {
             self.previous = None;
             self.current = room;
             self.elapsed = 3.0;
+            self.interrupted = None;
         } else if self.current != room {
+            // STAND-IN(#362): SPEC-2 §2.2 row 6 does not define an interrupted reset.
+            self.interrupted = if self.elapsed > 0.0 && self.elapsed < 3.0 {
+                self.displayed.take()
+            } else {
+                None
+            };
             self.previous = self.current;
             self.current = room;
             self.elapsed = 0.0;
@@ -122,12 +131,68 @@ impl RoomImageSpace {
         // SPEC-2 §2.2 row 6 advances on each update. The reset order is open. Advance
         // after a room reset so the new room does not flash before the fade starts.
         self.elapsed = (self.elapsed + seconds).min(3.0);
+        if self.elapsed == 3.0 {
+            self.interrupted = None;
+        }
         let s = self.elapsed / 3.0;
         let m = s * s * (3.0 - 2.0 * s);
         if m == 0.0 {
             return [(self.previous, 0.0), (self.current, 1.0)];
         }
         [(self.previous, 1.0 - m), (self.current, m)]
+    }
+
+    pub(crate) fn resolve(
+        &mut self,
+        cell: Option<u32>,
+        room: Option<u32>,
+        seconds: f32,
+        base: (HdrBlock, ImageSpaceReport),
+        resolve_form: impl Fn(u32) -> (HdrBlock, ImageSpaceReport),
+    ) -> (HdrBlock, ImageSpaceReport) {
+        let [(previous, old_share), (current, new_share)] = self.forms(cell, room, seconds);
+        let mut result = base.clone();
+        if (old_share > 0.0 && (previous.is_some() || self.interrupted.is_some()))
+            || current.is_some()
+        {
+            let mut parts = Vec::with_capacity(2);
+            let mut report = base.1.clone();
+            report.source = "room";
+            report.forms.clear();
+            let resolve = |form: Option<u32>| form.map_or_else(|| base.clone(), &resolve_form);
+            for (weight, form, frozen) in [
+                (old_share, previous, self.interrupted.as_ref()),
+                (new_share, current, None),
+            ] {
+                if weight == 0.0 {
+                    continue;
+                }
+                let (part, details) = frozen.cloned().unwrap_or_else(|| resolve(form));
+                parts.push((weight, part));
+                for (form, share) in details.forms {
+                    if let Some((_, total)) = report.forms.iter_mut().find(|(id, _)| *id == form) {
+                        *total += share * weight;
+                    } else {
+                        report.forms.push((form, share * weight));
+                    }
+                }
+                if frozen.is_some() || form.is_some() {
+                    for record in details.missing_records {
+                        if !report.missing_records.contains(&record) {
+                            report.missing_records.push(record);
+                        }
+                    }
+                    for field in details.defaulted_fields {
+                        if !report.defaulted_fields.contains(&field) {
+                            report.defaulted_fields.push(field);
+                        }
+                    }
+                }
+            }
+            result = (HdrBlock::blend(&parts), report);
+        }
+        self.displayed = Some(result.clone());
+        result
     }
 }
 
@@ -188,6 +253,43 @@ pub(crate) fn process_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupted_room_fade_starts_from_the_displayed_block() {
+        let mut state = RoomImageSpace::default();
+        let sample = |id: u32| {
+            (
+                HdrBlock {
+                    brightness: if id == 2 { 0.0 } else { 1.0 },
+                    ..HdrBlock::IMGS_CONSTRUCTOR_DEFAULT
+                },
+                ImageSpaceReport {
+                    source: "room",
+                    forms: vec![(id, 1.0)],
+                    missing_records: vec![],
+                    defaulted_fields: vec![],
+                    reason: None,
+                },
+            )
+        };
+        state.resolve(Some(1), Some(2), 0.1, sample(1), sample);
+        let (displayed, _) = state.resolve(Some(1), Some(3), 0.1, sample(1), sample);
+        let (next, report) = state.resolve(Some(1), Some(4), 0.1, sample(1), sample);
+        let t = 0.1_f32 / 3.0;
+        let m = t * t * (3.0 - 2.0 * t);
+        assert_eq!(
+            next,
+            HdrBlock::blend(&[(1.0 - m, displayed), (m, sample(4).0)])
+        );
+        assert_eq!(
+            report
+                .forms
+                .iter()
+                .map(|(form, _)| *form)
+                .collect::<Vec<_>>(),
+            [2, 3, 4]
+        );
+    }
 
     #[test]
     fn paused_room_change_uses_the_current_block_at_zero_weight() {

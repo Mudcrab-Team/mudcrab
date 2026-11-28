@@ -854,45 +854,15 @@ pub(crate) fn select_retail_image_space(
                     .find(|room| room.contains(position.translation))
                     .and_then(|room| room.image_space)
             });
-    let forms = room.forms(
-        cell,
-        room_form,
-        // STAND-IN(#362): fixtures without a Bevy clock leave room time unchanged.
-        time.as_deref().map_or(0.0, Time::delta_secs),
-    );
-    if let Some(lookup) = lookup.as_ref()
-        && forms
-            .iter()
-            .any(|(form, weight)| form.is_some() && *weight > 0.0)
-    {
-        let mut parts = Vec::with_capacity(2);
-        let mut room_report = report.clone();
-        room_report.source = "room";
-        room_report.forms.clear();
-        for (form, weight) in forms {
-            if weight == 0.0 {
-                continue;
-            }
-            if let Some(form) = form {
-                let (part, details) = blend_forms("room", &[(form, 1.0)], lookup);
-                parts.push((weight, part));
-                room_report.forms.push((form, weight));
-                room_report.missing_records.extend(details.missing_records);
-                room_report
-                    .defaulted_fields
-                    .extend(details.defaulted_fields);
-            } else {
-                parts.push((weight, block));
-                room_report.forms.extend(
-                    report
-                        .forms
-                        .iter()
-                        .map(|(form, share)| (*form, share * weight)),
-                );
-            }
-        }
-        block = HdrBlock::blend(&parts);
-        report = room_report;
+    if let Some(lookup) = lookup.as_ref() {
+        (block, report) = room.resolve(
+            cell,
+            room_form,
+            // STAND-IN(#362): fixtures without a Bevy clock leave room time unchanged.
+            time.as_deref().map_or(0.0, Time::delta_secs),
+            (block, report),
+            |form| blend_forms("room", &[(form, 1.0)], lookup),
+        );
     }
     if let Some(record) = source.as_deref().and_then(|source| source.record.as_ref())
         && let Some(lookup) = lookup.as_ref()

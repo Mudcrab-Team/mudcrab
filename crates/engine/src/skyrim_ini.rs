@@ -411,7 +411,15 @@ impl SkyrimIni {
         }
         if let Some(raw) = self.get("General", "iUnstableFrameTimeHistorySize") {
             match raw.parse::<usize>() {
-                Ok(value) if value >= 3 => hdr.frame_time_history_size = value,
+                Ok(value) if value >= 3 => {
+                    let max = crate::retail_hdr_chain::MAX_FRAME_TIME_HISTORY;
+                    hdr.frame_time_history_size = value.min(max);
+                    if value > max {
+                        eprintln!(
+                            "warning: clamping iUnstableFrameTimeHistorySize={value} to {max}"
+                        );
+                    }
+                }
                 _ => eprintln!(
                     "warning: ignoring iUnstableFrameTimeHistorySize={raw:?}; expected a whole number of at least 3"
                 ),
@@ -1063,6 +1071,15 @@ Display bUseMultipleLuminanceReferences 1 - -
         for (key, template, ultra, actual) in values {
             assert_eq!(Some(actual), ultra.or(template), "{key}");
         }
+    }
+
+    #[test]
+    fn oversized_hdr_history_is_capped_at_import() {
+        let config = apply("[General]\niUnstableFrameTimeHistorySize=1000000\n");
+        assert_eq!(
+            config.retail_hdr.frame_time_history_size,
+            crate::retail_hdr_chain::MAX_FRAME_TIME_HISTORY
+        );
     }
 
     #[test]

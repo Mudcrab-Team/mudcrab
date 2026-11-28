@@ -6,6 +6,8 @@
 pub const MAX_FRAME_SECONDS: f32 = 1.0 / 6.0;
 /// The history of the timer, `iUnstableFrameTimeHistorySize` (compiled default 8).
 const HISTORY: usize = 8;
+/// STAND-IN(#362): bound frame-history storage and per-frame scan work.
+pub(crate) const MAX_FRAME_TIME_HISTORY: usize = 256;
 /// The value the timer's history starts with (NEEDS 27).
 const HISTORY_PREFILL: f32 = 0.016;
 /// The cap on the largest sample that the trimmed mean removes (NEEDS 27).
@@ -39,19 +41,21 @@ impl FrameTimer {
         paused: bool,
         config: &super::retail_hdr::RetailHdrConfig,
     ) -> f32 {
-        let capacity = config.frame_time_history_size.max(3);
+        let capacity = config
+            .frame_time_history_size
+            .clamp(3, MAX_FRAME_TIME_HISTORY);
         if self.capacity != capacity {
             self.history.clear();
             self.capacity = capacity;
             self.next = 0;
         }
-        let smoothed = self.push(seconds);
+        self.record(seconds);
         if paused {
             return config.menu_adapt_timer;
         }
         let step = match config.fps_clamp {
             1..=199 => 1.0 / f32::from(config.fps_clamp),
-            _ if config.compensate_unstable_frame_time => smoothed,
+            _ if config.compensate_unstable_frame_time => self.trimmed_mean(),
             _ => frame_sample(seconds),
         };
         step * multiplier
@@ -59,7 +63,13 @@ impl FrameTimer {
 
     /// Records the time of the frame that just ended and returns `T`. A value that is not finite
     /// or is negative counts as 0.
+    #[cfg(test)]
     pub fn push(&mut self, seconds: f32) -> f32 {
+        self.record(seconds);
+        self.trimmed_mean()
+    }
+
+    fn record(&mut self, seconds: f32) {
         let seconds = frame_sample(seconds);
         if self.next == self.history.len() {
             self.history.push(seconds);
@@ -67,6 +77,9 @@ impl FrameTimer {
             self.history[self.next] = seconds;
         }
         self.next = (self.next + 1) % self.capacity;
+    }
+
+    fn trimmed_mean(&self) -> f32 {
         let missing = self.capacity - self.history.len();
         let mut largest = if missing > 0 { HISTORY_PREFILL } else { 0.0 };
         let mut smallest = if missing > 0 {

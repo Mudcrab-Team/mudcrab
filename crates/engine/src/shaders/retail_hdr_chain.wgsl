@@ -24,9 +24,9 @@ fn texel() -> vec2<f32> {
 // values differ by channel. The wide variant retains signed half-float values.
 fn store_hdr(value: vec3<f32>) -> vec4<f32> {
     var colour = finite(value);
-    if hdr.output.x == 0u {
-        colour = clamp(colour, vec3<f32>(0.0), vec3<f32>(65024.0, 65024.0, 64512.0));
-    }
+#ifdef RETAIL_HDR_PACKED
+    colour = clamp(colour, vec3<f32>(0.0), vec3<f32>(65024.0, 65024.0, 64512.0));
+#endif
     return vec4<f32>(colour, 1.0);
 }
 
