@@ -8,6 +8,13 @@ fn noise_multiplier(base: vec3<f32>, red: f32) -> f32 {
     return 0.37 + 0.833333 * mixed_red;
 }
 
+// Target 0 alpha of retail's near landscape with the distant blend, `Bd.a md s cb2[3].z vc.a`,
+// where the landscape's property alpha `cb2[3].z` is one. Without the blend the alpha is 0
+// (SPEC-1 section 9.2, [near-lighting.md](../../../../docs/specs/engine/near-lighting.md)).
+fn retail_land_alpha(distant_alpha: f32, multiplier: f32, s: f32, vertex_alpha: f32) -> f32 {
+    return distant_alpha * multiplier * s * vertex_alpha;
+}
+
 // Sample at three times the UV and use the non-projected 0.8h weight
 // from https://github.com/Mudcrab-Team/skyrim_decomp/pull/946, G02.
 fn noisy_land_colour(

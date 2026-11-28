@@ -20,9 +20,13 @@
 //! one, the height map (slot 3) to a parallax surface, and the environment cube and mask (slots 4
 //! and 5) to an environment surface (section 9.2).
 //!
-//! Limits, reported rather than guessed: a TXST that fills the specular or detail slot is not
-//! applied and the shape keeps its model material. `mudcrab` applies TX00 (diffuse) and TX01
-//! (normal) only. STAND-IN(#490): the glow map reaches a surface only when its model has one.
+//! The specular slot is the mask of a model-space surface and the detail slot belongs to the face
+//! and multilayer techniques. A swap reaches no model-space or face surface, so `skyrim` applies a
+//! set that fills either one and samples neither.
+//!
+//! Limits, reported rather than guessed: `mudcrab` applies TX00 (diffuse) and TX01 (normal) only,
+//! and a set that fills another slot keeps the model material there.
+//! STAND-IN(#490): the glow map reaches a surface only when its model has one.
 //! Directional MATO layers and a general TXST shader remain with their own owners.
 
 use crate::nif_depth::NifDepthMaterial;
@@ -647,12 +651,16 @@ fn apply_swaps(
                         retail,
                         unapplied,
                     } => {
-                        // A profile that decodes colour applies the first two slots only.
+                        // A profile that decodes colour applies the first two slots only. Under
+                        // `skyrim` no technique that a swap reaches samples the specular or
+                        // detail slot (SPEC-1 sections 5 and 9.2), so such a set applies.
                         let mut refused = unapplied.clone();
                         let mut retail = retail.borrowed();
                         if colour_srgb {
                             refused.extend(retail.filled().map(|(name, _)| name));
                             retail = RetailSlots::default();
+                        } else {
+                            refused.clear();
                         }
                         if !refused.is_empty() {
                             skipped.push(format!(

@@ -1483,7 +1483,7 @@
     "ACTI.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -1512,7 +1512,7 @@
     "ACTI.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -1560,7 +1560,7 @@
     "ACTI.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -1589,7 +1589,7 @@
     "ACTI.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3200,7 +3200,7 @@
     "ADDN.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3229,7 +3229,7 @@
     "ADDN.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3277,7 +3277,7 @@
     "ADDN.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3306,7 +3306,7 @@
     "ADDN.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3691,7 +3691,7 @@
     "ALCH.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3720,7 +3720,7 @@
     "ALCH.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3764,7 +3764,7 @@
     "ALCH.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -3793,7 +3793,7 @@
     "ALCH.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -5016,7 +5016,7 @@
     "AMMO.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -5045,7 +5045,7 @@
     "AMMO.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -5089,7 +5089,7 @@
     "AMMO.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -5118,7 +5118,7 @@
     "AMMO.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -6330,7 +6330,7 @@
     "APPA.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -6359,7 +6359,7 @@
     "APPA.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -6403,7 +6403,7 @@
     "APPA.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -6432,7 +6432,7 @@
     "APPA.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -8918,7 +8918,7 @@
     "ARMO.MO2S.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -8947,7 +8947,7 @@
     "ARMO.MO2S.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -8976,7 +8976,7 @@
     "ARMO.MO2S.alternate_textures_alternate_texture_3d_name": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -9005,7 +9005,7 @@
     "ARMO.MO2S.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -9034,7 +9034,7 @@
     "ARMO.MO2S.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -9217,7 +9217,7 @@
     "ARMO.MO4S.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -9246,7 +9246,7 @@
     "ARMO.MO4S.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -9275,7 +9275,7 @@
     "ARMO.MO4S.alternate_textures_alternate_texture_3d_name": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -9304,7 +9304,7 @@
     "ARMO.MO4S.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -9333,7 +9333,7 @@
     "ARMO.MO4S.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -10714,7 +10714,7 @@
     "ARTO.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -10743,7 +10743,7 @@
     "ARTO.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -10791,7 +10791,7 @@
     "ARTO.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -10820,7 +10820,7 @@
     "ARTO.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -11216,7 +11216,7 @@
     "BOOK.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -11245,7 +11245,7 @@
     "BOOK.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -11289,7 +11289,7 @@
     "BOOK.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -11318,7 +11318,7 @@
     "BOOK.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -14571,7 +14571,7 @@
     "CONT.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -14600,7 +14600,7 @@
     "CONT.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -14648,7 +14648,7 @@
     "CONT.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -14677,7 +14677,7 @@
     "CONT.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -16456,7 +16456,7 @@
     "DOOR.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -16485,7 +16485,7 @@
     "DOOR.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -16533,7 +16533,7 @@
     "DOOR.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -16562,7 +16562,7 @@
     "DOOR.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -18565,7 +18565,7 @@
     "FLOR.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -18594,7 +18594,7 @@
     "FLOR.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -18642,7 +18642,7 @@
     "FLOR.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -18671,7 +18671,7 @@
     "FLOR.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -20543,7 +20543,7 @@
     "FURN.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -20572,7 +20572,7 @@
     "FURN.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -20620,7 +20620,7 @@
     "FURN.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -20649,7 +20649,7 @@
     "FURN.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -23021,7 +23021,7 @@
     "HAZD.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -23050,7 +23050,7 @@
     "HAZD.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -23098,7 +23098,7 @@
     "HAZD.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -23127,7 +23127,7 @@
     "HAZD.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -24517,7 +24517,7 @@
     "INGR.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -24546,7 +24546,7 @@
     "INGR.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -24590,7 +24590,7 @@
     "INGR.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -24619,7 +24619,7 @@
     "INGR.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -25883,7 +25883,7 @@
     "KEYM.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -25912,7 +25912,7 @@
     "KEYM.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -25956,7 +25956,7 @@
     "KEYM.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -25985,7 +25985,7 @@
     "KEYM.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -29447,7 +29447,7 @@
     "LIGH.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -29476,7 +29476,7 @@
     "LIGH.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -29524,7 +29524,7 @@
     "LIGH.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -29553,7 +29553,7 @@
     "LIGH.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -31414,7 +31414,7 @@
     "MISC.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -31443,7 +31443,7 @@
     "MISC.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -31487,7 +31487,7 @@
     "MISC.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -31516,7 +31516,7 @@
     "MISC.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -33016,7 +33016,7 @@
     "MSTT.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -33045,7 +33045,7 @@
     "MSTT.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -33093,7 +33093,7 @@
     "MSTT.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -33122,7 +33122,7 @@
     "MSTT.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -58555,7 +58555,7 @@
     "PROJ.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -58584,7 +58584,7 @@
     "PROJ.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -58632,7 +58632,7 @@
     "PROJ.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -58661,7 +58661,7 @@
     "PROJ.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -64553,7 +64553,7 @@
     "SCRL.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -64582,7 +64582,7 @@
     "SCRL.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -64626,7 +64626,7 @@
     "SCRL.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -64655,7 +64655,7 @@
     "SCRL.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -65878,7 +65878,7 @@
     "SLGM.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -65907,7 +65907,7 @@
     "SLGM.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -65951,7 +65951,7 @@
     "SLGM.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -65980,7 +65980,7 @@
     "SLGM.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66379,7 +66379,7 @@
     "STAT.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66407,7 +66407,7 @@
     "STAT.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66454,7 +66454,7 @@
     "STAT.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66482,7 +66482,7 @@
     "STAT.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66855,7 +66855,7 @@
     "TACT.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66884,7 +66884,7 @@
     "TACT.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66928,7 +66928,7 @@
     "TACT.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -66957,7 +66957,7 @@
     "TACT.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -68420,7 +68420,7 @@
     "TREE.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -68449,7 +68449,7 @@
     "TREE.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -68497,7 +68497,7 @@
     "TREE.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -68526,7 +68526,7 @@
     "TREE.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -70248,7 +70248,7 @@
     "TXST.TX00.diffuse": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Consumed on terrain (TX00), composed actor skins and alternate-texture swaps under both visual profiles. Missing: A texture set that fills height, specular or detail is refused (object_materials.rs UNAPPLIED_SLOTS).",
+      "reason": "Consumed on terrain, composed actor skins and alternate-texture swaps under both visual profiles. Missing: swaps reach no model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -70284,7 +70284,7 @@
     "TXST.TX01.normal_gloss": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Consumed on terrain (TX01), composed actor skins and alternate-texture swaps under both visual profiles. Missing: A texture set that fills height, specular or detail is refused (object_materials.rs UNAPPLIED_SLOTS).",
+      "reason": "Consumed on terrain, composed actor skins and alternate-texture swaps under both visual profiles. Missing: swaps reach no model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -70448,7 +70448,7 @@
     "TXST.TX06.multilayer": {
       "disposition": "dropped",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to texture_sets and converted. Alternate-texture swaps refuse a set that fills this slot (object_materials.rs UNAPPLIED_SLOTS).",
+      "reason": "Exported to texture_sets and converted. Not sampled: mudcrab refuses a swap set that fills this slot, and skyrim applies the set without it, because only the face and multilayer techniques read it and a swap reaches neither.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -70480,7 +70480,7 @@
     "TXST.TX07.backlight_mask_specular": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to texture_sets and applied to composed actor skins. Alternate-texture swaps refuse a set that fills this slot (object_materials.rs UNAPPLIED_SLOTS).",
+      "reason": "Exported to texture_sets and applied to composed actor skins. Alternate-texture swaps do not sample it: mudcrab refuses such a set, and skyrim applies the set without it, because only model-space surfaces read it and a swap reaches none.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/exporter.rs",
@@ -72413,7 +72413,7 @@
     "WEAP.MODS.alternate_textures": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -72442,7 +72442,7 @@
     "WEAP.MODS.alternate_textures_alternate_texture_3d_index": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -72486,7 +72486,7 @@
     "WEAP.MODS.alternate_textures_alternate_texture_new_texture": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -72515,7 +72515,7 @@
     "WEAP.MODS.alternate_textures_count": {
       "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: a set that fills height, specular or detail is refused (object_materials.rs).",
+      "reason": "Exported to base_texture_swaps for every base with a world model and applied to placed instances: NullTextureSet hides, mudcrab applies TX00/TX01, skyrim also the glow map, cube and mask. Missing: mudcrab refuses a set that fills a slot past the normal map, and no profile swaps a model-space or external-emittance surface.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",

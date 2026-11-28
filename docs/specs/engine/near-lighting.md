@@ -136,7 +136,7 @@ changes the picture is unverified.
 | The environment fade is 1 and the technique is not dropped at `fEnvmapLODFadeEnd`; the eye technique and a model-space reflection are not drawn; a swapped glow map reaches a surface only when its model has one; eye ambient uses the surface normal | STAND-IN(#490): authored environment and eye cubemaps |
 | Projected UV, soft, rim, back, anisotropic, tree and multilayer variants shade as plain surfaces | STAND-IN(#362): the other Lighting shader variants |
 | A parallax pass without specular, soft, rim, back or ambient specular takes the camera's view vector; what retail gives it is unverified | STAND-IN(#362): the parallax view constant |
-| Landscape specular is not drawn, because SPEC-1 does not give the source of the layer exponent; the landscape keeps an output alpha of 1, because Mudcrab passes read the scene alpha | STAND-IN(#547): the LTEX specular exponent per layer |
+| Landscape specular is not drawn, because SPEC-1 does not give the source of the layer exponent | STAND-IN(#547): the LTEX specular exponent per layer |
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
 | Terrain LOD takes the plain near sum | STAND-IN(#946): LOD techniques excluded |
 | A short `XCLL` without fog power or max takes 1 | STAND-IN(#695): short cell data |

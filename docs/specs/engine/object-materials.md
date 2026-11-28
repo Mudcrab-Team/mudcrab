@@ -86,9 +86,10 @@ read for this count.
 
 ## Deliberate limits
 
-- A TXST that fills a slot its profile does not apply is not applied, and its shape keeps the
-  model material: TX02 to TX07 under `mudcrab`, and the specular (TX07) and detail (TX06) slots
-  under `skyrim`.
+- Under `mudcrab` a TXST that fills TX02 to TX07 is not applied, and its shape keeps the model
+  material. Under `skyrim` the specular (TX07) and detail (TX06) slots are not sampled: the
+  specular slot is the mask of a model-space surface, the detail slot belongs to the face and
+  multilayer techniques, and a swap reaches neither a model-space nor a face surface.
 - STAND-IN(#490): the swapped glow map reaches a surface only when its model has a glow map.
 - The texture set flags (`DNAM`) are not read: SPEC-1 does not define their effect.
 - Models with a skin, a static fallback or

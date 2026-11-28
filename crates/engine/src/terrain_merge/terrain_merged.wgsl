@@ -1,4 +1,4 @@
-#import engine::terrain_blend::{NearTerrainBlendSettings, noisy_land_colour, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
+#import engine::terrain_blend::{NearTerrainBlendSettings, noise_multiplier, noisy_land_colour, retail_land_alpha, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
 #import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_tangent_normal, terrain_tbn}
 
 // The shared terrain shader of merged cells (#215): one material for every cell.
@@ -368,10 +368,18 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
     let divisor = terrain_blend_divisor(total, retail);
     color = color / divisor;
     let seam_weight = terrain_blend_weight(in.seam_ramp, seam.atlas.w);
+    // Retail's landscape writes a target 0 alpha of 0, or the distant blend's.
+    var land_alpha = 0.0;
     if seam.atlas.w != 0.0 {
         let distant_uv = terrain_atlas_uv(in.uv, seam.atlas);
-        let distant = textureSample(seam_overlay, seam_overlay_sampler, distant_uv).rgb;
-        let noisy = noisy_land_colour(distant, seam_noise, seam_noise_sampler, distant_uv);
+        let distant = textureSample(seam_overlay, seam_overlay_sampler, distant_uv);
+        let noisy = noisy_land_colour(distant.rgb, seam_noise, seam_noise_sampler, distant_uv);
+        let red = textureSample(seam_noise, seam_noise_sampler, 3.0 * distant_uv).r;
+        var vertex_alpha = 1.0;
+#ifdef VERTEX_COLORS
+        vertex_alpha = in.color.a;
+#endif
+        land_alpha = retail_land_alpha(distant.a, noise_multiplier(distant.rgb, red), seam_weight, vertex_alpha);
         color = vec4<f32>(mix(color.rgb, noisy, seam_weight), color.a);
     }
     // Technique 19 order (skyrim_decomp#979): noise scales the distant sample before blending.
@@ -398,5 +406,8 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
         out.color = pbr_input.material.base_color;
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    if retail {
+        out.color.a = land_alpha;
+    }
     return out;
 }

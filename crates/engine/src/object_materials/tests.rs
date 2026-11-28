@@ -1023,7 +1023,8 @@ fn the_skyrim_profile_swaps_texture_sets_with_raw_colour_views() {
 }
 
 /// SPEC-1 section 9.2: under `skyrim` an environment surface takes the swapped set's cube and
-/// mask, and a surface of another technique takes neither. `mudcrab` refuses such a set.
+/// mask, and a surface of another technique takes neither. A filled detail or specular slot does
+/// not stop the swap there. `mudcrab` refuses such a set.
 #[test]
 fn the_skyrim_profile_swaps_the_environment_cube_and_mask() {
     for (skyrim, scale) in [(true, 2.0), (true, 0.0), (false, 2.0)] {
@@ -1039,6 +1040,9 @@ fn the_skyrim_profile_swaps_the_environment_cube_and_mask() {
                     (b"TX00", b"red.dds\0".to_vec()),
                     (b"TX02", b"blue.dds\0".to_vec()),
                     (b"TX05", b"cube.dds\0".to_vec()),
+                    // Slots that no technique a swap reaches samples; the files do not exist.
+                    (b"TX06", b"unread_detail.dds\0".to_vec()),
+                    (b"TX07", b"unread_specular.dds\0".to_vec()),
                 ],
             ),
         );
