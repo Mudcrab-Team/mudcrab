@@ -502,11 +502,11 @@ impl CellFog {
     fn from_lighting(lighting: &Lighting) -> Option<Self> {
         let far = lighting.fog_far.unwrap_or(0.0);
         // retail-default: RF-LIGHT-CPU-014, the getter reads a missing field as 0.
-        let authored_near = lighting.fog_near.unwrap_or(0.0);
-        let near = if authored_near <= 0.0 || authored_near > far {
+        let near = lighting.fog_near.unwrap_or(0.0);
+        let near = if near <= 0.0 || near > far {
             FOG_NEAR_CLAMP_FRACTION * far
         } else {
-            authored_near
+            near
         };
         let max = lighting.fog_max.unwrap_or(1.0);
         (far > 0.0 && near < far && max > 0.0).then(|| Self {

@@ -13012,7 +13012,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13039,7 +13039,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13066,7 +13066,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13093,7 +13093,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13120,7 +13120,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13147,7 +13147,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13196,7 +13196,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13223,7 +13223,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13250,7 +13250,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13277,7 +13277,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13304,7 +13304,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13331,7 +13331,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13380,7 +13380,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13407,7 +13407,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13434,7 +13434,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13461,7 +13461,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13488,7 +13488,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13515,7 +13515,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13655,7 +13655,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13682,7 +13682,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13709,7 +13709,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13762,7 +13762,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13789,7 +13789,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13923,7 +13923,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13950,7 +13950,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -13977,7 +13977,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -14015,7 +14015,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -14042,7 +14042,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -14069,7 +14069,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -14131,7 +14131,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -14158,7 +14158,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/light_dynamics.rs",
@@ -28702,7 +28702,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
@@ -28760,7 +28760,7 @@
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
-          "anchor": "let authored_near = lighting.fog_near.unwrap_or(0.0);"
+          "anchor": "let near = lighting.fog_near.unwrap_or(0.0);"
         },
         {
           "path": "crates/engine/src/world/environment/interior.rs",
