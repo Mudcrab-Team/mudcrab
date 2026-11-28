@@ -101,6 +101,12 @@ pub struct DoorLinkRow {
     pub arrival_position: [f32; 3],
     /// Arrival rotation in Creation-engine radians (`XTEL` bytes 16..28).
     pub arrival_rotation: [f32; 3],
+    /// The door reference's record header flags (`references.header_flags`). `None` when the
+    /// database has no such column: the flags are then unknown, never read as zero.
+    pub reference_flags: Option<u32>,
+    /// The base `DOOR` record's `FNAM` flags byte, read from `records.data`. `None` when the
+    /// database has no `records.data`, the base record is absent, or it does not decode.
+    pub base_flags: Option<u8>,
 }
 
 /// A `lights` row as the converted database stores it
@@ -1582,6 +1588,50 @@ const ABSENT_DOOR_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL"
 
 const DOOR_JOIN: &str = " LEFT JOIN door_links d ON d.ref_id=r.id";
 
+/// The door reference's own header flags and its base `DOOR` record's raw subrecords, read by name
+/// after every positional column. The blob is selected only for a row that has a `door_links` row
+/// and a `DOOR` base, so no other reference pays for it. Each is `NULL` where the database lacks
+/// the source column or table; see [`DoorLinkRow::reference_flags`] and
+/// [`DoorLinkRow::base_flags`].
+const DOOR_REFERENCE_FLAGS_ALIAS: &str = "door_reference_flags";
+const DOOR_BASE_DATA_ALIAS: &str = "door_base_data";
+const DOOR_BASE_DATA_COLUMN: &str =
+    "CASE WHEN d.ref_id IS NOT NULL AND b.record_type='DOOR' THEN b.data END";
+/// `DOOR.FNAM` is one flags byte (xEdit `wbDefinitionsTES5.pas`, DOOR; CommonLibSSE-NG
+/// `TESObjectDOOR::Flag`), kept in the converter's archived subrecord list of the record.
+const DOOR_FNAM_TAG: [u8; 4] = *b"FNAM";
+
+/// The `FNAM` flags byte of an archived base `DOOR` record, or `None` when the blob does not decode
+/// or carries no `FNAM`. SQLite gives no alignment guarantee, so the blob is copied first.
+fn door_flags_from_record(record: &[u8]) -> Option<u8> {
+    let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(record.len());
+    aligned.extend_from_slice(record);
+    let record = match rkyv::from_bytes::<shared::records::ArchivedRecordData, rkyv::rancor::Error>(
+        &aligned,
+    ) {
+        Ok(record) => record,
+        Err(error) => {
+            bevy::log::debug!(
+                error = %error,
+                "archived DOOR record failed to decode; door flags omitted"
+            );
+            return None;
+        }
+    };
+    let fnam = record
+        .subrecords
+        .iter()
+        .find(|subrecord| subrecord.tag == DOOR_FNAM_TAG)?;
+    if fnam.data.len() != 1 {
+        bevy::log::warn!(
+            len = fnam.data.len(),
+            "DOOR.FNAM subrecord has unexpected byte length (expected 1); door flags omitted"
+        );
+        return None;
+    }
+    Some(fnam.data[0])
+}
+
 /// The `lights` row of the reference's base record, in the order [`map_reference`] reads them.
 const LIGHT_COLUMNS: &str = "l.radius,l.color_r,l.color_g,l.color_b,l.flags";
 
@@ -1664,6 +1714,14 @@ const STATIC_FLAGS_INDEX: usize = REFERENCE_ENABLE_START + 3;
 
 /// The record header flag Skyrim sets on editor-only base records (`0x00800000`, "Is Marker").
 const MARKER_RECORD_FLAG: u32 = 0x0080_0000;
+
+/// Whether `records` carries the archived `data` column the base `DOOR` flags are read from.
+fn has_record_data(connection: &Connection) -> Result<bool> {
+    let count: i64 = connection
+        .prepare_cached("SELECT COUNT(*) FROM pragma_table_info('records') WHERE name='data'")?
+        .query_row([], |row| row.get(0))?;
+    Ok(count > 0)
+}
 
 fn has_records(connection: &Connection) -> Result<bool> {
     let count: i64 = connection
@@ -1894,11 +1952,21 @@ impl ReferenceQuery {
                 |row| row.get(0),
             )?;
         let day_part_columns = emittance_day_part_columns(has_emittance);
+        let door_reference_flags = match (has_door_links, enable_column_count) {
+            (true, 3) => "r.header_flags",
+            _ => "NULL",
+        };
+        let door_base_data = if has_door_links && has_records && has_record_data(connection)? {
+            DOOR_BASE_DATA_COLUMN
+        } else {
+            "NULL"
+        };
         Ok(Self {
             columns: format!(
                 "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
                  {door_columns},{emittance_columns},{reference_enable_columns},\
-                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column},{flicker_columns},{day_part_columns}"
+                 {STATIC_FLAGS_COLUMN},{fade_column},{falloff_column},{reference_light_columns},{fade_status_column},{radius_status_column},{flicker_columns},{day_part_columns},\
+                 {door_reference_flags} AS {DOOR_REFERENCE_FLAGS_ALIAS},{door_base_data} AS {DOOR_BASE_DATA_ALIAS}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
@@ -2339,6 +2407,10 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
                     destination_worldspace_id: row.get(27)?,
                     arrival_position: [value(0), value(1), value(2)],
                     arrival_rotation: [value(3), value(4), value(5)],
+                    reference_flags: row.get(DOOR_REFERENCE_FLAGS_ALIAS)?,
+                    base_flags: row
+                        .get::<_, Option<Vec<u8>>>(DOOR_BASE_DATA_ALIAS)?
+                        .and_then(|record| door_flags_from_record(&record)),
                 })
             } else {
                 bevy::log::debug!(
@@ -4833,6 +4905,9 @@ mod tests {
                         destination_worldspace_id: None,
                         arrival_position: [10.5, -20.25, 30.0],
                         arrival_rotation: [0.0, 0.0, 1.5],
+                        // The fixture has neither reference header flags nor a records table.
+                        reference_flags: None,
+                        base_flags: None,
                     }),
                     "doors={doors}, emittance={emittance}"
                 );
@@ -4870,11 +4945,137 @@ mod tests {
                 destination_worldspace_id: None,
                 arrival_position: [10.5, -20.25, 30.0],
                 arrival_rotation: [0.0, 0.0, 1.5],
+                reference_flags: None,
+                base_flags: None,
             })
         );
         assert_eq!(door(31).unwrap().destination_worldspace_id, Some(60));
         assert_eq!(door(32).unwrap().destination_cell_id, None);
         assert_eq!(payload.references.len(), 3);
+    }
+
+    /// A `records` table with archived `DOOR` data for base 20, the base of references 30 and 31.
+    fn add_door_records(connection: &Connection, fnam: Option<u8>) {
+        connection
+            .execute_batch(
+                "CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT NOT NULL,data BLOB);",
+            )
+            .unwrap();
+        let mut subrecords = vec![(*b"EDID", b"TestDoor\0".to_vec())];
+        subrecords.extend(fnam.map(|flags| (*b"FNAM", vec![flags])));
+        connection
+            .execute(
+                "INSERT INTO records VALUES(20,'DOOR',?1)",
+                [water_record(subrecords)],
+            )
+            .unwrap();
+    }
+
+    fn door_of(payload: &CellPayload, form_id: u32) -> DoorLinkRow {
+        payload
+            .references
+            .iter()
+            .find(|reference| reference.form_id == form_id)
+            .and_then(|reference| reference.door.clone())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_door_row_carries_the_reference_header_flags_and_the_base_door_flags() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        enable_columns(&connection);
+        add_door_records(&connection, Some(0x0E));
+        connection
+            .execute_batch(
+                "UPDATE \"references\" SET header_flags=0x500 WHERE id=30;
+                 UPDATE \"references\" SET header_flags=0x400 WHERE id=31;",
+            )
+            .unwrap();
+
+        let payload = exterior_payload(&connection);
+        let inaccessible = door_of(&payload, 30);
+        assert_eq!(inaccessible.reference_flags, Some(0x500));
+        assert_eq!(inaccessible.base_flags, Some(0x0E));
+        assert!(
+            crate::doors::load_door(30, Some(&inaccessible)).is_none(),
+            "the 0x100 bit makes the reference no load door"
+        );
+        let usable = door_of(&payload, 31);
+        assert_eq!(usable.reference_flags, Some(0x400));
+        let door = crate::doors::load_door(31, Some(&usable)).unwrap();
+        assert!(door.is_automatic() && door.is_hidden());
+    }
+
+    #[test]
+    fn an_old_database_omits_the_door_flags_instead_of_inventing_them() {
+        // No header_flags column, no records table: both fields unknown, the door still loads.
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        let payload = exterior_payload(&connection);
+        let row = door_of(&payload, 31);
+        assert_eq!((row.reference_flags, row.base_flags), (None, None));
+        let door = crate::doors::load_door(31, Some(&row)).unwrap();
+        assert_eq!(door.flags, None);
+
+        // A records table without its data column reads the same way, with the reference flags known.
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        enable_columns(&connection);
+        connection
+            .execute_batch(
+                "CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT NOT NULL);
+                 INSERT INTO records VALUES(20,'DOOR');",
+            )
+            .unwrap();
+        let row = door_of(&exterior_payload(&connection), 31);
+        assert_eq!((row.reference_flags, row.base_flags), (Some(0), None));
+    }
+
+    #[test]
+    fn a_base_door_record_without_fnam_or_with_a_corrupt_blob_has_no_base_flags() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        add_door_records(&connection, None);
+        assert_eq!(door_of(&exterior_payload(&connection), 31).base_flags, None);
+        connection
+            .execute(
+                "UPDATE records SET data=?1 WHERE form_id=20",
+                [vec![1u8, 2, 3]],
+            )
+            .unwrap();
+        assert_eq!(door_of(&exterior_payload(&connection), 31).base_flags, None);
+        // A base that is not a DOOR is not read.
+        connection
+            .execute(
+                "UPDATE records SET record_type='STAT', data=?1 WHERE form_id=20",
+                [water_record(vec![(*b"FNAM", vec![0x02])])],
+            )
+            .unwrap();
+        assert_eq!(door_of(&exterior_payload(&connection), 31).base_flags, None);
+    }
+
+    #[test]
+    fn a_door_flags_byte_is_read_only_from_the_door_fnam() {
+        let record = water_record(vec![
+            (*b"EDID", b"AutoLoadDoor01\0".to_vec()),
+            (*b"FNAM", vec![0x02]),
+        ]);
+        assert_eq!(door_flags_from_record(&record), Some(0x02));
+        assert_eq!(door_flags_from_record(&[]), None);
+        assert_eq!(door_flags_from_record(&water_record(vec![])), None);
+        assert_eq!(
+            door_flags_from_record(&water_record(vec![(*b"FNAM", vec![])])),
+            None
+        );
+        assert_eq!(
+            door_flags_from_record(&water_record(vec![(*b"FNAM", vec![0x02, 0x00])])),
+            None
+        );
     }
 
     #[test]
