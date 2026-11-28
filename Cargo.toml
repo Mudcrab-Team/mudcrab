@@ -61,12 +61,13 @@ project-wormhole-esm = "0.1.0"
 # decoder shares the fixed zstd with the converter. The advisories and the removal
 # criteria are in vendor/bevy_image/README.mudcrab.md.
 #
-# bevy_pbr and bevy_render are vendored for Bevy fixes that are not yet in a Bevy release.
-# Every carried Bevy change is listed in vendor/BEVY_PATCHES.md.
+# bevy_pbr, bevy_render and bevy_transform are vendored for Bevy fixes that are not yet in a
+# Bevy release. Every carried Bevy change is listed in vendor/BEVY_PATCHES.md.
 [patch.crates-io]
 bevy_image = { path = "vendor/bevy_image" }
 bevy_pbr = { path = "vendor/bevy_pbr" }
 bevy_render = { path = "vendor/bevy_render" }
+bevy_transform = { path = "vendor/bevy_transform" }
 
 [workspace.lints.rust]
 # `cargo fuzz` builds the converter with this cfg. It is not a Cargo feature, so

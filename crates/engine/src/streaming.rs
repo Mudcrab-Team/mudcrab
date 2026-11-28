@@ -110,6 +110,15 @@ pub(crate) struct MergedTerrainCoverage {
     pub(crate) grid: IVec2,
 }
 
+/// Quadrants of an exterior cell hidden by its `XCLC` land-hide flags (`bit q` hides quadrant
+/// `q`), spawned when no `TerrainPatch` or `MergedTerrainCoverage` already covers them so near
+/// terrain LOD tiles do not show through hidden quadrants.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HiddenTerrainQuadrants {
+    pub(crate) grid: IVec2,
+    pub(crate) mask: u8,
+}
+
 /// A merged terrain mesh that has been spawned and waits for the readiness pass.
 #[derive(Component)]
 struct PendingMergedTerrain;
@@ -1381,7 +1390,12 @@ fn collect_cells(
         if let Some(runtime) = runtime.as_mut()
             && let Ok(payload) = &response.result
         {
-            let terrain = cache.terrain(payload.cell_id);
+            let mut terrain = cache.terrain(payload.cell_id);
+            // Reserve only the quadrants that spawn_cell draws. The cached snapshot does not
+            // carry the XCLC hide mask, so copy it from the payload as the commit below does.
+            if let Some(terrain) = &mut terrain {
+                terrain.land_hide_flags = payload.land_hide_flags;
+            }
             let paths = surface_costs::surface_resource_paths(terrain.as_ref(), true, &catalog);
             if !runtime.reserve_cell(response.key, config.interactive_world_physics())
                 || !runtime.reserve_cell_textures(response.key, paths)
@@ -1397,6 +1411,9 @@ fn collect_cells(
         match response.result {
             Ok(payload) => {
                 let mut terrain = cache.terrain(payload.cell_id);
+                if let Some(terrain) = &mut terrain {
+                    terrain.land_hide_flags = payload.land_hide_flags;
+                }
                 // A cell with a snapshot is drawn from merged data when the merged path is ready
                 // and the cell's own data passes every check; otherwise by quadrant, counted.
                 let mut merged = terrain.as_ref().and_then(|_| {
@@ -1451,7 +1468,12 @@ fn collect_cells(
                     }
                 }
                 let cell_id = payload.cell_id;
-                let drawn_merged = merged.is_some();
+                let terrain_hide_flags = if let Some(terrain) = &terrain {
+                    terrain.land_hide_flags & 0x0F
+                } else {
+                    payload.land_hide_flags & 0x0F
+                };
+                let drawn_merged = merged.is_some() && terrain_hide_flags != 0x0F;
                 // Publish the exact surface used below by terrain meshes/colliders. The
                 // immutable field is copied once per commit only when grass is enabled.
                 let grass_terrain =
@@ -1730,23 +1752,42 @@ fn spawn_cell(
     if let (Some(terrain), Some(merged)) = (&mut terrain, &merged) {
         terrain.heights = crate::terrain_merge::mesh::cell_to_grid(&merged.cell)?.0;
     }
-    // The merged cell's one mesh and its one collider, built from the same buffers.
-    let merged_cell = merged
-        .map(|spawn| {
-            let mesh = crate::terrain_merge::mesh::build_merged_mesh(
-                &spawn.cell,
-                &spawn.classes.ids_by_form_id,
-            )?;
-            let collider = terrain_physics
-                .then(|| terrain_collider_from_mesh(&mesh))
-                .transpose()?;
-            Ok::<_, String>((mesh, collider, spawn.material, spawn.images))
-        })
-        .transpose()?;
+    let terrain_hide_flags = if let Some(terrain) = &terrain {
+        terrain.land_hide_flags & 0x0F
+    } else {
+        payload.land_hide_flags & 0x0F
+    };
+    // The merged cell's one mesh and its one collider, built from the same buffers. When all four
+    // quadrants are hidden (`0x0F`), omit the mesh and collider altogether rather than building an
+    // empty trimesh; `HiddenTerrainQuadrants` still suppresses near LOD tiles.
+    let merged_cell = if terrain_hide_flags == 0x0F {
+        None
+    } else {
+        merged
+            .map(|spawn| {
+                let mesh = crate::terrain_merge::mesh::build_merged_mesh(
+                    &spawn.cell,
+                    &spawn.classes.ids_by_form_id,
+                    terrain_hide_flags,
+                )?;
+                // Skip hidden quadrants for terrain colliders as well as render meshes: inferred
+                // from retail behaviour (in retail, the player walks on placed architecture/roads
+                // over hidden LAND; exact retail rule is unverified).
+                let collider = terrain_physics
+                    .then(|| terrain_collider_from_mesh(&mesh))
+                    .transpose()?;
+                Ok::<_, String>((mesh, collider, spawn.material, spawn.images))
+            })
+            .transpose()?
+    };
     let terrain_quadrants = if let (Some(terrain), None) = (&terrain, &merged_cell) {
-        (0..4)
+        (0..4u8)
+            .filter(|&quadrant| !terrain.is_quadrant_hidden(quadrant))
             .map(|quadrant| {
                 let mesh = build_terrain_quadrant_mesh(terrain, quadrant)?;
+                // Skip hidden quadrants for terrain colliders as well as render meshes: inferred
+                // from retail behaviour (in retail, the player walks on placed architecture/roads
+                // over hidden LAND; exact retail rule is unverified).
                 let collider = terrain_physics
                     .then(|| terrain_collider_from_mesh(&mesh))
                     .transpose()?;
@@ -1770,6 +1811,12 @@ fn spawn_cell(
     ));
     if let CellKey::Exterior { grid_x, grid_y, .. } = payload.key {
         root_commands.insert(ExteriorCellGrid(IVec2::new(grid_x, grid_y)));
+        if merged_cell.is_none() && terrain_hide_flags != 0 {
+            root_commands.insert(HiddenTerrainQuadrants {
+                grid: IVec2::new(grid_x, grid_y),
+                mask: terrain_hide_flags,
+            });
+        }
     }
     let large_members = manage_large_references
         .then(|| catalog.large_references.members.get(&payload.key))
@@ -4038,6 +4085,7 @@ fn weld_merged_cell(
         layers: Vec::new(),
         water_height: None,
         water_type_form_id: None,
+        land_hide_flags: 0,
     };
     validate_and_register_terrain_edges(key, &mut grid, continuity, metrics)?;
     crate::terrain_merge::mesh::write_grid(cell, &grid.heights, &grid.normals);
@@ -7258,6 +7306,7 @@ mod tests {
                 .collect(),
             water_height: None,
             water_type_form_id: None,
+            land_hide_flags: 0,
         }
     }
 
@@ -7284,6 +7333,275 @@ mod tests {
             for (triangle, indices) in trimesh.indices().iter().zip(indices.as_chunks::<3>().0) {
                 assert_eq!(*triangle, [indices[0], indices[1], indices[2]]);
             }
+        }
+    }
+
+    #[test]
+    fn xclc_hide_flags_omit_quadrant_meshes_and_collider_triangles() {
+        let spawn_with_flags = |flags: u8| {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+                .init_asset::<Mesh>()
+                .init_asset::<Image>()
+                .init_asset::<TerrainMaterial>()
+                .init_asset::<WaterMaterial>()
+                .init_resource::<AssetCatalog>()
+                .init_resource::<ActorCatalog>()
+                .init_resource::<StreamingMetrics>()
+                .init_resource::<ProfilingState>()
+                .insert_resource(WaterReflectionTexture(Handle::default()));
+            let mut terrain = terrain_fixture(0x0001_A277, 120.0);
+            terrain.land_hide_flags = flags;
+            let key = CellKey::Exterior {
+                worldspace_id: 107_119,
+                grid_x: 6,
+                grid_y: -3,
+            };
+            let mut pending = Some(terrain);
+            app.add_systems(
+                Update,
+                move |mut commands: Commands,
+                      asset_server: Res<AssetServer>,
+                      catalog: Res<AssetCatalog>,
+                      actor_catalog: Res<ActorCatalog>,
+                      reflection: Res<WaterReflectionTexture>,
+                      mut meshes: ResMut<Assets<Mesh>>,
+                      mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
+                      mut water_materials: ResMut<Assets<WaterMaterial>>,
+                      mut profiler: ResMut<ProfilingState>| {
+                    let Some(terrain) = pending.take() else {
+                        return;
+                    };
+                    spawn_cell(
+                        &mut commands,
+                        &asset_server,
+                        &catalog,
+                        &actor_catalog,
+                        &reflection,
+                        &mut meshes,
+                        &mut terrain_materials,
+                        &mut water_materials,
+                        IVec2::new(6, -3),
+                        false,
+                        true,
+                        false,
+                        false,
+                        CellPayload {
+                            generation: 1,
+                            key,
+                            cell_id: 0x0001_A277,
+                            references: Vec::new(),
+                            land_hide_flags: flags,
+                        },
+                        Some(terrain),
+                        None,
+                        &mut 0,
+                        &mut profiler,
+                        true,
+                    )
+                    .expect("spawn cell");
+                },
+            );
+            app.update();
+            app
+        };
+
+        let mut app_04 = spawn_with_flags(0x04);
+        let world_04 = app_04.world_mut();
+        let mut quadrants_04: Vec<u8> = world_04
+            .query_filtered::<&TerrainCoverage, With<TerrainPatch>>()
+            .iter(world_04)
+            .map(|coverage| coverage.quadrant)
+            .collect();
+        quadrants_04.sort_unstable();
+        assert_eq!(quadrants_04, [0, 1, 3]);
+        let mut colliders_04 =
+            world_04.query_filtered::<(&TerrainCoverage, &Collider), With<TerrainCollider>>();
+        let mut collided_quadrants = Vec::new();
+        for (coverage, collider) in colliders_04.iter(world_04) {
+            let trimesh = collider.as_trimesh().expect("quadrant trimesh");
+            assert_eq!(trimesh.indices().len(), 16 * 16 * 2);
+            collided_quadrants.push(coverage.quadrant);
+        }
+        collided_quadrants.sort_unstable();
+        assert_eq!(collided_quadrants, [0, 1, 3]);
+        let hidden_04 = world_04
+            .query::<&HiddenTerrainQuadrants>()
+            .single(world_04)
+            .unwrap();
+        assert_eq!(hidden_04.mask, 0x04);
+
+        let mut app_0f = spawn_with_flags(0x0F);
+        let world_0f = app_0f.world_mut();
+        assert_eq!(
+            world_0f
+                .query_filtered::<Entity, With<TerrainPatch>>()
+                .iter(world_0f)
+                .count(),
+            0
+        );
+        assert_eq!(
+            world_0f
+                .query_filtered::<Entity, With<TerrainCollider>>()
+                .iter(world_0f)
+                .count(),
+            0
+        );
+        let hidden_0f = world_0f
+            .query::<&HiddenTerrainQuadrants>()
+            .single(world_0f)
+            .unwrap();
+        assert_eq!(hidden_0f.mask, 0x0F);
+    }
+
+    #[test]
+    fn fixture_cells_never_render_a_quadrant_with_its_hide_bit_set() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"CREATE TABLE schema_info(version INTEGER NOT NULL);
+                INSERT INTO schema_info VALUES(6);
+                CREATE TABLE cells(id INTEGER PRIMARY KEY, worldspace_id INTEGER, grid_x INTEGER, grid_y INTEGER, data BLOB);
+                CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
+                CREATE TABLE statics(id INTEGER PRIMARY KEY, model_path TEXT, bounds_min_x REAL, bounds_min_y REAL, bounds_min_z REAL, bounds_max_x REAL, bounds_max_y REAL, bounds_max_z REAL, bounds_valid INTEGER NOT NULL, flags INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE "references"(id INTEGER PRIMARY KEY, cell_id INTEGER, base_form_id INTEGER, pos_x REAL, pos_y REAL, pos_z REAL, rot_x REAL, rot_y REAL, rot_z REAL, scale REAL);
+                CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);"#,
+            )
+            .unwrap();
+
+        let cells = [
+            (0x0001_A270u32, 6i32, -4i32, 0x00u8),
+            (0x0001_A277u32, 6i32, -3i32, 0x04u8),
+            (0x0001_A278u32, 5i32, -3i32, 0x0Cu8),
+            (0x0001_A275u32, 6i32, -1i32, 0x0Fu8),
+        ];
+        let mut cached_cells = Vec::new();
+        for &(cell_id, grid_x, grid_y, flags) in &cells {
+            let mut xclc = vec![0u8; 12];
+            xclc[0..4].copy_from_slice(&grid_x.to_le_bytes());
+            xclc[4..8].copy_from_slice(&grid_y.to_le_bytes());
+            xclc[8] = flags;
+            let data =
+                rkyv::to_bytes::<rkyv::rancor::Error>(&shared::records::ArchivedRecordData {
+                    subrecords: vec![shared::records::ArchivedSubRecord {
+                        tag: *b"XCLC",
+                        data: xclc,
+                    }],
+                })
+                .unwrap()
+                .to_vec();
+            connection
+                .execute(
+                    "INSERT INTO cells(id, worldspace_id, grid_x, grid_y, data) VALUES (?1, 107119, ?2, ?3, ?4)",
+                    rusqlite::params![cell_id, grid_x, grid_y, data],
+                )
+                .unwrap();
+            connection
+                .execute("INSERT INTO land(cell_id) VALUES (?1)", [cell_id])
+                .unwrap();
+            cached_cells.push(shared::CachedLand {
+                cell_id,
+                width: 33,
+                height: 33,
+                heights: vec![0.0; 33 * 33],
+                normals: [0, 0, 127].repeat(33 * 33),
+                vertex_colors: vec![255; 33 * 33 * 3],
+                layers: Vec::new(),
+                water_height: None,
+                water_type_form_id: None,
+            });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cell_cache.rkyv");
+        let cache_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: cached_cells,
+        })
+        .unwrap();
+        std::fs::write(&cache_path, cache_bytes).unwrap();
+        let cache = CellCache::open(&cache_path).unwrap();
+
+        for &(cell_id, grid_x, grid_y, expected_flags) in &cells {
+            let key = CellKey::Exterior {
+                worldspace_id: 107_119,
+                grid_x,
+                grid_y,
+            };
+            let payload = crate::world::database::tests::load_cell(&connection, 1, key).unwrap();
+            assert_eq!(payload.land_hide_flags, expected_flags);
+            let mut terrain = cache.terrain(payload.cell_id).unwrap();
+            terrain.land_hide_flags = payload.land_hide_flags;
+
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+                .init_asset::<Mesh>()
+                .init_asset::<Image>()
+                .init_asset::<TerrainMaterial>()
+                .init_asset::<WaterMaterial>()
+                .init_resource::<AssetCatalog>()
+                .init_resource::<ActorCatalog>()
+                .init_resource::<StreamingMetrics>()
+                .init_resource::<ProfilingState>()
+                .insert_resource(WaterReflectionTexture(Handle::default()));
+            let mut pending = Some((payload, terrain));
+            app.add_systems(
+                Update,
+                move |mut commands: Commands,
+                      asset_server: Res<AssetServer>,
+                      catalog: Res<AssetCatalog>,
+                      actor_catalog: Res<ActorCatalog>,
+                      reflection: Res<WaterReflectionTexture>,
+                      mut meshes: ResMut<Assets<Mesh>>,
+                      mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
+                      mut water_materials: ResMut<Assets<WaterMaterial>>,
+                      mut profiler: ResMut<ProfilingState>| {
+                    let Some((payload, terrain)) = pending.take() else {
+                        return;
+                    };
+                    spawn_cell(
+                        &mut commands,
+                        &asset_server,
+                        &catalog,
+                        &actor_catalog,
+                        &reflection,
+                        &mut meshes,
+                        &mut terrain_materials,
+                        &mut water_materials,
+                        IVec2::new(grid_x, grid_y),
+                        false,
+                        true,
+                        false,
+                        false,
+                        payload,
+                        Some(terrain),
+                        None,
+                        &mut 0,
+                        &mut profiler,
+                        true,
+                    )
+                    .expect("spawn fixture cell");
+                },
+            );
+            app.update();
+
+            let world = app.world_mut();
+            let mut rendered: Vec<u8> = world
+                .query_filtered::<&TerrainCoverage, With<TerrainPatch>>()
+                .iter(world)
+                .map(|coverage| coverage.quadrant)
+                .collect();
+            rendered.sort_unstable();
+            for &quadrant in &rendered {
+                assert_eq!(
+                    expected_flags & (1 << quadrant),
+                    0,
+                    "cell {cell_id:08X} rendered hidden quadrant {quadrant} (flags {expected_flags:#04x})"
+                );
+            }
+            let expected_rendered: Vec<u8> = (0..4u8)
+                .filter(|&quadrant| (expected_flags & (1 << quadrant)) == 0)
+                .collect();
+            assert_eq!(rendered, expected_rendered);
         }
     }
 
@@ -9915,6 +10233,7 @@ mod tests {
                     emittance: None,
                     emittance_day_parts: None,
                 }],
+                land_hide_flags: 0,
             },
             Some(terrain),
             None,
@@ -11018,6 +11337,7 @@ mod tests {
                     key: CellKey::Interior(99),
                     cell_id: 99,
                     references: queued.0.clone(),
+                    land_hide_flags: 0,
                 },
                 None,
                 None,

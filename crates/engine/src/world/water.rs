@@ -159,6 +159,7 @@ mod tests {
             layers: vec![],
             water_height: height,
             water_type_form_id: Some(cell_id + 100),
+            land_hide_flags: 0,
         }
     }
 

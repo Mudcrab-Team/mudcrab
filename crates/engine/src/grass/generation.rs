@@ -206,6 +206,7 @@ pub fn generate(cache: &GrassCache, cell_id: u32, config: &EngineConfig) -> Gene
         cell.heights.len(),
         |i| cell.heights[i].into(),
         cell.water_height.as_ref().map(|h| (*h).into()),
+        0,
         None,
         &mut |_| {},
     )
@@ -244,6 +245,7 @@ pub fn generate_observed(
         cell.heights.len(),
         |i| cell.heights[i].into(),
         cell.water_height.as_ref().map(|h| (*h).into()),
+        0,
         None,
         &mut observe,
     )
@@ -265,6 +267,7 @@ pub(super) fn generate_on_terrain(
         terrain.heights().len(),
         |i| terrain.heights()[i],
         terrain.0.water_height,
+        terrain.0.land_hide_flags,
         Some(terrain.luminance().unwrap_or(&white)),
         &mut |_| {},
     );
@@ -302,7 +305,7 @@ fn empty() -> GeneratedGrass {
 /// Roll entries in quadrant / odd-X / odd-Y / entry / grid-X / grid-Y order.
 #[expect(
     clippy::too_many_arguments,
-    reason = "observer extends the existing surface sampling inputs without changing their behavior"
+    reason = "observer and land_hide_flags extend the existing surface sampling inputs without changing their behavior"
 )]
 fn generate_field<const OBSERVE: bool>(
     cache: &GrassCache,
@@ -311,6 +314,7 @@ fn generate_field<const OBSERVE: bool>(
     height_count: usize,
     height_at: impl Fn(usize) -> f32,
     water: Option<f32>,
+    land_hide_flags: u8,
     luminance: Option<&[f32]>,
     observe: &mut impl FnMut(Placement),
 ) -> GeneratedGrass {
@@ -360,6 +364,7 @@ fn generate_field<const OBSERVE: bool>(
     let mut ordinal = 0u32;
     for quadrant in cell.quadrants.iter() {
         let q = usize::from(quadrant.quadrant);
+        let quadrant_hidden = (land_hide_flags & (1 << q)) != 0;
         for x in (1..16).step_by(2) {
             for y in (1..16).step_by(2) {
                 let origin = [
@@ -435,6 +440,21 @@ fn generate_field<const OBSERVE: bool>(
                             let u3 = rng.next();
                             let u4 = rng.next();
                             let u5 = rng.next();
+                            // Skip hidden quadrants for grass after advancing RNG and ordinals so
+                            // visible quadrants later in the cell keep identical placement: inferred
+                            // from retail behaviour (in retail, grass does not grow through streets
+                            // or buildings placed over hidden LAND; exact retail rule is unverified).
+                            if quadrant_hidden {
+                                continue;
+                            }
+                            // Binary16 root rounding can move a root onto the next quadrant's
+                            // border (local 2048). Also skip a root whose placed quadrant is
+                            // hidden. This check comes after the draws, so the stream is unchanged.
+                            let qx = usize::from(px >= 2048.0);
+                            let qy = usize::from(py >= 2048.0);
+                            if (land_hide_flags & (1 << (qx + 2 * qy))) != 0 {
+                                continue;
+                            }
                             let rounded_height = sampling::half_round(sample.height);
                             if !rounded_height.is_finite() {
                                 invalid_roots += 1;
@@ -447,8 +467,6 @@ fn generate_field<const OBSERVE: bool>(
                             if rule.model_path.is_empty() {
                                 continue;
                             }
-                            let qx = ((px / 2048.0) as usize).min(1);
-                            let qy = ((py / 2048.0) as usize).min(1);
                             let mask = &cell.quadrants[qx + 2 * qy];
                             let bit_x = (((px - qx as f32 * 2048.0) / 32.0) as usize).min(63);
                             let bit_y = (((py - qy as f32 * 2048.0) / 32.0) as usize).min(63);

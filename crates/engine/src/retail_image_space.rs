@@ -124,6 +124,9 @@ impl RoomImageSpace {
         self.elapsed = (self.elapsed + seconds).min(3.0);
         let s = self.elapsed / 3.0;
         let m = s * s * (3.0 - 2.0 * s);
+        if m == 0.0 {
+            return [(self.previous, 0.0), (self.current, 1.0)];
+        }
         [(self.previous, 1.0 - m), (self.current, m)]
     }
 }
@@ -185,6 +188,16 @@ pub(crate) fn process_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_room_change_uses_the_current_block_at_zero_weight() {
+        let mut state = RoomImageSpace::default();
+        state.forms(Some(1), Some(2), 0.1);
+        assert_eq!(
+            state.forms(Some(1), Some(3), 0.0),
+            [(Some(2), 0.0), (Some(3), 1.0)]
+        );
+    }
 
     #[test]
     fn room_fade_starts_on_the_change_frame_and_resets_on_cell_change() {

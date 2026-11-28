@@ -528,7 +528,7 @@ fn setup(
     let ids = &classes.ids_by_form_id;
     for (offset, cell) in [(0.0, &narrow), (4096.0, &wide)] {
         commands.spawn((
-            Mesh3d(meshes.add(build_merged_mesh(cell, ids).unwrap())),
+            Mesh3d(meshes.add(build_merged_mesh(cell, ids, 0).unwrap())),
             MeshMaterial3d(material.clone()),
             Transform::from_xyz(offset, 0.0, 0.0),
         ));
@@ -578,7 +578,7 @@ fn setup(
         weights: vec![],
     };
     let lit_mesh =
-        meshes.add(build_merged_mesh(&cell(8, [grey(), grey(), grey(), grey()]), ids).unwrap());
+        meshes.add(build_merged_mesh(&cell(8, [grey(), grey(), grey(), grey()]), ids, 0).unwrap());
     commands.spawn((
         Mesh3d(lit_mesh.clone()),
         MeshMaterial3d(lit.clone()),

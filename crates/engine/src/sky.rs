@@ -1496,6 +1496,7 @@ mod tests {
                 layers: vec![],
                 water_height: Some(0.0),
                 water_type_form_id: None,
+                land_hide_flags: 0,
             },
         )
         .expect("complete flat water body");

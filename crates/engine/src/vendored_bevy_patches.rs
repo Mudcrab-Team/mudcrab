@@ -1,4 +1,5 @@
-//! Pins the Bevy fixes that Mudcrab carries in `vendor/bevy_pbr` and `vendor/bevy_render`.
+//! Pins the Bevy fixes that Mudcrab carries in `vendor/bevy_pbr`, `vendor/bevy_render` and
+//! `vendor/bevy_transform`.
 //!
 //! `vendor/BEVY_PATCHES.md` lists each carried change. Every hunk has a `mudcrab:` marker comment.
 //! These tests read the vendored sources from the repository and never skip, so a re-vendor, a
@@ -8,13 +9,16 @@
 //! - bevyengine/bevy#26095: stale GPU bin-unpacking jobs and bind groups are cleared every frame;
 //! - bevyengine/bevy#26588: the GPU clustering staging-buffer leak;
 //! - Mudcrab's retail point-light falloff (`RetailPointFalloff`, #955), `1 - saturate(d / r)^2`;
-//! - Mudcrab's retail Lighting path (`RetailSurface`, `pbr_retail.wgsl`, #1010).
+//! - Mudcrab's retail Lighting path (`RetailSurface`, `pbr_retail.wgsl`, #1010);
+//! - Mudcrab's `bevy_transform` fix: a despawned entity does not hide a new subtree that reuses
+//!   its index. This one also has behaviour tests.
 //!
 //! Code checks run on source with whole-line `//` comments removed and whitespace collapsed, so
 //! code turned into a comment, or re-wrapped by `rustfmt`, is judged by what it really does. Marker
 //! checks read the raw text. The morph shader bounds have their own test in `vendored_morph_shader`.
 
 use crate::bevy_source::{read_source, required_source};
+use bevy::{app::TaskPoolPlugin, prelude::*, transform::TransformPlugin};
 use std::path::{Path, PathBuf};
 
 const PBR_MORPH: &str = "src/render/morph.rs";
@@ -953,5 +957,132 @@ fn every_line_ending_gives_the_same_verdicts() {
                 "{file} with {ending:?}: {message}"
             );
         }
+    }
+}
+
+/// The `bevy_transform` fix is wired in and its hunk is present.
+#[test]
+fn the_vendored_transform_fix_is_present() {
+    let manifest = read_source(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
+        .expect("the workspace has a Cargo.toml");
+    assert!(
+        patches_crate(&manifest, "bevy_transform"),
+        "Cargo.toml no longer patches bevy_transform: a streamed scene can keep the identity \
+         transform and draw at the world origin"
+    );
+    let systems = required_source(&vendor("bevy_transform"), "src/systems.rs");
+    assert!(
+        systems.contains("// mudcrab: skip a despawned entity."),
+        "src/systems.rs lost its `mudcrab:` marker comment"
+    );
+    assert!(
+        code(&systems).contains("if !live.contains_spawned(entity) { continue; }"),
+        "mark_dirty_trees no longer skips a despawned entity: re-port the vendored patch"
+    );
+}
+
+/// An app that runs only Bevy's transform propagation.
+fn transform_app() -> App {
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), TransformPlugin));
+    app
+}
+
+fn world_position(app: &App, entity: Entity) -> [f32; 3] {
+    app.world()
+        .get::<GlobalTransform>(entity)
+        .expect("a spawned entity has a transform")
+        .translation()
+        .to_array()
+}
+
+/// Bevy 0.19.0 left such a subtree at the origin for good: its object LOD chunk then drew at raw
+/// file coordinates, high above the world, and cast a shadow over the cells below.
+#[test]
+fn a_new_subtree_that_reuses_a_despawned_index_gets_its_transform() {
+    let mut app = transform_app();
+    let world = app.world_mut();
+    let root = world.spawn(Transform::from_xyz(10.0, 0.0, 0.0)).id();
+    // More despawns than one channel chunk of `mark_dirty_trees` (1024) holds.
+    let old: Vec<Entity> = (0..4_000)
+        .map(|_| world.spawn((ChildOf(root), Transform::default())).id())
+        .collect();
+    app.update();
+    app.update();
+    for &entity in &old {
+        app.world_mut().despawn(entity);
+    }
+    let world = app.world_mut();
+    let node = (0..20_000)
+        .map(|_| world.spawn_empty().id())
+        .find(|entity| old[..512].iter().any(|gone| gone.index() == entity.index()))
+        .expect("the setup needs a reused index");
+    world
+        .entity_mut(node)
+        .insert((ChildOf(root), Transform::default()));
+    let leaf = world
+        .spawn((ChildOf(node), Transform::from_xyz(0.0, 5.0, 0.0)))
+        .id();
+    app.update();
+    app.update();
+    assert_eq!(world_position(&app, leaf), [10.0, 5.0, 0.0]);
+}
+
+/// Rounds of unload and load under roots that do not move, as streamed scenes are: each root
+/// holds one subtree, so a single blocked climb hides it. The number of subtrees, their size and
+/// the root order change from round to round.
+#[test]
+fn streamed_transforms_hold_over_rounds_of_reused_indices() {
+    let mut app = transform_app();
+    let world = app.world_mut();
+    let roots: Vec<Entity> = (0..1_500_u16)
+        .map(|x| {
+            world
+                .spawn(Transform::from_xyz(f32::from(x), 0.0, 0.0))
+                .id()
+        })
+        .collect();
+    let mut nodes: Vec<Entity> = Vec::new();
+    // A fixed xorshift sequence: the same rounds on every run.
+    let mut state = 0x9E37_79B9_u32;
+    let mut next = |limit: usize| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state as usize % limit
+    };
+    app.update();
+    for round in 0..24 {
+        for node in nodes.drain(..) {
+            app.world_mut().despawn(node);
+        }
+        let mut leaves = Vec::new();
+        let step = 1 + next(3);
+        let offset = next(roots.len());
+        for index in (0..roots.len()).step_by(step) {
+            let x = (index + offset) % roots.len();
+            let world = app.world_mut();
+            let node = world
+                .spawn((ChildOf(roots[x]), Transform::from_xyz(0.0, 1.0, 0.0)))
+                .id();
+            for depth in 0..1 + next(3) {
+                let leaf = world
+                    .spawn((ChildOf(node), Transform::from_xyz(0.0, 0.0, depth as f32)))
+                    .id();
+                leaves.push((leaf, [x as f32, 1.0, depth as f32]));
+            }
+            nodes.push(node);
+        }
+        app.update();
+        let wrong = leaves
+            .iter()
+            .filter(|(leaf, expected)| world_position(&app, *leaf) != *expected)
+            .count();
+        assert_eq!(
+            wrong,
+            0,
+            "round {round}: {wrong} of {} leaves",
+            leaves.len()
+        );
     }
 }

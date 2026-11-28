@@ -2237,6 +2237,7 @@ mod tests {
             layers,
             water_height: None,
             water_type_form_id: None,
+            land_hide_flags: 0,
         }
     }
 

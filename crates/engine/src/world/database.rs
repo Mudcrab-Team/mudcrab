@@ -157,6 +157,8 @@ pub struct CellPayload {
     pub key: CellKey,
     pub cell_id: u32,
     pub references: Vec<ReferenceRow>,
+    /// Low nibble of the exterior `CELL` `XCLC` land-hide flags (`bit q` hides quadrant `q`).
+    pub land_hide_flags: u8,
 }
 
 #[derive(Debug)]
@@ -1803,6 +1805,111 @@ fn has_emittance(connection: &Connection) -> Result<bool> {
     Ok(count > 0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CellXclcWarning {
+    MissingDataColumn,
+    NullData,
+    CorruptRecord,
+    MissingXclc,
+    TruncatedXclc,
+    LegacyEightByteXclc,
+    UnexpectedXclcLength,
+    UpperNibbleBits,
+}
+
+fn decode_cell_land_hide_flags(
+    cell_id: u32,
+    record: Option<&[u8]>,
+    warnings: &mut HashSet<CellXclcWarning>,
+) -> u8 {
+    let Some(bytes) = record else {
+        if warnings.insert(CellXclcWarning::NullData) {
+            bevy::log::warn!(
+                cell = format_args!("{cell_id:08X}"),
+                "exterior CELL has NULL data; hiding no terrain quadrants"
+            );
+        }
+        return 0;
+    };
+    let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
+    aligned.extend_from_slice(bytes);
+    let Ok(record) =
+        rkyv::from_bytes::<shared::records::ArchivedRecordData, rkyv::rancor::Error>(&aligned)
+    else {
+        if warnings.insert(CellXclcWarning::CorruptRecord) {
+            bevy::log::warn!(
+                cell = format_args!("{cell_id:08X}"),
+                "failed to decode exterior CELL record data; hiding no terrain quadrants"
+            );
+        }
+        return 0;
+    };
+    let Some(xclc) = record
+        .subrecords
+        .iter()
+        .find(|subrecord| &subrecord.tag == b"XCLC")
+        .map(|subrecord| subrecord.data.as_slice())
+    else {
+        if warnings.insert(CellXclcWarning::MissingXclc) {
+            bevy::log::warn!(
+                cell = format_args!("{cell_id:08X}"),
+                "exterior CELL has no XCLC subrecord; hiding no terrain quadrants"
+            );
+        }
+        return 0;
+    };
+    let parsed = shared::xclc_land_hide_flags(xclc);
+    match parsed.issue {
+        Some(shared::XclcIssue::Truncated(len))
+            if warnings.insert(CellXclcWarning::TruncatedXclc) =>
+        {
+            bevy::log::warn!(
+                cell = format_args!("{cell_id:08X}"),
+                len,
+                "exterior CELL XCLC is shorter than 8 bytes; hiding no terrain quadrants"
+            );
+        }
+        Some(shared::XclcIssue::LegacyNoFlags)
+            if warnings.insert(CellXclcWarning::LegacyEightByteXclc) =>
+        {
+            bevy::log::info!(
+                cell = format_args!("{cell_id:08X}"),
+                "exterior CELL has 8-byte XCLC without land-hide flags; hiding no terrain quadrants"
+            );
+        }
+        Some(shared::XclcIssue::UnexpectedLength(len))
+            if warnings.insert(CellXclcWarning::UnexpectedXclcLength) =>
+        {
+            bevy::log::warn!(
+                cell = format_args!("{cell_id:08X}"),
+                len,
+                "exterior CELL XCLC has unexpected length"
+            );
+        }
+        Some(shared::XclcIssue::UpperNibbleBits(bits))
+            if warnings.insert(CellXclcWarning::UpperNibbleBits) =>
+        {
+            bevy::log::warn!(
+                cell = format_args!("{cell_id:08X}"),
+                bits = format_args!("{bits:#04x}"),
+                "exterior CELL XCLC has non-zero upper land-flag bits; ignoring them"
+            );
+        }
+        None | Some(_) => {}
+    }
+    if parsed.upper_nibble_bits != 0
+        && !matches!(parsed.issue, Some(shared::XclcIssue::UpperNibbleBits(_)))
+        && warnings.insert(CellXclcWarning::UpperNibbleBits)
+    {
+        bevy::log::warn!(
+            cell = format_args!("{cell_id:08X}"),
+            bits = format_args!("{:#04x}", parsed.upper_nibble_bits),
+            "exterior CELL XCLC has non-zero upper land-flag bits; ignoring them"
+        );
+    }
+    parsed.flags
+}
+
 /// The reference query's column list and joins for one database: optional `records`, `lights`,
 /// `door_links`, and `emittance` data read as `NULL` when absent, keeping [`map_reference`]'s
 /// column indices stable across database versions. Enable-state metadata is optional for legacy
@@ -1812,8 +1919,10 @@ struct ReferenceQuery {
     joins: String,
     parent_sql: String,
     has_named_room_targets: bool,
+    has_cell_data: bool,
     enable_states: EnableStateResolver,
     enable_errors: HashSet<EnableStateError>,
+    cell_xclc_warnings: HashSet<CellXclcWarning>,
 }
 
 impl ReferenceQuery {
@@ -1951,6 +2060,11 @@ impl ReferenceQuery {
                 [],
                 |row| row.get(0),
             )?;
+        let has_cell_data: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cells') WHERE name='data')",
+            [],
+            |row| row.get(0),
+        )?;
         let day_part_columns = emittance_day_part_columns(has_emittance);
         let door_reference_flags = match (has_door_links, enable_column_count) {
             (true, 3) => "r.header_flags",
@@ -1971,8 +2085,10 @@ impl ReferenceQuery {
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
             has_named_room_targets,
+            has_cell_data,
             enable_states: EnableStateResolver::default(),
             enable_errors: HashSet::new(),
+            cell_xclc_warnings: HashSet::new(),
         })
     }
 }
@@ -2279,12 +2395,33 @@ fn load_cell(
     } else {
         HashSet::new()
     };
+    let land_hide_flags = if matches!(key, CellKey::Exterior { .. }) {
+        if query.has_cell_data {
+            let data: Option<Vec<u8>> = connection
+                .prepare_cached("SELECT data FROM cells WHERE id=?1")?
+                .query_row([cell_id], |row| row.get(0))?;
+            decode_cell_land_hide_flags(cell_id, data.as_deref(), &mut query.cell_xclc_warnings)
+        } else {
+            if query
+                .cell_xclc_warnings
+                .insert(CellXclcWarning::MissingDataColumn)
+            {
+                bevy::log::warn!(
+                    "world database cells table has no data column; XCLC land-hide flags unavailable and hiding no terrain quadrants"
+                );
+            }
+            0
+        }
+    } else {
+        0
+    };
     let references = resolve_reference_rows(connection, query, rows, &named_room_targets)?;
     Ok(CellPayload {
         generation,
         key,
         cell_id,
         references,
+        land_hide_flags,
     })
 }
 
@@ -2570,7 +2707,7 @@ pub(crate) mod water_fixtures {
 mod inventory_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::water_fixtures::{
         NoiseFixture, water_record, water_record_with_fog, water_record_with_noise,
     };
@@ -2595,7 +2732,11 @@ mod tests {
 
     /// `load_cell` with the reference query built for `connection` as it is now, the way the
     /// worker builds it when it opens a database.
-    fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
+    pub(crate) fn load_cell(
+        connection: &Connection,
+        generation: u64,
+        key: CellKey,
+    ) -> Result<CellPayload> {
         super::load_cell(
             connection,
             &mut ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default())?,
@@ -5183,5 +5324,120 @@ mod tests {
             )
             .unwrap();
         assert!(load_lod_object_atlas(&connection, 60).is_err());
+    }
+
+    #[test]
+    fn load_cell_reads_xclc_land_hide_flags_from_cells_data() {
+        let xclc_record = |grid_x: i32, grid_y: i32, flags: Option<u8>, len: usize| {
+            let mut xclc = vec![0u8; len];
+            if len >= 8 {
+                xclc[0..4].copy_from_slice(&grid_x.to_le_bytes());
+                xclc[4..8].copy_from_slice(&grid_y.to_le_bytes());
+            }
+            if let Some(flags) = flags
+                && len >= 9
+            {
+                xclc[8] = flags;
+            }
+            water_record(vec![(*b"XCLC", xclc)])
+        };
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        // `fixture` has no `cells.data` column: legacy databases hide nothing.
+        let legacy = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        assert_eq!(legacy.land_hide_flags, 0);
+
+        connection
+            .execute_batch("ALTER TABLE cells ADD COLUMN data BLOB;")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO cells(id, worldspace_id, grid_x, grid_y, data) VALUES
+                 (100, 107119, 6, -3, ?1),
+                 (101, 107119, 6, -1, ?2),
+                 (102, 107119, 5, -3, ?3),
+                 (103, 107119, 4, -3, ?4)",
+                params![
+                    xclc_record(6, -3, Some(0x04), 12),
+                    xclc_record(6, -1, Some(0x0F), 12),
+                    xclc_record(5, -3, None, 8),
+                    water_record(vec![(*b"EDID", b"NoXclc\0".to_vec())]),
+                ],
+            )
+            .unwrap();
+
+        let q2_hidden = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 107119,
+                grid_x: 6,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        assert_eq!(q2_hidden.land_hide_flags, 0x04);
+        assert_ne!(
+            q2_hidden.land_hide_flags & (1 << 2),
+            0,
+            "12-byte XCLC 0x04 hides quadrant 2"
+        );
+
+        let all_hidden = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 107119,
+                grid_x: 6,
+                grid_y: -1,
+            },
+        )
+        .unwrap();
+        assert_eq!(all_hidden.land_hide_flags, 0x0F);
+
+        let eight_byte = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 107119,
+                grid_x: 5,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        assert_eq!(eight_byte.land_hide_flags, 0);
+
+        let no_xclc = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 107119,
+                grid_x: 4,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        assert_eq!(no_xclc.land_hide_flags, 0);
+
+        let interior = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert_eq!(interior.land_hide_flags, 0);
+
+        let wrong_len = xclc_record(7, -3, Some(0xF4), 10);
+        let mut warnings = HashSet::new();
+        assert_eq!(
+            decode_cell_land_hide_flags(104, Some(&wrong_len), &mut warnings),
+            0
+        );
+        assert!(warnings.contains(&CellXclcWarning::UnexpectedXclcLength));
+        assert!(warnings.contains(&CellXclcWarning::UpperNibbleBits));
     }
 }

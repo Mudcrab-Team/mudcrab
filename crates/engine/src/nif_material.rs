@@ -541,11 +541,14 @@ impl NativeMaterialHandler {
             unpaired_blend,
             authored_blend_factors(material),
         )?;
-        Some(if retail::is_lighting(material) {
-            state.retail_first_stage(alpha_mode)
-        } else {
-            state
-        })
+        if !retail::is_lighting(material) {
+            return Some(state);
+        }
+        // SPEC-2 §1 stage 1 and §3: keep the stock cutout prepass and its alpha test.
+        if state.alpha_mask && state.depth_write && !state.decal {
+            return None;
+        }
+        Some(state.retail_first_stage(alpha_mode))
     }
 }
 
@@ -1715,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_blended_lighting_cutouts_keep_first_stage_depth_writes() {
+    fn skyrim_blended_lighting_cutouts_keep_stock_prepass_or_first_stage_decal() {
         let skyrim = NativeMaterialHandler {
             raw_colour_texels: true,
             ..default()
@@ -1728,6 +1731,14 @@ mod tests {
                 1.0,
                 1 | (6 << 1) | (7 << 5) | (1 << 9),
                 DEPTH_TEST,
+                DEPTH_WRITE,
+            ),
+            (
+                "MASK",
+                AlphaMode::Mask(0.5),
+                1.0,
+                1 | (6 << 1) | (7 << 5) | (1 << 9),
+                DEPTH_TEST | CAST_SHADOWS,
                 DEPTH_WRITE,
             ),
             (
@@ -1750,9 +1761,16 @@ mod tests {
                 }}
             }));
             let material = doc.materials().next().unwrap();
-            let state = skyrim.depth_state(&material, mode).unwrap();
-            assert_eq!(state.retail_blend_mode, Some(1));
+            let state = skyrim.depth_state(&material, mode);
             let cutout = matches!(mode, AlphaMode::Mask(_));
+            if cutout && flags_2 == DEPTH_WRITE {
+                // No depth extension means the standard alpha-mask prepass is enabled.
+                assert_eq!(state, native_depth_state(&material, mode));
+                assert!(state.is_none());
+                continue;
+            }
+            let state = state.unwrap();
+            assert_eq!(state.retail_blend_mode, Some(1));
             assert_eq!(state.first_stage, cutout);
             assert_eq!(state.depth_write, cutout);
             assert_eq!(state.alpha_mask, cutout);

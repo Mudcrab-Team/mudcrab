@@ -208,11 +208,15 @@ pub fn has_zero_normal(cell: &TerrainCellMesh) -> bool {
         .any(|normal| normal == &[0, 0, 0])
 }
 
-/// Builds the render mesh of a validated, welded cell. Positions, normals, UVs, colours and
-/// triangles reproduce today's four quadrant meshes (`build_terrain_quadrant_mesh`) exactly,
-/// stacked in quadrant order; indices are `u32` so the collider reads the same buffers it does
-/// for a quadrant.
-pub fn build_merged_mesh(cell: &TerrainCellMesh, ids: &HashMap<u32, u16>) -> Result<Mesh, String> {
+/// Builds the render mesh of a validated, welded cell, omitting quadrants whose hide bit is set
+/// in `land_hide_flags`. Positions, normals, UVs, colours and triangles reproduce today's quadrant
+/// meshes (`build_terrain_quadrant_mesh`) exactly, stacked in quadrant order; indices are `u32` so
+/// the collider reads the same buffers it does for a quadrant.
+pub fn build_merged_mesh(
+    cell: &TerrainCellMesh,
+    ids: &HashMap<u32, u16>,
+    land_hide_flags: u8,
+) -> Result<Mesh, String> {
     let slots = expand_slots(cell, ids)?;
     let mut positions = Vec::with_capacity(CELL_MESH_VERTICES);
     let mut normals = Vec::with_capacity(CELL_MESH_VERTICES);
@@ -247,7 +251,8 @@ pub fn build_merged_mesh(cell: &TerrainCellMesh, ids: &HashMap<u32, u16>) -> Res
             ]
         });
     }
-    let indices: Vec<u32> = (0..4)
+    let indices: Vec<u32> = (0..4usize)
+        .filter(|&quadrant| (land_hide_flags & (1 << quadrant)) == 0)
         .flat_map(quadrant_triangles)
         .flatten()
         .map(u32::from)

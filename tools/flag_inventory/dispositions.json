@@ -3034,84 +3034,80 @@
       "reason": "Unknown/unused bit in XCLC land_flags."
     },
     "CELL.XCLC.land_hide.hide_quad_1": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "\"XCLC\" if data.len() >= 8 => {",
-          "path": "crates/converter/src/esm/extractors.rs"
+          "anchor": "pub fn xclc_land_hide_flags(",
+          "path": "crates/shared/src/lib.rs"
         },
         {
-          "anchor": "cells_by_id.insert(",
-          "path": "crates/converter/src/esm/cell_cache.rs"
+          "anchor": "fn decode_cell_land_hide_flags(",
+          "path": "crates/engine/src/world/database.rs"
         },
         {
-          "anchor": "let terrain_quadrants = if let (Some(terrain), None) = (&terrain, &merged_cell) {",
+          "anchor": "!terrain.is_quadrant_hidden(quadrant)",
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Known dropped flag: extract_cell_info reads only XCLC bytes 0..8 and discards byte 8 (land_flags), so quad 1 is always meshed and drawn."
+      "reason": "Engine reads XCLC byte 8 low nibble from cells.data on exterior cell load and skips hidden quad 1 in quadrant terrain meshes/colliders, merged terrain mesh/collider, grass placement, and near-cell LOD suppression."
     },
     "CELL.XCLC.land_hide.hide_quad_2": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "\"XCLC\" if data.len() >= 8 => {",
-          "path": "crates/converter/src/esm/extractors.rs"
+          "anchor": "pub fn xclc_land_hide_flags(",
+          "path": "crates/shared/src/lib.rs"
         },
         {
-          "anchor": "cells_by_id.insert(",
-          "path": "crates/converter/src/esm/cell_cache.rs"
+          "anchor": "fn decode_cell_land_hide_flags(",
+          "path": "crates/engine/src/world/database.rs"
         },
         {
-          "anchor": "let terrain_quadrants = if let (Some(terrain), None) = (&terrain, &merged_cell) {",
+          "anchor": "!terrain.is_quadrant_hidden(quadrant)",
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Known dropped flag: extract_cell_info reads only XCLC bytes 0..8 and discards byte 8 (land_flags), so quad 2 is always meshed and drawn."
+      "reason": "Engine reads XCLC byte 8 low nibble from cells.data on exterior cell load and skips hidden quad 2 in quadrant terrain meshes/colliders, merged terrain mesh/collider, grass placement, and near-cell LOD suppression."
     },
     "CELL.XCLC.land_hide.hide_quad_3": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "\"XCLC\" if data.len() >= 8 => {",
-          "path": "crates/converter/src/esm/extractors.rs"
+          "anchor": "pub fn xclc_land_hide_flags(",
+          "path": "crates/shared/src/lib.rs"
         },
         {
-          "anchor": "cells_by_id.insert(",
-          "path": "crates/converter/src/esm/cell_cache.rs"
+          "anchor": "fn decode_cell_land_hide_flags(",
+          "path": "crates/engine/src/world/database.rs"
         },
         {
-          "anchor": "let terrain_quadrants = if let (Some(terrain), None) = (&terrain, &merged_cell) {",
+          "anchor": "!terrain.is_quadrant_hidden(quadrant)",
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Known dropped flag: extract_cell_info reads only XCLC bytes 0..8 and discards byte 8 (land_flags), so quad 3 is always meshed and drawn."
+      "reason": "Engine reads XCLC byte 8 low nibble from cells.data on exterior cell load and skips hidden quad 3 in quadrant terrain meshes/colliders, merged terrain mesh/collider, grass placement, and near-cell LOD suppression."
     },
     "CELL.XCLC.land_hide.hide_quad_4": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "\"XCLC\" if data.len() >= 8 => {",
-          "path": "crates/converter/src/esm/extractors.rs"
+          "anchor": "pub fn xclc_land_hide_flags(",
+          "path": "crates/shared/src/lib.rs"
         },
         {
-          "anchor": "cells_by_id.insert(",
-          "path": "crates/converter/src/esm/cell_cache.rs"
+          "anchor": "fn decode_cell_land_hide_flags(",
+          "path": "crates/engine/src/world/database.rs"
         },
         {
-          "anchor": "let terrain_quadrants = if let (Some(terrain), None) = (&terrain, &merged_cell) {",
+          "anchor": "!terrain.is_quadrant_hidden(quadrant)",
           "path": "crates/engine/src/streaming.rs"
         }
       ],
-      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Known dropped flag: extract_cell_info reads only XCLC bytes 0..8 and discards byte 8 (land_flags), so quad 4 is always meshed and drawn."
+      "reason": "Engine reads XCLC byte 8 low nibble from cells.data on exterior cell load and skips hidden quad 4 in quadrant terrain meshes/colliders, merged terrain mesh/collider, grass placement, and near-cell LOD suppression."
     },
     "CELL.XCLL.inherits.ambient_color": {
       "disposition": "respected",

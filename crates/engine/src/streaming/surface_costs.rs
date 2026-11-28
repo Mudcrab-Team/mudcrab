@@ -20,6 +20,8 @@ use std::{any::TypeId, collections::HashSet};
 
 /// Follow the same layer selection and water-height conditions as `spawn_cell`.
 /// The caller performs strict terrain validation before committing these loads.
+/// The caller sets `terrain.land_hide_flags` from the cell payload. A hidden quadrant
+/// binds no landscape textures, so it reserves none. Water does not use the mask.
 pub(crate) fn surface_resource_paths(
     terrain: Option<&TerrainSnapshot>,
     water: bool,
@@ -30,6 +32,9 @@ pub(crate) fn surface_resource_paths(
     };
     let mut paths = Vec::new();
     for quadrant in 0..4 {
+        if terrain.is_quadrant_hidden(quadrant) {
+            continue;
+        }
         let Ok(layers) = quadrant_layers(terrain, quadrant) else {
             continue;
         };
@@ -190,6 +195,7 @@ mod tests {
                 .collect(),
             water_height: Some(0.0),
             water_type_form_id: Some(20),
+            land_hide_flags: 0,
         }
     }
 
@@ -393,6 +399,50 @@ mod tests {
                 "textures/landscape/dirt02.ktx2",
                 "textures/landscape/dirt02_n.ktx2"
             ]
+        );
+    }
+
+    #[test]
+    fn hidden_quadrants_reserve_no_landscape_textures_and_keep_water() {
+        let (directory, _) = catalog();
+        let path = directory.path().join("world.sqlite");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO texture_sets VALUES(2,'Textures\\Hidden.dds','Textures\\Hidden_n.dds');
+                 INSERT INTO landscape_textures VALUES(11,2);",
+            )
+            .unwrap();
+        let catalog = AssetCatalog::open(&path).unwrap();
+        let mut terrain = terrain();
+        // Quadrant 2 alone uses the second texture set.
+        terrain.layers[2].texture_form_id = 11;
+        assert_eq!(
+            surface_resource_paths(Some(&terrain), false, &catalog),
+            vec![
+                "textures/hidden.ktx2",
+                "textures/hidden_n.ktx2",
+                "textures/shared.ktx2",
+                "textures/shared_n.ktx2",
+            ]
+        );
+
+        terrain.land_hide_flags = 0x04;
+        assert_eq!(
+            surface_resource_paths(Some(&terrain), false, &catalog),
+            vec!["textures/shared.ktx2", "textures/shared_n.ktx2"],
+            "hidden quadrant 2 must not reserve its textures"
+        );
+
+        terrain.land_hide_flags = 0x0F;
+        assert!(
+            surface_resource_paths(Some(&terrain), false, &catalog).is_empty(),
+            "a fully hidden cell must reserve no landscape textures"
+        );
+        assert_eq!(
+            surface_resource_paths(Some(&terrain), true, &catalog),
+            vec!["textures/water_n.ktx2"],
+            "the hide mask must not change the water reservation"
         );
     }
 
