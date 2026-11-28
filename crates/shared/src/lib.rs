@@ -164,9 +164,118 @@ impl Bounds3 {
     }
 }
 
+/// Result of inspecting a `CELL` `XCLC` subrecord for SSE land-hide flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XclcLandHide {
+    /// Low nibble (`bit q` hides quadrant `q` in `0..4`). Zero when absent or not 12 bytes.
+    pub flags: u8,
+    /// Non-zero upper-nibble bits at byte 8 when `XCLC` is at least 9 bytes.
+    pub upper_nibble_bits: u8,
+    /// Present when `XCLC` is shorter than 9 bytes, not 12 bytes, or has upper-nibble bits set.
+    pub issue: Option<XclcIssue>,
+}
+
+/// Non-standard `XCLC` layout observed while reading land-hide flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum XclcIssue {
+    Truncated(usize),
+    LegacyNoFlags,
+    UnexpectedLength(usize),
+    UpperNibbleBits(u8),
+}
+
+/// Parse the low-nibble quadrant-hide bitmask from a `CELL` `XCLC` payload.
+///
+/// An SSE `XCLC` is 12 bytes with land-hide flags at byte 8 (`bit q` hides quadrant `q`, `0..4`).
+/// Legacy 8-byte `XCLC` fields carry only `(grid_x, grid_y)` and hide nothing.
+pub fn xclc_land_hide_flags(xclc: &[u8]) -> XclcLandHide {
+    if xclc.len() < 8 {
+        return XclcLandHide {
+            flags: 0,
+            upper_nibble_bits: 0,
+            issue: Some(XclcIssue::Truncated(xclc.len())),
+        };
+    }
+    if xclc.len() == 8 {
+        return XclcLandHide {
+            flags: 0,
+            upper_nibble_bits: 0,
+            issue: Some(XclcIssue::LegacyNoFlags),
+        };
+    }
+    let raw = xclc[8];
+    let upper_nibble_bits = raw & 0xF0;
+    if xclc.len() != 12 {
+        return XclcLandHide {
+            flags: 0,
+            upper_nibble_bits,
+            issue: Some(XclcIssue::UnexpectedLength(xclc.len())),
+        };
+    }
+    let flags = raw & 0x0F;
+    let issue = (upper_nibble_bits != 0).then_some(XclcIssue::UpperNibbleBits(upper_nibble_bits));
+    XclcLandHide {
+        flags,
+        upper_nibble_bits,
+        issue,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xclc_land_hide_flags_parses_sse_and_rejects_short_payloads() {
+        let mut sse = [0u8; 12];
+        sse[8] = 0x04;
+        assert_eq!(
+            xclc_land_hide_flags(&sse),
+            XclcLandHide {
+                flags: 0x04,
+                upper_nibble_bits: 0,
+                issue: None
+            }
+        );
+
+        sse[8] = 0xF4;
+        assert_eq!(
+            xclc_land_hide_flags(&sse),
+            XclcLandHide {
+                flags: 0x04,
+                upper_nibble_bits: 0xF0,
+                issue: Some(XclcIssue::UpperNibbleBits(0xF0))
+            }
+        );
+
+        let mut wrong_len = [0u8; 10];
+        wrong_len[8] = 0xF4;
+        assert_eq!(
+            xclc_land_hide_flags(&wrong_len),
+            XclcLandHide {
+                flags: 0,
+                upper_nibble_bits: 0xF0,
+                issue: Some(XclcIssue::UnexpectedLength(10))
+            }
+        );
+
+        assert_eq!(
+            xclc_land_hide_flags(&[0u8; 8]),
+            XclcLandHide {
+                flags: 0,
+                upper_nibble_bits: 0,
+                issue: Some(XclcIssue::LegacyNoFlags)
+            }
+        );
+        assert_eq!(
+            xclc_land_hide_flags(&[0u8; 4]),
+            XclcLandHide {
+                flags: 0,
+                upper_nibble_bits: 0,
+                issue: Some(XclcIssue::Truncated(4))
+            }
+        );
+    }
 
     #[test]
     fn version_line_and_flags_are_stable() {

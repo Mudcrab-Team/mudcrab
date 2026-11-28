@@ -68,6 +68,7 @@ fn snapshot(cache: &GrassCache, cell_id: u32, modified: bool) -> TerrainSnapshot
         layers: vec![],
         water_height: cell.water_height.as_ref().map(|height| (*height).into()),
         water_type_form_id: None,
+        land_hide_flags: 0,
     }
 }
 

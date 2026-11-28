@@ -799,3 +799,144 @@ fn modelless_species_preserves_following_reference_positions() {
         }
     }
 }
+
+#[test]
+fn hidden_quadrants_omit_grass_placement_and_keep_visible_quadrants() {
+    let source = cell(vec![layer(vec![7], 1.0, true)]);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let config = EngineConfig::default();
+
+    let all_visible = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![0.0; 1089], None, 0),
+    );
+    let total_visible: usize = all_visible.batches.iter().map(|b| b.instances.len()).sum();
+    assert!(total_visible > 0);
+
+    let q2_hidden = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![0.0; 1089], None, 0x04),
+    );
+    let q2_instances: Vec<_> = q2_hidden
+        .batches
+        .iter()
+        .flat_map(|b| b.instances.iter())
+        .collect();
+    assert!(!q2_instances.is_empty());
+    assert!(q2_instances.len() < total_visible);
+    for instance in q2_instances {
+        let x = f32::from(instance.position[0]) * GRASS_CELL_SIZE / 65535.0;
+        let y = f32::from(instance.position[1]) * GRASS_CELL_SIZE / 65535.0;
+        let q = usize::from(x >= 2048.0) + usize::from(y >= 2048.0) * 2;
+        assert_ne!(q, 2, "hidden quadrant 2 must not receive grass instances");
+    }
+
+    let expected_visible: Vec<Vec<_>> = all_visible
+        .batches
+        .iter()
+        .map(|batch| {
+            batch
+                .instances
+                .iter()
+                .filter(|instance| {
+                    let x = f32::from(instance.position[0]) * GRASS_CELL_SIZE / 65535.0;
+                    let y = f32::from(instance.position[1]) * GRASS_CELL_SIZE / 65535.0;
+                    !(x < 2048.0 && y >= 2048.0)
+                })
+                .copied()
+                .collect()
+        })
+        .collect();
+    let actual_visible: Vec<Vec<_>> = q2_hidden
+        .batches
+        .iter()
+        .map(|batch| batch.instances.to_vec())
+        .collect();
+    assert_eq!(
+        actual_visible, expected_visible,
+        "skipping hidden quadrant 2 must preserve RNG draws and ordinals in later quadrants"
+    );
+
+    let all_hidden = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![0.0; 1089], None, 0x0F),
+    );
+    assert!(all_hidden.batches.is_empty());
+}
+
+/// A quadrant-0 root that binary16 rounding places on local Y = 2048 lies in quadrant 2.
+/// Hiding quadrant 2 must drop it, and must keep every other root and its draws unchanged.
+#[test]
+fn hidden_quadrant_drops_roots_rounded_onto_its_border() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    // Only quadrant 0 nominates roots, so every root in quadrant 2 came from rounding.
+    for quadrant in &mut source.quadrants[1..] {
+        quadrant.layers.clear();
+    }
+    // Spacing 16 puts the top root row of quadrant 0 at local Y 2032..2048. At grid Y 7 the
+    // binary16 step is 16, so part of that row rounds to 2048.
+    let cache = mapped(vec![rule(7, 16.0)], source);
+    let config = EngineConfig {
+        grass_min_spacing: 16.0,
+        ..EngineConfig::default()
+    };
+    let decode = |instance: &GrassInstance| {
+        [instance.position[0], instance.position[1]]
+            .map(|value| f32::from(value) * GRASS_CELL_SIZE / 65535.0)
+    };
+    let in_quadrant_2 = |instance: &GrassInstance| {
+        let [x, y] = decode(instance);
+        x < 2048.0 && y >= 2048.0
+    };
+
+    let all_visible = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![120.0; 1089], None, 0),
+    );
+    let rounded_onto_border = all_visible
+        .batches
+        .iter()
+        .flat_map(|batch| batch.instances.iter())
+        .filter(|instance| in_quadrant_2(instance))
+        .count();
+    assert!(
+        rounded_onto_border > 0,
+        "the fixture must round some quadrant-0 roots onto quadrant 2"
+    );
+
+    let q2_hidden = generate_on_terrain(
+        &cache,
+        42,
+        &config,
+        &GrassTerrain::with_hide_flags(vec![120.0; 1089], None, 0x04),
+    );
+    let expected: Vec<Vec<_>> = all_visible
+        .batches
+        .iter()
+        .map(|batch| {
+            batch
+                .instances
+                .iter()
+                .filter(|instance| !in_quadrant_2(instance))
+                .copied()
+                .collect()
+        })
+        .collect();
+    let actual: Vec<Vec<_>> = q2_hidden
+        .batches
+        .iter()
+        .map(|batch| batch.instances.to_vec())
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "a root placed in hidden quadrant 2 must be dropped without changing other roots"
+    );
+}

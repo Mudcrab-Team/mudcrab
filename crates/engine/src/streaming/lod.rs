@@ -1,6 +1,7 @@
 use super::{
-    ActiveSpace, MergedTerrainCoverage, RenderOrigin, StreamingCommitBudget, StreamingMetrics,
-    StreamingWorld, TerrainCoverage, TerrainSurfaceReady, requests,
+    ActiveSpace, HiddenTerrainQuadrants, MergedTerrainCoverage, RenderOrigin,
+    StreamingCommitBudget, StreamingMetrics, StreamingWorld, TerrainCoverage, TerrainSurfaceReady,
+    requests,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
@@ -1253,15 +1254,28 @@ fn apply_quadrant_selection(
     !quadrant.is_empty()
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct LodVisibilityRemovals<'w, 's> {
+    coverage: RemovedComponents<'w, 's, TerrainCoverage>,
+    readiness: RemovedComponents<'w, 's, TerrainSurfaceReady>,
+    merged: RemovedComponents<'w, 's, MergedTerrainCoverage>,
+    drawn_swaps: RemovedComponents<'w, 's, SwapWaiting>,
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct HiddenTerrainState<'w, 's> {
+    removed: RemovedComponents<'w, 's, HiddenTerrainQuadrants>,
+    added: Query<'w, 's, (), Added<HiddenTerrainQuadrants>>,
+    quadrants: Query<'w, 's, &'static HiddenTerrainQuadrants>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_terrain_lod_visibility(
     config: Res<EngineConfig>,
     origin: Res<RenderOrigin>,
     camera: Query<&Transform, With<StreamingCamera>>,
-    mut removed_coverage: RemovedComponents<TerrainCoverage>,
-    mut removed_readiness: RemovedComponents<TerrainSurfaceReady>,
-    mut removed_merged: RemovedComponents<MergedTerrainCoverage>,
-    mut drawn_swaps: RemovedComponents<SwapWaiting>,
+    mut removals: LodVisibilityRemovals,
+    mut hidden_terrain: HiddenTerrainState,
     mut streaming: ParamSet<(Res<LodStreaming>, ResMut<LodStreaming>)>,
     ready_patches: Query<
         (Entity, &TerrainCoverage, Has<super::TerrainPatch>),
@@ -1285,7 +1299,7 @@ pub(super) fn update_terrain_lod_visibility(
     // vouches for leave the index quietly; any other coverage/readiness removal is a real
     // semantic invalidation, and absent events cannot leak tracking.
     let mut real_removals = false;
-    for entity in removed_coverage.read().chain(removed_readiness.read()) {
+    for entity in removals.coverage.read().chain(removals.readiness.read()) {
         let expected = replaced_sources.contains(&entity);
         if !expected {
             real_removals = true;
@@ -1317,23 +1331,26 @@ pub(super) fn update_terrain_lod_visibility(
         );
     }
     let batches_removed = batches.removed();
+    let merged_removed = removals.merged.read().count() != 0;
+    let hidden_changed =
+        !hidden_terrain.added.is_empty() || hidden_terrain.removed.read().count() != 0;
+    // Every surface the bridge confirms drawn leaves the waiting set; only a merged cell's
+    // completion changes what this pass decides. Read in full, so no event is left for next frame.
+    let merged_drawn = removals
+        .drawn_swaps
+        .read()
+        .filter(|entity| merged_full_detail.contains(*entity))
+        .count()
+        != 0;
+    let merged_changed = merged_removed || merged_drawn || hidden_changed;
     let Ok(camera) = camera.single() else {
-        if real_removals || batches_removed {
+        if real_removals || batches_removed || merged_changed {
             streaming.p1().visibility_dirty = true;
         }
         return;
     };
     let camera_grid = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
     let upload_completed = batches.upload_completed();
-    let merged_removed = removed_merged.read().count() != 0;
-    // Every surface the bridge confirms drawn leaves the waiting set; only a merged cell's
-    // completion changes what this pass decides. Read in full, so no event is left for next frame.
-    let merged_drawn = drawn_swaps
-        .read()
-        .filter(|entity| merged_full_detail.contains(*entity))
-        .count()
-        != 0;
-    let merged_changed = merged_removed || merged_drawn;
     let grid_origin = streaming.p0().grid_origin;
     let (force_apply, camera_moved, radius_changed) = {
         let state = streaming.p0();
@@ -1382,10 +1399,16 @@ pub(super) fn update_terrain_lod_visibility(
         }
 
         // Every quadrant a drawn merged cell covers is full detail, whether or not it holds LOD
-        // patches of its own.
+        // patches of its own. Quadrants hidden by `XCLC` land-hide flags without a `TerrainPatch`
+        // or `MergedTerrainCoverage` are covered as well so LOD tiles do not show near the player.
         let merged_full: HashSet<(IVec2, u8)> = merged_full_detail
             .iter()
             .flat_map(|coverage| (0..4u8).map(move |quadrant| (coverage.grid, quadrant)))
+            .chain(hidden_terrain.quadrants.iter().flat_map(|coverage| {
+                (0..4u8)
+                    .filter(move |&quadrant| (coverage.mask & (1 << quadrant)) != 0)
+                    .map(move |quadrant| (coverage.grid, quadrant))
+            }))
             .collect();
         let index = &mut *index;
         let changed = std::mem::take(&mut index.changed);
@@ -3887,5 +3910,65 @@ mod tests {
                 "an unloaded cell falls back to its LOD land"
             );
         }
+    }
+
+    #[test]
+    fn hidden_terrain_quadrants_suppress_near_lod_tiles_without_a_terrain_patch() {
+        let mut seam = SeamWorld::new();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.world.spawn(HiddenTerrainQuadrants {
+            grid: IVec2::ZERO,
+            mask: 0x04,
+        });
+        seam.run();
+        assert_eq!(seam.visibility(lod[2]), Visibility::Hidden);
+        for quadrant in [0usize, 1, 3] {
+            assert_eq!(seam.visibility(lod[quadrant]), Visibility::Inherited);
+        }
+
+        let all_hidden_grid = IVec2::new(1, 0);
+        let lod_all: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(all_hidden_grid, quadrant))
+            .collect();
+        let root = seam
+            .world
+            .spawn(HiddenTerrainQuadrants {
+                grid: all_hidden_grid,
+                mask: 0x0F,
+            })
+            .id();
+        seam.run();
+        for entity in &lod_all {
+            assert_eq!(seam.visibility(*entity), Visibility::Hidden);
+        }
+        seam.world.entity_mut(root).despawn();
+        seam.run();
+        for entity in &lod_all {
+            assert_eq!(seam.visibility(*entity), Visibility::Inherited);
+        }
+
+        let camera = seam
+            .world
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(&seam.world)
+            .unwrap();
+        seam.world.entity_mut(camera).despawn();
+        seam.world.spawn(HiddenTerrainQuadrants {
+            grid: IVec2::ZERO,
+            mask: 0x01,
+        });
+        seam.run();
+        assert!(
+            seam.world.resource::<LodStreaming>().visibility_dirty,
+            "hidden-quadrant changes while camera is absent must mark visibility dirty"
+        );
+        seam.world.spawn((
+            StreamingCamera,
+            Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+        ));
+        seam.run();
+        assert_eq!(seam.visibility(lod[0]), Visibility::Hidden);
     }
 }

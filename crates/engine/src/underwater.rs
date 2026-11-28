@@ -574,6 +574,7 @@ mod tests {
             layers: vec![],
             water_height: Some(-5000.0),
             water_type_form_id: None,
+            land_hide_flags: 0,
         };
         let body = FlatWaterBody::from_terrain(
             CellKey::Exterior {
@@ -673,6 +674,7 @@ mod tests {
             layers: vec![],
             water_height: Some(100.0),
             water_type_form_id: None,
+            land_hide_flags: 0,
         };
         let body = FlatWaterBody::from_terrain(
             CellKey::Exterior {
