@@ -280,6 +280,72 @@ fn av_flags(block: &NifBlock) -> Option<&NiAVObjectFlags> {
     }
 }
 
+/// Material preparation state tracking
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+p pub enum MaterialPreparationState {
+    /// Material is not prepared at all
+    Unprepared,
+    /// Image exists on CPU but render side not ready
+    ImageReady,
+    /// Material is fully prepared on render side
+    RenderReady,
+}
+
+/// Material swap tracking
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MaterialSwapState {
+    /// The current material being used
+    pub current_material: ValidatedNifMaterial,
+    /// The material we're swapping to, if any
+    pub pending_swap: Option<ValidatedNifMaterial>,
+    /// Preparation state of the pending swap
+    pub preparation_state: MaterialPreparationState,
+}
+
+impl MaterialSwapState {
+    /// Create a new material swap state with no pending swap
+    pub fn new(material: ValidatedNifMaterial) -> Self {
+        Self {
+            current_material: material,
+            pending_swap: None,
+            preparation_state: MaterialPreparationState::Unprepared,
+        }
+    }
+    
+    /// Start a material swap
+    pub fn start_swap(&mut self, new_material: ValidatedNifMaterial) {
+        self.pending_swap = Some(new_material);
+        self.preparation_state = MaterialPreparationState::Unprepared;
+    }
+    
+    /// Mark the image as ready (CPU side)
+    pub fn mark_image_ready(&mut self) {
+        if let Some(_) = self.pending_swap {
+            self.preparation_state = MaterialPreparationState::ImageReady;
+        }
+    }
+    
+    /// Mark the material as render ready
+    pub fn mark_render_ready(&mut self) -> bool {
+        if self.pending_swap.is_some() && self.preparation_state == MaterialPreparationState::ImageReady {
+            self.preparation_state = MaterialPreparationState::RenderReady;
+            return true;
+        }
+        false
+    }
+    
+    /// Complete the swap if ready
+    pub fn complete_swap_if_ready(&mut self) -> bool {
+        if self.pending_swap.is_some() && self.preparation_state == MaterialPreparationState::RenderReady {
+            self.current_material = self.pending_swap.take().unwrap();n            self.preparation_state = MaterialPreparationState::Unprepared;
+            return true;
+        }
+        false
+    }
+}
+
 /// Replaces the legacy exporter's order-based materials with deterministic
 /// glTF/PBR materials built from the per-shape NIF contract.
 pub fn publish_gltf_materials(
