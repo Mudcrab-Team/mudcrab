@@ -1715,18 +1715,28 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_depth_writing_non_decals_with_blend_stay_sorted() {
+    fn skyrim_blended_lighting_cutouts_keep_first_stage_depth_writes() {
         let skyrim = NativeMaterialHandler {
             raw_colour_texels: true,
             ..default()
         };
-        for (gltf_mode, mode, alpha, flags) in [
-            ("OPAQUE", AlphaMode::Opaque, 0.5, 0),
+        for (gltf_mode, mode, alpha, flags, flags_1, flags_2) in [
+            ("OPAQUE", AlphaMode::Opaque, 0.5, 0, DEPTH_TEST, DEPTH_WRITE),
             (
                 "MASK",
                 AlphaMode::Mask(0.5),
                 1.0,
                 1 | (6 << 1) | (7 << 5) | (1 << 9),
+                DEPTH_TEST,
+                DEPTH_WRITE,
+            ),
+            (
+                "MASK",
+                AlphaMode::Mask(0.5),
+                1.0,
+                1 | (6 << 1) | (7 << 5) | (1 << 9),
+                DEPTH_TEST | DECAL,
+                0,
             ),
         ] {
             let doc = first_material(serde_json::json!({
@@ -1734,16 +1744,21 @@ mod tests {
                 "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, alpha]},
                 "extras": {"openSkyrim": {
                     "shaderFamily": "lighting",
-                    "shaderFlags1": DEPTH_TEST,
-                    "shaderFlags2": DEPTH_WRITE,
+                    "shaderFlags1": flags_1,
+                    "shaderFlags2": flags_2,
                     "alphaProperty": shared::nif_alpha::NifAlphaProperty::from_nif(flags, 128)
                 }}
             }));
             let material = doc.materials().next().unwrap();
             let state = skyrim.depth_state(&material, mode).unwrap();
             assert_eq!(state.retail_blend_mode, Some(1));
-            assert!(!state.first_stage);
-            assert_eq!(state.alpha_mask, matches!(mode, AlphaMode::Mask(_)));
+            let cutout = matches!(mode, AlphaMode::Mask(_));
+            assert_eq!(state.first_stage, cutout);
+            assert_eq!(state.depth_write, cutout);
+            assert_eq!(state.alpha_mask, cutout);
+            if cutout {
+                assert_eq!(state.blend_factors, None);
+            }
         }
     }
 

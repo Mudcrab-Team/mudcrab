@@ -45,7 +45,14 @@ const SIZE: u32 = 65;
 /// Half precision keeps about three decimal digits below 1.
 const TOLERANCE: f32 = 1.5e-3;
 
+#[path = "retail_composite_gpu_tests.rs"]
+mod retail_composite_gpu_tests;
+
 fn app() -> App {
+    app_with(|_| {})
+}
+
+fn app_with(install: impl FnOnce(&mut App)) -> App {
     assert_eq!(
         std::env::var("MUDCRAB_RETAIL_PIXEL").as_deref(),
         Ok("1"),
@@ -71,6 +78,7 @@ fn app() -> App {
     .add_plugins((RetailFogPlugin, SkyPlugin))
     .insert_resource(ClearColor(Color::BLACK))
     .insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+    install(&mut app);
     let deadline = Instant::now() + Duration::from_secs(20);
     while app.plugins_state() != PluginsState::Ready {
         assert!(

@@ -52,8 +52,9 @@ fn composite_terms(in: FullscreenVertexOutput, sample_index: u32) -> vec4<f32> {
     let copied_z = textureLoad(copied_depth, coord, 0);
     let colour_z = textureLoad(colour_depth, coord, 0);
 #endif
-    // STAND-IN(#362): some Mudcrab materials draw depth only in the colour pass.
-    let ndc = select(colour_z, copied_z, copied_z > 0.0);
+    // STAND-IN(#362): merged terrain and some decals write depth only in the colour pass.
+    // Reverse-Z puts a visible surface ahead of any object it hides in the prepass.
+    let ndc = max(copied_z, colour_z);
     // Uncovered depth skips fog and output scale. Occlusion still applies.
     if ndc <= 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, fog.far_colour.w);

@@ -91,9 +91,11 @@ fn retail_two_stages(
 }
 
 // Sorted blended draws run with `(S, T) = (1, 1)`, every other draw with `(1, 0)` (section 4).
-// STAND-IN(#362): retail keeps blended decals in the first stage; Mudcrab draws every blended
-// material after the composite, so it takes the second stage's tail.
+// The sorted pipeline can retain the base material's mask discard.
 fn retail_blend_selector(flags: u32) -> f32 {
+#ifdef SKYRIM_SORTED_ALPHA
+    return 1.0;
+#else
     let mode = flags & pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS;
     if mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE
         || mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK
@@ -101,6 +103,7 @@ fn retail_blend_selector(flags: u32) -> f32 {
         return 0.0;
     }
     return 1.0;
+#endif
 }
 
 // The output tail of a draw at `world_position`, with the camera's weather or cell fog.

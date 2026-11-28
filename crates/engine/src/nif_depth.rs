@@ -88,11 +88,13 @@ impl NifDepthState {
     /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): retail draws it in the
     /// first stage, before the composite. A decal writes depth there; another surface keeps its
     /// authored write. A blended surface and a surface without a depth test keep the sorted draw.
-    /// STAND-IN(#362): a blended decal draws after the composite and applies it in its shader.
+    /// STAND-IN(#362): depth-writing cutouts and masked decals keep their cutout pass when
+    /// authored with blend factors. SPEC-2 §4.2 only selects a blend mode for sorted draws.
     #[must_use]
     pub fn retail_first_stage(mut self, alpha_mode: AlphaMode) -> Self {
         if self.depth_test
-            && self.retail_blend_mode.is_none_or(|mode| mode == 0)
+            && (self.retail_blend_mode.is_none_or(|mode| mode == 0)
+                || (self.alpha_mask && (self.decal || self.depth_write)))
             && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_))
         {
             self.first_stage = true;
@@ -128,14 +130,16 @@ impl NifDepthState {
             return None;
         }
         let depth_test = flags_1 & DEPTH_TEST != 0;
+        let alpha_mask = matches!(alpha_mode, AlphaMode::Mask(_));
         Some(Self {
             depth_test,
-            // A sorted blended draw of this path writes no depth, as before.
-            depth_write: false,
+            // Preserve the authored write for cutouts. The first-stage lighting path needs it
+            // to distinguish depth-writing cutouts from the sorted list.
+            depth_write: depth_test && flags_2 & DEPTH_WRITE != 0 && alpha_mask,
             decal: false,
-            alpha_mask: matches!(alpha_mode, AlphaMode::Mask(_)),
+            alpha_mask,
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
-            blend_factors,
+            blend_factors: if alpha_mask { None } else { blend_factors },
             retail_blend_mode: Some(mode),
             uses_effect_emittance: false,
             first_stage: false,

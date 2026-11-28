@@ -857,18 +857,226 @@ mod tests {
         assert_eq!(bad, defaults);
     }
 
+    // SPEC-2 §10 supplies the compiled fallback. The two INI columns contain only the
+    // values for HDR keys present in the shipped Skyrim_Default.ini and Ultra.ini.
+    #[test]
+    fn hdr_defaults_match_shipped_ini_values_and_compiled_fallbacks() {
+        const DEFAULTS: &str = "
+Display bUseFilmicCurve 0 - -
+Display fReinhardWhiteScale 1.1 - -
+Display fFilmicWhiteScale 1.4 - -
+Display fGlobalEyeAdaptSpeedScale 2.0 - -
+Display fGlobalEyeAdaptStrengthScale 0.4 - -
+Display fGamma 1.0 - -
+Display fGammaMin 0.6 - -
+Display fGammaMax 1.4 - -
+Display fGlobalSaturationBoost 0 - -
+Display fGlobalBrightnessBoost 0 - -
+Display fGlobalContrastBoost 0 - -
+Display fGlobalBloomThresholdBoost 0 - -
+Display fGlobalMapBrightnessBoost 0.25 - -
+Display fGlobalMapContrastBoost -0.3 - -
+Display fGlobalMapBloomThresholdBoost 0.25 - -
+Display fConstHDRAdaptTimerForMenu 0.3 - -
+General iFPSClamp 0 - -
+General bCompensateUnstableFrameTime 1 - -
+General iUnstableFrameTimeHistorySize 8 - -
+Display bUse64bitsHDRRenderTarget 0 - 1
+Display bSAOEnable 1 - 1
+Display bSAOApplyFog 1 - -
+Display bUseMultipleLuminanceReferences 1 - -
+";
+        let mut ini = SkyrimIni::default();
+        for row in DEFAULTS.trim().lines() {
+            let columns: Vec<_> = row.split_whitespace().collect();
+            let [section, key, compiled, template, ultra] = columns.as_slice() else {
+                panic!("invalid default row {row}");
+            };
+            let value = [*ultra, *template, *compiled]
+                .into_iter()
+                .find(|value| *value != "-")
+                .unwrap();
+            ini.merge_str(&format!("[{section}]\n{key}={value}\n"));
+        }
+        // Seed every field with a different value so a missing parser mapping fails this
+        // comparison as well. An exhaustive literal also requires a row for each new field.
+        let mut config = EngineConfig {
+            retail_hdr: crate::retail_hdr::RetailHdrConfig {
+                filmic: true,
+                reinhard_white_scale: 2.0,
+                filmic_white_scale: 2.0,
+                eye_adapt_speed_scale: 3.0,
+                eye_adapt_strength_scale: 1.0,
+                gamma: 1.2,
+                gamma_min: 0.7,
+                gamma_max: 1.5,
+                saturation_boost: 1.0,
+                brightness_boost: 1.0,
+                contrast_boost: 1.0,
+                bloom_threshold_boost: 1.0,
+                map_brightness_boost: 1.0,
+                map_contrast_boost: 1.0,
+                map_bloom_threshold_boost: 1.0,
+                menu_adapt_timer: 1.0,
+                fps_clamp: 60,
+                compensate_unstable_frame_time: false,
+                frame_time_history_size: 3,
+                use_64_bit_hdr_targets: false,
+                sao_enabled: false,
+                sao_apply_fog: false,
+                multiple_luminance_references: false,
+            },
+            ..Default::default()
+        };
+        ini.apply_retail_hdr(&mut config);
+        assert_eq!(EngineConfig::default().retail_hdr, config.retail_hdr);
+    }
+
+    #[test]
+    fn remaining_ini_backed_defaults_match_the_shipped_files() {
+        let config = EngineConfig::default();
+        let grass = GrassSettings::default();
+        // Columns are the INI key, Skyrim_Default.ini, Ultra.ini and the runtime default.
+        // These keys are the non-HDR importer defaults present in either shipped file.
+        let values = [
+            (
+                "fLightLODStartFade",
+                Some(3500.0),
+                None,
+                f64::from(config.light_lod_start_fade),
+            ),
+            (
+                "fFirstSliceDistance",
+                Some(2000.0),
+                None,
+                f64::from(config.sun_first_slice_distance),
+            ),
+            (
+                "uLargeRefLODGridSize",
+                None,
+                Some(11.0),
+                f64::from(config.large_ref_grid_size),
+            ),
+            (
+                "iShadowMapResolution",
+                None,
+                Some(4096.0),
+                f64::from(u32::try_from(config.sun_shadow_map_size).unwrap()),
+            ),
+            (
+                "fShadowDistance",
+                None,
+                Some(10000.0),
+                f64::from(config.sun_shadow_distance_limit.unwrap()),
+            ),
+            (
+                "fMeshLODLevel1FadeDist",
+                None,
+                Some(999999.0),
+                f64::from(config.lod_fade.mesh_lod_level1_fade_distance),
+            ),
+            (
+                "fMeshLODLevel2FadeDist",
+                None,
+                Some(999999.0),
+                f64::from(config.lod_fade.mesh_lod_level2_fade_distance),
+            ),
+            (
+                "fLODFadeOutMultObjects",
+                None,
+                Some(30.0),
+                f64::from(config.lod_fade.fade_out_mult_objects),
+            ),
+            (
+                "fLODFadeOutMultActors",
+                None,
+                Some(15.0),
+                f64::from(config.lod_fade.fade_out_mult_actors),
+            ),
+            (
+                "fLODFadeOutMultItems",
+                None,
+                Some(10.0),
+                f64::from(config.lod_fade.fade_out_mult_items),
+            ),
+            (
+                "fBlockLevel0Distance",
+                None,
+                Some(60000.0),
+                f64::from(config.terrain_lod.block_level0_distance),
+            ),
+            (
+                "fBlockLevel1Distance",
+                None,
+                Some(90000.0),
+                f64::from(config.terrain_lod.block_level1_distance),
+            ),
+            (
+                "fBlockMaximumDistance",
+                None,
+                Some(250000.0),
+                f64::from(config.terrain_lod.block_maximum_distance),
+            ),
+            (
+                "fSplitDistanceMult",
+                None,
+                Some(1.5),
+                f64::from(config.terrain_lod.split_distance_mult),
+            ),
+            (
+                "fTreeLoadDistance",
+                None,
+                Some(75000.0),
+                f64::from(config.terrain_lod.tree_load_distance),
+            ),
+            (
+                "fGrassStartFadeDistance",
+                None,
+                Some(7000.0),
+                f64::from(config.grass_fade_start),
+            ),
+            (
+                "fGrassMaxStartFadeDistance",
+                Some(7000.0),
+                None,
+                grass.max_start_fade_distance,
+            ),
+            (
+                "fGrassMinStartFadeDistance",
+                Some(0.0),
+                None,
+                grass.min_start_fade_distance,
+            ),
+            (
+                "bAllowCreateGrass",
+                Some(1.0),
+                None,
+                f64::from(u8::from(grass.allow_create_grass)),
+            ),
+            (
+                "bAllowLoadGrass",
+                Some(0.0),
+                None,
+                f64::from(u8::from(grass.allow_load_grass)),
+            ),
+        ];
+        for (key, template, ultra, actual) in values {
+            assert_eq!(Some(actual), ultra.or(template), "{key}");
+        }
+    }
+
     #[test]
     fn hdr_formats_timers_gamma_bounds_and_map_boosts_take_the_ini() {
         let config = apply(
             "[General]\niFPSClamp=60\nbCompensateUnstableFrameTime=0\n\
              iUnstableFrameTimeHistorySize=5\n\
-             [Display]\nbUse64bitsHDRRenderTarget=1\nfConstHDRAdaptTimerForMenu=0.2\n\
+             [Display]\nbUse64bitsHDRRenderTarget=0\nfConstHDRAdaptTimerForMenu=0.2\n\
              fGammaMin=0.7\nfGammaMax=1.5\nfGlobalMapBrightnessBoost=0.5\n\
              fGlobalMapContrastBoost=-0.2\nfGlobalMapBloomThresholdBoost=0.4\n\
              bSAOEnable=0\nbSAOApplyFog=0\n",
         )
         .retail_hdr;
-        assert!(config.use_64_bit_hdr_targets);
+        assert!(!config.use_64_bit_hdr_targets);
         assert_eq!(config.fps_clamp, 60);
         assert!(!config.compensate_unstable_frame_time);
         assert_eq!(config.frame_time_history_size, 5);

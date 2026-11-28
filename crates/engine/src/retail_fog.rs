@@ -1015,7 +1015,7 @@ mod tests {
             "view.view_from_clip,",
             "var z = -view_position.z;",
             "z /= 1.01 - 0.01 * (z / camera_far);",
-            "select(colour_z, copied_z, copied_z > 0.0)",
+            "max(copied_z, colour_z)",
         ] {
             assert!(code.contains(term), "retail_fog.wgsl lost `{term}`");
         }

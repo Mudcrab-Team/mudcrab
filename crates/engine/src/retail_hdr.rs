@@ -54,7 +54,7 @@ pub const ADAPT_STEP_FLOOR: f32 = 1.0 / 256.0;
 /// The luminance weights of the shipped image-space shaders (NEEDS 18).
 pub const LUMINANCE_WEIGHTS: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
-/// The INI keys of the chain, in `[Display]`. Every default is the compiled retail value.
+/// The INI keys of the chain, in `[Display]`. Defaults follow Ultra.ini, Skyrim_Default.ini, then the compiled retail value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RetailHdrConfig {
     /// `bUseFilmicCurve`.
@@ -115,7 +115,9 @@ impl Default for RetailHdrConfig {
             fps_clamp: 0,
             compensate_unstable_frame_time: true,
             frame_time_history_size: 8,
-            use_64_bit_hdr_targets: false,
+            // retail-default: Ultra.ini [Display] bUse64bitsHDRRenderTarget=1 (SPEC-2 §10).
+            use_64_bit_hdr_targets: true,
+            // retail-default: Ultra.ini [Display] bSAOEnable=1 (SPEC-2 §10).
             sao_enabled: true,
             sao_apply_fog: true,
             multiple_luminance_references: true,

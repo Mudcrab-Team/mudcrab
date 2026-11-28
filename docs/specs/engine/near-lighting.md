@@ -81,15 +81,15 @@ and the same output tail.
 | --- | --- | --- |
 | 1 | frame order: first stage, composite, saturate, blended draws, HDR, output | `retail_fog.rs`, `retail_hdr_render.rs` |
 | 2.1, 2.2 | the image-space block, the base-block rules, a missing weather or form takes `0x167` | `retail_hdr::select_block`, `HdrBlock` |
-| 2.3 | copy and normaliser | with no modifier the tint is the record's colour and amount |
+| 2.3 | copy and normaliser | `retail_image_space.rs` applies sampled modifiers and accumulates tint and fade |
 | 3 | composite, records 53, 51 and 49; its unsigned input | `retail_fog.rs`, `shaders/retail_fog.wgsl` |
-| 4.1, 4.2 | blend modes of sorted draws | `nif_depth::retail_blend_factors` |
+| 4.1, 4.2 | blend modes of sorted draws | `nif_depth.rs` selects pipeline blend state and keeps mask discard independent of that state |
 | 4.3 | draws after the composite add above 1 | blended draws run after the saturate |
-| 5.1 | targets | `Rgba16Float` (the Ultra preset) |
+| 5.1 | targets | `Rgba16Float` by default (Ultra.ini). The composite input copy uses `Rg11b10Ufloat` where supported |
 | 5.2 to 5.4 | downsample, luminance, adaptation, bloom | `retail_hdr*.rs`, `shaders/retail_hdr*.wgsl` |
 | 6 | tonemap, cinematic terms, fade | `RetailHdr`, `shaders/retail_hdr_tonemap.wgsl` |
-| 7 | output and gamma | the tonemap writes the surface; temporal anti-aliasing is the identity step |
-| 10 | settings | `skyrim_ini.rs` (`[Display]` HDR keys) |
+| 7 | output and gamma | the tonemap writes an 8-bit display texture and the present pass copies it to the view. Temporal anti-aliasing is the identity step |
+| 10 | settings | `skyrim_ini.rs` (`[Display]` and `[General]` HDR keys). Defaults follow Ultra.ini, Skyrim_Default.ini, then the compiled values |
 | 11 | examples E0 to E4 | `retail_output_examples.rs`, `nif_depth.rs` tests |
 
 ## Tests
@@ -113,9 +113,9 @@ changes the picture is unverified.
 | Ambient occlusion factor `A` is 1 in the composite | STAND-IN(#995): no SAO pass |
 | Every point light of a cluster adds; retail caps a geometry at 7 | STAND-IN(#999): light list order |
 | Vertex fog is evaluated per pixel, with camera planes 15 and 10240 | STAND-IN(#891): vertex fog inputs |
-| Composite uses the true axial depth, not `1.01 d - 0.01`; it also sees the depth a first-stage decal writes | STAND-IN(#891): retail composite depth rescale |
+| The composite uses the nearer of copied prepass and colour-pass depth for surfaces such as merged terrain. The depth remap and sky cutoff use the active projection planes | STAND-IN(#362): prepass coverage and camera planes |
 | Shadow masks are Mudcrab's shadow maps; interiors have no sun shadow | STAND-IN(#362): shadow mask production |
-| Blended decals draw after the composite with the second-stage tail ([Pass rules](#pass-rules)) | STAND-IN(#362): decal stage order |
+| Blended decals without alpha test draw after the composite with the second-stage tail ([Pass rules](#pass-rules)) | STAND-IN(#362): decal stage order |
 | Additive term `cb1[8]` is 0; the specular distance fade is 1 | STAND-IN(#362): open run-time inputs |
 | Ambient specular is not drawn | STAND-IN(#362): key bit 17 predicate |
 | Specular strength and colour are clamped to `[0, 1]` by the converter, and a surface with only flag 41 loses its strength | STAND-IN(#362): converter publishes clamped values |
@@ -126,11 +126,13 @@ changes the picture is unverified.
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
 | Terrain LOD takes the plain near sum | STAND-IN(#946): LOD techniques excluded |
 | A short `XCLL` without fog power or max takes 1 | STAND-IN(#695): short cell data |
-| One exterior weather; no weather transition, flash, image-space modifier, override or room cross-fade | STAND-IN(#364): weather and image-space state |
+| The renderer accepts previous-weather and modifier inputs, but the game has no live producers for them. Room and cell blocks cross-fade. SPEC-2 leaves room-clock reset order open | STAND-IN(#364): weather and image-space state |
 | Temporal anti-aliasing is not run: the tonemap writes the output | STAND-IN(#361): the identity step of SPEC-2 |
 | Depth of field, radial and full-screen blur, double vision, refraction, volumetric lighting, lens flares and screen-space reflection are not drawn | STAND-IN(#364): the other post effects |
-| `ClearAdaptedLight` and the menu pause timer never fire | STAND-IN(#361): the adaptation reset triggers |
-| The composite's unsigned copy keeps only the sign clamp, not its 11/10-bit precision | STAND-IN(#362): the composite input format |
+| `ClearAdaptedLight` clears the adapted pair and the pause timer uses the menu value. Separate retail sky and menu reset triggers have no producer | STAND-IN(#361): the adaptation reset triggers |
+| Multisampled views and adapters without packed render targets clamp the composite input without storing it at 11/10-bit precision | STAND-IN(#361): the composite input format |
+| The optional packed HDR chain can stall or bias upward eye adaptation on Metal. A positive step below the next representable value can truncate back to the previous value. Ultra uses the wide chain by default | SPEC-2 §5.3: retail rounding is unverified |
+| HDR-off copies into Mudcrab’s display target. Retail copy encoding is open | SPEC-2 §13 P11 |
 | A blend pair outside retail's table draws as a plain alpha blend | STAND-IN(#362): inherited blend modes |
 | The light distance dimmer and flicker gate measure from the camera | STAND-IN(#955): the player position as origin |
 | A palette effect surface does not take its reference's emittance colour; an additive effect decal takes it after the composite, unfogged | STAND-IN(#984): the effect shader's emittance, tint and fog |
