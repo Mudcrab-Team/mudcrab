@@ -1145,6 +1145,14 @@ struct AmbientTargets<'w, 's> {
     retail_fog: Option<ResMut<'w, InteriorRetailFog>>,
 }
 
+/// The camera that chooses the room, with its room lookup distance.
+type RoomCameras<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Transform, Option<&'static RoomCullingNear>),
+    (With<StreamingCamera>, Without<WorldSun>),
+>;
+
 /// Advances the room-lighting blend one frame (`RF-LIGHT-CPU-024`): a cell change takes the new
 /// room at once, and a room crossing inside the cell starts or continues a blend.
 ///
@@ -1154,10 +1162,7 @@ struct AmbientTargets<'w, 's> {
 /// A cell without a usable graph takes the room boxes ([`SceneEnvironment::room_at`]).
 fn step_room_blend(
     scene: Res<SceneEnvironment>,
-    cameras: Query<
-        (&Transform, Option<&RoomCullingNear>),
-        (With<StreamingCamera>, Without<WorldSun>),
-    >,
+    cameras: RoomCameras,
     graphs: Option<Res<RoomCullingState>>,
     roots: Query<&GlobalTransform, InteriorRoot>,
     mut blend: ResMut<RoomBlend>,
