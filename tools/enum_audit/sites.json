@@ -535,7 +535,7 @@
     },
     {
       "file": "crates/engine/src/papyrus_host.rs",
-      "anchor": "let reason = format!(\"property type {kind} is not a defined VMAD property type\");",
+      "anchor": "\"property type {kind} is not a defined VMAD property type\"",
       "enum_id": "VMAD.Property.Type",
       "status": "exhaustive"
     }

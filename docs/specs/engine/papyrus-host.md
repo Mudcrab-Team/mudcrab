@@ -24,17 +24,31 @@ first and the reference's override them. A script attaches only if its name is i
 (`SLICE_SCRIPTS`) and its class extends `ObjectReference`. Each attach logs one `info` line.
 
 **Property rows.** `script_properties.status` holds the VMAD property flag, which xEdit names
-1 (Edited) and 3 (Removed). The host seeds an Edited row. A Removed row sets nothing (#1052). Each
-type needs its own value column: a NULL or out-of-range column, a value count that does not match,
-or an undefined status or type makes the property unreadable. The host logs it and does not set it
-(#1095). A stored 0, empty string or false is a value. `crates/engine/tests/sqlite_null_guard.rs`
-rejects a new NULL-to-literal coercion in the engine's SQLite readers.
+1 (Edited) and 3 (Removed). The host seeds an Edited row. A Removed row sets nothing (#1052). When
+two Edited rows name one property, only the later one runs. Each type needs its own value column.
+These make a property unreadable: a NULL or out-of-range column, a value count that does not match,
+a `value_index` that does not run from 0 with no gap, or an undefined status or type. The host logs
+it and does not set it (#1095). A Removed row's values are checked the same way and damage is logged.
+A `scripts` row that cannot be read is logged too. A stored 0, empty string or false is a value.
+`crates/engine/tests/sqlite_null_guard.rs` rejects a new NULL-to-literal coercion in the engine's
+SQLite readers.
 
 **Quest aliases.** An object value with an alias id other than `0xFFFF` names a quest alias (#1051).
-A property typed `ReferenceAlias`, `LocationAlias` or `Alias` holds that alias, and every property
-bound to it shares one object. `GetReference` reads the current fill. Two cases stay `None` with a
-`warn` line: a property typed as a derived alias script (the database has no alias script data), and
-a property whose script declares no type for `::<name>_var`. Nothing fills aliases yet.
+A property typed `ReferenceAlias`, `LocationAlias` or `Alias` holds that alias. Properties with
+compatible types share one object: the same type, or `Alias` with one of its subtypes. The object
+then has the subtype's class. `GetReference` reads the current fill. Nothing fills aliases yet.
+
+These alias bindings give `None` and a `warn` line:
+
+- the property's type is a derived alias script (the database has no alias script data);
+- the property's type is not an alias type;
+- the script declares no type for `::<name>_var`;
+- the form the value names is not a quest in the world database;
+- the alias already has an unrelated class (`ReferenceAlias` and `LocationAlias`). The first
+  binding that runs fixes the class. A replaced row does not run.
+
+The class change from `Alias` to a subtype assumes that no alias class sets instance fields. A
+converted alias class that sets one gives `None` and an `error` line.
 
 **Allowlist.** Four scripts: `defaultDisableSelfOnActivate`, `defaultUnlockOnLoad`,
 `dunDeadMensRotatingDoor` and `dunPOIDragonNoteScript`. Every other converted script stays detached

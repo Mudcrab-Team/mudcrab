@@ -56,6 +56,9 @@ image_dds.workspace = true
 # No default features: the "glsl" one makes naga_oil write every imported header in GLSL as well,
 # which panics on Bevy's bindless material headers. Bevy turns on what it needs.
 naga_oil = { version = "0.22", default-features = false }
+# Parse the engine's own source in `tests/sqlite_null_guard.rs`. `span-locations` gives lines.
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "visit", "clone-impls"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [lints]
 workspace = true

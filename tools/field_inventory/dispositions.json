@@ -256,7 +256,7 @@
     "ACHR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -272,7 +272,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -280,7 +280,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -2116,7 +2116,7 @@
     "ACTI.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -2128,7 +2128,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -2136,7 +2136,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -4181,9 +4181,10 @@
       "issue": ""
     },
     "ALCH.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed ALCH references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -4195,7 +4196,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -4203,7 +4204,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -5529,9 +5530,10 @@
       "issue": ""
     },
     "AMMO.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed AMMO references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -5543,7 +5545,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -5551,7 +5553,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -6866,9 +6868,10 @@
       "issue": ""
     },
     "APPA.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed APPA references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -6880,7 +6883,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -6888,7 +6891,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -9731,9 +9734,10 @@
       "issue": ""
     },
     "ARMO.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "VMAD primary scripts and properties are exported to scripts/script_properties/script_property_values and readable via base_form in papyrus_host.rs, but papyrus_plugin.rs:78 gates live attachment to SLICE_SCRIPTS and actor/armor scripts are not attached. The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -9745,7 +9749,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -9753,7 +9757,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -11680,9 +11684,10 @@
       "issue": ""
     },
     "BOOK.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed BOOK references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -11694,7 +11699,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -11702,7 +11707,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -15180,7 +15185,7 @@
     "CONT.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -15192,7 +15197,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -15200,7 +15205,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -17048,7 +17053,7 @@
     "DOOR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -17060,7 +17065,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -17068,7 +17073,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -19140,7 +19145,7 @@
     "FLOR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -19152,7 +19157,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -19160,7 +19165,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -21123,7 +21128,7 @@
     "FURN.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -21135,7 +21140,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -21143,7 +21148,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -24932,9 +24937,10 @@
       "issue": ""
     },
     "INGR.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed INGR references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -24946,7 +24952,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -24954,7 +24960,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -26321,9 +26327,10 @@
       "issue": ""
     },
     "KEYM.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed KEYM references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -26335,7 +26342,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -26343,7 +26350,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -30042,7 +30049,7 @@
     "LIGH.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -30054,7 +30061,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -30062,7 +30069,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -31870,9 +31877,10 @@
       "issue": ""
     },
     "MISC.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed MISC references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -31884,7 +31892,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -31892,7 +31900,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -47522,9 +47530,10 @@
       "issue": ""
     },
     "NPC_.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "VMAD primary scripts and properties are exported to scripts/script_properties/script_property_values and readable via base_form in papyrus_host.rs, but papyrus_plugin.rs:78 gates live attachment to SLICE_SCRIPTS and actor/armor scripts are not attached. The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -47536,7 +47545,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -47544,7 +47553,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -48821,7 +48830,7 @@
     "PARW.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -48837,7 +48846,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -48845,7 +48854,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -50075,7 +50084,7 @@
     "PBAR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -50091,7 +50100,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -50099,7 +50108,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -51329,7 +51338,7 @@
     "PBEA.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -51345,7 +51354,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -51353,7 +51362,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -52583,7 +52592,7 @@
     "PCON.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -52599,7 +52608,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -52607,7 +52616,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -53848,7 +53857,7 @@
     "PFLA.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -53864,7 +53873,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -53872,7 +53881,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -55102,7 +55111,7 @@
     "PGRE.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -55118,7 +55127,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -55126,7 +55135,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -56356,7 +56365,7 @@
     "PHZD.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -56372,7 +56381,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -56380,7 +56389,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -57610,7 +57619,7 @@
     "PMIS.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -57626,7 +57635,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -57634,7 +57643,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -62541,7 +62550,7 @@
     "REFR.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -62557,7 +62566,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -62565,7 +62574,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -65265,9 +65274,10 @@
       "issue": ""
     },
     "SCRL.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed SCRL references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -65279,7 +65289,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -65287,7 +65297,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -67563,9 +67573,10 @@
       "issue": ""
     },
     "TACT.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed TACT references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -67577,7 +67588,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -67585,7 +67596,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -69273,7 +69284,7 @@
     "TREE.VMAD.scripts_script_properties_property_flags": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is not set, and any other status is rejected and logged as an unreadable property. When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -69285,7 +69296,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -69293,7 +69304,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
@@ -73127,9 +73138,10 @@
       "issue": ""
     },
     "WEAP.VMAD.scripts_script_properties_property_flags": {
-      "disposition": "respected",
+      "disposition": "partial",
+      "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Exported to script_properties.status and read by papyrus_host.rs: Edited (1) is seeded, Removed (3) is skipped so an earlier owner's value or the script default stays, and any other status is rejected and logged as an unreadable property.",
+      "reason": "Extracted to scripts/script_properties/script_property_values and attached from base_form by PapyrusHost::attach_reference when placed WEAP references spawn, but papyrus_plugin.rs limits runtime script attachment to SLICE_SCRIPTS (4 scripts). The host seeds Edited (1) and does not set Removed (3). When a reference removes (3) a property that its base record sets, the base value stays; that rule is unverified against retail.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/records/record_type/vmad.rs",
@@ -73141,7 +73153,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "PropertyStatus::Removed => continue,"
+          "anchor": "PropertyStatus::Removed { fault } => {"
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
@@ -73149,7 +73161,7 @@
         },
         {
           "path": "crates/engine/src/papyrus_host.rs",
-          "anchor": "VMAD_STATUS_REMOVED => {"
+          "anchor": "VMAD_STATUS_REMOVED => ScriptProperty {"
         }
       ]
     },
