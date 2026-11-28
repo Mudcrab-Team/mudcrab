@@ -2129,6 +2129,23 @@ the first catalog export without a schema bump (`WORLD_DATABASE_SCHEMA_VERSION` 
 `create_tables` adds it to an older reused `actor_models`, and the engine probes for it, so a
 database without it still loads.
 
+**Height scale (runtime only).** The game draws a placed actor at its reference scale times the
+race height for its sex times the NPC's own height. The race height is `RACE/DATA` at offset 16
+(male) or 20 (female), a little-endian `f32`. The NPC height is `NPC_/NAM6`. The engine reads both
+from the `records` table when it opens the actor catalog, so no column is published and an existing
+pack with `actor_models` and `records` needs no reconversion. It follows the same Traits chain as
+race and sex, so the race, the sex and the height come from one NPC. Static Ghidra analysis of
+`0x1403c1e30` confirms `Use Traits` (bit 0) copies `height`
+(`docs/research/retail/q10-npc-templates.md`), though no formal `RF-` registry row is published yet.
+A broken, cyclic, or `LVLN` `Use Traits` chain yields no `NAM6` height (`1.0`). A missing race
+defaults only the race height to 1.0, and a missing `NAM6` defaults only the NPC height to 1.0
+(for example, a missing `NAM6` on a 0.65 race gives 0.65); a database without `records` gives a
+factor of 1.0. A non-finite or non-positive NPC product gives 1.0, and a composed scale that falls
+below the transform validation floor (`<= 1e-6` or `|det| <= 1e-8`) or overflows a usable reference
+scale falls back to the reference scale; both guards are engine policy and not retail behaviour.
+The engine also drops the X and Y rotation of an actor reference and keeps Z, as the game does. See
+`crates/engine/src/world/actor_scale.rs`.
+
 **Sex.** `NPC_/ACBS` bit 0 (`1` = female). A base with no `ACBS` defaults to male and records a
 `missing_acbs` diagnostic.
 

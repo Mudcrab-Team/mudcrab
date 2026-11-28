@@ -1,4 +1,5 @@
 pub mod actor_catalog;
+pub(crate) mod actor_scale;
 pub mod cache;
 pub mod components;
 pub mod database;
