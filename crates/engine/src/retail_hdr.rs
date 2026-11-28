@@ -1,87 +1,24 @@
-//! Retail's HDR image-space chain for the `skyrim` visual profile (#796, #361).
+//! HDR image space, adaptation, bloom and tonemap for the Skyrim visual profile.
 //!
-//! The engine rules are in [near-lighting.md](../../../docs/specs/engine/near-lighting.md).
+//! SPEC-2 sections 2 and 5 to 7 define the image-space selection, HDR passes and display math.
+//! The [near-lighting spec](../../../docs/specs/engine/near-lighting.md) defines the scene inputs.
+//! `retail_hdr_render.rs` records the render passes and `retail_image_space.rs` applies the
+//! room and modifier values before rendering.
 //!
-//! Before this module the `skyrim` profile still ran Bevy's TonyMcMapface and a fixed EV100 of
-//! 9.7. Retail has neither. It tone maps once, with a luminance curve whose input is the lit and
-//! fogged scene, it adds bloom, and it adapts to the scene brightness over time. This module is
-//! that chain. `mudcrab` is unchanged and never reaches it.
-//!
-//! ## Where the facts come from
-//!
-//! Skyrim-research NEEDS 18 (`skyrim_decomp` PR 1059) with its re-verification (amendments D1 to
-//! D9), NEEDS 24 (the fog composite and `k`), NEEDS 25 (the frame timer), NEEDS 26 (interiors use
-//! the same chain) and NEEDS 27 (reviewed: the timer, the first frame, the adapted pair, the
-//! draws after the composite, the image-space selection and the bloom). All of them are static
-//! readings of 1.7.104.0. No capture confirms any value, so every number below is a static result.
-//!
-//! ## What retail does, in order
-//!
-//! [near-lighting.md](../../../docs/specs/engine/near-lighting.md), section 10 of its source.
-//!
-//! 1. The lit scene is composited with fog (`retail_fog.rs`). The composite's own output is
-//!    **saturated** (D3). Draws after the composite (the sorted alpha passes, the first-person
-//!    view, volumetrics) add light above 1, so the tonemap input can exceed 1. Only the composite
-//!    output is clipped. The whole scene is not (NEEDS 27).
-//! 2. A 4-tap downsample takes the scene to a quarter size. Luminance steps (4 taps first, then 16
-//!    taps) divide each side by 4 until the 2 by 2 adapted pair. The average is linear.
-//! 3. The adapt draw replaces the last step. For each channel and texel,
-//!    `delta = target - previous`,
-//!    `step = sign(delta * rate) * min(|delta|, max(|delta * rate|, 1/256))`
-//!    and `new = previous + step`: at rate 0 nothing moves (SPEC-1 section 10). A NaN target keeps
-//!    the previous value. The rates are
-//!    `y = 1 - max(1 - 0.01 S, 0)^E` and `x = 1 - max(1 - 0.01 S / K, 0)^E`, with
-//!    `S = fGlobalEyeAdaptSpeedScale * EyeAdaptSpeed`, `K = fGlobalEyeAdaptStrengthScale *
-//!    EyeAdaptStrength` and `E = 30 T`. `T` is the smoothed real frame time in seconds. On the
-//!    first frame, or after the targets are rebuilt, the adapt draw is skipped and the pair is
-//!    the current luminance, so the ratio is 1.
-//! 4. Bloom: a bright pass with a vertical blur and a horizontal blur, both at a quarter size, of
-//!    the first downsample. `k = clamp(trunc(BloomBlurRadius), 1, 7)`.
-//! 5. The tonemap pass, per pixel: `Ls = L * A.y / A.x`, where `A` is the adapted pair sampled
-//!    bilinearly at the screen coordinate. Reinhard `Lt = Ls (1 + Ls W2) / (1 + Ls)` with
-//!    `W2 = 1 / (1.1 White)^2`, or the filmic curve when `bUseFilmicCurve` is 1. Then
-//!    `colour = c * Lt / L + b * saturate(ReceiveBloomThreshold - Lt)`, saturation about the
-//!    colour's luminance, the tint, brightness and contrast as multipliers about `A.x` (D6),
-//!    `saturate`, power `1 / fGamma`, and the fade.
-//! 6. The result goes to an `R8G8B8A8_UNORM` backbuffer with no transfer function.
-//!
-//! The image-space values (`IMGS`) come from the weather's four day-part forms for an exterior,
-//! mixed by the same day-part weights as the sky. An interior takes the cell's own link, or the
-//! default form when the cell has none, unless a cell flag selects the weather block. An exterior
-//! in a world space with a lighting template follows the interior rule (NEEDS 27).
-//!
-//! ## The input scale
-//!
-//! There is none. Under `skyrim` the scene is lit in retail's own unitless values
-//! (`retail_lighting.rs`, [near-lighting.md](../../../docs/specs/engine/near-lighting.md),
-//! SPEC-1 section 2.1) and the camera exposure is 1, so the HDR target
-//! holds what retail's holds.
-//!
-//! ## What Mudcrab does differently from retail
-//!
-//! - **IMGS constructor default.** STAND-IN(#361): a record that lacks a field takes retail's
-//!   constructor default for it ([`HdrBlock::IMGS_CONSTRUCTOR_DEFAULT`]). The selection report
-//!   names every defaulted field.
-//! - **Not applied.** IMAD modifiers and `SetHDRParam` (Mudcrab has no cinematic modifier
-//!   source), room image spaces and their cross-fade, the map-menu boosts, a screen fade (the
-//!   fade amount is 0) and `ClearAdaptedLight` requests from the sky, from menus and from player
-//!   moves (the pair restarts only when the targets are rebuilt).
-//! - **Pause menu.** Retail replaces `T` with `fConstHDRAdaptTimerForMenu` (0.3) while paused.
-//!   Mudcrab has no pause menu that stops the game clock, so `T` is always the frame time.
-//! - **Weather transitions.** The weather does not change, so the current-weather share `m` is 1.
-//! - **Output transfer.** The pass stores the linear decode of the display value, because
-//!   Mudcrab's surface encodes sRGB on write and retail's backbuffer does not.
-//! - **Fog composite saturate (D3).** The fog pass is a blend and cannot clip. A Min-blend draw
-//!   of 1.0 right after it does (`retail_hdr_saturate.wgsl`), before the transmissive and
-//!   transparent passes, so later draws still add above 1. Only views that draw the composite are
-//!   clipped. The composite runs outside and inside; without fog it is retail's record 49, which
-//!   clips and applies no `k` (see `retail_fog.rs`).
-//! - **Targets.** The chain targets are `Rgba16Float`, retail's `Ultra` format.
+//! STAND-IN(#361): Bevy presents through an sRGB view. The presentation shader decodes the
+//! stored display bytes to linear values so the sRGB write reproduces them on screen.
+//! STAND-IN(#361): Bevy shares the main attachment with presentation and UI. Keep it wide
+//! to preserve the display bytes through the sRGB transfer. Adapters without packed HDR
+//! render-attachment support also use wide intermediate targets.
 
 use crate::{
     color_pipeline::{SceneGradeSource, SceneGradeTarget},
     config::EngineConfig,
+    console::{AppConsoleExt, ConsoleCommand},
     retail_hdr_chain::{FrameTimer, bloom_radius, bloom_taps},
+    retail_image_space::{
+        ImageSpaceEffects, RetailImageSpaceInputs, RoomImageSpace, process_frame,
+    },
     visual_profile::VisualProfile,
     weather_sky::WeatherSky,
     world::{
@@ -108,8 +45,7 @@ pub const FILMIC_WHITE_SCALE: f32 = 1.4;
 pub const GLOBAL_EYE_ADAPT_SPEED_SCALE: f32 = 2.0;
 /// `fGlobalEyeAdaptStrengthScale` (NEEDS 18, compiled default).
 pub const GLOBAL_EYE_ADAPT_STRENGTH_SCALE: f32 = 0.4;
-/// `fConstHDRAdaptTimerForMenu` (NEEDS 18, compiled default). Mudcrab has no pause menu that
-/// stops the game clock, so nothing selects it. It is kept for the day a pause menu does.
+/// `fConstHDRAdaptTimerForMenu` (NEEDS 18, compiled default).
 pub const MENU_ADAPT_TIMER: f32 = 0.3;
 /// `fGamma` (NEEDS 18, compiled default). The shader's final exponent is `1 / fGamma`.
 pub const GAMMA: f32 = 1.0;
@@ -118,7 +54,7 @@ pub const ADAPT_STEP_FLOOR: f32 = 1.0 / 256.0;
 /// The luminance weights of the shipped image-space shaders (NEEDS 18).
 pub const LUMINANCE_WEIGHTS: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
-/// The INI keys of the chain, in `[Display]`. Every default is the compiled retail value.
+/// The INI keys of the chain, in `[Display]`. Defaults follow Ultra.ini, Skyrim_Default.ini, then the compiled retail value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RetailHdrConfig {
     /// `bUseFilmicCurve`.
@@ -133,6 +69,8 @@ pub struct RetailHdrConfig {
     pub eye_adapt_strength_scale: f32,
     /// `fGamma`.
     pub gamma: f32,
+    pub gamma_min: f32,
+    pub gamma_max: f32,
     /// `fGlobalSaturationBoost`, added to the image space saturation.
     pub saturation_boost: f32,
     /// `fGlobalBrightnessBoost`, added to the image space brightness.
@@ -141,6 +79,16 @@ pub struct RetailHdrConfig {
     pub contrast_boost: f32,
     /// `fGlobalBloomThresholdBoost`, added to the image space bloom threshold.
     pub bloom_threshold_boost: f32,
+    pub map_brightness_boost: f32,
+    pub map_contrast_boost: f32,
+    pub map_bloom_threshold_boost: f32,
+    pub menu_adapt_timer: f32,
+    pub fps_clamp: u16,
+    pub compensate_unstable_frame_time: bool,
+    pub frame_time_history_size: usize,
+    pub use_64_bit_hdr_targets: bool,
+    pub sao_enabled: bool,
+    pub sao_apply_fog: bool,
     /// `bUseMultipleLuminanceReferences`: the adapted pair is 2 by 2 when set, else 1 by 1.
     pub multiple_luminance_references: bool,
 }
@@ -154,17 +102,48 @@ impl Default for RetailHdrConfig {
             eye_adapt_speed_scale: GLOBAL_EYE_ADAPT_SPEED_SCALE,
             eye_adapt_strength_scale: GLOBAL_EYE_ADAPT_STRENGTH_SCALE,
             gamma: GAMMA,
+            gamma_min: 0.6,
+            gamma_max: 1.4,
             saturation_boost: 0.0,
             brightness_boost: 0.0,
             contrast_boost: 0.0,
             bloom_threshold_boost: 0.0,
+            map_brightness_boost: 0.25,
+            map_contrast_boost: -0.3,
+            map_bloom_threshold_boost: 0.25,
+            menu_adapt_timer: MENU_ADAPT_TIMER,
+            fps_clamp: 0,
+            compensate_unstable_frame_time: true,
+            frame_time_history_size: 8,
+            // retail-default: Ultra.ini [Display] bUse64bitsHDRRenderTarget=1 (SPEC-2 §10).
+            use_64_bit_hdr_targets: true,
+            // retail-default: Ultra.ini [Display] bSAOEnable=1 (SPEC-2 §10).
+            sao_enabled: true,
+            sao_apply_fog: true,
             multiple_luminance_references: true,
         }
     }
 }
 
-/// One image space's values: the nine `HNAM` floats, the `CNAM` triple and the `TNAM` tint.
+impl RetailHdrConfig {
+    /// The SPEC-2 brightness slider maps its normalized position to fGamma.
+    pub(crate) fn gamma_for_slider(self, position: f32) -> f32 {
+        self.gamma_min + position.clamp(0.0, 1.0) * (self.gamma_max - self.gamma_min)
+    }
+
+    pub(crate) fn gamma_slider_position(self) -> f64 {
+        let range = f64::from(self.gamma_max) - f64::from(self.gamma_min);
+        if range > 0.0 {
+            ((f64::from(self.gamma) - f64::from(self.gamma_min)) / range).clamp(0.0, 1.0)
+        } else {
+            0.5
+        }
+    }
+}
+
+/// The working image-space values in HNAM, CNAM, TNAM and DNAM order.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
 pub struct HdrBlock {
     pub eye_adapt_speed: f32,
     pub bloom_blur_radius: f32,
@@ -180,10 +159,11 @@ pub struct HdrBlock {
     pub contrast: f32,
     pub tint_amount: f32,
     pub tint_rgb: [f32; 3],
+    pub depth_of_field: [f32; 4],
 }
 
 /// The names of the fields a record can lack, in [`HdrBlock`] order.
-const FIELD_NAMES: [&str; 14] = [
+const FIELD_NAMES: [&str; 18] = [
     "eye_adaptation_speed",
     "bloom_blur_radius",
     "bloom_threshold",
@@ -198,17 +178,15 @@ const FIELD_NAMES: [&str; 14] = [
     "contrast",
     "tint_amount",
     "tint",
+    "depth_of_field_strength",
+    "depth_of_field_distance",
+    "depth_of_field_range",
+    "depth_of_field_mode",
 ];
 
 impl HdrBlock {
-    /// STAND-IN(#361): the IMGS constructor default, for a record that lacks a field. The values
-    /// are the compiled block defaults of NEEDS 18, Question 2: speed 3.0, blur radius 7.0,
-    /// threshold 0.6, bloom scale 0.5, receive-bloom 0.15, white 0.15, SunlightScale 1.8, SkyScale
-    /// 1.5, saturation 0.9, brightness 1.5, contrast 1.1 and tint 0. The block constructor sets
-    /// EyeAdaptStrength 3.5 and the record initialiser sets 3.0. A record is what is missing a
-    /// field, so 3.0 is used. The tint colour is not given and does not matter at tint 0, so it
-    /// is white. The SunlightScale default is the same 1.8 the object LOD path uses
-    /// (`streaming/lod_object_material.rs`, issue #946).
+    /// SPEC-2 section 2.1 defines the record defaults, including the new-record eye adaptation
+    /// strength of 3.0. The manager block starts with 3.5 before a record is copied into it.
     pub const IMGS_CONSTRUCTOR_DEFAULT: Self = Self {
         eye_adapt_speed: 3.0,
         bloom_blur_radius: 7.0,
@@ -223,7 +201,13 @@ impl HdrBlock {
         brightness: 1.5,
         contrast: 1.1,
         tint_amount: 0.0,
-        tint_rgb: [1.0, 1.0, 1.0],
+        tint_rgb: [0.0; 3],
+        depth_of_field: [0.0, 0.0, 0.0, 2.0],
+    };
+
+    pub const MANAGER_CONSTRUCTOR_DEFAULT: Self = Self {
+        eye_adapt_strength: 3.5,
+        ..Self::IMGS_CONSTRUCTOR_DEFAULT
     };
 
     /// The block of a record. A field the record lacks takes the constructor default and its name
@@ -232,7 +216,8 @@ impl HdrBlock {
         let default = Self::IMGS_CONSTRUCTOR_DEFAULT;
         let Some(record) = record else {
             defaulted.extend(FIELD_NAMES);
-            return default;
+            // STAND-IN(#361): use the manager's initial block when the pack lacks the form.
+            return Self::MANAGER_CONSTRUCTOR_DEFAULT;
         };
         let tint = match record.tint {
             Some(rgb) if rgb.iter().all(|channel| channel.is_finite()) => rgb,
@@ -286,6 +271,13 @@ impl HdrBlock {
             contrast: pick(record.contrast, default.contrast, "contrast"),
             tint_amount: pick(record.tint_amount, default.tint_amount, "tint_amount"),
             tint_rgb: tint,
+            depth_of_field: std::array::from_fn(|index| {
+                pick(
+                    record.depth_of_field[index],
+                    default.depth_of_field[index],
+                    FIELD_NAMES[14 + index],
+                )
+            }),
         }
     }
 
@@ -307,6 +299,7 @@ impl HdrBlock {
             contrast: 0.0,
             tint_amount: 0.0,
             tint_rgb: [0.0; 3],
+            depth_of_field: [0.0; 4],
         };
         for (weight, block) in parts {
             let w = *weight;
@@ -324,6 +317,9 @@ impl HdrBlock {
             mixed.contrast += w * block.contrast;
             mixed.tint_amount += w * block.tint_amount;
             for (channel, value) in mixed.tint_rgb.iter_mut().zip(block.tint_rgb) {
+                *channel += w * value;
+            }
+            for (channel, value) in mixed.depth_of_field.iter_mut().zip(block.depth_of_field) {
                 *channel += w * value;
             }
         }
@@ -416,6 +412,8 @@ pub struct RetailHdr {
     pub bloom: Vec4,
     /// The blur weights of radius `k`: entry `u + 7` holds tap `u`, in x.
     pub weights: [Vec4; 15],
+    /// x selects 64-bit intermediate targets, y bypasses HDR, z is the adaptation generation.
+    pub output: UVec4,
 }
 
 impl Default for RetailHdr {
@@ -434,6 +432,7 @@ impl Default for RetailHdr {
                 crate::output_scale::framebuffer_output_scale(true),
             ),
             weights: blur_weights(1),
+            output: UVec4::ZERO,
         }
     }
 }
@@ -476,6 +475,7 @@ impl RetailHdr {
                 crate::output_scale::framebuffer_output_scale(true),
             ),
             weights: blur_weights(radius),
+            output: UVec4::new(u32::from(config.use_64_bit_hdr_targets), 0, 0, 0),
         }
     }
 
@@ -565,7 +565,7 @@ fn blend_forms(
 
 fn constructor_default(reason: &'static str) -> (HdrBlock, ImageSpaceReport) {
     (
-        HdrBlock::IMGS_CONSTRUCTOR_DEFAULT,
+        HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT,
         ImageSpaceReport {
             source: "none",
             forms: Vec::new(),
@@ -584,25 +584,42 @@ pub fn weather_block(
     hour: f64,
     lookup: &dyn Fn(u32) -> Option<ImageSpace>,
 ) -> (HdrBlock, ImageSpaceReport) {
-    let weights = weather.slot_weights_at(hour);
-    let forms = weather.image_space_forms();
-    let used: Vec<(u32, f32)> = forms
-        .iter()
-        .zip(weights)
-        .filter(|(_, weight)| *weight > 0.0)
-        .map(|(form, weight)| {
+    weather_transition_block(Some(weather), None, hour, lookup)
+}
+
+fn weather_transition_block(
+    current: Option<&WeatherSky>,
+    transition: Option<(&WeatherSky, f32)>,
+    hour: f64,
+    lookup: &dyn Fn(u32) -> Option<ImageSpace>,
+) -> (HdrBlock, ImageSpaceReport) {
+    let (previous, q) = transition.map_or((None, 1.0), |(weather, q)| {
+        (Some(weather), q.clamp(0.0, 1.0))
+    });
+    let weights = current
+        .or(previous)
+        // retail-default: SPEC-2 §2.2 row 5 gives all weight to form 0x167 without weather.
+        .map_or([1.0, 0.0, 0.0, 0.0], |weather| {
+            weather.slot_weights_at(hour)
+        });
+    let mut used = Vec::with_capacity(4);
+    for (weather, share) in [(current, q), (previous, 1.0 - q)] {
+        let forms = weather.map_or([None; 4], WeatherSky::image_space_forms);
+        for (form, weight) in forms.into_iter().zip(weights) {
+            let weight = share * weight;
+            if weight <= 0.0 {
+                continue;
+            }
             let form = form
                 .filter(|form| *form != 0)
                 .unwrap_or(DEFAULT_IMAGE_SPACE_FORM);
-            (form, weight)
-        })
-        .collect();
-    let (block, mut report) = blend_forms("weather", &used, lookup);
-    if report.forms.is_empty() {
+            used.push((form, weight));
+        }
+    }
+    if used.is_empty() {
         return constructor_default("the day-part weights are all zero");
     }
-    report.source = "weather";
-    (block, report)
+    blend_forms("weather", &used, lookup)
 }
 
 /// Which image space the scene asks for.
@@ -632,9 +649,20 @@ impl SceneImageSpace {
 /// `DefaultImageSpace` when the cell has none). An interior that uses sky lighting, and every
 /// exterior, takes the weather's. Anything that cannot be resolved gives the constructor default
 /// with the reason in the report. Nothing is invented.
-pub(crate) fn select_block(
+#[cfg(test)]
+fn select_block(
     scene: SceneImageSpace,
     weather: Option<&WeatherSky>,
+    hour: f64,
+    lookup: Option<&dyn Fn(u32) -> Option<ImageSpace>>,
+) -> (HdrBlock, ImageSpaceReport) {
+    select_base_block(scene, weather, None, hour, lookup)
+}
+
+fn select_base_block(
+    scene: SceneImageSpace,
+    weather: Option<&WeatherSky>,
+    transition: Option<(&WeatherSky, f32)>,
     hour: f64,
     lookup: Option<&dyn Fn(u32) -> Option<ImageSpace>>,
 ) -> (HdrBlock, ImageSpaceReport) {
@@ -668,10 +696,7 @@ pub(crate) fn select_block(
         }
         // A missing current weather gives its weight to the default image space (SPEC-2
         // section 2.2).
-        _ => match weather {
-            Some(weather) => weather_block(weather, hour, lookup),
-            None => blend_forms("weather", &[(DEFAULT_IMAGE_SPACE_FORM, 1.0)], lookup),
-        },
+        _ => weather_transition_block(weather, transition, hour, lookup),
     }
 }
 
@@ -740,18 +765,27 @@ fn scene_image_space(
 /// The image-space block of the active scene (SPEC-1 section 2.4). The sun's `SunlightScale`,
 /// the sky's `SkyScale` and the HDR chain all read this one block.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct RetailImageSpace(pub HdrBlock);
+pub(crate) struct RetailImageSpace {
+    pub block: HdrBlock,
+    pub effects: ImageSpaceEffects,
+}
 
 impl Default for RetailImageSpace {
     fn default() -> Self {
-        Self(HdrBlock::IMGS_CONSTRUCTOR_DEFAULT)
+        Self {
+            block: HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT,
+            effects: ImageSpaceEffects::default(),
+        }
     }
 }
 
 /// The selected block. An app without the selection system (a fixture) takes the constructor
 /// block, as a scene with no image-space record does.
 pub(crate) fn scene_block(selected: Option<&RetailImageSpace>) -> HdrBlock {
-    selected.map_or(HdrBlock::IMGS_CONSTRUCTOR_DEFAULT, |selected| selected.0)
+    // retail-default: SPEC-2 §2.1 defines the constructor block.
+    selected.map_or(HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT, |selected| {
+        selected.block
+    })
 }
 
 /// Selects the scene's image-space block under the `skyrim` profile, after the scene is selected
@@ -771,6 +805,9 @@ pub(crate) fn select_retail_image_space(
     eye: Query<&Transform, With<StreamingCamera>>,
     mut last: Local<Option<ImageSpaceReport>>,
     selected: Option<ResMut<RetailImageSpace>>,
+    inputs: Option<Res<RetailImageSpaceInputs>>,
+    time: Option<Res<Time<Virtual>>>,
+    mut room: Local<RoomImageSpace>,
 ) {
     let Some(mut selected) = selected else {
         return;
@@ -786,21 +823,55 @@ pub(crate) fn select_retail_image_space(
     let lookup = catalog
         .as_deref()
         .map(|catalog| move |form: u32| catalog.image_space(form).copied());
-    let (block, report) = select_block(
+    let position = eye.iter().next();
+    let (mut block, mut report) = select_base_block(
         scene_image_space(
             scene.as_deref(),
             catalog.as_deref(),
             space.as_deref(),
             config_resource.as_deref(),
             origin.as_deref(),
-            eye.iter().next(),
+            position,
         ),
         weather,
+        inputs
+            .as_deref()
+            .and_then(|inputs| inputs.weather_transition.as_ref())
+            .map(|(weather, share)| (weather, *share)),
         hour,
         lookup
             .as_ref()
             .map(|lookup| lookup as &dyn Fn(u32) -> Option<ImageSpace>),
     );
+    let cell = space.as_deref().and_then(|space| space.interior);
+    let room_form =
+        cell.zip(catalog.as_deref())
+            .zip(position)
+            .and_then(|((cell, catalog), position)| {
+                catalog
+                    .room_bounds(cell)
+                    .iter()
+                    .find(|room| room.contains(position.translation))
+                    .and_then(|room| room.image_space)
+            });
+    if let Some(lookup) = lookup.as_ref() {
+        (block, report) = room.resolve(
+            cell,
+            room_form,
+            // STAND-IN(#362): fixtures without a Bevy clock leave room time unchanged.
+            time.as_deref().map_or(0.0, Time::delta_secs),
+            (block, report),
+            |form| blend_forms("room", &[(form, 1.0)], lookup),
+        );
+    }
+    if let Some(record) = source.as_deref().and_then(|source| source.record.as_ref())
+        && let Some(lookup) = lookup.as_ref()
+    {
+        (block, report) = blend_forms("override", &[(record.form_id, 1.0)], lookup);
+    }
+    if let Some(override_block) = inputs.as_deref().and_then(|inputs| inputs.override_block) {
+        block = override_block;
+    }
     if last.as_ref() != Some(&report) {
         info!(
             "retail HDR image space: source {}, forms {:08X?}, missing records {:08X?}, \
@@ -815,35 +886,135 @@ pub(crate) fn select_retail_image_space(
         );
         *last = Some(report);
     }
-    selected.set_if_neq(RetailImageSpace(block));
+    let modifiers = inputs
+        .as_deref()
+        .map_or(&[][..], |inputs| inputs.modifiers.as_slice());
+    let (block, effects) = process_frame(block, modifiers);
+    selected.set_if_neq(RetailImageSpace { block, effects });
 }
 
 /// Writes the scene's image space and the adaptation rates into every camera's pass.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Bevy supplies the time, settings, and view system parameters separately"
+)]
 pub(crate) fn drive_retail_hdr(
     config_resource: Option<Res<EngineConfig>>,
     image_space: Option<Res<RetailImageSpace>>,
     time: Res<Time<Real>>,
+    virtual_time: Option<Res<Time<Virtual>>>,
+    rendering: Option<Res<crate::settings::RenderingSettings>>,
+    inputs: Option<Res<RetailImageSpaceInputs>>,
     mut timer: Local<FrameTimer>,
     mut cameras: Query<&mut RetailHdr>,
 ) {
-    // The timer records every frame, as retail's does.
-    let seconds = timer.push(time.delta_secs());
+    // A world without the engine's configuration (a test) takes the compiled retail values.
+    let mut config = config_resource
+        .as_deref()
+        .map_or_else(RetailHdrConfig::default, |config| config.retail_hdr);
+    let seconds = timer.adaptation_time(
+        time.delta_secs(),
+        // STAND-IN(#362): fixtures without virtual time run at normal speed.
+        virtual_time.as_deref().map_or(1.0, Time::relative_speed),
+        virtual_time.as_deref().is_some_and(Time::is_paused),
+        &config,
+    );
     if cameras.is_empty() {
         return;
     }
-    // A world without the engine's configuration (a test) takes the compiled retail values.
-    let config = config_resource
+    if let Some(gamma) = rendering
         .as_deref()
-        .map_or_else(RetailHdrConfig::default, |config| config.retail_hdr);
+        .and_then(|settings| settings.skyrim_gamma)
+    {
+        config.gamma = gamma;
+    }
+    if inputs.as_deref().is_some_and(|inputs| inputs.map_open) {
+        config.brightness_boost = config.map_brightness_boost;
+        config.contrast_boost = config.map_contrast_boost;
+        config.bloom_threshold_boost = config.map_bloom_threshold_boost;
+    }
     let block = scene_block(image_space.as_deref());
     // SPEC-2 amends the output stage: its inputs enter here, with the block.
-    let settings = RetailHdr::from_block(&block, &config, seconds);
+    let mut settings = RetailHdr::from_block(&block, &config, seconds);
+    if let Some(image_space) = image_space {
+        settings.curve.w = image_space.effects.fade.amount;
+        settings.fade = image_space.effects.fade.rgb.extend(0.0);
+    }
+    if let Some(inputs) = inputs {
+        settings.output.y = u32::from(inputs.hdr_disabled);
+        settings.output.z = inputs.adaptation_generation;
+    }
     for mut camera in &mut cameras {
         camera.set_if_neq(settings);
     }
 }
 
 pub struct RetailHdrPlugin;
+
+fn set_gamma_command() -> ConsoleCommand {
+    ConsoleCommand {
+        name: "SetGamma",
+        short: None,
+        usage: "SetGamma <gamma>",
+        help: "set the Skyrim HDR gamma directly",
+        handler: Box::new(|world, args| {
+            let [value] = args else {
+                return Err("usage: SetGamma <gamma>".into());
+            };
+            let gamma = value
+                .parse::<f32>()
+                .map_err(|_| "gamma must be positive and finite")?;
+            if !gamma.is_finite() || gamma <= 0.0 {
+                return Err("gamma must be positive and finite".into());
+            }
+            let mut settings = world
+                .get_resource_mut::<crate::settings::RenderingSettings>()
+                .ok_or("rendering settings are unavailable")?;
+            if !settings.running_skyrim {
+                return Err("SetGamma requires the Skyrim visual profile".into());
+            }
+            settings.skyrim_gamma = Some(gamma);
+            Ok(format!("Skyrim gamma is {gamma}"))
+        }),
+    }
+}
+
+fn toggle_hdr_command() -> ConsoleCommand {
+    ConsoleCommand {
+        name: "ToggleHDR",
+        short: None,
+        usage: "ToggleHDR",
+        help: "switch the Skyrim HDR effect between tonemapping and a display copy",
+        handler: Box::new(|world, args| {
+            if !args.is_empty() {
+                return Err("usage: ToggleHDR".into());
+            }
+            let mut inputs = world.resource_mut::<RetailImageSpaceInputs>();
+            inputs.hdr_disabled = !inputs.hdr_disabled;
+            Ok(format!(
+                "Skyrim HDR effect {}",
+                if inputs.hdr_disabled { "off" } else { "on" }
+            ))
+        }),
+    }
+}
+
+fn clear_adapted_light_command() -> ConsoleCommand {
+    ConsoleCommand {
+        name: "ClearAdaptedLight",
+        short: None,
+        usage: "ClearAdaptedLight",
+        help: "restart Skyrim eye adaptation from the next frame's luminance",
+        handler: Box::new(|world, args| {
+            if !args.is_empty() {
+                return Err("usage: ClearAdaptedLight".into());
+            }
+            let mut inputs = world.resource_mut::<RetailImageSpaceInputs>();
+            inputs.adaptation_generation = inputs.adaptation_generation.wrapping_add(1);
+            Ok("Skyrim eye adaptation will restart on the next frame".into())
+        }),
+    }
+}
 
 impl Plugin for RetailHdrPlugin {
     fn build(&self, app: &mut App) {
@@ -856,6 +1027,10 @@ impl Plugin for RetailHdrPlugin {
             UniformComponentPlugin::<RetailHdr>::default(),
         ))
         .init_resource::<RetailImageSpace>()
+        .init_resource::<RetailImageSpaceInputs>()
+        .add_console_command(set_gamma_command())
+        .add_console_command(toggle_hdr_command())
+        .add_console_command(clear_adapted_light_command())
         .add_systems(
             PostUpdate,
             (attach_retail_hdr, drive_retail_hdr)
@@ -884,6 +1059,59 @@ mod tests {
             (actual - expected).abs() < 1.0e-6,
             "{what}: expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    fn menu_pause_and_map_boosts_reach_the_camera_uniform() {
+        let mut app = App::new();
+        let mut time = Time::<Real>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        let mut virtual_time = Time::<Virtual>::default();
+        virtual_time.pause();
+        let block = HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT;
+        let camera = app
+            .insert_resource(time)
+            .insert_resource(virtual_time)
+            .insert_resource(RetailImageSpaceInputs {
+                map_open: true,
+                adaptation_generation: 1,
+                ..default()
+            })
+            .add_systems(Update, drive_retail_hdr)
+            .world_mut()
+            .spawn(RetailHdr::default())
+            .id();
+        app.update();
+        let hdr = app.world().get::<RetailHdr>(camera).unwrap();
+        let config = RetailHdrConfig::default();
+        let (x, y) = adapt_rates(&block, &config, config.menu_adapt_timer);
+        assert_eq!((hdr.adapt.x, hdr.adapt.y), (x, y));
+        assert_eq!(hdr.grade.y, block.brightness + config.map_brightness_boost);
+        assert_eq!(hdr.grade.z, block.contrast + config.map_contrast_boost);
+        assert_eq!(
+            hdr.bloom.x,
+            block.bloom_threshold + config.map_bloom_threshold_boost
+        );
+        assert_eq!(hdr.output.z, 1);
+    }
+
+    #[test]
+    fn gamma_command_preserves_the_value_when_the_input_is_invalid() {
+        use crate::settings::RenderingSettings;
+        let mut world = World::new();
+        world.insert_resource(RenderingSettings {
+            running_skyrim: true,
+            ..Default::default()
+        });
+        let command = set_gamma_command();
+        assert!((command.handler)(&mut world, &["1.2"]).is_ok());
+        for raw in ["NaN", "inf", "-inf", "0", "-1", "invalid"] {
+            assert!((command.handler)(&mut world, &[raw]).is_err());
+            assert_eq!(
+                world.resource::<RenderingSettings>().skyrim_gamma,
+                Some(1.2)
+            );
+        }
     }
 
     /// A block with neutral grade and `White` 1.0, the worked check of NEEDS 18 (re-verification).
@@ -1140,6 +1368,7 @@ mod tests {
             contrast: Some(seed + 11.0),
             tint_amount: Some(seed + 12.0),
             tint: Some([seed + 13.0, seed + 14.0, seed + 15.0]),
+            depth_of_field: [Some(0.0), Some(0.0), Some(0.0), Some(2.0)],
         }
     }
 
@@ -1264,7 +1493,7 @@ mod tests {
     /// the labelled constructor default and are reported.
     #[test]
     fn a_missing_record_or_field_takes_the_constructor_default_and_is_reported() {
-        let defaults = HdrBlock::IMGS_CONSTRUCTOR_DEFAULT;
+        let defaults = HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT;
         let sky = weather([Some(0x10), Some(0x99), Some(0x12), Some(0x13)]);
         let lookup: &dyn Fn(u32) -> Option<ImageSpace> = &database;
         let (block, report) =
@@ -1418,7 +1647,7 @@ mod tests {
                 .iter()
                 .map(|member| member.offset)
                 .collect::<Vec<_>>(),
-            [0, 16, 32, 48, 64, 80, 96]
+            [0, 16, 32, 48, 64, 80, 96, 336]
         );
     }
 
@@ -1544,7 +1773,7 @@ mod tests {
         assert_eq!(report.forms, vec![(DEFAULT_IMAGE_SPACE_FORM, 1.0)]);
         assert_eq!(block.white, 905.0);
         let (block, report) = run(SceneImageSpace::TemplatedExterior(None));
-        assert_eq!(block, HdrBlock::IMGS_CONSTRUCTOR_DEFAULT);
+        assert_eq!(block, HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT);
         assert!(report.reason.is_some());
     }
 

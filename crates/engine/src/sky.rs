@@ -759,7 +759,7 @@ fn apply_sky(
 ) {
     let adjusted_palette = scaled_palette(&palette, settings.as_deref());
     let look = retail.look();
-    // Under `skyrim` the frame clears to `k x` the fog far colour (SPEC-1 section 8.1).
+    // SPEC-2 amendment: the `skyrim` clear uses fog far colour multiplied by 0.83332998.
     let sky_clear = match look {
         FogLook::Mudcrab => adjusted_palette.clear_colour(*space),
         FogLook::Retail => retail.clear_colour(&adjusted_palette, *space),
@@ -1019,6 +1019,7 @@ fn apply_fog(
     underwater: Res<crate::underwater::UnderwaterState>,
     profile: Option<Res<crate::visual_profile::VisualProfile>>,
     interior_retail_fog: Option<Res<crate::world::environment::interior::InteriorRetailFog>>,
+    config: Option<Res<crate::config::EngineConfig>>,
 ) {
     let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
     let look = profile
@@ -1068,6 +1069,16 @@ fn apply_fog(
         }
         _ => None,
     };
+    if let Some(config) = config.as_deref()
+        && let Some(pass) = wanted_pass
+    {
+        let no_fog = crate::retail_fog::RetailFogPass::without_fog();
+        if !config.retail_hdr.sao_apply_fog || pass == no_fog {
+            // STAND-IN(#361): leave the scene in place when both effects are off.
+            // The output encoding of the generic copy in SPEC-2 section 3 is unverified.
+            wanted_pass = config.retail_hdr.sao_enabled.then_some(no_fog);
+        }
+    }
     for (camera, current, current_pass) in &cameras {
         if current_pass != wanted_pass.as_ref() {
             match wanted_pass {
@@ -2148,6 +2159,25 @@ mod tests {
         assert!(app.world().get::<RetailFogPass>(camera).is_none());
     }
 
+    #[test]
+    fn skyrim_selects_the_composite_from_sao_and_fog_settings() {
+        use crate::retail_fog::RetailFogPass;
+        let (mut app, camera) = skyrim_fog_app(crate::visual_profile::VisualProfile::Skyrim);
+        for (sao, fog) in [(true, true), (false, true), (true, false), (false, false)] {
+            let mut config = crate::config::EngineConfig::default();
+            config.retail_hdr.sao_enabled = sao;
+            config.retail_hdr.sao_apply_fog = fog;
+            app.insert_resource(config);
+            app.update();
+            let pass = app.world().get::<RetailFogPass>(camera);
+            if fog {
+                assert_eq!(pass.expect("fog composite").far(), 80_000.0);
+            } else {
+                assert_eq!(pass, sao.then_some(&RetailFogPass::without_fog()));
+            }
+        }
+    }
+
     /// The pass follows the same gates as the camera fog: interiors, the fog setting and water.
     #[test]
     fn the_composite_is_removed_inside_with_fog_off_and_under_water() {
@@ -2504,7 +2534,7 @@ mod tests {
         use crate::visual_profile::VisualProfile;
         let (mut app, sun) = lighting_app(VisualProfile::Skyrim, 12.0);
         let mut image_space = crate::retail_hdr::RetailImageSpace::default();
-        image_space.0.sunlight_scale = 2.5;
+        image_space.block.sunlight_scale = 2.5;
         app.insert_resource(image_space);
         app.update();
         let light = app.world().get::<DirectionalLight>(sun).unwrap();

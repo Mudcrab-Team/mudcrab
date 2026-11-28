@@ -46,8 +46,9 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    (unverified). The blend counts game time: it stands while the game is paused, and one frame adds
    at most 1/6 s (RF-TIME-001, cited by RF-LIGHT-CPU-024). A room change while a blend runs waits
    for it to end. A cell change (a door) applies the new cell at once. A side with no fog ramp
-   stands for retail's far clamp of 163,840, so fog fades in or out. Not blended: the key-light
-   rotation (the cell's) and the room image space (`room_bounds` has no image-space column yet).
+   stands for retail's far clamp of 163,840, so fog fades in or out. Not blended here: the
+   key-light rotation (the cell's) and the room image space, which the HDR chain blends on its own
+   room clock and by the room box that holds the camera.
    The record-to-extra-0x77 link is a medium-confidence name lead.
 5. **Key light**: the same `DirectionalLight` entity as the exterior sun (retail uses one light
    node, RF-LIGHT-CPU-011).

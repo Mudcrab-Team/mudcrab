@@ -665,8 +665,8 @@ impl InteriorRender {
     /// ambient) and the fog, for both profiles' fog. The rotation, the sunlight scale and the key
     /// illuminance are the cell's and are not blended. The light fade squares blend too, in
     /// [`SceneEnvironment::light_fade`], because they resolve with engine settings; the pair
-    /// here is the current side's. The room image space is not blended: `room_bounds` carries no
-    /// image-space data yet.
+    /// here is the current side's. The room image space is not blended here: the HDR chain
+    /// blends it (`crate::retail_image_space::RoomImageSpace`).
     fn blended_with(&self, current: &Self, w: f32) -> Self {
         let mut faces = [[0; 3]; 6];
         for (face, (from, to)) in faces
@@ -910,7 +910,7 @@ impl SceneEnvironment {
                     .room_bounds(cell_id)
                     .iter()
                     .filter_map(|bound| {
-                        let template = catalog.lighting_template(bound.lighting_template)?;
+                        let template = catalog.lighting_template(bound.lighting_template?)?;
                         Some(RoomLighting::new(
                             bound,
                             render.with_room_template(template),
@@ -2324,7 +2324,7 @@ mod tests {
             crate::retail_lighting::sun_illuminance(
                 app.world()
                     .resource::<crate::retail_hdr::RetailImageSpace>()
-                    .0
+                    .block
                     .sunlight_scale
             )
         );
@@ -3181,7 +3181,8 @@ mod tests {
                 position: [0.0; 3],
                 rotation: [0.0; 3],
                 half: [100.0; 3],
-                lighting_template: 1,
+                lighting_template: Some(1),
+                image_space: None,
             },
             render(Some((3000.0, 4000.0))),
         );
@@ -3232,7 +3233,8 @@ mod tests {
                     position: [x, 0.0, 0.0],
                     rotation: [0.0; 3],
                     half: [100.0; 3],
-                    lighting_template: 1,
+                    lighting_template: Some(1),
+                    image_space: None,
                 },
                 render,
             )

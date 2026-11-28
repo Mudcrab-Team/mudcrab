@@ -9157,12 +9157,12 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! - **Not applied.** IMAD modifiers and `SetHDRParam` (Mudcrab has no cinematic modifier",
-          "path": "crates/engine/src/retail_hdr.rs"
+          "anchor": "The engine does not yet decode or sample IMAD animation curves or effect flags.",
+          "path": "crates/engine/src/retail_image_space.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: image-space adapter (IMAD) cinematic modifier curves. Converter decodes IMAD.DNAM animatable at offset 0 (visual_extras.json:495) into records.data; retail_hdr.rs:65 notes IMAD modifiers are not applied."
+      "reason": "Missing system: image-space adapter (IMAD) cinematic modifier curves. Converter decodes IMAD.DNAM animatable at offset 0 (visual_extras.json:495) into records.data; The engine accepts sampled modifiers but does not sample IMAD records."
     },
     "IMAD.DNAM.dof.bit3": {
       "disposition": "not-applicable",
@@ -9209,8 +9209,8 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! - **Not applied.** IMAD modifiers and `SetHDRParam` (Mudcrab has no cinematic modifier",
-          "path": "crates/engine/src/retail_hdr.rs"
+          "anchor": "The engine does not yet decode or sample IMAD animation curves or effect flags.",
+          "path": "crates/engine/src/retail_image_space.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
@@ -9228,8 +9228,8 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! - **Not applied.** IMAD modifiers and `SetHDRParam` (Mudcrab has no cinematic modifier",
-          "path": "crates/engine/src/retail_hdr.rs"
+          "anchor": "The engine does not yet decode or sample IMAD animation curves or effect flags.",
+          "path": "crates/engine/src/retail_image_space.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
@@ -9247,8 +9247,8 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! - **Not applied.** IMAD modifiers and `SetHDRParam` (Mudcrab has no cinematic modifier",
-          "path": "crates/engine/src/retail_hdr.rs"
+          "anchor": "The engine does not yet decode or sample IMAD animation curves or effect flags.",
+          "path": "crates/engine/src/retail_image_space.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
@@ -9266,8 +9266,8 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! - **Not applied.** IMAD modifiers and `SetHDRParam` (Mudcrab has no cinematic modifier",
-          "path": "crates/engine/src/retail_hdr.rs"
+          "anchor": "The engine does not yet decode or sample IMAD animation curves or effect flags.",
+          "path": "crates/engine/src/retail_image_space.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
@@ -9285,12 +9285,12 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "//! - **Not applied.** IMAD modifiers and `SetHDRParam` (Mudcrab has no cinematic modifier",
-          "path": "crates/engine/src/retail_hdr.rs"
+          "anchor": "The engine does not yet decode or sample IMAD animation curves or effect flags.",
+          "path": "crates/engine/src/retail_image_space.rs"
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: image-space adapter (IMAD) modifiers and radial blur pass. Converter decodes radial_flags at offset 200 (visual_extras.json:745-751); engine does not apply IMAD or radial blur."
+      "reason": "Missing system: image-space adapter (IMAD) modifiers and radial blur pass. Converter decodes radial_flags at offset 200 (visual_extras.json:745-751); the engine processes sampled modifiers but does not decode these flags or run radial blur."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_0": {
       "disposition": "system-not-implemented",
@@ -9308,7 +9308,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9317,7 +9317,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_1": {
       "disposition": "system-not-implemented",
@@ -9335,7 +9335,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9344,7 +9344,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_2": {
       "disposition": "system-not-implemented",
@@ -9362,7 +9362,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9371,7 +9371,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_3": {
       "disposition": "system-not-implemented",
@@ -9389,7 +9389,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9398,7 +9398,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_4": {
       "disposition": "system-not-implemented",
@@ -9416,7 +9416,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9425,7 +9425,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_5": {
       "disposition": "system-not-implemented",
@@ -9443,7 +9443,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9452,7 +9452,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_6": {
       "disposition": "system-not-implemented",
@@ -9470,7 +9470,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9479,7 +9479,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.no_sky_radius_7": {
       "disposition": "system-not-implemented",
@@ -9497,7 +9497,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9506,7 +9506,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_0": {
       "disposition": "system-not-implemented",
@@ -9524,7 +9524,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9533,7 +9533,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_1": {
       "disposition": "system-not-implemented",
@@ -9551,7 +9551,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9560,7 +9560,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_2": {
       "disposition": "system-not-implemented",
@@ -9578,7 +9578,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9587,7 +9587,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_3": {
       "disposition": "system-not-implemented",
@@ -9605,7 +9605,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9614,7 +9614,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_4": {
       "disposition": "system-not-implemented",
@@ -9632,7 +9632,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9641,7 +9641,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_5": {
       "disposition": "system-not-implemented",
@@ -9659,7 +9659,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9668,7 +9668,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_6": {
       "disposition": "system-not-implemented",
@@ -9686,7 +9686,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9695,7 +9695,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "IMGS.DNAM.sky_blur_radius.radius_7": {
       "disposition": "system-not-implemented",
@@ -9713,7 +9713,7 @@
           "path": "crates/converter/src/esm/environment.rs"
         },
         {
-          "anchor": "let image_spaces = read(",
+          "anchor": "let mut image_spaces = read(",
           "path": "crates/engine/src/world/environment.rs"
         },
         {
@@ -9722,7 +9722,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but engine world/environment.rs:418-421 and imagespace.rs never read any DoF columns and no IMGS DoF pass exists."
+      "reason": "Missing system: IMGS Depth-of-Field post-processing. Converter extracts sky_blur_code into image_spaces.dof_sky_blur_radius (environment.rs:685-689), but neither engine loader selects the mode word and no IMGS depth-of-field pass uses it."
     },
     "INFO.CNAM.favor_level.large": {
       "disposition": "system-not-implemented",
@@ -14084,13 +14084,13 @@
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         }
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Destination Blend Mode is decoded and applied to RGB blend state for blended draws, but dropped when AlphaMode::Mask (nif_depth.rs:73) and unmapped pairs fall back to [6,7] in retail_blend_factors; alpha-channel blend equation stays Bevy default."
+      "reason": "Destination Blend Mode supplies the generic RGB factors for blended draws. The generic mask path drops those factors. The Skyrim sorted path selects RGB and alpha blend factors independently of mask discard. A masked [4,7] draw uses mode 3. Unmapped pairs use mode 1."
     },
     "NIF.AlphaFlags.editor_alpha_threshold": {
       "disposition": "not-applicable",
@@ -14139,13 +14139,13 @@
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         }
       ],
       "issue": "",
       "owner": "Mudcrab maintainers",
-      "reason": "Source Blend Mode is decoded and applied to RGB blend state for blended draws, but dropped when AlphaMode::Mask (nif_depth.rs:73) and unmapped pairs fall back to [6,7] in retail_blend_factors; alpha-channel blend equation stays Bevy default."
+      "reason": "Source Blend Mode supplies the generic RGB factors for blended draws. The generic mask path drops those factors. The Skyrim sorted path selects RGB and alpha blend factors independently of mask discard. A masked [4,7] draw uses mode 3. Unmapped pairs use mode 1."
     },
     "NIF.AlphaFlags.test_func": {
       "disposition": "dropped",
@@ -14215,7 +14215,7 @@
       "disposition": "partial",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         }
       ],
@@ -14227,7 +14227,7 @@
       "disposition": "respected",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
@@ -14236,13 +14236,13 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 4 (DEST_COLOR) maps in blend_factor() and participates in retail_blend_factors() pairs ([6,7], [6,0], [4,7], [4,1])."
+      "reason": "BlendFunction 4 (DEST_COLOR) maps in blend_factor() and the retail path selects from the SPEC-2 sorted-draw mode table."
     },
     "NIF.AlphaFunction.inv_dest_alpha": {
       "disposition": "respected",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
@@ -14251,13 +14251,13 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 9 (INV_DEST_ALPHA) maps in blend_factor() and participates in retail_blend_factors() pairs ([6,7], [6,0], [4,7], [4,1])."
+      "reason": "BlendFunction 9 (INV_DEST_ALPHA) maps directly on the generic path. For Skyrim sorted draws with [6,9], SPEC-2 section 4.2 selects the retail table entry and mode 2 replaces OneMinusDstAlpha with One."
     },
     "NIF.AlphaFunction.inv_dest_color": {
       "disposition": "partial",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         }
       ],
@@ -14269,7 +14269,7 @@
       "disposition": "respected",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
@@ -14278,13 +14278,13 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 7 (INV_SRC_ALPHA) maps in blend_factor() and participates in retail_blend_factors() pairs ([6,7], [6,0], [4,7], [4,1])."
+      "reason": "BlendFunction 7 (INV_SRC_ALPHA) maps in blend_factor() and the retail path selects from the SPEC-2 sorted-draw mode table."
     },
     "NIF.AlphaFunction.inv_src_color": {
       "disposition": "partial",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         }
       ],
@@ -14296,7 +14296,7 @@
       "disposition": "respected",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
@@ -14305,13 +14305,13 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 0 (ONE) maps in blend_factor() and participates in retail_blend_factors() pairs ([6,7], [6,0], [4,7], [4,1])."
+      "reason": "BlendFunction 0 (ONE) maps directly on the generic path. For Skyrim sorted draws with [0,0], SPEC-2 section 4.2 selects the retail table entry and mode 2 replaces the source One with SrcAlpha."
     },
     "NIF.AlphaFunction.src_alpha": {
       "disposition": "respected",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
@@ -14320,13 +14320,13 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 6 (SRC_ALPHA) maps in blend_factor() and participates in retail_blend_factors() pairs ([6,7], [6,0], [4,7], [4,1])."
+      "reason": "BlendFunction 6 (SRC_ALPHA) maps in blend_factor() and the retail path selects from the SPEC-2 sorted-draw mode table."
     },
     "NIF.AlphaFunction.src_alpha_saturate": {
       "disposition": "partial",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         }
       ],
@@ -14338,7 +14338,7 @@
       "disposition": "respected",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
@@ -14347,13 +14347,13 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 2 (SRC_COLOR) maps in blend_factor() and participates in retail_blend_factors() pairs ([6,7], [6,0], [4,7], [4,1])."
+      "reason": "BlendFunction 2 (SRC_COLOR) maps directly on the generic path. For Skyrim sorted draws with [1,2], SPEC-2 section 4.2 selects the retail table entry and mode 4 replaces the destination Src with Zero."
     },
     "NIF.AlphaFunction.zero": {
       "disposition": "respected",
       "evidence": [
         {
-          "anchor": "pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {",
+          "anchor": "pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {",
           "path": "crates/engine/src/nif_depth.rs"
         },
         {
@@ -14362,7 +14362,7 @@
         }
       ],
       "owner": "Mudcrab maintainers",
-      "reason": "BlendFunction 1 (ZERO) maps in blend_factor() and participates in retail_blend_factors() pairs ([6,7], [6,0], [4,7], [4,1])."
+      "reason": "BlendFunction 1 (ZERO) maps in blend_factor() and the retail path selects from the SPEC-2 sorted-draw mode table."
     },
     "NIF.AnimNoteType.ant_grabik": {
       "disposition": "format-not-read",

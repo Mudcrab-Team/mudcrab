@@ -188,6 +188,7 @@ pub struct ImageSpace {
     pub contrast: Option<f32>,
     pub tint_amount: Option<f32>,
     pub tint: Option<[f32; 3]>,
+    pub depth_of_field: [Option<f32>; 4],
 }
 
 /// One entry of a climate's weather list (`WLST`).
@@ -220,7 +221,7 @@ pub struct EnvironmentCatalog {
     parent_worlds: HashMap<u32, u32>,
     /// The pack's winning sun GMSTs in `sun::SUN_KEYS` order; `None` where the pack has none.
     sun_settings: [Option<f32>; 5],
-    /// `room_bounds` rows with a lighting template, by cell, in `ref_id` order.
+    /// Room marker data by cell, in reference ID order.
     room_bounds: HashMap<u32, Vec<RoomBound>>,
 }
 
@@ -233,7 +234,19 @@ pub struct RoomBound {
     pub position: [f32; 3],
     pub rotation: [f32; 3],
     pub half: [f32; 3],
-    pub lighting_template: u32,
+    pub lighting_template: Option<u32>,
+    pub image_space: Option<u32>,
+}
+
+impl RoomBound {
+    pub(crate) fn contains(&self, position: bevy::prelude::Vec3) -> bool {
+        use crate::streaming::{creation_rotation_to_bevy, creation_to_bevy};
+        use bevy::prelude::Vec3;
+        let center = creation_to_bevy(Vec3::from_array(self.position));
+        let rotation = creation_rotation_to_bevy(self.rotation).inverse();
+        let half = creation_to_bevy(Vec3::from_array(self.half)).abs();
+        (rotation * (position - center)).abs().cmple(half).all()
+    }
 }
 
 /// A directional ambient block's 22 columns after `prefix`.
@@ -414,7 +427,7 @@ impl EnvironmentCatalog {
                 ))
             },
         );
-        let image_spaces = read(
+        let mut image_spaces = read(
             connection,
             "SELECT id, eye_adaptation_speed, bloom_blur_radius, bloom_threshold, bloom_scale, \
              receive_bloom_threshold, white, sunlight_scale, sky_scale, eye_adaptation_strength, \
@@ -442,10 +455,27 @@ impl EnvironmentCatalog {
                         contrast: row.get(12)?,
                         tint_amount: row.get(13)?,
                         tint,
+                        depth_of_field: [None; 4],
                     },
                 ))
             },
         );
+        // Older packs can still supply HDR values without the DNAM columns.
+        for (id, depth_of_field) in read_rows(
+            connection,
+            "SELECT id, dof_strength, dof_distance, dof_range FROM image_spaces",
+            "image_spaces DNAM",
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    [row.get(1)?, row.get(2)?, row.get(3)?, None],
+                ))
+            },
+        ) {
+            if let Some(image_space) = image_spaces.get_mut(&id) {
+                image_space.depth_of_field = depth_of_field;
+            }
+        }
         let parent_worlds = read(
             connection,
             "SELECT id, parent_world FROM worldspaces WHERE parent_world IS NOT NULL",
@@ -485,11 +515,20 @@ impl EnvironmentCatalog {
             climate_weathers.len()
         );
         let mut room_bounds: HashMap<u32, Vec<RoomBound>> = HashMap::new();
+        let room_image_space_column = if connection
+            .prepare("SELECT image_space_id FROM room_bounds LIMIT 0")
+            .is_ok()
+        {
+            "image_space_id"
+        } else {
+            "NULL"
+        };
         for (cell, room) in read_rows(
             connection,
-            "SELECT cell_id, ref_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, \
-             half_z, lighting_template_id FROM room_bounds \
-             WHERE lighting_template_id IS NOT NULL ORDER BY ref_id",
+            &format!(
+                "SELECT cell_id, ref_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, \
+                 half_z, lighting_template_id, {room_image_space_column} FROM room_bounds ORDER BY ref_id"
+            ),
             "room_bounds",
             |row| {
                 let f = |index: usize| row.get::<_, f64>(index).map(|value| value as f32);
@@ -501,6 +540,7 @@ impl EnvironmentCatalog {
                         rotation: [f(5)?, f(6)?, f(7)?],
                         half: [f(8)?, f(9)?, f(10)?],
                         lighting_template: row.get(11)?,
+                        image_space: row.get(12)?,
                     },
                 ))
             },
@@ -525,7 +565,7 @@ impl EnvironmentCatalog {
         }
     }
 
-    /// The cell's room markers that carry a lighting template, in `ref_id` order.
+    /// The cell's room markers in reference ID order.
     pub fn room_bounds(&self, cell_id: u32) -> &[RoomBound] {
         self.room_bounds.get(&cell_id).map_or(&[], Vec::as_slice)
     }

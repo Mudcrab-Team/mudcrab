@@ -26,19 +26,20 @@
 //!   fade below 0.05 does.
 //! - Under `skyrim` (SPEC-1 section 2.6, [near-lighting.md](../../../docs/specs/engine/near-lighting.md))
 //!   the period is limited to `[0, 1]`, `dt` is the smoothed real frame time of
-//!   [`crate::retail_hdr_chain::FrameTimer`], and the pulse reads the 512-step table too.
+//!   [`crate::retail_hdr_chain::FrameTimer`] with the engine's frame-time settings, times the
+//!   speed of the game clock, and the pulse reads the 512-step table too.
 
 use crate::{
     config::EngineConfig,
     lights::{LightEvaluation, SkyrimLight},
     physics::PlayerBody,
+    retail_hdr::RetailHdrConfig,
     retail_hdr_chain::FrameTimer,
     retail_lighting::LightUnits,
     world::{
         components::StreamingCamera,
         environment::interior::{
-            LightFade, RETAIL_FRAME_DELTA_CAP, RoomBlend, SceneEnvironment,
-            point_light_fade_factor, resolve_light_fade,
+            LightFade, RoomBlend, SceneEnvironment, point_light_fade_factor, resolve_light_fade,
         },
     },
 };
@@ -326,14 +327,18 @@ pub(crate) fn update_light_dynamics(
     >,
 ) {
     // The smoothed frame time records every frame, as retail's timer does. The speed of the
-    // game clock scales it and is 0 while the game is paused (SPEC-1 section 2.6, RF-TIME-001).
-    let smoothed = retail_timer.push(
+    // game clock scales it and is 0 while the game is paused (SPEC-1 section 2.6, RF-TIME-001),
+    // so the paused value of the eye adaptation is not asked for.
+    let retail_dt = retail_timer.adaptation_time(
         real.as_deref()
-            .map_or_else(|| time.delta_secs(), |real| real.delta_secs())
-            .min(RETAIL_FRAME_DELTA_CAP),
+            .map_or_else(|| time.delta_secs(), |real| real.delta_secs()),
+        // retail-default: not record data; a run without the game clock runs at normal speed.
+        game.map_or(1.0, |game| game.effective_speed()),
+        false,
+        &config
+            .as_deref()
+            .map_or_else(RetailHdrConfig::default, |config| config.retail_hdr),
     );
-    // retail-default: not record data; a run without the game clock runs at normal speed.
-    let retail_dt = smoothed * game.map_or(1.0, |game| game.effective_speed());
     let Ok(camera) = camera.single() else {
         return;
     };

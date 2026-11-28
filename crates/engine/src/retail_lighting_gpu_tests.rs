@@ -47,7 +47,14 @@ const SIZE: u32 = 65;
 /// Half precision keeps about three decimal digits below 1.
 const TOLERANCE: f32 = 1.5e-3;
 
+#[path = "retail_composite_gpu_tests.rs"]
+mod retail_composite_gpu_tests;
+
 fn app() -> App {
+    app_with(|_| {})
+}
+
+fn app_with(install: impl FnOnce(&mut App)) -> App {
     assert_eq!(
         std::env::var("MUDCRAB_RETAIL_PIXEL").as_deref(),
         Ok("1"),
@@ -73,6 +80,7 @@ fn app() -> App {
     .add_plugins((RetailFogPlugin, SkyPlugin))
     .insert_resource(ClearColor(Color::BLACK))
     .insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+    install(&mut app);
     let deadline = Instant::now() + Duration::from_secs(20);
     while app.plugins_state() != PluginsState::Ready {
         assert!(
@@ -541,7 +549,8 @@ fn retail_pixel_example_b_exterior() {
             far_rgb: bytes([130, 160, 200]),
             ramp: [1000.0, 80_000.0, 0.5, 0.8],
             lit: [0.966_026, 0.680_193, 0.437_308],
-            input: [0.730_871, 0.562_637, 0.423_793],
+            // SPEC-2 §3 (packed copy): use the R11G11B10 scene colour before fog.
+            input: [0.727_941, 0.562_337, 0.418_580],
         },
         "B 12:00",
     );
@@ -562,7 +571,8 @@ fn retail_pixel_example_b_exterior() {
             far_rgb: at_18([130, 160, 200], [150, 110, 120]),
             ramp: [800.0, 64_000.0, 0.54, 0.84],
             lit: [0.401_255, 0.233_716, 0.159_762],
-            input: [0.379_016, 0.246_230, 0.199_329],
+            // SPEC-2 §3 (packed copy): use the R11G11B10 scene colour before fog.
+            input: [0.377_011, 0.245_161, 0.196_750],
         },
         "B 18:00",
     );
@@ -579,7 +589,7 @@ fn retail_pixel_example_d_sky() {
         ..SkyPalette::SKYRIM_CLEAR_DAY
     });
     let mut image_space = crate::retail_hdr::RetailImageSpace::default();
-    image_space.0.sky_scale = 0.2;
+    image_space.block.sky_scale = 0.2;
     app.insert_resource(image_space);
     let target = target(&mut app);
     let camera = spawn_camera(

@@ -168,7 +168,7 @@ skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24,
   1/6 s counted as 1/6 s. On the first frame, and after the targets are rebuilt, the adapt draw is
   skipped and the pair is the current luminance, so the ratio is exactly 1. The tonemap samples the
   pair bilinearly at the screen coordinate. `bUseMultipleLuminanceReferences` 0 gives a 1 by 1
-  pair. Retail's pause timer (0.3) is never selected: there is no pause menu.
+  pair. The pause menu uses the fixed retail timer value (0.3 by default).
 - **Bloom.** `k = clamp(trunc(BloomBlurRadius), 1, 7)`. Pass 0 reads the first downsample at
   `(W >> 2) x (H >> 2)`: `k_r * BloomScale * sum w * max(c / k_r - T, 0)` per channel, vertical,
   with `k_r` 0.8333333 and `T = BloomThreshold + fGlobalBloomThresholdBoost`. Pass 1 is the
@@ -191,11 +191,13 @@ skyrim-research NEEDS 18 (PR 1059) and its re-verification (D1 to D9), NEEDS 24,
   `Ultra` format.
 - **INI.** `[Display]`: `bUseFilmicCurve`, `bUseMultipleLuminanceReferences`, `fReinhardWhiteScale`,
   `fFilmicWhiteScale`, `fGlobalEyeAdaptSpeedScale`, `fGlobalEyeAdaptStrengthScale`, `fGamma`, the
-  three global boosts and `fGlobalBloomThresholdBoost`. The defaults are the compiled retail values.
-  `Ultra.ini` sets only `bUse64bitsHDRRenderTarget`.
-- **Not applied.** IMAD modifiers and `SetHDRParam`, room image spaces and their cross-fade, the
-  map-menu boosts, a screen fade, and the `ClearAdaptedLight` requests from the sky, menus and
-  player moves.
+  three global boosts and `fGlobalBloomThresholdBoost`. Defaults use `Skyrim_Default.ini` and the
+  compiled values for absent keys. `Ultra.ini` takes precedence where presets differ, including
+  `bUse64bitsHDRRenderTarget` and `bSAOEnable`.
+- **Image-space inputs.** Room blocks cross-fade. Sampled modifiers, map boosts and screen fades
+  reach the renderer when their inputs are supplied. The game has no live modifier or map-menu
+  producer. `ClearAdaptedLight` resets adaptation through the console. The sky, menu and player
+  movement reset requests and `SetHDRParam` are still open.
 - **Tests.** Unit tests cover the arithmetic. `retail_hdr_gpu_matches_the_cpu_reference` runs the
   shaders on a headless GPU against a CPU reference; it is ignored by default (run it with
   `--ignored`).

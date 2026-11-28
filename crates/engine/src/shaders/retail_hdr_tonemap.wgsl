@@ -53,24 +53,38 @@ fn retail_tonemap(scene_colour: vec3<f32>, a_x: f32, a_y: f32, bloom: vec3<f32>)
     if hdr.curve.w > 0.0 {
         colour = colour + hdr.curve.w * (hdr.fade.rgb - colour);
     }
-    return colour;
+    // Protect the display target from invalid shader or modifier inputs.
+    return saturate(finite(colour));
 }
 
 // Retail writes the value to an R8G8B8A8_UNORM backbuffer with no transfer function (see
 // research_notes, https://github.com/Mudcrab-Team/mudcrab/blob/main/research_notes/Skyrim%20native%20tone%20mapping/output_transfer_trace.md). Mudcrab's
 // surface encodes linear values to sRGB on write, so the display value is stored as its linear
 // decode and the byte that reaches the screen equals retail's.
-fn srgb_to_linear(colour: vec3<f32>) -> vec3<f32> {
+fn srgb_to_linear(colour: vec3<f32>) -> vec3<f32> { // colour-space: SPEC-2 section 7, Bevy surface compensation
     let low = colour / 12.92;
     let high = pow((colour + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
     return select(high, low, colour <= vec3<f32>(0.04045));
 }
 
 @fragment
-fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+fn display_fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let source = textureLoad(scene, vec2<i32>(in.position.xy), 0);
     let adapted = finite(textureSampleLevel(adapted_texture, linear_clamp, in.uv, 0.0).rgb);
     let bloom = finite(textureSampleLevel(bloom_texture, linear_clamp, in.uv, 0.0).rgb);
     let display = retail_tonemap(finite(source.rgb), adapted.x, adapted.y, bloom);
-    return vec4<f32>(srgb_to_linear(display), source.a);
+    return vec4<f32>(display, source.a);
+}
+
+// STAND-IN(#361): the retail HDR-off output encoding is unverified.
+@fragment
+fn copy_display_fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let source = textureLoad(scene, vec2<i32>(in.position.xy), 0);
+    return vec4<f32>(saturate(finite(source.rgb)), source.a);
+}
+
+@fragment
+fn present_fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let stored = textureLoad(scene, vec2<i32>(in.position.xy), 0);
+    return vec4<f32>(srgb_to_linear(stored.rgb), stored.a); // colour-space: SPEC-2 section 7, Bevy surface compensation
 }

@@ -357,8 +357,6 @@ mod system {
         );
     }
 
-    /// SPEC-1 section 2.6: under `skyrim` the flicker gate measures from the player body, so a
-    /// free camera next to a far light does not animate it.
     /// The retail flicker counts game time: it stands while the console or a menu pauses the
     /// game (RF-TIME-001).
     #[test]
@@ -401,6 +399,44 @@ mod system {
         assert_ne!(phase(&app), running);
     }
 
+    /// The flicker reads the same frame timer as the eye adaptation, so the engine's frame
+    /// clamp (`iFPSClamp`) sets its step too: the measured frame time then has no effect.
+    #[test]
+    fn the_skyrim_flicker_takes_the_engine_frame_clamp() {
+        let phase_after = |fps_clamp: u16, millis: u64| {
+            let mut config = EngineConfig::default();
+            config.retail_hdr.fps_clamp = fps_clamp;
+            let mut app = app_with(config, Vec3::ZERO);
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(millis),
+            ));
+            let evaluation = evaluate_light(&row(0x8, 1.0, 0.5, 8.0), None);
+            let light = evaluation.point_light_in(LightUnits::Retail, None).unwrap();
+            let entity = app
+                .world_mut()
+                .spawn((
+                    light,
+                    SkyrimLight {
+                        form_id: 1,
+                        cell_id: 2,
+                        shadow_flagged: false,
+                    },
+                    LightDynamics::retail(&evaluation, 1),
+                    Transform::default(),
+                    GlobalTransform::from(Transform::from_xyz(100.0, 0.0, 0.0)),
+                ))
+                .id();
+            for _ in 0..10 {
+                app.update();
+            }
+            app.world().get::<LightDynamics>(entity).unwrap().phase
+        };
+        assert_eq!(phase_after(60, 30), phase_after(60, 150));
+        assert_ne!(phase_after(0, 30), phase_after(0, 150));
+    }
+
+    /// SPEC-1 section 2.6: under `skyrim` the flicker gate measures from the player body, so a
+    /// free camera next to a far light does not animate it.
     #[test]
     fn the_skyrim_flicker_gate_measures_from_the_player() {
         let config = EngineConfig {

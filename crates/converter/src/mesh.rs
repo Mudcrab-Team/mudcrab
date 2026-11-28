@@ -6583,10 +6583,15 @@ mod tests {
         let glb = |json: &str| {
             let mut json = json.as_bytes().to_vec();
             json.resize(json.len().next_multiple_of(4), b' ');
+            let length = |bytes: usize| {
+                u32::try_from(bytes)
+                    .unwrap_or_else(|_| panic!("GLB length {bytes} does not fit in u32"))
+                    .to_le_bytes()
+            };
             let mut glb = b"glTF".to_vec();
             glb.extend_from_slice(&2_u32.to_le_bytes());
-            glb.extend_from_slice(&((20 + json.len() + 12) as u32).to_le_bytes());
-            glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+            glb.extend_from_slice(&length(20 + json.len() + 12));
+            glb.extend_from_slice(&length(json.len()));
             glb.extend_from_slice(b"JSON");
             glb.extend_from_slice(&json);
             glb.extend_from_slice(&4_u32.to_le_bytes());

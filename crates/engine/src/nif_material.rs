@@ -625,17 +625,25 @@ impl NativeMaterialHandler {
             return native_depth_state(material, alpha_mode);
         }
         let (flags_1, flags_2) = native_depth_flags(material)?;
+        // SPEC-2 §4.2: with blending disabled, fractional property alpha selects mode 1.
+        // Older packs without alpha metadata use glTF BLEND as their fallback.
+        let unpaired_blend = material.pbr_metallic_roughness().base_color_factor()[3] < 1.0
+            || (matches!(alpha_mode, AlphaMode::Blend) && alpha_property_extra(material).is_none());
         let state = NifDepthState::retail_from_material(
             flags_1,
             flags_2,
             alpha_mode,
+            unpaired_blend,
             authored_blend_factors(material),
         )?;
-        Some(if retail::is_lighting(material) {
-            state.retail_first_stage(alpha_mode)
-        } else {
-            state
-        })
+        if !retail::is_lighting(material) {
+            return Some(state);
+        }
+        // SPEC-2 §1 stage 1 and §3: keep the stock cutout prepass and its alpha test.
+        if state.alpha_mask && state.depth_write && !state.decal {
+            return None;
+        }
+        Some(state.retail_first_stage(alpha_mode))
     }
 }
 
@@ -937,6 +945,14 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             }
         }
         let mut depth = self.depth_state(source, material.alpha_mode);
+        if let Some(state) = depth
+            && !state.first_stage
+            && state.retail_blend_mode == Some(1)
+            && material.alpha_mode == AlphaMode::Opaque
+        {
+            // The sorted pass already owns the pipeline mode. Keep the fragment alpha available.
+            material.alpha_mode = AlphaMode::Blend;
+        }
         if palette.is_none()
             && let Some(state) = depth.as_mut()
             && !has_model_space_normals(source)
@@ -1812,6 +1828,107 @@ mod tests {
         let effect = document("effect");
         let source = effect.materials().next().unwrap();
         assert!(!skyrim.depth_state(&source, mode).unwrap().first_stage);
+    }
+
+    #[test]
+    fn skyrim_sorted_material_uses_property_alpha_when_blending_is_disabled() {
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        let mudcrab = NativeMaterialHandler::default();
+        for (alpha, expected) in [(0.0, 1), (0.5, 1), (0.999, 1), (1.0, 0)] {
+            for (gltf_mode, mode) in [
+                ("OPAQUE", AlphaMode::Opaque),
+                ("MASK", AlphaMode::Mask(0.5)),
+                ("BLEND", AlphaMode::Blend),
+            ] {
+                let doc = first_material(serde_json::json!({
+                    "alphaMode": gltf_mode,
+                    "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, alpha]},
+                    "extras": {"openSkyrim": {
+                        "shaderFamily": "lighting",
+                        "shaderFlags1": 0,
+                        "shaderFlags2": 0,
+                        "alphaProperty": shared::nif_alpha::NifAlphaProperty::from_nif(0, 0)
+                    }}
+                }));
+                let material = doc.materials().next().unwrap();
+                let state = skyrim.depth_state(&material, mode).unwrap();
+                assert!(!state.first_stage);
+                assert_eq!(state.retail_blend_mode, Some(expected));
+                assert_eq!(
+                    mudcrab
+                        .depth_state(&material, mode)
+                        .unwrap()
+                        .retail_blend_mode,
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skyrim_blended_lighting_cutouts_keep_stock_prepass_or_first_stage_decal() {
+        let skyrim = NativeMaterialHandler {
+            raw_colour_texels: true,
+            ..default()
+        };
+        for (gltf_mode, mode, alpha, flags, flags_1, flags_2) in [
+            ("OPAQUE", AlphaMode::Opaque, 0.5, 0, DEPTH_TEST, DEPTH_WRITE),
+            (
+                "MASK",
+                AlphaMode::Mask(0.5),
+                1.0,
+                1 | (6 << 1) | (7 << 5) | (1 << 9),
+                DEPTH_TEST,
+                DEPTH_WRITE,
+            ),
+            (
+                "MASK",
+                AlphaMode::Mask(0.5),
+                1.0,
+                1 | (6 << 1) | (7 << 5) | (1 << 9),
+                DEPTH_TEST | CAST_SHADOWS,
+                DEPTH_WRITE,
+            ),
+            (
+                "MASK",
+                AlphaMode::Mask(0.5),
+                1.0,
+                1 | (6 << 1) | (7 << 5) | (1 << 9),
+                DEPTH_TEST | DECAL,
+                0,
+            ),
+        ] {
+            let doc = first_material(serde_json::json!({
+                "alphaMode": gltf_mode,
+                "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, alpha]},
+                "extras": {"openSkyrim": {
+                    "shaderFamily": "lighting",
+                    "shaderFlags1": flags_1,
+                    "shaderFlags2": flags_2,
+                    "alphaProperty": shared::nif_alpha::NifAlphaProperty::from_nif(flags, 128)
+                }}
+            }));
+            let material = doc.materials().next().unwrap();
+            let state = skyrim.depth_state(&material, mode);
+            let cutout = matches!(mode, AlphaMode::Mask(_));
+            if cutout && flags_2 == DEPTH_WRITE {
+                // No depth extension means the standard alpha-mask prepass is enabled.
+                assert_eq!(state, native_depth_state(&material, mode));
+                assert!(state.is_none());
+                continue;
+            }
+            let state = state.unwrap();
+            assert_eq!(state.retail_blend_mode, Some(1));
+            assert_eq!(state.first_stage, cutout);
+            assert_eq!(state.depth_write, cutout);
+            assert_eq!(state.alpha_mask, cutout);
+            if cutout {
+                assert_eq!(state.blend_factors, None);
+            }
+        }
     }
 
     #[test]
