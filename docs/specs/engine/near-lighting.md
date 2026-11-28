@@ -151,7 +151,7 @@ open rules of that table, then the rules it gives that the engine does not follo
 | STAND-IN(#362): the pass of a surface without a depth test is not specified |
 | STAND-IN(#362): the effect shader's pass is specified only for a plain blended surface |
 | STAND-IN(#362): depth write of an unblended surface follows its flag |
-| STAND-IN(#362): sorted blended draws normally skip depth writes. Sorted effect cutouts keep their authored depth write. The pass audit excludes these 31 effect materials because SPEC-2 does not define their depth state. |
+| STAND-IN(#362): a sorted blended draw writes no depth. Sorted effect cutouts keep their authored depth write. The pass audit excludes these 31 effect materials because SPEC-2 does not define their depth state. |
 | STAND-IN(#362): a blend pair outside the table draws as a plain alpha blend |
 | STAND-IN(#362): the two-sided flag does not change the pass |
 | STAND-IN(#362): a decal with property alpha below one and no blend is not specified |
