@@ -235,8 +235,8 @@ pub(super) fn apply(
         AlphaMode::Mask(_) => flags_2 & SLSF2_BIT_32 == 0,
         _ => false,
     };
-    // The published cutoff is the threshold byte / 255; the half step guards the f32 product.
-    let reference = |cutoff: f32| ((cutoff * 255.0).round() * alpha + 1.0e-3).floor() / 255.0;
+    // The published cutoff is the threshold byte / 255.
+    let reference = |cutoff: f32| alpha_reference((cutoff * 255.0).round(), alpha);
     // A blended surface keeps its alpha test (section 6.3).
     let mut blended_reference = 0.0;
     if blends && converts {
@@ -354,6 +354,13 @@ pub(super) fn refracts(source: &Material<'_>) -> bool {
     is_lighting(source)
         && native_depth_flags(source)
             .is_some_and(|(flags_1, _)| flags_1 & SLSF1_REFRACTION_BITS != 0)
+}
+
+/// SPEC-1 section 6.3: `trunc(threshold byte x property alpha) / 255`, with no bias. The
+/// specification does not state the precision of the product; single precision, the type of both
+/// operands, is assumed.
+fn alpha_reference(threshold: f32, alpha: f32) -> f32 {
+    (threshold * alpha).trunc() / 255.0
 }
 
 #[cfg(test)]
@@ -726,6 +733,32 @@ mod tests {
     fn the_alpha_reference_is_the_truncated_threshold_times_the_property_alpha() {
         let material = applied(0, SLSF2_BIT_32, "");
         assert_eq!(material.alpha_mode, AlphaMode::Mask(64.0 / 255.0));
+    }
+
+    /// Nothing is added to the product, so a product below an integer truncates down. Only the
+    /// single-precision multiply rounds: `100 x 0.57` is 56.999999, and 57 is its nearest `f32`.
+    /// `200 x 0.265` stays 52 because the `f32` of 0.265 is below 0.265.
+    #[test]
+    fn the_alpha_reference_adds_no_bias_to_the_product() {
+        for (threshold, alpha, expected) in [
+            (99.0, 0.101, 9.0),
+            (128.0, 0.499_999, 63.0),
+            (200.0, 0.265, 52.0),
+            (100.0, 0.57, 57.0),
+            (128.0, 0.5, 64.0),
+            (255.0, 1.0, 255.0),
+        ] {
+            assert_eq!(
+                alpha_reference(threshold, alpha),
+                expected / 255.0,
+                "{threshold} x {alpha}"
+            );
+        }
+        // Every threshold byte survives the published cutoff at full alpha.
+        for byte in 0..=u8::MAX {
+            let cutoff = f32::from(byte) / 255.0;
+            assert_eq!(alpha_reference((cutoff * 255.0).round(), 1.0), cutoff);
+        }
     }
 
     /// The fixture's property alpha is 0.5, so a surface that is not a decal blends (section 9.2).

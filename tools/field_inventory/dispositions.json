@@ -70969,7 +70969,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "let glow = retail.glow.filter(|_| model.emissive_texture.is_some());"
+          "anchor": "glow: self.glow.filter(|_| model.emissive_texture.is_some()),"
         }
       ],
       "spec": "SPEC-1 2.1-b, 9.2-d, 9.2-f"
@@ -71033,7 +71033,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "image(paths.retail.environment).filter(|_| reflects);"
+          "anchor": "standard.retail_environment_cube_source = image(paths.retail.environment);"
         }
       ],
       "spec": "SPEC-1 2.1-b, 9.2-d, 9.2-f"

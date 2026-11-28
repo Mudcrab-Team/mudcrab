@@ -735,6 +735,10 @@ pub(crate) struct FogFields {
     pub far: Option<f32>,
     pub power: Option<f32>,
     pub max: Option<f32>,
+    /// A blend already replaced the zero far colour of each side, so a blended far colour that
+    /// rounds to zero bytes stays.
+    #[serde(skip)]
+    far_color_blended: bool,
 }
 
 /// The largest fog far distance retail keeps (SPEC-1 section 8.2).
@@ -752,17 +756,19 @@ impl FogFields {
             far: lighting.fog_far,
             power: lighting.fog_power,
             max: lighting.fog_max,
+            far_color_blended: false,
         }
     }
 
-    /// The fields with retail's clamps applied (SPEC-1 section 8.2): colour bytes, a far colour of
-    /// zero bytes replaced by the near colour, far and near clamped, power and max 1 when missing.
+    /// The fields with retail's clamps applied (SPEC-1 section 8.2): colour bytes, a stored far
+    /// colour of zero bytes replaced by the near colour, far and near clamped, power and max 1 when
+    /// missing.
     ///
     /// STAND-IN(#695): a short `XCLL` or template without the power or max field also takes 1.
     fn resolved(&self) -> ([u8; 3], [u8; 3], f32, f32, f32, f32) {
         let near_color = self.near_color.unwrap_or([0; 3]);
         let far_color = match self.far_color {
-            Some(colour) if colour != [0; 3] => colour,
+            Some(colour) if colour != [0; 3] || self.far_color_blended => colour,
             _ => near_color,
         };
         let far = match self.far {
@@ -801,11 +807,12 @@ impl FogFields {
             far: Some(lerp(a.3, b.3)),
             power: Some(lerp(a.4, b.4)),
             max: Some(lerp(a.5, b.5)),
+            far_color_blended: true,
         }
     }
 
-    /// The retail fog property of an interior (SPEC-1 section 8.2): the colour bytes / 255, a far
-    /// colour of zero bytes takes the near colour, a far distance at or below 0 or above 163840
+    /// The retail fog property of an interior (SPEC-1 section 8.2): the colour bytes / 255, a
+    /// stored far colour of zero bytes takes the near colour, a far distance at or below 0 or above 163840
     /// becomes 163840, and a near distance at or below 0 or above far becomes `0.17 far`. A cell
     /// without lighting data has power 1 and max 1.
     ///
@@ -3137,6 +3144,28 @@ mod tests {
         assert_eq!(half.near_rgb, unit_rgb([60, 70, 80]));
         assert_eq!(half.far_rgb, unit_rgb([6, 11, 17]));
         assert_eq!(cell.blended_with(&room, 1.0).fog_fields, room.fog_fields);
+    }
+
+    /// The zero rule applies to the stored far colour of each side, not to their blend: a blended
+    /// far colour that rounds to zero bytes does not jump to the near colour, also through a
+    /// second blend.
+    #[test]
+    fn a_blended_far_colour_that_rounds_to_zero_stays() {
+        let side = |near: u8, far: u8| FogFields {
+            near_color: Some([near; 3]),
+            far_color: Some([far; 3]),
+            near: Some(100.0),
+            far: Some(1000.0),
+            ..default()
+        };
+        // The previous side is all black; the current far colour is 1.
+        let blended = FogFields::blend(&side(0, 0), &side(255, 1), 0.25);
+        assert_eq!(blended.retail_params().near_rgb, unit_rgb([64; 3]));
+        assert_eq!(blended.retail_params().far_rgb, unit_rgb([0; 3]));
+        let again = FogFields::blend(&blended, &side(255, 1), 0.25);
+        assert_eq!(again.retail_params().far_rgb, unit_rgb([0; 3]));
+        // A stored zero far colour still takes the near colour.
+        assert_eq!(side(255, 0).retail_params().far_rgb, unit_rgb([255; 3]));
     }
 
     /// RF-LIGHT-CPU-025: the squared light fade pair blends between rooms with the colours.

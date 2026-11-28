@@ -407,6 +407,18 @@ fn swap_image_sampler(default: Option<&DefaultGltfImageSampler>) -> ImageSampler
     sampler
 }
 
+/// The model material of a surface, once it has loaded: the one a swap derives from.
+fn model_of<'a, M: SwappedMaterial>(
+    surfaces: &SwapSurfaces<M>,
+    entity: Entity,
+    materials: &'a Assets<M>,
+) -> Option<&'a StandardMaterial> {
+    // silent-ok: an entity that draws the other material type has no surface of this one.
+    let (_, binding, source) = surfaces.get(entity).ok()?;
+    let original = source.map_or(binding.0.id(), |source| source.0.id());
+    materials.get(original).map(SwappedMaterial::standard_ref)
+}
+
 /// The one place a swap requests an image. Bevy keys an image by path and the first request's
 /// settings win for every later consumer of that path, so the settings must match what the other
 /// consumers of the path would have asked for. Landscape textures serve swaps and models alike: a
@@ -445,6 +457,25 @@ struct SwapPaths<'a> {
     normal: Option<&'a str>,
     /// Empty under a profile that applies the diffuse and normal maps only.
     retail: RetailSlots<&'a str>,
+}
+
+impl RetailSlots<&str> {
+    /// The slots a surface of `model` reads: the glow map with a model glow map, the height map
+    /// on a parallax surface, and the cube and its mask on a surface that reflects. A swap does
+    /// not request another slot, so a missing file there cannot fail it.
+    fn read_by(self, model: &StandardMaterial) -> Self {
+        let parallax = model.retail_surface.is_some() && model.depth_map.is_some();
+        let reflects = self.environment.is_some()
+            && model
+                .retail_surface
+                .is_some_and(|surface| surface.environment_scale != 0.0);
+        Self {
+            glow: self.glow.filter(|_| model.emissive_texture.is_some()),
+            height: self.height.filter(|_| parallax),
+            environment: self.environment.filter(|_| reflects),
+            mask: self.mask.filter(|_| reflects),
+        }
+    }
 }
 
 /// The derived textures of one texture set, or why the images cannot take the slots.
@@ -509,9 +540,6 @@ fn bind_swapped<M: SwappedMaterial>(
             standard.occlusion_texture = None;
             // The environment technique reads the new cube and mask. `retail_environment` binds
             // them once their shapes are checked; an empty cube slot reflects nothing.
-            let reflects = standard
-                .retail_surface
-                .is_some_and(|surface| surface.environment_scale != 0.0);
             let image = |path: Option<&str>| path.map(|path| handles[path].clone());
             // A parallax surface reads the new height map, and an empty slot is black.
             // `retail_environment` makes the view read the stored bytes.
@@ -524,10 +552,8 @@ fn bind_swapped<M: SwappedMaterial>(
             }
             standard.retail_environment_cube = None;
             standard.retail_environment_mask = None;
-            standard.retail_environment_cube_source =
-                image(paths.retail.environment).filter(|_| reflects);
-            standard.retail_environment_mask_source = image(paths.retail.mask)
-                .filter(|_| standard.retail_environment_cube_source.is_some());
+            standard.retail_environment_cube_source = image(paths.retail.environment);
+            standard.retail_environment_mask_source = image(paths.retail.mask);
             let derived = materials.add(derived);
             cache.0.insert(key, derived.id());
             derived
@@ -543,8 +569,7 @@ fn bind_swapped<M: SwappedMaterial>(
 }
 
 /// Copies of the loaded images in the colour space and sampler of the slots they take. TX00 is
-/// colour, which only a profile that decodes sRGB views as sRGB; TX01 is direction data. A glow
-/// map is taken only by a surface whose model has one, so only the glow technique reads it.
+/// colour, which only a profile that decodes sRGB views as sRGB; TX01 is direction data.
 fn swap_textures(
     model: &StandardMaterial,
     SwapPaths {
@@ -565,7 +590,6 @@ fn swap_textures(
     let diffuse_sampler = sampler_of(&model.base_color_texture);
     let normal_sampler = sampler_of(&model.normal_map_texture).or_else(|| diffuse_sampler.clone());
     let glow_sampler = sampler_of(&model.emissive_texture);
-    let glow = retail.glow.filter(|_| model.emissive_texture.is_some());
     let mut build = |path: Option<&str>,
                      srgb: bool,
                      sampler: Option<bevy::image::ImageSampler>|
@@ -610,7 +634,7 @@ fn swap_textures(
     Ok(SwapTextures {
         diffuse: build(diffuse, colour_srgb, diffuse_sampler)?,
         normal: build(normal, false, normal_sampler)?,
-        glow: build(glow, colour_srgb, glow_sampler)?,
+        glow: build(retail.glow, colour_srgb, glow_sampler)?,
     })
 }
 
@@ -699,6 +723,14 @@ fn apply_swaps(
                                 "index {index}: texture set fills unsupported slots {refused:?}"
                             ));
                             continue;
+                        }
+                        if retail.filled().next().is_some() {
+                            let model = model_of(&surfaces, *entity, &materials)
+                                .or_else(|| model_of(&depth_surfaces, *entity, &depth_materials));
+                            let Some(model) = model else {
+                                return ObjectTextureSwapState::Pending;
+                            };
+                            retail = retail.read_by(model);
                         }
                         plans.push((
                             *entity,

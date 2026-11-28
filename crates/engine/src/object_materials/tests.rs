@@ -1160,6 +1160,65 @@ fn the_skyrim_profile_swaps_the_environment_cube_and_mask() {
     }
 }
 
+/// A swap requests only the slots its surface reads: a missing file in another slot does not
+/// fail it, and a missing file in a slot the surface reads does.
+#[test]
+fn a_swap_requests_only_the_slots_its_surface_reads() {
+    for glows in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path());
+        let (conn, mut records) = database();
+        records.insert(
+            101,
+            record(
+                101,
+                b"TXST",
+                &[
+                    (b"TX00", b"red.dds\0".to_vec()),
+                    // Mask, glow, height and environment: none of these files exists.
+                    (b"TX02", b"absent_mask.dds\0".to_vec()),
+                    (b"TX03", b"absent_glow.dds\0".to_vec()),
+                    (b"TX04", b"absent_height.dds\0".to_vec()),
+                    (b"TX05", b"absent_cube.dds\0".to_vec()),
+                ],
+            ),
+        );
+        export_to_db(&conn, &records).unwrap();
+        let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+        let mut app = object_app(directory.path());
+        app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+        let scene = load_scene(&mut app, "shared.glb");
+        let glow = app.world().resource::<Assets<Image>>().reserve_handle();
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let models: Vec<_> = materials.ids().collect();
+        for id in models {
+            let mut material = materials.get_mut(id).unwrap();
+            material.retail_surface = Some(bevy::pbr::RetailSurface::MATTE);
+            material.emissive_texture = glows.then(|| glow.clone());
+        }
+        let root = spawn(&mut app, &scene, catalog.get(1));
+        settle(&mut app, &[root]);
+        let state = app.world().get::<ObjectTextureSwapState>(root).unwrap();
+        if glows {
+            assert!(
+                matches!(state, ObjectTextureSwapState::Failed(reason)
+                    if reason.contains("absent_glow")),
+                "{state:?}"
+            );
+        } else {
+            assert_eq!(
+                state,
+                &ObjectTextureSwapState::Applied {
+                    textured: 1,
+                    hidden: 0
+                }
+            );
+            let held = &app.world().get::<RequestedImages>(root).unwrap().0;
+            assert_eq!(held.keys().collect::<Vec<_>>(), ["textures/red.ktx2"]);
+        }
+    }
+}
+
 #[test]
 fn projection_rows_resolve_texture_sets_and_keep_other_txst_consumers() {
     let (conn, mut records) = database();

@@ -277,8 +277,11 @@ Earlier assignments do not reject the LAND or remove healthy neighboring items.
 
 ### Placed-STAT MODS visibility (producer 10)
 
-Permanent obstruction masks omit lighting primitives hidden by the winning base record's
-NullTextureSet alternate-texture entry in the runtime's supported standard-material swap path.
+Permanent obstruction masks omit lighting primitives that the winning placed `STAT` base
+record hides with a NullTextureSet alternate-texture entry, on the standard-material swap
+path. A reference of another base type keeps its whole model in the mask, although the runtime
+applies the swaps of its base too
+([#1112](https://github.com/Mudcrab-Team/mudcrab/issues/1112)).
 Signed negative indices are ignored; the last entry at each geometry index wins,
 so a later retexture or missing target restores the model's visible shape. Only
 matching eligible geometry tags enter each reference's hidden-index set. That set
@@ -288,11 +291,14 @@ by distinct bases retain separate visibility variants inside the bounded triangl
 cache. Source GLB bytes remain immutable and their full digest still guards reuse
 and changes during baking.
 
-The offline material classifier mirrors the current runtime binding exclusions:
-external emittance and native depth, skin, hair or palette wrappers retain their
-geometry because the current MODS query cannot hide those bindings. Native materials
-that still use the standard binding participate. This is a bounded mirror of that
-current path, not a claim that every material path supports MODS. These masks describe the normal
+The offline material classifier keeps the geometry of external emittance and of native
+depth, skin, hair or palette wrappers. Native materials that still use the standard binding
+participate. The runtime also hides a NullTextureSet shape of a native depth material (a
+decal, or a surface without depth test or depth write), so the mask still counts such a shape
+as an obstruction where the runtime draws nothing
+([#1112](https://github.com/Mudcrab-Team/mudcrab/issues/1112)). Closing the difference needs a
+new producer version and a new grass bake. The classifier is a bounded mirror of the swap
+path, not a claim that every material path supports MODS. These masks describe the normal
 converted-world path. Producer 10 rejects producer-9 masks even when their other
 inputs happen to match. Mesh, texture and terrain cache identities are unchanged by
 this grass policy change.

@@ -119,8 +119,15 @@ A pack publishes the NIF's specular colour, strength, glossiness and environment
 `material-values.json` at its root. `converter derive-material-values <pack> --registry
 <packs.json> --data <Skyrim Data> --output <new file>` writes that file from the source NIFs
 without a reconversion. It uses a NIF only when its bytes match the pack's conversion manifest,
-and it never writes into a registered pack. Without either source a surface keeps the converter's
-clamped glTF specular and draws no reflection.
+and it never writes into the pack it reads or into a registered pack. Without either source a
+surface keeps the converter's clamped glTF specular and draws no reflection.
+
+To add the file to a registered pack, leave that pack unchanged:
+
+1. Run the command with an `--output` path outside every pack.
+2. Clone the pack. On APFS, `cp -c -R <pack> <clone>` shares the file data.
+3. Copy the output to `<clone>/material-values.json`.
+4. Run the engine with `--assets <clone>`.
 
 ## Stand-ins and gaps
 

@@ -1785,6 +1785,13 @@ fn verify_legacy_prune(
         &target,
         Some(expected),
     )?;
+    // A package converted before materials carried `materialValues` recorded the GLB without
+    // them. The retained package keeps those bytes; `derive-material-values` adds the values.
+    if hash_file(&target)? != entry.output_hash
+        && let Some(historical) = crate::mesh::glb_without_material_values(&fs::read(&target)?)?
+    {
+        fs::write(&target, historical)?;
+    }
     ensure!(
         hash_file(&target)? == entry.output_hash
             && fs::metadata(&target)?.len() == entry.output_size,

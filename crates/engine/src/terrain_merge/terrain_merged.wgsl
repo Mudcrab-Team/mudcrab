@@ -1,5 +1,5 @@
 #import engine::terrain_blend::{NearTerrainBlendSettings, noise_multiplier, noisy_land_colour, retail_land_alpha, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
-#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_tangent_normal, terrain_tbn}
+#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_blended_normal, terrain_tangent_normal, terrain_tbn}
 
 // The shared terrain shader of merged cells (#215): one material for every cell.
 //
@@ -394,7 +394,7 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
     // Only a fragment that reads at least one normal map turns the blend into a world normal.
     if any_normal || retail {
         let geometric = normalize(pbr_input.world_normal);
-        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(tangent_normal / divisor, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
+        pbr_input.N = normalize(terrain_tbn(geometric) * terrain_blended_normal(mix(tangent_normal / divisor, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
     }
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     var out: FragmentOutput;

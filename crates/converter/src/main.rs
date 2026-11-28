@@ -1157,6 +1157,9 @@ fn derive_material_values(args: &[OsString]) -> Result<()> {
         "Wrote the values of {} materials of {} meshes ({} with an environment map scale); the pack lists {} meshes",
         report.materials, report.written_meshes, report.environment_materials, report.meshes
     );
+    for (copy, reason) in report.failed_copies.iter().take(CHECK_PROBLEM_LINES) {
+        eprintln!("Warning: not decompressed: {copy}: {reason}");
+    }
     if !report.missing_sources.is_empty() || !report.unreadable.is_empty() {
         eprintln!(
             "Warning: left out {} meshes whose recorded source bytes were not found and {} that did not parse",

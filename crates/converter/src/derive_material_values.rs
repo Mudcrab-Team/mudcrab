@@ -7,8 +7,12 @@
 //!
 //! A NIF is used only when its bytes have the SHA-256 the pack's conversion manifest records for
 //! that mesh (the first part of a skinned mesh's `<mesh>:<skeleton>` hash), whether it comes from a loose file or a `.bsa` archive of the Skyrim `Data` folder.
-//! A mesh whose source is not found or does not parse is counted and left out; nothing is
-//! filled in. The command refuses an output inside a registered pack, and an output that exists.
+//! A loose file is read by its spelling on disk. A copy in an archive that does not decompress
+//! is reported, and the other archives are still searched. A mesh whose source is not found or
+//! does not parse is counted and left out; nothing is filled in.
+//!
+//! The command refuses an output inside the pack it reads or inside a registered pack, and an
+//! output that exists. The sidecar gets its name only after its bytes are written and synced.
 
 use crate::{
     archive,
@@ -55,6 +59,9 @@ pub struct DeriveMaterialValuesReport {
     pub environment_materials: usize,
     /// Meshes whose recorded source bytes were not found.
     pub missing_sources: Vec<String>,
+    /// Archive copies of a listed mesh that did not decompress (`<archive>: <mesh>`), with the
+    /// reason. Another copy may still have supplied the mesh.
+    pub failed_copies: Vec<(String, String)>,
     /// Meshes whose source did not parse, with the reason.
     pub unreadable: Vec<(String, String)>,
 }
@@ -87,6 +94,7 @@ pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValues
         "refused: {} is not a pack: it has no conversion manifest",
         options.pack.display()
     );
+    require_outside_pack(&options.pack, &options.output)?;
     // The manifest as written: `ConversionManifest::load` drops the entries of a producer whose
     // outputs a conversion may not reuse, and an older pack still names its sources.
     let manifest: ConversionManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
@@ -112,10 +120,8 @@ pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValues
     let mut file = MaterialValuesFile::new();
 
     // Loose files first, then every archive. The hash decides which copy the pack was made from.
-    let loose: Vec<String> = wanted.keys().cloned().collect();
-    for source in loose {
-        let path = options.data.join(&source);
-        if !path.is_file() {
+    for (source, path) in loose_sources(&options.data, &wanted)? {
+        if !wanted.contains_key(&source) {
             continue;
         }
         let bytes = fs::read(&path).wrap_err_with(|| format!("cannot read {}", path.display()))?;
@@ -143,8 +149,17 @@ pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValues
         }
         archive::for_each_bsa_entry(&path, &mut |name, decompress| {
             let source = MaterialValuesFile::key(name);
-            if wanted.contains_key(&source) {
-                take(&source, &decompress()?, &mut wanted, &mut file, &mut report);
+            if !wanted.contains_key(&source) {
+                return Ok(());
+            }
+            match decompress() {
+                Ok(bytes) => take(&source, &bytes, &mut wanted, &mut file, &mut report),
+                Err(error) => {
+                    let copy = format!("{}: {source}", path.display());
+                    let reason = format!("{error:#}");
+                    log::warn!("cannot decompress {copy}: {reason}");
+                    report.failed_copies.push((copy, reason));
+                }
             }
             Ok(())
         })
@@ -159,8 +174,54 @@ pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValues
         );
     }
     report.written_meshes = file.meshes.len();
-    write_new(&options.output, &serde_json::to_vec(&file)?)?;
+    let bytes = serde_json::to_vec(&file)?;
+    publish_new(&options.output, |sidecar| sidecar.write_all(&bytes))?;
     Ok(report)
+}
+
+/// Refuses an output inside the pack the command reads, registered or not. The output's folder
+/// must exist.
+fn require_outside_pack(pack: &Path, output: &Path) -> Result<()> {
+    let folder = fs::canonicalize(folder_of(output))
+        .wrap_err_with(|| format!("refused: the folder of {} does not exist", output.display()))?;
+    let pack = fs::canonicalize(pack)
+        .wrap_err_with(|| format!("refused: cannot resolve the pack {}", pack.display()))?;
+    ensure!(
+        !folder.starts_with(&pack),
+        "refused: {} is inside the pack {}, which this command only reads",
+        output.display(),
+        pack.display()
+    );
+    Ok(())
+}
+
+fn folder_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+/// The loose files of `data` that name a wanted mesh, as `(key, path as spelled on disk)`. A
+/// manifest key is lower case, so joining it to `data` misses `Meshes/A.NIF` on a
+/// case-sensitive volume. Every spelling is returned.
+fn loose_sources(data: &Path, wanted: &BTreeMap<String, Wanted>) -> Result<Vec<(String, PathBuf)>> {
+    let mut sources = Vec::new();
+    for entry in walkdir::WalkDir::new(data)
+        .follow_links(true)
+        .sort_by_file_name()
+    {
+        let entry = entry
+            .wrap_err_with(|| format!("cannot read the game data folder {}", data.display()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        // A name that is not UTF-8 matches no manifest key, with or without its lossy letters.
+        let key = MaterialValuesFile::key(&entry.path().strip_prefix(data)?.to_string_lossy());
+        if wanted.contains_key(&key) {
+            sources.push((key, entry.into_path()));
+        }
+    }
+    Ok(sources)
 }
 
 /// Uses `bytes` for the mesh at `source` when they are the bytes the pack was converted from.
@@ -210,14 +271,27 @@ fn values_of(source: &str, bytes: &[u8]) -> Result<BTreeMap<u32, MaterialValues>
         .collect())
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+/// Creates the file at `path` with the bytes `write` gives it. The bytes go to a temporary file
+/// in the same folder, which takes the name only after they are written and synced. A failure
+/// leaves no file at `path`, and an existing file is never replaced.
+fn publish_new(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<()> {
+    let mut builder = tempfile::Builder::new();
+    // The default mode of a temporary file is 0600; the sidecar is an ordinary file.
+    #[cfg(unix)]
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+    let mut temporary = builder
+        .tempfile_in(folder_of(path))
         .wrap_err_with(|| format!("cannot create {}", path.display()))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
+    write(temporary.as_file_mut())
+        .and_then(|()| temporary.as_file().sync_all())
+        .wrap_err_with(|| format!("cannot write {}", path.display()))?;
+    temporary
+        .persist_noclobber(path)
+        .map_err(|error| error.error)
+        .wrap_err_with(|| format!("cannot create {}", path.display()))?;
     Ok(())
 }
 
@@ -333,5 +407,121 @@ mod tests {
         assert_eq!(report.unreadable.len(), 1);
         let written = MaterialValuesFile::parse(&fs::read(&options.output).unwrap()).unwrap();
         assert!(written.meshes.is_empty());
+    }
+
+    /// A pack with one listed mesh whose recorded source bytes are `recorded`.
+    fn one_mesh_pack(root: &Path) -> DeriveMaterialValuesOptions {
+        let pack = root.join("clone");
+        let data = root.join("data");
+        fs::create_dir_all(&pack).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let mut manifest = ConversionManifest::default();
+        manifest.entries.insert(
+            "meshes/a.nif".to_owned(),
+            CacheEntry {
+                source_hash: hash_bytes(b"recorded"),
+                output: "meshes/a.glb".to_owned(),
+                output_size: 0,
+                output_hash: String::new(),
+            },
+        );
+        fs::write(
+            pack.join("conversion-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        DeriveMaterialValuesOptions {
+            pack,
+            registry: registry(root),
+            data,
+            output: root.join("material-values.json"),
+        }
+    }
+
+    #[test]
+    fn a_loose_file_is_read_by_its_spelling_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let options = one_mesh_pack(root.path());
+        fs::create_dir_all(options.data.join("Meshes")).unwrap();
+        fs::write(options.data.join("Meshes/A.NIF"), b"recorded").unwrap();
+        fs::write(options.data.join("Meshes/B.NIF"), b"not listed").unwrap();
+        let wanted = BTreeMap::from([(
+            "meshes/a.nif".to_owned(),
+            Wanted {
+                output: "meshes/a.glb".to_owned(),
+                source_hash: hash_bytes(b"recorded"),
+            },
+        )]);
+        // The path keeps the spelling: the lower case key would not open on a case-sensitive
+        // volume.
+        assert_eq!(
+            loose_sources(&options.data, &wanted).unwrap(),
+            [(
+                "meshes/a.nif".to_owned(),
+                options.data.join("Meshes").join("A.NIF")
+            )]
+        );
+        let report = run(&options).unwrap();
+        assert!(report.missing_sources.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn an_output_inside_the_unregistered_input_pack_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let mut options = one_mesh_pack(root.path());
+        fs::create_dir_all(options.pack.join("meshes")).unwrap();
+        for output in ["material-values.json", "meshes/material-values.json"] {
+            options.output = options.pack.join(output);
+            let error = run(&options).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("inside the pack"),
+                "{error:#}"
+            );
+            assert!(!options.output.exists());
+        }
+    }
+
+    #[test]
+    fn a_copy_that_does_not_decompress_leaves_the_other_archives_searched() {
+        use dummy_content::{Entry, bsa};
+        let root = tempfile::tempdir().unwrap();
+        let options = one_mesh_pack(root.path());
+        let entries = [Entry::new("meshes/a.nif", b"recorded")];
+        let mut broken = bsa::v105(&entries, bsa::Compression::Zlib).unwrap();
+        // The payload is the uncompressed size and then the zlib header.
+        let header = broken
+            .windows(5)
+            .position(|bytes| bytes[..4] == 8_u32.to_le_bytes() && bytes[4] == 0x78)
+            .expect("a zlib payload");
+        broken[header + 4] = 0;
+        fs::write(options.data.join("a.bsa"), broken).unwrap();
+        fs::write(
+            options.data.join("b.bsa"),
+            bsa::v105(&entries, bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+        let report = run(&options).unwrap();
+        assert!(report.missing_sources.is_empty(), "{report:?}");
+        // The good copy reached the parser, which reports that these bytes are not a NIF.
+        assert_eq!(report.unreadable.len(), 1);
+        assert_eq!(report.failed_copies.len(), 1);
+        assert!(report.failed_copies[0].0.contains("a.bsa: meshes/a.nif"));
+    }
+
+    #[test]
+    fn a_failed_write_publishes_nothing_and_an_existing_file_stays() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("material-values.json");
+        let error = publish_new(&path, |file| {
+            file.write_all(b"half")?;
+            Err(std::io::Error::other("the disk is full"))
+        })
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("disk is full"), "{error:#}");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+        publish_new(&path, |file| file.write_all(b"first")).unwrap();
+        assert!(publish_new(&path, |file| file.write_all(b"second")).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"first");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 }

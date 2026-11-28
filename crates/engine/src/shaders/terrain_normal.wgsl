@@ -56,6 +56,13 @@ fn terrain_tangent_normal(sample_xy: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(tilt, sqrt(max(0.0, 1.0 - dot(tilt, tilt))));
 }
 
+// The unit tangent-space normal of a layer blend. A blend that cancels to zero has no direction:
+// it takes the frame's own axis, which is the geometric normal, where `normalize` would give NaN.
+fn terrain_blended_normal(blend: vec3<f32>) -> vec3<f32> {
+    let length_squared = dot(blend, blend);
+    return select(vec3<f32>(0.0, 0.0, 1.0), blend * inverseSqrt(max(length_squared, 1.0e-12)), length_squared > 1.0e-12);
+}
+
 // The terrain's tangent frame. Its texture coordinates run exactly along world +X (u) and world -Z
 // (v), so the frame is analytic: the u axis made perpendicular to the interpolated normal, and the
 // v axis from their cross product. The mesh's tangent attribute cannot be used: it carries weights.

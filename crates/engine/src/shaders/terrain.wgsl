@@ -1,5 +1,5 @@
 #import engine::terrain_blend::{NearTerrainBlendSettings, noise_multiplier, noisy_land_colour, retail_land_alpha, terrain_atlas_uv, terrain_blend_ramp, terrain_blend_weight}
-#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_tangent_normal, terrain_tbn}
+#import engine::terrain_normal::{retail_terrain_normal, terrain_blend_divisor, terrain_blended_normal, terrain_tangent_normal, terrain_tbn}
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
@@ -283,7 +283,7 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
         surface += layer_surface(normal_5, uv, terrain.normal_layers_1.y, retail) * weights[5];
         specular_mask = surface.w;
         let geometric = normalize(pbr_input.world_normal);
-        pbr_input.N = normalize(terrain_tbn(geometric) * normalize(mix(surface.xyz / divisor, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
+        pbr_input.N = normalize(terrain_tbn(geometric) * terrain_blended_normal(mix(surface.xyz / divisor, vec3<f32>(0.0, 0.0, 1.0), seam_weight)));
     }
     pbr_input.material.reflectance = terrain_reflectance(pbr_input.material.reflectance, specular_mask, total);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
