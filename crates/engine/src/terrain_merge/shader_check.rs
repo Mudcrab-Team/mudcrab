@@ -699,7 +699,7 @@ fn mask_slots(
             .iter()
             .any(|(_, expression)| matches!(expression,
                 Expression::Binary { op: naga::BinaryOperator::Divide, right, .. }
-            if *right == divisor
+            if scalar_access_path(fragment, *right) == (divisor, Vec::new())
             ))
     );
     let (mask_root, path) = access_path(fragment, arguments[1]);
