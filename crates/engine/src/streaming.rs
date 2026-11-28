@@ -11968,6 +11968,8 @@ mod tests {
             destination_worldspace_id: None,
             arrival_position: [10.0, 20.0, 30.0],
             arrival_rotation: [0.0, 0.0, 1.0],
+            reference_flags: Some(0),
+            base_flags: Some(0),
         };
         let mut door = lit_reference(0x110, None, None);
         door.door = Some(link(Some(500)));
@@ -11996,6 +11998,62 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    /// A reference flagged Inaccessible (header bit 0x100) is spawned but is no load door; the
+    /// same reference without the bit is one. Flags the database carries ride on `LoadDoor`.
+    #[test]
+    fn an_inaccessible_door_reference_carries_no_load_door() {
+        let link = |reference_flags, base_flags| crate::world::database::DoorLinkRow {
+            destination_ref_id: 0x700,
+            destination_cell_id: Some(500),
+            destination_worldspace_id: None,
+            arrival_position: [10.0, 20.0, 30.0],
+            arrival_rotation: [0.0, 0.0, 1.0],
+            reference_flags,
+            base_flags,
+        };
+        let mut inaccessible = lit_reference(0x130, None, None);
+        inaccessible.model_path = Some("Architecture/Riften/RiftenDoor01.nif".to_owned());
+        inaccessible.door = Some(link(Some(0x500), Some(0)));
+        let mut auto_hidden = lit_reference(0x131, None, None);
+        auto_hidden.door = Some(link(Some(0x400), Some(0x06)));
+        let mut hidden_only = lit_reference(0x132, None, None);
+        hidden_only.door = Some(link(Some(0x400), Some(0x04)));
+        let mut unknown = lit_reference(0x133, None, None);
+        unknown.door = Some(link(None, None));
+        let app =
+            spawn_reference_cell_app(vec![inaccessible, auto_hidden, hidden_only, unknown], false);
+
+        let door = |form_id| {
+            app.world()
+                .entity(reference_entity(&app, form_id))
+                .get::<crate::doors::LoadDoor>()
+                .cloned()
+        };
+        let inaccessible_entity = app.world().entity(reference_entity(&app, 0x130));
+        assert!(
+            inaccessible_entity
+                .get::<crate::doors::LoadDoor>()
+                .is_none()
+        );
+        assert_eq!(
+            inaccessible_entity
+                .get::<MeshHandle>()
+                .map(|handle| handle.0.as_str()),
+            Some("meshes/architecture/riften/riftendoor01.glb"),
+            "an inaccessible door still spawns its visual mesh"
+        );
+        assert!(inaccessible_entity.get::<PendingModel>().is_some());
+        let auto_hidden = door(0x131).expect("an accessible automatic hidden door loads");
+        assert_eq!(auto_hidden.flags, Some(crate::doors::DoorFlags(0x06)));
+        assert!(auto_hidden.is_automatic() && auto_hidden.is_hidden());
+        let hidden_only = door(0x132).expect("an accessible hidden door loads");
+        assert_eq!(hidden_only.flags, Some(crate::doors::DoorFlags(0x04)));
+        assert!(!hidden_only.is_automatic() && hidden_only.is_hidden());
+        let unknown = door(0x133).expect("unknown flags leave the door usable");
+        assert_eq!(unknown.flags, None);
+        assert!(!unknown.is_automatic() && !unknown.is_hidden());
     }
 
     /// Two references to the same model, one whose base record carries `Is Marker`: only the
