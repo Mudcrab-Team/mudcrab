@@ -835,6 +835,32 @@ fn hidden_quadrants_omit_grass_placement_and_keep_visible_quadrants() {
         assert_ne!(q, 2, "hidden quadrant 2 must not receive grass instances");
     }
 
+    let expected_visible: Vec<Vec<_>> = all_visible
+        .batches
+        .iter()
+        .map(|batch| {
+            batch
+                .instances
+                .iter()
+                .filter(|instance| {
+                    let x = f32::from(instance.position[0]) * GRASS_CELL_SIZE / 65535.0;
+                    let y = f32::from(instance.position[1]) * GRASS_CELL_SIZE / 65535.0;
+                    !(x < 2048.0 && y >= 2048.0)
+                })
+                .copied()
+                .collect()
+        })
+        .collect();
+    let actual_visible: Vec<Vec<_>> = q2_hidden
+        .batches
+        .iter()
+        .map(|batch| batch.instances.to_vec())
+        .collect();
+    assert_eq!(
+        actual_visible, expected_visible,
+        "skipping hidden quadrant 2 must preserve RNG draws and ordinals in later quadrants"
+    );
+
     let all_hidden = generate_on_terrain(
         &cache,
         42,

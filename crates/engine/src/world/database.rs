@@ -1839,6 +1839,16 @@ fn decode_cell_land_hide_flags(
         }
         None | Some(_) => {}
     }
+    if parsed.upper_nibble_bits != 0
+        && !matches!(parsed.issue, Some(shared::XclcIssue::UpperNibbleBits(_)))
+        && warnings.insert(CellXclcWarning::UpperNibbleBits)
+    {
+        bevy::log::warn!(
+            cell = format_args!("{cell_id:08X}"),
+            bits = format_args!("{:#04x}", parsed.upper_nibble_bits),
+            "exterior CELL XCLC has non-zero upper land-flag bits; ignoring them"
+        );
+    }
     parsed.flags
 }
 
@@ -5219,5 +5229,14 @@ pub(crate) mod tests {
 
         let interior = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
         assert_eq!(interior.land_hide_flags, 0);
+
+        let wrong_len = xclc_record(7, -3, Some(0xF4), 10);
+        let mut warnings = HashSet::new();
+        assert_eq!(
+            decode_cell_land_hide_flags(104, Some(&wrong_len), &mut warnings),
+            0
+        );
+        assert!(warnings.contains(&CellXclcWarning::UnexpectedXclcLength));
+        assert!(warnings.contains(&CellXclcWarning::UpperNibbleBits));
     }
 }

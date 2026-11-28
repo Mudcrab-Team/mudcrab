@@ -166,8 +166,10 @@ impl Bounds3 {
 /// Result of inspecting a `CELL` `XCLC` subrecord for SSE land-hide flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XclcLandHide {
-    /// Low nibble (`bit q` hides quadrant `q` in `0..4`). Zero when absent or shorter than 9 bytes.
+    /// Low nibble (`bit q` hides quadrant `q` in `0..4`). Zero when absent or not 12 bytes.
     pub flags: u8,
+    /// Non-zero upper-nibble bits at byte 8 when `XCLC` is at least 9 bytes.
+    pub upper_nibble_bits: u8,
     /// Present when `XCLC` is shorter than 9 bytes, not 12 bytes, or has upper-nibble bits set.
     pub issue: Option<XclcIssue>,
 }
@@ -189,25 +191,33 @@ pub fn xclc_land_hide_flags(xclc: &[u8]) -> XclcLandHide {
     if xclc.len() < 8 {
         return XclcLandHide {
             flags: 0,
+            upper_nibble_bits: 0,
             issue: Some(XclcIssue::Truncated(xclc.len())),
         };
     }
     if xclc.len() == 8 {
         return XclcLandHide {
             flags: 0,
+            upper_nibble_bits: 0,
             issue: Some(XclcIssue::LegacyNoFlags),
         };
     }
     let raw = xclc[8];
+    let upper_nibble_bits = raw & 0xF0;
+    if xclc.len() != 12 {
+        return XclcLandHide {
+            flags: 0,
+            upper_nibble_bits,
+            issue: Some(XclcIssue::UnexpectedLength(xclc.len())),
+        };
+    }
     let flags = raw & 0x0F;
-    let issue = if xclc.len() != 12 {
-        Some(XclcIssue::UnexpectedLength(xclc.len()))
-    } else if (raw & 0xF0) != 0 {
-        Some(XclcIssue::UpperNibbleBits(raw & 0xF0))
-    } else {
-        None
-    };
-    XclcLandHide { flags, issue }
+    let issue = (upper_nibble_bits != 0).then_some(XclcIssue::UpperNibbleBits(upper_nibble_bits));
+    XclcLandHide {
+        flags,
+        upper_nibble_bits,
+        issue,
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +232,7 @@ mod tests {
             xclc_land_hide_flags(&sse),
             XclcLandHide {
                 flags: 0x04,
+                upper_nibble_bits: 0,
                 issue: None
             }
         );
@@ -231,7 +242,19 @@ mod tests {
             xclc_land_hide_flags(&sse),
             XclcLandHide {
                 flags: 0x04,
+                upper_nibble_bits: 0xF0,
                 issue: Some(XclcIssue::UpperNibbleBits(0xF0))
+            }
+        );
+
+        let mut wrong_len = [0u8; 10];
+        wrong_len[8] = 0xF4;
+        assert_eq!(
+            xclc_land_hide_flags(&wrong_len),
+            XclcLandHide {
+                flags: 0,
+                upper_nibble_bits: 0xF0,
+                issue: Some(XclcIssue::UnexpectedLength(10))
             }
         );
 
@@ -239,6 +262,7 @@ mod tests {
             xclc_land_hide_flags(&[0u8; 8]),
             XclcLandHide {
                 flags: 0,
+                upper_nibble_bits: 0,
                 issue: Some(XclcIssue::LegacyNoFlags)
             }
         );
@@ -246,6 +270,7 @@ mod tests {
             xclc_land_hide_flags(&[0u8; 4]),
             XclcLandHide {
                 flags: 0,
+                upper_nibble_bits: 0,
                 issue: Some(XclcIssue::Truncated(4))
             }
         );

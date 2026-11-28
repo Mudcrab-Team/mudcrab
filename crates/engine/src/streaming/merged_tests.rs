@@ -1236,6 +1236,34 @@ fn merged_mesh_and_collider_omit_hidden_quadrants_for_0x04_and_0x0f() {
             .flatten()
             .all(|&index| !(q2_start..q2_end).contains(&index))
     );
+    {
+        use bevy_rapier3d::rapier::parry::{math::Pose, query::Ray};
+        for (quadrant, cx, cy) in [
+            (0usize, 1024.0f32, 1024.0f32),
+            (1, 3072.0, 1024.0),
+            (2, 1024.0, 3072.0),
+            (3, 3072.0, 3072.0),
+        ] {
+            let origin = Vec3::from_array(shared::coordinates::creation_to_runtime_vector([
+                cx, cy, 1000.0,
+            ]));
+            let ray = Ray::new(origin, Vec3::NEG_Y);
+            let hit = collider_04
+                .raw
+                .cast_ray(&Pose::IDENTITY, &ray, 2000.0, true);
+            if quadrant == 2 {
+                assert!(
+                    hit.is_none(),
+                    "raycast into hidden quadrant 2 must not hit merged terrain collider"
+                );
+            } else {
+                assert!(
+                    hit.is_some(),
+                    "raycast into visible quadrant {quadrant} must hit merged terrain collider"
+                );
+            }
+        }
+    }
 
     let mut app_0f = spawn_with_flags(0x0F);
     let world_0f = app_0f.world_mut();

@@ -103,20 +103,6 @@ pub fn extract_cell_info(
     (grid_x, grid_y, interior_name)
 }
 
-/// Read the `CELL` `XCLC` quadrant-hide bitmask from raw subrecords without requiring a schema bump.
-/// Absent or `< 9`-byte `XCLC` payloads hide nothing (`0`).
-pub fn extract_cell_land_hide_flags(subs: &[(Vec<u8>, Vec<u8>)]) -> shared::XclcLandHide {
-    for (tag, data) in subs {
-        if tag.as_slice() == b"XCLC" {
-            return shared::xclc_land_hide_flags(data);
-        }
-    }
-    shared::XclcLandHide {
-        flags: 0,
-        issue: None,
-    }
-}
-
 pub fn serialize_subrecords(subs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     let record_data = ArchivedRecordData {
         subrecords: subs
@@ -327,28 +313,7 @@ impl<'a> SubrecordView<'a> {
 
 #[cfg(test)]
 mod subrecord_tests {
-    use super::{extract_cell_land_hide_flags, extract_subrecords};
-
-    #[test]
-    fn twelve_byte_xclc_extracts_land_hide_flags_and_short_hides_nothing() {
-        let mut xclc = vec![0u8; 12];
-        xclc[0..4].copy_from_slice(&6i32.to_le_bytes());
-        xclc[4..8].copy_from_slice(&(-3i32).to_le_bytes());
-        xclc[8] = 0x04;
-        let extracted = extract_cell_land_hide_flags(&[(b"XCLC".to_vec(), xclc)]);
-        assert_eq!(extracted.flags, 0x04);
-        assert_eq!(extracted.issue, None);
-        assert_ne!(extracted.flags & (1 << 2), 0, "quadrant 2 must be hidden");
-        assert_eq!(extracted.flags & !(1 << 2), 0);
-
-        let eight_byte = extract_cell_land_hide_flags(&[(b"XCLC".to_vec(), vec![0u8; 8])]);
-        assert_eq!(eight_byte.flags, 0);
-        assert_eq!(eight_byte.issue, Some(shared::XclcIssue::LegacyNoFlags));
-
-        let absent = extract_cell_land_hide_flags(&[]);
-        assert_eq!(absent.flags, 0);
-        assert_eq!(absent.issue, None);
-    }
+    use super::extract_subrecords;
 
     #[test]
     fn rejects_truncation_even_after_a_valid_subrecord() {

@@ -364,12 +364,7 @@ fn generate_field<const OBSERVE: bool>(
     let mut ordinal = 0u32;
     for quadrant in cell.quadrants.iter() {
         let q = usize::from(quadrant.quadrant);
-        // Skip hidden quadrants for grass as well as terrain rendering: inferred from retail
-        // behaviour (in retail, grass does not grow through streets/buildings placed over
-        // hidden LAND; exact retail rule is unverified).
-        if (land_hide_flags & (1 << q)) != 0 {
-            continue;
-        }
+        let quadrant_hidden = (land_hide_flags & (1 << q)) != 0;
         for x in (1..16).step_by(2) {
             for y in (1..16).step_by(2) {
                 let origin = [
@@ -445,6 +440,13 @@ fn generate_field<const OBSERVE: bool>(
                             let u3 = rng.next();
                             let u4 = rng.next();
                             let u5 = rng.next();
+                            // Skip hidden quadrants for grass after advancing RNG and ordinals so
+                            // visible quadrants later in the cell keep identical placement: inferred
+                            // from retail behaviour (in retail, grass does not grow through streets
+                            // or buildings placed over hidden LAND; exact retail rule is unverified).
+                            if quadrant_hidden {
+                                continue;
+                            }
                             let rounded_height = sampling::half_round(sample.height);
                             if !rounded_height.is_finite() {
                                 invalid_roots += 1;

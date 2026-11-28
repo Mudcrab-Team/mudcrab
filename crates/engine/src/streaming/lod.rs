@@ -1331,14 +1331,6 @@ pub(super) fn update_terrain_lod_visibility(
         );
     }
     let batches_removed = batches.removed();
-    let Ok(camera) = camera.single() else {
-        if real_removals || batches_removed {
-            streaming.p1().visibility_dirty = true;
-        }
-        return;
-    };
-    let camera_grid = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
-    let upload_completed = batches.upload_completed();
     let merged_removed = removals.merged.read().count() != 0;
     let hidden_changed =
         !hidden_terrain.added.is_empty() || hidden_terrain.removed.read().count() != 0;
@@ -1351,6 +1343,14 @@ pub(super) fn update_terrain_lod_visibility(
         .count()
         != 0;
     let merged_changed = merged_removed || merged_drawn || hidden_changed;
+    let Ok(camera) = camera.single() else {
+        if real_removals || batches_removed || merged_changed {
+            streaming.p1().visibility_dirty = true;
+        }
+        return;
+    };
+    let camera_grid = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
+    let upload_completed = batches.upload_completed();
     let grid_origin = streaming.p0().grid_origin;
     let (force_apply, camera_moved, radius_changed) = {
         let state = streaming.p0();
@@ -3948,5 +3948,27 @@ mod tests {
         for entity in &lod_all {
             assert_eq!(seam.visibility(*entity), Visibility::Inherited);
         }
+
+        let camera = seam
+            .world
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(&seam.world)
+            .unwrap();
+        seam.world.entity_mut(camera).despawn();
+        seam.world.spawn(HiddenTerrainQuadrants {
+            grid: IVec2::ZERO,
+            mask: 0x01,
+        });
+        seam.run();
+        assert!(
+            seam.world.resource::<LodStreaming>().visibility_dirty,
+            "hidden-quadrant changes while camera is absent must mark visibility dirty"
+        );
+        seam.world.spawn((
+            StreamingCamera,
+            Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+        ));
+        seam.run();
+        assert_eq!(seam.visibility(lod[0]), Visibility::Hidden);
     }
 }

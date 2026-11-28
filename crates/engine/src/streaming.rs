@@ -1463,7 +1463,12 @@ fn collect_cells(
                     }
                 }
                 let cell_id = payload.cell_id;
-                let drawn_merged = merged.is_some();
+                let terrain_hide_flags = if let Some(terrain) = &terrain {
+                    terrain.land_hide_flags & 0x0F
+                } else {
+                    payload.land_hide_flags & 0x0F
+                };
+                let drawn_merged = merged.is_some() && terrain_hide_flags != 0x0F;
                 // Publish the exact surface used below by terrain meshes/colliders. The
                 // immutable field is copied once per commit only when grass is enabled.
                 let grass_terrain =
