@@ -2863,7 +2863,7 @@ pub fn walk_movement_system(
             ));
         }
         if drop.landed {
-            // Inferred Mudcrab stand-in (unverified in binary; see `walk_support` module doc):
+            // STAND-IN(#1108): inferred, unverified in the binary (see `walk_support` module doc):
             // the downward sweep reached a surface, approximating Havok's proxy contact solve
             // arresting downward velocity. Leaving the old 4 x gravity speed in `Phase::Gliding`
             // would accumulate unbounded fall speed across stair treads or downhill ticks.

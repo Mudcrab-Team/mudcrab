@@ -27,11 +27,12 @@
 //! Mudcrab tunes the step-up probe (`walk_step_rise`, RF-CC-019) and uses a 28-unit capsule
 //! radius (retail uses about 18 units, RF-CC-020). The 900 units/s² gravity setting applies only
 //! to rigid bodies. The player controller uses retail world gravity (686.6 units/s², RF-CC-002).
-//! The glide rule persists vertical velocity across airborne glide ticks until a downward drop
-//! sweep hits a surface, where Mudcrab resets the controller to Supported (inferred stand-in for
-//! Havok's `hkpCharacterProxy::integrate` contact solve). Both cross-step persistence and contact
-//! velocity reset (RF-CC-014), the Havok proxy's support tolerance and keep distance (RF-CC-001),
-//! and the normal threshold at `0x141829400` (RF-CC-017) remain unverified in the binary.
+//! The glide rule keeps the vertical velocity from one cast-hit step to the next only until the
+//! downward drop sweep of a step hits a surface. Mudcrab then resets the controller to Supported,
+//! so the vertical velocity is 0. This reset is an inferred stand-in for the contact solve of
+//! Havok's `hkpCharacterProxy::integrate`, tracked in #1108. The cross-step persistence
+//! (RF-CC-014), the contact reset, the Havok proxy's support tolerance and keep distance
+//! (RF-CC-001), and the normal threshold at `0x141829400` (RF-CC-017) are unverified in the binary.
 
 use super::{MovementTuning, PLAYER_CONTROLLER_OFFSET, carry::UNITS_PER_METRE};
 use bevy::prelude::*;

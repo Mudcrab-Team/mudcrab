@@ -13327,7 +13327,10 @@ mod rebase_collision_tests {
         let clutter = app
             .world_mut()
             .spawn((
-                crate::physics::DynamicClutter,
+                crate::physics::DynamicClutter {
+                    max_linear_velocity: 7308.0,
+                    max_angular_velocity: 31.57,
+                },
                 RigidBody::Dynamic,
                 bevy_rapier3d::prelude::GravityScale(0.0),
                 Collider::cuboid(30.0, 10.0, 30.0),
@@ -13536,11 +13539,10 @@ mod rebase_collision_tests {
     /// post-rebase broad-phase support on every rebase frame and never drop the player through the
     /// terrain or lose ground contact.
     ///
-    /// With cause (a) already fixed, a single stale post-rebase tick only drops the player by
-    /// `wish.y * dt` (~3-4 u), so checking only the final `airborne` flag caught only the fastest
-    /// (`193.6 ms / 555`) setup under a cause-(c)-only revert; asserting immediate post-rebase
-    /// broad-phase ground contact right after `update_render_origin` makes all four setups fail
-    /// deterministically when the BVH refresh is removed.
+    /// With cause (a) fixed, one stale post-rebase tick barely moves the player, so the final
+    /// `airborne` flag alone caught only the `193.6 ms / 555` setup when the BVH refresh was
+    /// removed. The test therefore also asserts ground contact in the broad phase right after
+    /// `update_render_origin`, which fails on the first rebase without the refresh.
     #[test]
     fn render_origin_rebase_over_downhill_trimesh_terrain_keeps_ground_contact_and_never_falls_through()
      {
@@ -13680,92 +13682,87 @@ mod rebase_collision_tests {
         }
     }
 
-    /// Regression for cause (c) while airborne: measures the exact horizontal travel during a
-    /// 600-unit sprint fall, then places the cell rebase border across that landing window in
-    /// 6-unit steps (smaller than one 1/60 s tick at 555 u/s = 9.25 u). That guarantees a rebase
-    /// lands directly on the impact tick at ~1000 u/s (~17 u/tick downward), which tunnels through
-    /// the zero-thickness terrain trimesh if `broad_phase.set_aabb` is omitted.
+    /// Regression for cause (c) while airborne: a render-origin rebase immediately before the
+    /// impact tick of a fall (~1000 u/s, ~17 u per 1/60 s tick) must not let the capsule sink into
+    /// the zero-thickness terrain trimesh.
+    ///
+    /// The test forces the rebase on a chosen frame by moving the camera across the border, so it
+    /// does not depend on horizontal travel or camera lag. It sweeps every frame around the impact
+    /// and drop heights that differ by less than one tick of travel.
     #[test]
     fn render_origin_rebase_while_airborne_over_thin_trimesh_never_tunnels() {
+        #[derive(Resource)]
+        struct ForceRebase {
+            frame: u32,
+            at: Option<u32>,
+        }
+
+        fn force_rebase(
+            mut force: ResMut<ForceRebase>,
+            mut camera: Query<&mut Transform, With<StreamingCamera>>,
+        ) {
+            force.frame += 1;
+            if force.at == Some(force.frame) {
+                camera.single_mut().expect("camera").translation.z = -(CELL_SIZE + 1.0);
+            }
+        }
+
         let ground_y = 200.0_f32;
-        let drop_height = 600.0_f32;
 
-        // Measure the exact horizontal travel from release to first ground contact away from any
-        // rebase boundary so the offsets below bracket the exact impact tick.
-        let impact_travel = {
-            let mut app = headless::fixture_app();
-            for grid_y in 0..=2 {
-                spawn_sloped_terrain_cell(&mut app, grid_y, 0.0, ground_y);
-            }
-            app.update();
-            let start_z = -1500.0_f32;
-            headless::place_player(&mut app, Vec3::new(1531.3, ground_y + drop_height, start_z));
-            app.insert_resource(MoveMode::Walk);
-            app.insert_resource(WalkIntent {
-                wish_dir: Vec3::NEG_Z,
-                target_speed: 555.0,
-                jump_pressed: false,
-            });
-            let mut travel = None;
-            for _ in 0..240 {
-                app.update();
-                let (pose, grounded) = headless::player_pose(&mut app);
-                if grounded && pose.y < ground_y + 70.0 {
-                    travel = Some(start_z - pose.z);
-                    break;
-                }
-            }
-            travel.expect("baseline fall must land")
-        };
-
-        for delta in [-36.0_f32, -30.0, -24.0, -18.0, -12.0, -6.0] {
-            let border_offset = (impact_travel + delta).max(16.0);
+        // Returns the first frame with ground contact. Panics if the capsule sinks into the ground.
+        let fall = |drop_height: f32, rebase_at: Option<u32>| -> u32 {
             let mut app = headless::fixture_app();
             app.insert_resource(EngineConfig::default())
                 .insert_resource(RenderOrigin(IVec2::ZERO))
                 .init_resource::<ActiveSpace>()
+                .insert_resource(ForceRebase {
+                    frame: 0,
+                    at: rebase_at,
+                })
                 .add_systems(
                     Update,
-                    update_render_origin.after(crate::physics::PlayerControlsSystems),
+                    (force_rebase, update_render_origin)
+                        .chain()
+                        .after(crate::physics::PlayerControlsSystems),
                 );
-            for grid_y in 0..=2 {
+            // The rebase moves the world one cell south, so cell (0, -1) must exist too.
+            for grid_y in -1..=1 {
                 spawn_sloped_terrain_cell(&mut app, grid_y, 0.0, ground_y);
             }
             app.update();
-            // Start south of the cell (0, 1) rebase boundary (-4096) and sprint north while falling.
-            headless::place_player(
-                &mut app,
-                Vec3::new(1531.3, ground_y + drop_height, -(CELL_SIZE - border_offset)),
-            );
-            app.insert_resource(MoveMode::Walk);
-            app.insert_resource(WalkIntent {
-                wish_dir: Vec3::NEG_Z,
-                target_speed: 555.0,
-                jump_pressed: false,
-            });
-            let mut landed = false;
+            headless::place_player(&mut app, Vec3::new(1531.3, ground_y + drop_height, -1500.0));
+            let mut landed_frame = None;
             for _ in 0..240 {
                 app.update();
                 let (pose, grounded) = headless::player_pose(&mut app);
                 assert!(
-                    pose.y >= ground_y + 35.0,
-                    "border_offset={border_offset:.1} (delta={delta}): tunneled through rebased thin terrain at y={}",
+                    pose.y >= ground_y + 45.0,
+                    "drop_height={drop_height}, rebase_at={rebase_at:?}: sank into rebased thin \
+                     terrain at y={}",
                     pose.y
                 );
                 if grounded && pose.y < ground_y + 70.0 {
-                    landed = true;
-                    break;
+                    let frame = app.world().resource::<ForceRebase>().frame;
+                    let first = *landed_frame.get_or_insert(frame);
+                    // Run a few frames past the landing and past a late forced rebase.
+                    if frame >= first + 5 {
+                        break;
+                    }
                 }
             }
-            assert!(
-                landed,
-                "border_offset={border_offset:.1} (delta={delta}): never landed on terrain (pose={:?})",
-                headless::player_pose(&mut app)
+            assert_eq!(
+                app.world().resource::<StreamingMetrics>().origin_rebases,
+                u64::from(rebase_at.is_some()),
+                "drop_height={drop_height}, rebase_at={rebase_at:?}: wrong rebase count"
             );
-            assert!(
-                app.world().resource::<StreamingMetrics>().origin_rebases >= 1,
-                "border_offset={border_offset:.1} (delta={delta}): test must cross a render-origin rebase"
-            );
+            landed_frame.expect("the fall must land")
+        };
+
+        for drop_height in [600.0_f32, 604.0, 608.0, 612.0, 616.0] {
+            let impact = fall(drop_height, None);
+            for rebase_at in impact - 4..=impact + 1 {
+                fall(drop_height, Some(rebase_at));
+            }
         }
     }
 
