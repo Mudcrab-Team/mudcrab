@@ -110,7 +110,12 @@ pub(crate) struct ReferenceTextureSwaps {
 }
 
 #[derive(Default)]
-pub(crate) struct ObjectTextureCatalog(HashMap<u32, Arc<Vec<TextureSwap>>>);
+pub(crate) struct ObjectTextureCatalog {
+    bases: HashMap<u32, Arc<Vec<TextureSwap>>>,
+    /// What an older database lacks. The catalog is read before the log starts, so the first
+    /// lookup logs this.
+    shortfall: Option<&'static str>,
+}
 
 impl ObjectTextureCatalog {
     pub(crate) fn read(connection: &Connection) -> rusqlite::Result<Self> {
@@ -122,11 +127,10 @@ impl ObjectTextureCatalog {
             )
         };
         if !has_table("base_texture_swaps")? {
-            warn!(
-                "the world database has no base_texture_swaps table; bases keep their own \
-                 textures (a metadata rebuild with --reuse-assets adds it)"
-            );
-            return Ok(Self::default());
+            return Ok(Self {
+                shortfall: Some(NO_SWAP_TABLE),
+                ..Self::default()
+            });
         }
         let has_sets = has_table("texture_sets")?;
         let mut statement = connection.prepare(
@@ -189,27 +193,30 @@ impl ObjectTextureCatalog {
                 [],
                 |row| row.get::<_, bool>(0),
             )?;
-        if only_statics && !bases.is_empty() {
-            warn!(
-                "the world database lists texture swaps for STAT bases only; other bases keep \
-                 their own textures (a metadata rebuild with --reuse-assets adds them)"
-            );
-        }
-        Ok(Self(
-            bases
+        Ok(Self {
+            shortfall: (only_statics && !bases.is_empty()).then_some(STATIC_SWAPS_ONLY),
+            bases: bases
                 .into_iter()
                 .map(|(base, swaps)| (base, Arc::new(swaps)))
                 .collect(),
-        ))
+        })
     }
 
     pub(crate) fn get(&self, base: u32) -> Option<ReferenceTextureSwaps> {
+        if let Some(shortfall) = self.shortfall {
+            warn_once!("{shortfall}");
+        }
         Some(ReferenceTextureSwaps {
             base,
-            swaps: self.0.get(&base)?.clone(),
+            swaps: self.bases.get(&base)?.clone(),
         })
     }
 }
+
+const NO_SWAP_TABLE: &str = "the world database has no base_texture_swaps table; bases keep their \
+     own textures (a metadata rebuild with --reuse-assets adds it)";
+const STATIC_SWAPS_ONLY: &str = "the world database lists texture swaps for STAT bases only; other \
+     bases keep their own textures (a metadata rebuild with --reuse-assets adds them)";
 
 /// The `texture_sets` columns no profile applies, with their place in the query above: diffuse,
 /// normal, glow, height, environment, mask, specular and detail (the projection of TX02 to TX07

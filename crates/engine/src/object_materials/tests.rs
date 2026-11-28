@@ -71,6 +71,31 @@ const DIRT: u32 = 126810;
 const ROCKS: u32 = 126829;
 const NULL_TEXTURE_SET: u32 = 0x28;
 
+/// An older database is marked, so that the first lookup can log what it lacks.
+#[test]
+fn a_database_from_an_older_converter_is_marked() {
+    let connection = Connection::open_in_memory().unwrap();
+    let shortfall =
+        |connection: &Connection| ObjectTextureCatalog::read(connection).unwrap().shortfall;
+    assert_eq!(shortfall(&connection), Some(NO_SWAP_TABLE));
+    connection
+        .execute_batch(
+            "CREATE TABLE base_texture_swaps(base_id INTEGER, position INTEGER, shape_name TEXT,
+                 shape_index INTEGER, texture_set_id INTEGER, disposition TEXT);
+             CREATE TABLE formid_map(form_id INTEGER PRIMARY KEY, record_type TEXT);
+             INSERT INTO formid_map VALUES (1, 'STAT'), (2, 'MSTT');
+             INSERT INTO base_texture_swaps VALUES (1, 0, 'A', 0, 0, 'null_texture_set');",
+        )
+        .unwrap();
+    assert_eq!(shortfall(&connection), Some(STATIC_SWAPS_ONLY));
+    connection
+        .execute_batch(
+            "INSERT INTO base_texture_swaps VALUES (2, 0, 'A', 0, 0, 'null_texture_set');",
+        )
+        .unwrap();
+    assert_eq!(shortfall(&connection), None);
+}
+
 fn database() -> (Connection, HashMap<u32, RawRecord>) {
     let conn = Connection::open_in_memory().unwrap();
     create_tables(&conn).unwrap();
