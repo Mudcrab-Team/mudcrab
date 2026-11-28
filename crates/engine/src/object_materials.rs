@@ -122,6 +122,10 @@ impl ObjectTextureCatalog {
             )
         };
         if !has_table("base_texture_swaps")? {
+            warn!(
+                "the world database has no base_texture_swaps table; bases keep their own \
+                 textures (a metadata rebuild with --reuse-assets adds it)"
+            );
             return Ok(Self::default());
         }
         let has_sets = has_table("texture_sets")?;
@@ -176,6 +180,20 @@ impl ObjectTextureCatalog {
                 texture_set,
                 kind,
             });
+        }
+        // A database from before the swaps of every model base lists `STAT` bases only.
+        let only_statics = has_table("formid_map")?
+            && connection.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM base_texture_swaps b
+                 JOIN formid_map f ON f.form_id=b.base_id WHERE f.record_type<>'STAT')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if only_statics && !bases.is_empty() {
+            warn!(
+                "the world database lists texture swaps for STAT bases only; other bases keep \
+                 their own textures (a metadata rebuild with --reuse-assets adds them)"
+            );
         }
         Ok(Self(
             bases

@@ -12,6 +12,7 @@
 //! research note and is not in the tree; the spec says where each row matters.
 
 use super::{DirectionalAmbient, EnvironmentCatalog, Lighting, RoomBound};
+use crate::room_culling::{InteriorRoot, PointRooms, RoomCullingNear, RoomCullingState};
 use crate::streaming::{ActiveSpace, creation_rotation_to_bevy, creation_to_bevy};
 use crate::world::components::StreamingCamera;
 use bevy::{
@@ -905,24 +906,23 @@ impl SceneEnvironment {
         }
     }
 
-    /// The room the camera point is in, or `None` for no room (the cell's own lighting).
-    ///
-    /// RF-LIGHT-CPU-026: retail first re-tests the room it already has, and only when the point has
-    /// left that room scans the cell's rooms in order and takes the first that holds it. `last` is
-    /// the room chosen on the previous frame, so a point inside two overlapping rooms stays in the
-    /// first one it entered. Retail's point is the camera plus its near distance along the view
-    /// direction (RF-ROOM-002); the near distance is not traced, so the camera position stands in.
-    pub(crate) fn room_at(&self, camera: Option<Vec3>, last: Option<u32>) -> Option<u32> {
-        let position = camera?;
-        if let Some(room) = last.and_then(|id| self.rooms.iter().find(|room| room.ref_id == id))
-            && room.contains(position)
-        {
-            return Some(room.ref_id);
-        }
-        self.rooms
+    /// The templated room whose box holds the point, or `None` for no room (the cell's own
+    /// lighting). The lookup for a cell that has no usable room graph; with one, the graph names
+    /// the rooms ([`step_room_blend`]). `last` is held as in [`keep_or_first`].
+    pub(crate) fn room_at(&self, point: Option<Vec3>, last: Option<u32>) -> Option<u32> {
+        let point = point?;
+        let holding: Vec<u32> = self
+            .rooms
             .iter()
-            .find(|room| room.contains(position))
+            .filter(|room| room.contains(point))
             .map(|room| room.ref_id)
+            .collect();
+        keep_or_first(&holding, last)
+    }
+
+    /// Whether `ref_id` is a room of this cell with a lighting template.
+    fn has_template(&self, ref_id: u32) -> bool {
+        self.rooms.iter().any(|room| room.ref_id == ref_id)
     }
 
     /// What one side of a blend applies: the room's lighting, or the cell's when `room` is `None`
@@ -961,6 +961,16 @@ impl SceneEnvironment {
     }
 }
 
+/// The room a point is in, out of the rooms that hold it, in table order.
+///
+/// RF-LIGHT-CPU-026: retail first re-tests the room it already has, and only when the point has
+/// left that room takes the first room in order that holds it. `last` is the room of the previous
+/// frame, so a point inside two overlapping rooms stays in the first one it entered.
+fn keep_or_first(holding: &[u32], last: Option<u32>) -> Option<u32> {
+    last.filter(|id| holding.contains(id))
+        .or_else(|| holding.first().copied())
+}
+
 /// `fRoomLightingTransitionDuration`: the seconds a switch between room lightings takes
 /// (`RF-LIGHT-CPU-024`: record `0x14209E7C0`, default 3.0, one reader `0x14041206C`, no ESM
 /// override found). The unit is the frame delta of the renderer's clock, which about 200 retail
@@ -986,7 +996,7 @@ const ROOM_TRANSITION_START_WEIGHT: f32 = 1.0e-5;
 pub(crate) struct RoomBlend {
     /// The cell the state belongs to. A different cell snaps.
     cell_id: Option<u32>,
-    /// The room the camera is in now, as chosen by [`SceneEnvironment::room_at`].
+    /// The room the camera is in now, with or without a lighting template ([`step_room_blend`]).
     target: Option<u32>,
     previous: Option<u32>,
     current: Option<u32>,
@@ -1137,26 +1147,59 @@ struct AmbientTargets<'w, 's> {
 
 /// Advances the room-lighting blend one frame (`RF-LIGHT-CPU-024`): a cell change takes the new
 /// room at once, and a room crossing inside the cell starts or continues a blend.
+///
+/// The room comes from the cell's portal graph ([`RoomCullingState::rooms_at`]), at retail's room
+/// point: the camera plus its near distance along the view direction (RF-ROOM-002). While the
+/// graph is read, the cell's own lighting applies and the first answer counts as the cell change.
+/// A cell without a usable graph takes the room boxes ([`SceneEnvironment::room_at`]).
 fn step_room_blend(
     scene: Res<SceneEnvironment>,
-    cameras: Query<&Transform, (With<StreamingCamera>, Without<WorldSun>)>,
+    cameras: Query<
+        (&Transform, Option<&RoomCullingNear>),
+        (With<StreamingCamera>, Without<WorldSun>),
+    >,
+    graphs: Option<Res<RoomCullingState>>,
+    roots: Query<&GlobalTransform, InteriorRoot>,
     mut blend: ResMut<RoomBlend>,
     time: Option<Res<Time<Real>>>,
 ) {
-    let camera = cameras.iter().next().map(|transform| transform.translation);
+    let point = cameras.iter().next().map(|(transform, near)| {
+        near.map_or(transform.translation, |near| {
+            near.world_point(&GlobalTransform::from(*transform))
+        })
+    });
     let cell_id = scene.interior.as_ref().map(|interior| interior.cell_id);
-    let room = scene.room_at(camera, blend.target);
+    let found = match (cell_id, point, graphs) {
+        (Some(cell_id), Some(point), Some(graphs)) => graphs.rooms_at(cell_id, point, &roots),
+        _ => PointRooms::Unavailable,
+    };
+    let (room, side) = match found {
+        PointRooms::Pending => {
+            // No cell is recorded, so the first answer of the graph applies without a blend.
+            let mut unread = RoomBlend::default();
+            unread.snap(None, None);
+            blend.set_if_neq(unread);
+            return;
+        }
+        PointRooms::Holding(holding) => {
+            let room = keep_or_first(&holding, blend.target);
+            (room, room.filter(|&id| scene.has_template(id)))
+        }
+        PointRooms::Unavailable => {
+            let room = scene.room_at(point, blend.target);
+            (room, room)
+        }
+    };
     // retail-default: not record data; a run without the real clock has no elapsed time.
     let delta = time.map_or(0.0, |time| time.delta_secs());
-    if blend.cell_id != cell_id {
-        blend.snap(cell_id, room);
-        return;
-    }
     let mut next = blend.clone();
-    next.step(room, delta);
-    if *blend != next {
-        *blend = next;
+    if next.cell_id == cell_id {
+        next.step(side, delta);
+    } else {
+        next.snap(cell_id, side);
     }
+    next.target = room;
+    blend.set_if_neq(next);
 }
 
 /// Applies sky modes 1 and 2 to the [`WorldSun`], `GlobalAmbientLight` and [`InteriorFog`]
@@ -3186,6 +3229,91 @@ mod tests {
         enter(&mut app, Some(ALVOR));
         assert_eq!(app.world().resource::<RoomBlend>().weight, 0.0);
         assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(65, 70, 80));
+    }
+
+    /// With a room graph, the graph names the rooms, at the camera plus its near distance
+    /// (RF-ROOM-002). Until the graph is read the cell's lighting applies, and the first answer
+    /// is no crossing. A room without a lighting template holds the camera with the cell's
+    /// lighting.
+    #[test]
+    fn the_room_graph_names_the_room_at_the_near_distance() {
+        use crate::room_culling::{Room, RoomGraph};
+        use crate::world::components::{CellRef, StreamedCellRoot};
+
+        const UNTEMPLATED: u32 = 5;
+        let center = Vec3::new(7936.0, -5015.0, -1900.0);
+        let room = |ref_id| Room::from_creation(ref_id, center.to_array(), [0.0; 3], [100.0; 3]);
+        let graph = |rooms| RoomGraph { rooms, ..default() };
+        let mut app = app(rule_catalog());
+        app.insert_resource(RoomCullingState::unread());
+        let sun = spawn_world_sun(&mut app);
+        // 10 units outside the box's face, looking in: the near point is 5 units inside.
+        let outside_face = creation_to_bevy(center) + Vec3::Z * 110.0;
+        let camera = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                RoomCullingNear::SKYRIM,
+                Transform::from_translation(outside_face),
+            ))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                StreamedCellRoot,
+                CellRef(BLEAK_FALLS),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        enter(&mut app, Some(BLEAK_FALLS));
+        app.update();
+        let cell_color = Color::srgb_u8(44, 47, 48);
+        let room_color = Color::srgb_u8(68, 79, 81);
+        assert_eq!(
+            sun_light(&app, sun).color,
+            cell_color,
+            "the graph is unread"
+        );
+
+        app.world_mut()
+            .resource_mut::<RoomCullingState>()
+            .insert_graph(BLEAK_FALLS, root, graph(vec![room(90_193)]));
+        app.update();
+        assert_eq!(sun_light(&app, sun).color, room_color, "at once");
+        assert_eq!(app.world().resource::<RoomBlend>().weight, 0.0);
+
+        // Turned away at the same eye, the near point is outside: a crossing, so a blend.
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .rotate_y(std::f32::consts::PI);
+        app.update();
+        let blend = app.world().resource::<RoomBlend>();
+        assert_eq!((blend.target, blend.current), (None, None));
+        assert!(blend.weight > 0.0);
+
+        // The first room in table order holds the camera, also without a template.
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .rotation = Quat::IDENTITY;
+        enter(&mut app, Some(ALVOR));
+        app.world_mut()
+            .resource_mut::<RoomCullingState>()
+            .insert_graph(
+                BLEAK_FALLS,
+                root,
+                graph(vec![room(UNTEMPLATED), room(90_193)]),
+            );
+        enter(&mut app, Some(BLEAK_FALLS));
+        app.update();
+        let blend = app.world().resource::<RoomBlend>();
+        assert_eq!(
+            (blend.target, blend.current),
+            (Some(UNTEMPLATED), None),
+            "the cell's lighting"
+        );
+        assert_eq!(sun_light(&app, sun).color, cell_color);
     }
 
     /// Retail takes the sky mode from the cell the player is in (RF-LIGHT-CPU-010), and an

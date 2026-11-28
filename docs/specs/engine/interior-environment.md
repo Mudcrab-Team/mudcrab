@@ -27,20 +27,25 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    `cell_lighting` table (an older pack) has no authored lighting at all, so nothing below applies
    and the built-in lights stay; this differs from an authored cell without XCLL. `xcll_size` is used only as "the
    cell has XCLL"; all 786 shipped interiors have 92 bytes.
-4. **Room templates** (RF-LIGHT-CPU-013). When the camera is inside a room marker box
-   (`room_bounds`, first match in `ref_id` order) whose LNAM template exists, that template
-   supplies the colour source (directional, DALC, fog colours) and the whole fog: near, far,
-   power and max (RF-LIGHT-CPU-023). The cell's inherit bits do not apply to a room, so a
-   template without a fog ramp gives a room without fog. Only the rotation stays the cell's.
-   Retail follows the current room through the portal system; Mudcrab uses the camera position
-   (RF-LIGHT-CPU-026), staying in the room it is in while the point is still inside it. A room
+4. **Room templates** (RF-LIGHT-CPU-013). When the camera's room has an LNAM template that exists,
+   that template supplies the colour source (directional, DALC, fog colours) and the whole fog:
+   near, far, power and max (RF-LIGHT-CPU-023). The cell's inherit bits do not apply to a room, so
+   a template without a fog ramp gives a room without fog. Only the rotation stays the cell's. The
+   room comes from the cell's portal graph, by the lookup the portal walk starts from, at the
+   camera plus its near distance along the view direction (RF-ROOM-002). An authored room group
+   answers as its master room. The camera stays in its room while that point is still inside it,
+   and else takes the first room in `ref_id` order that holds it (RF-LIGHT-CPU-026). While the
+   graph is read, the cell's own lighting applies, and the first answer applies with no blend.
+   Without a usable graph (no room tables, a failed read, or an authored group without a unique
+   master) the templated room boxes answer. SPEC-1 does not define the room choice, and no source
+   read here says which template a joined room takes, so the master's applies (unverified). A room
    change blends over `fRoomLightingTransitionDuration` = 3.0 s with `w = (3 - 2t) t^2`
    (RF-LIGHT-CPU-024): directional colour, the six DALC colours, both fog colours and fog near,
    far, power and max (RF-LIGHT-CPU-025). A room change while a blend runs waits for it to end. A
    cell change (a door) applies the new cell at once. A side with no fog ramp stands for retail's
    far clamp of 163,840, so fog fades in or out. Not blended: the key-light rotation (the cell's),
-   the light fade (reported only) and the room image space (`room_bounds` has no image-space
-   column yet). The record-to-extra-0x77 link is a medium-confidence name lead.
+   the light fade (reported only) and the room image space (`room_bounds` has no image-space column
+   yet). The record-to-extra-0x77 link is a medium-confidence name lead.
 5. **Key light**: the same `DirectionalLight` entity as the exterior sun (retail uses one light
    node, RF-LIGHT-CPU-011).
    - Colour `Color::srgb_u8(directional)`, the same conversion as the exterior sun.

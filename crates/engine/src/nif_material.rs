@@ -883,6 +883,14 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 self.material_values.as_deref(),
                 &context.path().path().to_string_lossy(),
             );
+            if values.is_none() {
+                warn_once!(
+                    "no NIF material values for {}: lit surfaces without them keep the clamped \
+                     glTF specular and draw no reflection (`converter derive-material-values` \
+                     writes them for an existing pack)",
+                    context.path().path().display()
+                );
+            }
             retail::apply(source, &standard, values, &self.textures, &mut material);
             if retail::empty_base_slot(source, &material) {
                 material.base_color_texture =

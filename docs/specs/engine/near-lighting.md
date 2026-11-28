@@ -140,7 +140,7 @@ changes the picture is unverified.
 | Snow rim and snow composite term are not drawn | STAND-IN(#435): retail snow shading terms |
 | Terrain LOD takes the plain near sum | STAND-IN(#946): LOD techniques excluded |
 | A short `XCLL` without fog power or max takes 1 | STAND-IN(#695): short cell data |
-| One exterior weather; no weather transition, flash, image-space modifier, override or room cross-fade | STAND-IN(#364): weather and image-space state |
+| One exterior weather; no weather transition, flash, image-space modifier, override or room image-space cross-fade | STAND-IN(#364): weather and image-space state |
 | Temporal anti-aliasing is not run: the tonemap writes the output | STAND-IN(#361): the identity step of SPEC-2 |
 | Depth of field, radial and full-screen blur, double vision, refraction, volumetric lighting, lens flares and screen-space reflection are not drawn | STAND-IN(#364): the other post effects |
 | `ClearAdaptedLight` and the menu pause timer never fire | STAND-IN(#361): the adaptation reset triggers |
