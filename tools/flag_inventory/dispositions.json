@@ -4270,28 +4270,32 @@
       "reason": "[HDR-R1 verified] COMMON.RecordHeader.bit7 (TES4 Localized respected; kFireOff unimplemented). No bug in implemented code: TES4 bit 7 (0x80, Localized) is respected, and kFireOff belongs to an unimplemented particle FX system (already system-not-implemented on PARW..PMIS/REFR.CommonLib)."
     },
     "COMMON.RecordHeader.bit8": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "fn write_links(conn: &Connection, edited_doors: Option<&HashSet<u32>>) -> Result<usize> {",
-          "path": "crates/converter/src/esm/doors.rs"
+          "anchor": "pub const REFERENCE_INACCESSIBLE: u32 = 0x100;",
+          "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "// Idle: E at a door starts a crossing.",
-          "path": "crates/engine/src/door_crossing.rs"
+          "anchor": "Some(flags) if flags & REFERENCE_INACCESSIBLE != 0 => {",
+          "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "reference_never_fades: row.get::<_, u32>(REFERENCE_ENABLE_START)?",
+          "anchor": "reference_flags: row.get(DOOR_REFERENCE_FLAGS_ALIAS)?,",
           "path": "crates/engine/src/world/database.rs"
         },
         {
           "anchor": "pub fn shadow_flagged(&self) -> bool {",
           "path": "crates/engine/src/lights.rs"
+        },
+        {
+          "anchor": "reference_never_fades: row.get::<_, u32>(REFERENCE_ENABLE_START)?",
+          "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "#1027",
+      "issue": "#1032",
       "owner": "Mudcrab maintainers",
-      "reason": "Signature-aliased bit 8 (0x100) includes Inaccessible on REFR[DOOR] (ignored in doors.rs/door_crossing.rs) and Doesn't Light Water on REFR[LIGH] (ignored in database.rs/lights.rs); Must Update Anims has no object-anim system."
+      "reason": "Signature-aliased bit 8 (0x100): Inaccessible on REFR[DOOR] is respected (doors.rs). Doesn't Light Water on REFR[LIGH] is still ignored (#1032, database.rs/lights.rs); Must Update Anims has no object-anim system."
     },
     "COMMON.RecordHeader.bit9": {
       "disposition": "partial",
@@ -5417,28 +5421,27 @@
       "reason": "Missing system: dynamic and impact decal projection. Converter keeps TXST.DODT (schema.json:819) and decodes IPCT.DODT flags at offset 29 (visual_extras.json:4022-4030) in records.data; exporter and engine never read DODT."
     },
     "DOOR.FNAM.automatic": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "\"signature\": \"FNAM\",",
-          "path": "crates/converter/src/records/schema.json"
-        },
-        {
-          "anchor": "fn write_links(conn: &Connection, edited_doors: Option<&HashSet<u32>>) -> Result<usize> {",
-          "path": "crates/converter/src/esm/doors.rs"
-        },
-        {
-          "anchor": "pub(crate) fn load_door(ref_id: u32, link: Option<&DoorLinkRow>) -> Option<LoadDoor> {",
+          "anchor": "pub const DOOR_FLAG_AUTOMATIC: u8 = 0x02;",
           "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "// Idle: E at a door starts a crossing.",
+          "anchor": "fn door_flags_from_record(record: &[u8]) -> Option<u8> {",
+          "path": "crates/engine/src/world/database.rs"
+        },
+        {
+          "anchor": "pub fn is_automatic(&self) -> bool {",
+          "path": "crates/engine/src/doors.rs"
+        },
+        {
+          "anchor": "fn automatic_door_touched<'a>(",
           "path": "crates/engine/src/door_crossing.rs"
         }
       ],
-      "issue": "#1039",
       "owner": "Mudcrab maintainers",
-      "reason": "Load-door crossing exists (doors.rs, door_crossing.rs), and schema.json:1645 decodes automatic (0x02), but esm/doors.rs never extracts DOOR.FNAM into door_links and door_crossing.rs:739 requires KeyCode::KeyE instead of auto-crossing on touch/approach."
+      "reason": "DOOR.FNAM bit 0x02 is read from the base DOOR record in records.data (no metadata rebuild) and carried on LoadDoor. door_crossing.rs starts the crossing when the player's capsule touches the door, with no E press, and suppresses the door just used and the door arrived at until the player steps clear (#1039)."
     },
     "DOOR.FNAM.bit0": {
       "disposition": "not-applicable",
@@ -5467,28 +5470,23 @@
       "reason": "Missing system: NPC AI combat search behavior. Converter decodes no_combat_search_open in schema.json:1649; engine has no AI combat search."
     },
     "DOOR.FNAM.hidden": {
-      "disposition": "dropped",
+      "disposition": "system-not-implemented",
       "evidence": [
         {
-          "anchor": "\"signature\": \"FNAM\",",
-          "path": "crates/converter/src/records/schema.json"
-        },
-        {
-          "anchor": "fn write_links(conn: &Connection, edited_doors: Option<&HashSet<u32>>) -> Result<usize> {",
-          "path": "crates/converter/src/esm/doors.rs"
-        },
-        {
-          "anchor": "pub(crate) fn load_door(ref_id: u32, link: Option<&DoorLinkRow>) -> Option<LoadDoor> {",
+          "anchor": "pub const DOOR_FLAG_HIDDEN: u8 = 0x04;",
           "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "// Idle: E at a door starts a crossing.",
-          "path": "crates/engine/src/door_crossing.rs"
+          "anchor": "fn door_flags_from_record(record: &[u8]) -> Option<u8> {",
+          "path": "crates/engine/src/world/database.rs"
+        },
+        {
+          "anchor": "pub fn is_hidden(&self) -> bool {",
+          "path": "crates/engine/src/doors.rs"
         }
       ],
-      "issue": "#1039",
       "owner": "Mudcrab maintainers",
-      "reason": "Load-door activation exists (door_crossing.rs:738-756) and schema.json:1646 decodes hidden (0x04), but esm/doors.rs never extracts DOOR.FNAM into door_links so hidden load doors remain directly activatable with KeyCode::KeyE."
+      "reason": "DOOR.FNAM bit 0x04 (Hidden, Creation Kit wiki: omits the door from the local map) is read from records.data and exposed via LoadDoor::is_hidden(), while local map UI rendering and door activation prompt UI do not exist in Mudcrab yet. Retail secret doors with 0x04 remain E-activatable (#1039)."
     },
     "DOOR.FNAM.minimal_use": {
       "disposition": "system-not-implemented",
@@ -33885,28 +33883,32 @@
       "reason": "Particle/addon campfire emitter toggling does not exist in Mudcrab."
     },
     "REFR.CommonLib.RecordHeader.bit8": {
-      "disposition": "dropped",
+      "disposition": "partial",
       "evidence": [
         {
-          "anchor": "fn write_links(conn: &Connection, edited_doors: Option<&HashSet<u32>>) -> Result<usize> {",
-          "path": "crates/converter/src/esm/doors.rs"
+          "anchor": "pub const REFERENCE_INACCESSIBLE: u32 = 0x100;",
+          "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "// Idle: E at a door starts a crossing.",
-          "path": "crates/engine/src/door_crossing.rs"
+          "anchor": "Some(flags) if flags & REFERENCE_INACCESSIBLE != 0 => {",
+          "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "reference_never_fades: row.get::<_, u32>(REFERENCE_ENABLE_START)?",
+          "anchor": "reference_flags: row.get(DOOR_REFERENCE_FLAGS_ALIAS)?,",
           "path": "crates/engine/src/world/database.rs"
         },
         {
           "anchor": "pub fn shadow_flagged(&self) -> bool {",
           "path": "crates/engine/src/lights.rs"
+        },
+        {
+          "anchor": "reference_never_fades: row.get::<_, u32>(REFERENCE_ENABLE_START)?",
+          "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "#1027",
+      "issue": "#1032",
       "owner": "Mudcrab maintainers",
-      "reason": "REFR bit 8 (0x100) is ignored for Inaccessible doors and Doesn't Light Water lights; pre-baked .bto LOD also ignores enable state."
+      "reason": "REFR bit 8 (0x100): Inaccessible on REFR[DOOR] is respected (doors.rs). Doesn't Light Water on REFR[LIGH] is still ignored (#1032); pre-baked .bto LOD also ignores enable state."
     },
     "REFR.CommonLib.RecordHeader.bit9": {
       "disposition": "system-not-implemented",
@@ -34133,28 +34135,23 @@
       "reason": "Local map UI rendering does not exist in Mudcrab."
     },
     "REFR.DOOR.RecordHeader.bit8": {
-      "disposition": "dropped",
+      "disposition": "respected",
       "evidence": [
         {
-          "anchor": "fn write_links(conn: &Connection, edited_doors: Option<&HashSet<u32>>) -> Result<usize> {",
-          "path": "crates/converter/src/esm/doors.rs"
+          "anchor": "pub const REFERENCE_INACCESSIBLE: u32 = 0x100;",
+          "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "// Idle: E at a door starts a crossing.",
-          "path": "crates/engine/src/door_crossing.rs"
+          "anchor": "Some(flags) if flags & REFERENCE_INACCESSIBLE != 0 => {",
+          "path": "crates/engine/src/doors.rs"
         },
         {
-          "anchor": "\"INSERT OR REPLACE INTO \\\"references\\\"(id, cell_id, worldspace_id, base_form_id, is_exterior, pos_x, pos_y, pos_z, local_x, local_y, rot_x, rot_y, rot_z, scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, emittance_id, data, radius_status)",
-          "path": "crates/converter/src/esm/exporter.rs"
-        },
-        {
-          "anchor": "header_flags: row.get(start)?,",
+          "anchor": "reference_flags: row.get(DOOR_REFERENCE_FLAGS_ALIAS)?,",
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "issue": "#1027",
       "owner": "Mudcrab maintainers",
-      "reason": "REFR[DOOR] Inaccessible (0x100) is ignored by door_links extraction and door_crossing activation, allowing player crossing of inaccessible load doors."
+      "reason": "REFR[DOOR] Inaccessible (0x100) is read from references.header_flags into the door_links row, and doors::load_door gives an inaccessible reference no LoadDoor, so the player cannot activate or cross it (#1027). An old database without header_flags leaves the door usable and logs once."
     },
     "REFR.FNAM.map.can_travel_to": {
       "disposition": "system-not-implemented",
