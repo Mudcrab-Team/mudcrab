@@ -310,18 +310,20 @@ mod tests {
         let mut app = app();
         let height = add(&mut app, image(1, false, TextureFormat::Rgba8UnormSrgb));
         let plain = add(&mut app, image(1, false, TextureFormat::Rgba8UnormSrgb));
-        for (map, retail_surface) in [
+        // The handles keep both materials alive.
+        let _materials = [
             (height.clone(), Some(bevy::pbr::RetailSurface::MATTE)),
             (plain.clone(), None),
-        ] {
+        ]
+        .map(|(map, retail_surface)| {
             app.world_mut()
                 .resource_mut::<Assets<StandardMaterial>>()
                 .add(StandardMaterial {
                     depth_map: Some(map),
                     retail_surface,
                     ..default()
-                });
-        }
+                })
+        });
         app.update();
         app.update();
         let images = app.world().resource::<Assets<Image>>();

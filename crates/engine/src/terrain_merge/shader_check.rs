@@ -670,14 +670,36 @@ fn mask_slots(
         })
         .unwrap();
     assert!(apply_index < store_index && store_index < lighting_index);
-    // The mask must use the same denominator as colour, including missing-normal layers.
+    // The mask must use the same sum as colour, including missing-normal layers: the colour
+    // divides by the blend divisor of the sum the mask takes, which is that sum under `mudcrab`.
+    let divisor = body
+        .iter()
+        .find_map(|(statement, _)| match statement {
+            Statement::Call {
+                function,
+                arguments: blend,
+                result: Some(divisor),
+            } if module.functions[*function]
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("terrain_blend_divisor")) =>
+            {
+                assert_eq!(
+                    scalar_access_path(fragment, blend[0]),
+                    scalar_access_path(fragment, arguments[2])
+                );
+                Some(*divisor)
+            }
+            _ => None,
+        })
+        .expect("fragment must take the blend divisor");
     assert!(
         fragment
             .expressions
             .iter()
             .any(|(_, expression)| matches!(expression,
                 Expression::Binary { op: naga::BinaryOperator::Divide, right, .. }
-            if scalar_access_path(fragment, *right) == scalar_access_path(fragment, arguments[2])
+            if *right == divisor
             ))
     );
     let (mask_root, path) = access_path(fragment, arguments[1]);
