@@ -162,6 +162,7 @@
     "crates/engine/src/world/environment.rs::prepare::4ec7c53222c8a758::1": null,
     "crates/engine/src/world/environment.rs::prepare::6fd138bc80a6bced::1": "0ce1f3dd8552a42c",
     "crates/engine/src/world/environment.rs::prepare::f6dc4be1049bc192::1": "dfd2a083a31e4451",
+    "crates/engine/src/world/environment.rs::prepare::fbb4d9e7039b7d1c::1": "95f513c40a0aa004",
     "crates/engine/src/world/imagespace.rs::prepare::6688130150955807::1": "21b8190fd7a3b16a",
     "crates/engine/src/world/imagespace.rs::prepare::e00b22ed53d96ea7::1": "a8f41b4a22b0b188",
     "crates/engine/src/world/imagespace.rs::query_row::70e9dce6c30a183a::1": "1673d988818bf20a"

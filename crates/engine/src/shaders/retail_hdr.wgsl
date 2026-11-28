@@ -20,6 +20,7 @@ struct RetailHdr {
     bloom: vec4<f32>,
     // The blur weights of radius k: entry u + 7 holds the weight of tap u, in x. Zero beyond k.
     weights: array<vec4<f32>, 15>,
+    output: vec4<u32>,
 }
 
 // The luminance weights of the shipped image-space shaders (NEEDS 18).

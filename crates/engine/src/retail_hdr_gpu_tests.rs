@@ -12,7 +12,7 @@
 use crate::{
     retail_hdr::{HdrBlock, RetailHdr, RetailHdrConfig, adapt_rates, adapt_step},
     retail_hdr_chain::{ChainTarget, PassKind, bloom_size, bloom_taps, chain_plan, chain_sizes},
-    retail_hdr_render::{CHAIN_FORMAT, ChainGpu, encode_chain},
+    retail_hdr_render::{ChainGpu, WIDE_HDR_FORMAT, encode_chain},
     shader_validation::compose,
 };
 use bevy::render::render_resource::encase::UniformBuffer;
@@ -107,7 +107,7 @@ fn average16(source: &Plane, u: f32, v: f32, linear: bool) -> f32 {
             } else {
                 source.nearest(at.0, at.1)
             };
-            sum += luminance(sample) / 16.0;
+            sum += sample[0] / 16.0;
         }
     }
     sum
@@ -119,15 +119,52 @@ struct Frame {
     bloom: Plane,
 }
 
-fn cpu_frame(scene: &Plane, previous: Option<&Plane>, hdr: &RetailHdr) -> Frame {
+#[derive(Clone, Copy)]
+enum ChainPrecision {
+    Half,
+    PackedNearest,
+    PackedTruncated,
+}
+
+impl ChainPrecision {
+    fn store(self, size: (u32, u32), value: impl Fn(f32, f32) -> Colour) -> Plane {
+        Plane::from_fn(size, |u, v| {
+            let colour = value(u, v);
+            match self {
+                Self::Half => colour,
+                Self::PackedNearest | Self::PackedTruncated => {
+                    // These fixtures use finite nonnegative values within the packed range.
+                    std::array::from_fn(|channel| {
+                        let value = colour[channel];
+                        let exponent = ((value.to_bits() >> 23) & 0xff) as i32 - 127;
+                        let mantissa_bits = if channel == 2 { 5 } else { 6 };
+                        let step = 2.0_f32.powi(exponent.max(-14) - mantissa_bits);
+                        let units = value / step;
+                        step * match self {
+                            Self::PackedNearest => units.round_ties_even(),
+                            _ => units.floor(),
+                        }
+                    })
+                }
+            }
+        })
+    }
+}
+
+fn cpu_frame(
+    scene: &Plane,
+    previous: Option<&Plane>,
+    hdr: &RetailHdr,
+    precision: ChainPrecision,
+) -> Frame {
     let sizes = chain_sizes(scene.width, scene.height, true);
-    let first = Plane::from_fn(sizes[0], |u, v| average4(scene, u, v));
-    let second = Plane::from_fn(sizes[1], |u, v| {
+    let first = precision.store(sizes[0], |u, v| average4(scene, u, v));
+    let second = precision.store(sizes[1], |u, v| {
         let l = luminance(average4(&first, u, v));
         [l, l, l]
     });
     assert_eq!(sizes.len(), 3, "the test scene has one 16-tap step");
-    let pair = Plane::from_fn(sizes[2], |u, v| match previous {
+    let pair = precision.store(sizes[2], |u, v| match previous {
         None => {
             let l = average16(&second, u, v, false);
             [l, l, l]
@@ -146,7 +183,7 @@ fn cpu_frame(scene: &Plane, previous: Option<&Plane>, hdr: &RetailHdr) -> Frame 
     let weights = bloom_taps(RADIUS);
     let (threshold, scale, k_r) = (hdr.bloom.x, hdr.bloom.y, hdr.bloom.w);
     let k = RADIUS as i32;
-    let swap = Plane::from_fn(size, |u, v| {
+    let swap = precision.store(size, |u, v| {
         let mut sum = [0.0; 3];
         for tap in -k..=k {
             let sample = first.nearest(u, v + tap as f32 / size.1 as f32);
@@ -157,7 +194,7 @@ fn cpu_frame(scene: &Plane, previous: Option<&Plane>, hdr: &RetailHdr) -> Frame 
         }
         sum.map(|c| k_r * scale * c)
     });
-    let bloom = Plane::from_fn(size, |u, v| {
+    let bloom = precision.store(size, |u, v| {
         let mut sum = [0.0; 3];
         for tap in -k..=k {
             let sample = swap.nearest(u + tap as f32 / swap.width as f32, v);
@@ -169,14 +206,6 @@ fn cpu_frame(scene: &Plane, previous: Option<&Plane>, hdr: &RetailHdr) -> Frame 
         sum
     });
     Frame { pair, bloom }
-}
-
-fn srgb_to_linear(value: f32) -> f32 {
-    if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    }
 }
 
 /// IEEE binary32 to binary16 with rounding to nearest, for the normal range of the test values.
@@ -213,8 +242,13 @@ fn half_to_f32(half: u16) -> f32 {
     }
 }
 
-fn module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
-    let naga = compose(source, label, HashMap::new()).unwrap_or_else(|error| panic!("{error}"));
+fn module(
+    device: &wgpu::Device,
+    label: &str,
+    source: &str,
+    definitions: HashMap<String, naga_oil::compose::ShaderDefValue>,
+) -> wgpu::ShaderModule {
+    let naga = compose(source, label, definitions).unwrap_or_else(|error| panic!("{error}"));
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Naga(Cow::Owned(naga)),
@@ -289,10 +323,16 @@ fn read_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     source: &wgpu::Texture,
-    half: bool,
 ) -> Vec<[f32; 4]> {
     let (width, height) = (source.width(), source.height());
-    let bytes_per_texel = if half { 8 } else { 16 };
+    let format = source.format();
+    let bytes_per_texel = match format {
+        wgpu::TextureFormat::Rgba16Float => 8,
+        wgpu::TextureFormat::Rg11b10Ufloat
+        | wgpu::TextureFormat::Rgba8Unorm
+        | wgpu::TextureFormat::Rgba8UnormSrgb => 4,
+        _ => panic!("unsupported HDR readback format: {format:?}"),
+    };
     let row = (width * bytes_per_texel).div_ceil(256) * 256;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -332,13 +372,23 @@ fn read_texture(
     for y in 0..height {
         for x in 0..width {
             let start = (y * row + x * bytes_per_texel) as usize;
+            if format == wgpu::TextureFormat::Rg11b10Ufloat {
+                let packed = u32::from_le_bytes(data[start..start + 4].try_into().unwrap());
+                // The packed channels share the half-float exponent. Restore the mantissa bits.
+                texels.push([
+                    half_to_f32(((packed & 0x7ff) << 4) as u16),
+                    half_to_f32((((packed >> 11) & 0x7ff) << 4) as u16),
+                    half_to_f32(((packed >> 22) << 5) as u16),
+                    1.0,
+                ]);
+                continue;
+            }
             texels.push(std::array::from_fn(|i| {
-                if half {
+                if bytes_per_texel == 8 {
                     let at = start + i * 2;
                     half_to_f32(u16::from_le_bytes([data[at], data[at + 1]]))
                 } else {
-                    let at = start + i * 4;
-                    f32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+                    f32::from(data[start + i]) / 255.0
                 }
             }));
         }
@@ -367,6 +417,17 @@ fn scene_plane(gain: f32) -> Plane {
 #[test]
 #[ignore = "needs a GPU adapter; run with --ignored"]
 fn retail_hdr_gpu_matches_the_cpu_reference() {
+    verify_chain(WIDE_HDR_FORMAT);
+}
+
+#[test]
+#[ignore = "requires a GPU with renderable packed HDR"]
+fn retail_hdr_packed_gpu_matches_the_cpu_reference() {
+    verify_chain(wgpu::TextureFormat::Rg11b10Ufloat);
+}
+
+fn verify_chain(format: wgpu::TextureFormat) {
+    let wide = format == WIDE_HDR_FORMAT;
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -377,7 +438,11 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
     .expect("a GPU adapter");
     let (device, queue) = bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("retail_hdr_test"),
-        required_features: wgpu::Features::empty(),
+        required_features: if wide {
+            wgpu::Features::empty()
+        } else {
+            wgpu::Features::RG11B10UFLOAT_RENDERABLE
+        },
         required_limits: adapter.limits(),
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
         memory_hints: wgpu::MemoryHints::Performance,
@@ -404,6 +469,8 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
     };
     let config = RetailHdrConfig {
         gamma: 2.0,
+        // A packed request must not change wide stores on a device without packed support.
+        use_64_bit_hdr_targets: false,
         ..RetailHdrConfig::default()
     };
     let t = 1.0 / 30.0;
@@ -427,27 +494,34 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
     let scene = texture(
         &device,
         (SIZE, SIZE),
-        CHAIN_FORMAT,
+        WIDE_HDR_FORMAT,
         Usage::TEXTURE_BINDING | Usage::COPY_DST,
     );
     let sizes = chain_sizes(SIZE, SIZE, true);
     let levels: Vec<_> = sizes[..sizes.len() - 1]
         .iter()
-        .map(|&size| texture(&device, size, CHAIN_FORMAT, chain_usage))
+        .map(|&size| texture(&device, size, format, chain_usage | Usage::COPY_DST))
         .collect();
     let pair_size = sizes[sizes.len() - 1];
     let adapted = [
-        texture(&device, pair_size, CHAIN_FORMAT, chain_usage),
-        texture(&device, pair_size, CHAIN_FORMAT, chain_usage),
+        texture(&device, pair_size, format, chain_usage),
+        texture(&device, pair_size, format, chain_usage),
     ];
-    let swap = texture(&device, bloom_size(SIZE, SIZE), CHAIN_FORMAT, chain_usage);
-    let bloom = texture(&device, bloom_size(SIZE, SIZE), CHAIN_FORMAT, chain_usage);
+    let swap = texture(&device, bloom_size(SIZE, SIZE), format, chain_usage);
+    let bloom = texture(&device, bloom_size(SIZE, SIZE), format, chain_usage);
+    let display_target = texture(
+        &device,
+        (SIZE, SIZE),
+        wgpu::TextureFormat::Rgba8Unorm,
+        chain_usage,
+    );
     let target = texture(
         &device,
         (SIZE, SIZE),
-        wgpu::TextureFormat::Rgba32Float,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
         Usage::RENDER_ATTACHMENT | Usage::COPY_SRC,
     );
+    let presentation = texture(&device, (SIZE, SIZE), WIDE_HDR_FORMAT, chain_usage);
     let linear = device.create_sampler(&wgpu::SamplerDescriptor {
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
@@ -528,25 +602,53 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
         &device,
         "retail_hdr_chain.wgsl",
         include_str!("shaders/retail_hdr_chain.wgsl"),
+        if wide {
+            HashMap::new()
+        } else {
+            HashMap::from([(
+                "RETAIL_HDR_PACKED".into(),
+                naga_oil::compose::ShaderDefValue::Bool(true),
+            )])
+        },
     );
     let tonemap_module = module(
         &device,
         "retail_hdr_tonemap.wgsl",
         include_str!("shaders/retail_hdr_tonemap.wgsl"),
+        HashMap::new(),
     );
-    let chain_pipelines = PassKind::ALL.map(|kind| {
-        pipeline(
-            &chain_module,
-            kind.entry_point(),
-            &chain_layout,
-            CHAIN_FORMAT,
-        )
-    });
+    let chain_pipelines = PassKind::ALL
+        .map(|kind| pipeline(&chain_module, kind.entry_point(), &chain_layout, format));
     let tonemap = pipeline(
         &tonemap_module,
-        "fragment",
+        "display_fragment",
         &tonemap_layout,
-        wgpu::TextureFormat::Rgba32Float,
+        display_target.0.format(),
+    );
+    let hazard_target = texture(&device, (SIZE, SIZE), WIDE_HDR_FORMAT, chain_usage);
+    let hazard_tonemap = pipeline(
+        &tonemap_module,
+        "display_fragment",
+        &tonemap_layout,
+        hazard_target.0.format(),
+    );
+    let present = pipeline(
+        &tonemap_module,
+        "present_fragment",
+        &tonemap_layout,
+        presentation.0.format(),
+    );
+    let blit = pipeline(
+        &tonemap_module,
+        "copy_display_fragment",
+        &tonemap_layout,
+        target.0.format(),
+    );
+    let copy = pipeline(
+        &tonemap_module,
+        "copy_display_fragment",
+        &tonemap_layout,
+        display_target.0.format(),
     );
     let chain_gpu = ChainGpu {
         layout: &chain_layout,
@@ -587,35 +689,64 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
         encode_chain(&device, &mut encoder, &chain_gpu, &plan, view);
         queue.submit([encoder.finish()]);
     };
-    let compare = |what: &str, actual: &[[f32; 4]], expected: &Plane, channels: usize| {
-        assert_eq!(actual.len(), expected.texels.len(), "{what} size");
-        for (index, (gpu, cpu)) in actual.iter().zip(&expected.texels).enumerate() {
-            for channel in 0..channels {
-                let tolerance = 3.0e-3 * cpu[channel].abs().max(1.0);
-                assert!(
-                    (gpu[channel] - cpu[channel]).abs() <= tolerance,
-                    "{what} texel {index} channel {channel}: GPU {} vs CPU {}",
-                    gpu[channel],
-                    cpu[channel]
-                );
+    let compare =
+        |what: &str, actual: &[[f32; 4]], lower: &Plane, upper: &Plane, channels: usize| {
+            assert_eq!(actual.len(), lower.texels.len(), "{what} size");
+            assert_eq!(actual.len(), upper.texels.len(), "{what} size");
+            for (index, gpu) in actual.iter().enumerate() {
+                let low = lower.texels[index];
+                let high = upper.texels[index];
+                for channel in 0..channels {
+                    // Allow shader arithmetic error in addition to the per-store precision.
+                    let tolerance = 3.0e-3 * high[channel].abs().max(1.0);
+                    assert!(
+                        (low[channel] - tolerance..=high[channel] + tolerance)
+                            .contains(&gpu[channel]),
+                        "{what} texel {index} channel {channel}: GPU {} vs CPU {}..={}",
+                        gpu[channel],
+                        low[channel],
+                        high[channel]
+                    );
+                }
             }
-        }
+        };
+    let (lower, upper) = if wide {
+        (ChainPrecision::Half, ChainPrecision::Half)
+    } else {
+        // Packed stores may truncate or round. Propagate both through the positive-weight passes.
+        (
+            ChainPrecision::PackedTruncated,
+            ChainPrecision::PackedNearest,
+        )
     };
+
+    let store_probe = Plane::from_fn((SIZE, SIZE), |_, _| [-1.0, 0.0, 64992.0]);
+    upload(&store_probe);
+    run(false, 0);
+    let stored = read_texture(&device, &queue, &levels[0].0);
+    let expected = if wide {
+        [-1.0, 0.0, 64992.0]
+    } else {
+        [0.0, 0.0, 64512.0]
+    };
+    assert!(stored.iter().all(|pixel| pixel[..3] == expected));
 
     // Frame 1: no adapted pair, so the last step becomes the pair (A.x = A.y = n).
     let first_scene = scene_plane(1.0);
     upload(&first_scene);
     run(false, 0);
-    let first = cpu_frame(&first_scene, None, &hdr);
-    let pair = read_texture(&device, &queue, &adapted[1].0, true);
-    compare("first pair", &pair, &first.pair, 3);
+    let first_low = cpu_frame(&first_scene, None, &hdr, lower);
+    let first_high = cpu_frame(&first_scene, None, &hdr, upper);
+    let pair = read_texture(&device, &queue, &adapted[1].0);
+    compare("first pair", &pair, &first_low.pair, &first_high.pair, 3);
     for texel in &pair {
         assert_eq!(texel[0], texel[1], "the first-frame ratio is exactly 1");
     }
     compare(
         "first bloom",
-        &read_texture(&device, &queue, &bloom.0, true),
-        &first.bloom,
+        &read_texture(&device, &queue, &bloom.0),
+        &first_low.bloom,
+        &first_high.bloom,
         3,
     );
 
@@ -623,71 +754,162 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
     let second_scene = scene_plane(0.4);
     upload(&second_scene);
     run(true, 1);
-    let second = cpu_frame(&second_scene, Some(&first.pair), &hdr);
-    let pair = read_texture(&device, &queue, &adapted[0].0, true);
-    compare("adapted pair", &pair, &second.pair, 2);
+    let second_low = cpu_frame(&second_scene, Some(&first_low.pair), &hdr, lower);
+    let second_high = cpu_frame(&second_scene, Some(&first_high.pair), &hdr, upper);
+    let pair = read_texture(&device, &queue, &adapted[0].0);
+    compare(
+        "adapted pair",
+        &pair,
+        &second_low.pair,
+        &second_high.pair,
+        2,
+    );
     assert!(
         pair.iter()
             .any(|texel| (texel[0] - texel[1]).abs() > 1.0e-3),
         "the two channels adapt at different rates"
     );
     assert!(
-        second.bloom.texels.iter().any(|c| c[0] > 0.01),
+        second_low.bloom.texels.iter().any(|c| c[0] > 0.01),
         "the test scene blooms"
     );
 
-    // The tonemap of frame 2.
-    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("tonemap"),
-        layout: &tonemap_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&scene.1),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(&bloom.1),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&adapted[0].1),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Sampler(&linear),
-            },
-        ],
-    });
+    compare(
+        "frame-two bloom",
+        &read_texture(&device, &queue, &bloom.0),
+        &second_low.bloom,
+        &second_high.bloom,
+        3,
+    );
+
+    // Inject an invalid measurement after the upstream finite-input guards.
+    let plan = chain_plan(sizes.len(), true, 0);
+    let adapt = plan
+        .iter()
+        .find(|step| step.kind == PassKind::Adapt)
+        .expect("adapt draw");
+    let ChainTarget::Level(source) = adapt.source else {
+        panic!("the adapt draw reads the preceding luminance level");
+    };
+    let source = &levels[source].0;
+    let invalid_texel = if wide {
+        [0x00, 0x7e, 0, 0, 0, 0, 0, 0].as_slice()
+    } else {
+        [0xc1, 0x07, 0, 0].as_slice()
+    };
+    let pattern = invalid_texel.repeat((source.width() * source.height()) as usize);
+    queue.write_texture(
+        source.as_image_copy(),
+        &pattern,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(source.width() * if wide { 8 } else { 4 }),
+            rows_per_image: Some(source.height()),
+        },
+        extent((source.width(), source.height())),
+    );
     let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("tonemap"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target.1,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&tonemap);
-        pass.set_bind_group(0, &group, &[0]);
-        pass.draw(0..3, 0..1);
-    }
+    encode_chain(
+        &device,
+        &mut encoder,
+        &chain_gpu,
+        std::slice::from_ref(adapt),
+        view,
+    );
     queue.submit([encoder.finish()]);
-    let pixels = read_texture(&device, &queue, &target.0, false);
+    for (held, old) in read_texture(&device, &queue, &adapted[1].0)
+        .iter()
+        .zip(&pair)
+    {
+        assert_eq!(
+            held[..2],
+            old[..2],
+            "an invalid measurement holds both channels"
+        );
+    }
+
+    // Use the same display store and transfer as the render-world shaders.
+    let output = |pair: usize, first_pass: &wgpu::RenderPipeline, float: bool| {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let passes = [
+            (first_pass, &scene.1, &display_target.1),
+            (&present, &display_target.1, &presentation.1),
+            (&blit, &presentation.1, &target.1),
+        ];
+        let hazard_pass = [(first_pass, &scene.1, &hazard_target.1)];
+        let passes: &[_] = if float { &hazard_pass } else { &passes };
+        for &(pipeline, source, destination) in passes {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("retail_hdr_test_output"),
+                layout: &tonemap_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&bloom.1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&adapted[pair].1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&linear),
+                    },
+                ],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("retail_hdr_test_output"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: destination,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &group, &[0]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit([encoder.finish()]);
+        read_texture(
+            &device,
+            &queue,
+            if float { &hazard_target.0 } else { &target.0 },
+        )
+    };
+    let pixels = output(0, &tonemap, false);
+    assert_eq!(pixels, read_texture(&device, &queue, &display_target.0));
+    let copied = output(0, &copy, false);
+    for (pixel, scene) in copied.iter().zip(&second_scene.texels) {
+        for channel in 0..3 {
+            let expected = (scene[channel].clamp(0.0, 1.0) * 255.0).round() / 255.0;
+            assert!((pixel[channel] - expected).abs() <= f32::EPSILON);
+        }
+    }
     // The GPU pair, which the tonemap samples.
+    let gpu_bloom = Plane {
+        width: bloom.0.width(),
+        height: bloom.0.height(),
+        texels: read_texture(&device, &queue, &bloom.0)
+            .iter()
+            .map(|t| [t[0], t[1], t[2]])
+            .collect(),
+    };
     let gpu_pair = Plane {
         width: pair_size.0,
         height: pair_size.1,
@@ -703,15 +925,16 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
             let display = hdr.display_value(
                 second_scene.texel(i64::from(x), i64::from(y)),
                 [adapted[0], adapted[1]],
-                second.bloom.linear(u, v),
+                gpu_bloom.linear(u, v),
             );
             let gpu = pixels[(y * SIZE + x) as usize];
             for channel in 0..3 {
-                let expected = srgb_to_linear(display[channel]);
+                let expected = (display[channel].clamp(0.0, 1.0) * 255.0).round();
+                let actual = (gpu[channel] * 255.0).round();
+                // Shader arithmetic and texture filtering can move the result across a byte boundary.
                 assert!(
-                    (gpu[channel] - expected).abs() < 4.0e-3,
-                    "pixel ({x}, {y}) channel {channel}: GPU {} vs CPU {expected}",
-                    gpu[channel]
+                    (actual - expected).abs() <= 1.0,
+                    "pixel ({x}, {y}) channel {channel}: GPU byte {actual} vs CPU byte {expected}",
                 );
             }
         }
@@ -744,58 +967,7 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
             extent((SIZE, SIZE)),
         );
     };
-    let tonemapped = |pair: usize| {
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tonemap"),
-            layout: &tonemap_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&scene.1),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&bloom.1),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&adapted[pair].1),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&linear),
-                },
-            ],
-        });
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("tonemap"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.1,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&tonemap);
-            pass.set_bind_group(0, &group, &[0]);
-            pass.draw(0..3, 0..1);
-        }
-        queue.submit([encoder.finish()]);
-        read_texture(&device, &queue, &target.0, false)
-    };
+    let tonemapped = |pair| output(pair, &tonemap, false);
     // The first pair of the run is made from a NaN frame, then the pair adapts through the rest.
     let hazards = [
         NOT_A_NUMBER,
@@ -820,14 +992,14 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
         run(frame != 0, current);
         let next = 1 - current;
         for (what, texture) in [("adapted pair", &adapted[next].0), ("bloom", &bloom.0)] {
-            for texel in read_texture(&device, &queue, texture, true) {
+            for texel in read_texture(&device, &queue, texture) {
                 assert!(
                     texel.iter().all(|value| value.is_finite()),
                     "frame {frame}, input {hazard:#06x}: {what} holds {texel:?}"
                 );
             }
         }
-        for pixel in tonemapped(next) {
+        for pixel in output(next, &hazard_tonemap, true) {
             assert!(
                 pixel[..3].iter().all(|value| (0.0..=1.0).contains(value)),
                 "frame {frame}, input {hazard:#06x}: the screen holds {pixel:?}"
@@ -863,7 +1035,7 @@ fn retail_hdr_gpu_matches_the_cpu_reference() {
     assert!(
         last.iter().any(|pixel| (pixel[1] - settled).abs() > 0.05),
         "the recovered frame is solid, mean {settled}; pair {:?}",
-        read_texture(&device, &queue, &adapted[current].0, true)
+        read_texture(&device, &queue, &adapted[current].0)
     );
 
     let error = bevy::tasks::block_on(validation.pop());

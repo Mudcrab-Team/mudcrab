@@ -6,6 +6,8 @@
 pub const MAX_FRAME_SECONDS: f32 = 1.0 / 6.0;
 /// The history of the timer, `iUnstableFrameTimeHistorySize` (compiled default 8).
 const HISTORY: usize = 8;
+/// STAND-IN(#1114): bound frame-history storage and per-frame scan work.
+pub(crate) const MAX_FRAME_TIME_HISTORY: usize = 256;
 /// The value the timer's history starts with (NEEDS 27).
 const HISTORY_PREFILL: f32 = 0.016;
 /// The cap on the largest sample that the trimmed mean removes (NEEDS 27).
@@ -14,37 +16,107 @@ const REMOVED_MAXIMUM_CAP: f32 = 0.05;
 /// The smoothed real frame time that drives the adaptation (`T`): with the last 8 frame times,
 /// `(sum - min(largest, 0.05) - smallest) / 6`, so a spike above 0.05 s is only partly removed.
 /// A measured time above 1/6 s counts as 1/6 s. The global time multiplier is 1.0 in the image.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FrameTimer {
-    history: [f32; HISTORY],
+    history: Vec<f32>,
+    capacity: usize,
     next: usize,
 }
 
 impl Default for FrameTimer {
     fn default() -> Self {
         Self {
-            history: [HISTORY_PREFILL; HISTORY],
+            history: Vec::new(),
+            capacity: HISTORY,
             next: 0,
         }
     }
 }
 
 impl FrameTimer {
+    pub fn adaptation_time(
+        &mut self,
+        seconds: f32,
+        multiplier: f32,
+        paused: bool,
+        config: &super::retail_hdr::RetailHdrConfig,
+    ) -> f32 {
+        let capacity = config
+            .frame_time_history_size
+            .clamp(3, MAX_FRAME_TIME_HISTORY);
+        if self.capacity != capacity {
+            self.history.clear();
+            self.capacity = capacity;
+            self.next = 0;
+        }
+        self.record(seconds);
+        if paused {
+            return config.menu_adapt_timer;
+        }
+        let step = match config.fps_clamp {
+            1..=199 => 1.0 / f32::from(config.fps_clamp),
+            _ if config.compensate_unstable_frame_time => self.trimmed_mean(),
+            _ => frame_sample(seconds),
+        };
+        step * multiplier
+    }
+
     /// Records the time of the frame that just ended and returns `T`. A value that is not finite
     /// or is negative counts as 0.
+    #[cfg(test)]
     pub fn push(&mut self, seconds: f32) -> f32 {
-        let seconds = if seconds.is_finite() {
-            seconds.clamp(0.0, MAX_FRAME_SECONDS)
+        self.record(seconds);
+        self.trimmed_mean()
+    }
+
+    fn record(&mut self, seconds: f32) {
+        let seconds = frame_sample(seconds);
+        if self.next == self.history.len() {
+            self.history.push(seconds);
         } else {
-            0.0
+            self.history[self.next] = seconds;
+        }
+        self.next = (self.next + 1) % self.capacity;
+    }
+
+    fn trimmed_mean(&self) -> f32 {
+        let missing = self.capacity - self.history.len();
+        let mut largest = if missing > 0 { HISTORY_PREFILL } else { 0.0 };
+        let mut smallest = if missing > 0 {
+            HISTORY_PREFILL
+        } else {
+            f32::INFINITY
         };
-        self.history[self.next] = seconds;
-        self.next = (self.next + 1) % HISTORY;
-        let sum: f32 = self.history.iter().sum();
-        let largest = self.history.iter().copied().fold(0.0_f32, f32::max);
-        let smallest = self.history.iter().copied().fold(f32::INFINITY, f32::min);
-        // Six of the eight samples remain.
-        ((sum - largest.min(REMOVED_MAXIMUM_CAP) - smallest) / 6.0).max(0.0)
+        let mut sum = f64::from(HISTORY_PREFILL) * count_as_f64(missing);
+        for &sample in &self.history {
+            largest = largest.max(sample);
+            smallest = smallest.min(sample);
+            sum += f64::from(sample);
+        }
+        let mean = (sum - f64::from(largest.min(REMOVED_MAXIMUM_CAP)) - f64::from(smallest))
+            / count_as_f64(self.capacity - 2);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the mean is bounded by the sample range"
+        )]
+        let mean = mean as f32;
+        mean.max(0.0)
+    }
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "sample counts are used for a floating-point mean"
+)]
+fn count_as_f64(count: usize) -> f64 {
+    count as f64
+}
+
+fn frame_sample(seconds: f32) -> f32 {
+    if seconds.is_finite() {
+        seconds.clamp(0.0, MAX_FRAME_SECONDS)
+    } else {
+        0.0
     }
 }
 
@@ -179,16 +251,18 @@ pub enum PassKind {
     Luminance4,
     Luminance16,
     Adapt,
+    AdaptColour,
     BrightBlurVertical,
     BlurHorizontal,
 }
 
 impl PassKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Downsample4,
         Self::Luminance4,
         Self::Luminance16,
         Self::Adapt,
+        Self::AdaptColour,
         Self::BrightBlurVertical,
         Self::BlurHorizontal,
     ];
@@ -200,8 +274,9 @@ impl PassKind {
             Self::Luminance4 => 1,
             Self::Luminance16 => 2,
             Self::Adapt => 3,
-            Self::BrightBlurVertical => 4,
-            Self::BlurHorizontal => 5,
+            Self::AdaptColour => 4,
+            Self::BrightBlurVertical => 5,
+            Self::BlurHorizontal => 6,
         }
     }
 
@@ -211,6 +286,7 @@ impl PassKind {
             Self::Luminance4 => "luminance4",
             Self::Luminance16 => "luminance16",
             Self::Adapt => "adapt",
+            Self::AdaptColour => "adapt_colour",
             Self::BrightBlurVertical => "bright_blur_vertical",
             Self::BlurHorizontal => "blur_horizontal",
         }
@@ -260,12 +336,11 @@ pub fn chain_plan(levels: usize, adapted_valid: bool, current: usize) -> Vec<Cha
             ChainTarget::Level(level),
         ));
     }
-    let last_kind = if adapted_valid {
-        PassKind::Adapt
-    } else if intermediates == 1 {
-        PassKind::Luminance4
-    } else {
-        PassKind::Luminance16
+    let last_kind = match (adapted_valid, intermediates == 1) {
+        (true, true) => PassKind::AdaptColour,
+        (true, false) => PassKind::Adapt,
+        (false, true) => PassKind::Luminance4,
+        (false, false) => PassKind::Luminance16,
     };
     passes.push(pass(
         last_kind,
@@ -324,7 +399,8 @@ mod tests {
         let with_pair = chain_plan(5, true, 0);
         let kinds = |plan: &[ChainPass]| plan.iter().map(|pass| pass.kind).collect::<Vec<_>>();
         use PassKind::{
-            Adapt, BlurHorizontal, BrightBlurVertical, Downsample4, Luminance4, Luminance16,
+            Adapt, AdaptColour, BlurHorizontal, BrightBlurVertical, Downsample4, Luminance4,
+            Luminance16,
         };
         assert_eq!(
             kinds(&first),
@@ -364,6 +440,7 @@ mod tests {
         assert_eq!(with_pair[6].target, ChainTarget::Bloom);
         // A chain with one intermediate draws the first luminance step into the pair.
         assert_eq!(chain_plan(2, false, 0)[1].kind, Luminance4);
+        assert_eq!(chain_plan(2, true, 0)[1].kind, AdaptColour);
     }
 
     #[test]

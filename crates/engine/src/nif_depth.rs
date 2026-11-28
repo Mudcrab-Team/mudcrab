@@ -4,8 +4,9 @@ use bevy::{
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     prelude::*,
     render::render_resource::{
-        AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, CompareFunction,
-        DepthStencilState, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+        AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState,
+        ColorWrites, CompareFunction, DepthStencilState, RenderPipelineDescriptor,
+        SpecializedMeshPipelineError,
     },
 };
 
@@ -39,6 +40,8 @@ pub struct NifDepthState {
     pub alpha_mask: bool,
     pub cast_shadows: bool,
     pub blend_factors: Option<[u8; 2]>,
+    /// The Skyrim blend table entry for a sorted draw. Other draw paths use their existing state.
+    pub retail_blend_mode: Option<u8>,
     pub uses_effect_emittance: bool,
     /// Drawn in the opaque or cutout phase, with the base material's alpha mode, so that the fog
     /// composite runs after it ([`Self::retail_first_stage`]).
@@ -75,6 +78,7 @@ impl NifDepthState {
             } else {
                 blend_factors
             },
+            retail_blend_mode: None,
             uses_effect_emittance: false,
             first_stage: false,
         })
@@ -84,10 +88,15 @@ impl NifDepthState {
     /// [near-lighting.md](../../../docs/specs/engine/near-lighting.md)): retail draws it in the
     /// first stage, before the composite. A decal writes depth there; another surface keeps its
     /// authored write. A blended surface and a surface without a depth test keep the sorted draw.
-    /// STAND-IN(#362): a blended decal draws after the composite and applies it in its shader.
+    /// STAND-IN(#362): depth-writing cutouts and masked decals keep their cutout pass when
+    /// authored with blend factors. SPEC-2 §4.2 only selects a blend mode for sorted draws.
     #[must_use]
     pub fn retail_first_stage(mut self, alpha_mode: AlphaMode) -> Self {
-        if self.depth_test && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+        if self.depth_test
+            && (self.retail_blend_mode.is_none_or(|mode| mode == 0)
+                || (self.alpha_mask && (self.decal || self.depth_write)))
+            && matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_))
+        {
             self.first_stage = true;
             self.depth_write |= self.decal;
         }
@@ -95,31 +104,43 @@ impl NifDepthState {
     }
 
     /// [`Self::from_material`] under the `skyrim` profile: the blend pair is retail's
-    /// ([`retail_blend_factors`]), and a blended surface whose pair is not the plain alpha blend
-    /// takes the authored state even when its depth state alone would not need one.
+    /// ([`retail_blend_factors`]). Sorted surfaces use the retail blend equation even when
+    /// their depth state alone would not need a specialization.
     pub fn retail_from_material(
         flags_1: u32,
         flags_2: u32,
         alpha_mode: AlphaMode,
+        unpaired_blend: bool,
         blend_factors: Option<[u8; 2]>,
     ) -> Option<Self> {
+        let first_stage_decal = flags_1 & DEPTH_TEST != 0
+            && flags_1 & (DECAL | DYNAMIC_DECAL) != 0
+            && !matches!(alpha_mode, AlphaMode::Blend);
+        // SPEC-2 §4.2 selects a state for sorted draws. Unblended first-stage decals stay there.
+        let mode = blend_factors.map_or_else(
+            || u8::from(unpaired_blend && !first_stage_decal),
+            sorted_blend_mode,
+        );
         let blend_factors = blend_factors.map(retail_blend_factors);
-        let state = Self::from_material(flags_1, flags_2, alpha_mode, blend_factors);
-        if state.is_some()
-            || !matches!(alpha_mode, AlphaMode::Blend)
-            || blend_factors.is_none_or(|factors| factors == [6, 7])
-        {
-            return state;
+        if let Some(mut state) = Self::from_material(flags_1, flags_2, alpha_mode, blend_factors) {
+            state.retail_blend_mode = Some(mode);
+            return Some(state);
+        }
+        if mode == 0 && !matches!(alpha_mode, AlphaMode::Blend) {
+            return None;
         }
         let depth_test = flags_1 & DEPTH_TEST != 0;
+        let alpha_mask = matches!(alpha_mode, AlphaMode::Mask(_));
         Some(Self {
             depth_test,
-            // A sorted blended draw of this path writes no depth, as before.
-            depth_write: false,
+            // Preserve the authored write for cutouts. The first-stage lighting path needs it
+            // to distinguish depth-writing cutouts from the sorted list.
+            depth_write: depth_test && flags_2 & DEPTH_WRITE != 0 && alpha_mask,
             decal: false,
-            alpha_mask: false,
+            alpha_mask,
             cast_shadows: flags_1 & CAST_SHADOWS != 0,
-            blend_factors,
+            blend_factors: if alpha_mask { None } else { blend_factors },
+            retail_blend_mode: Some(mode),
             uses_effect_emittance: false,
             first_stage: false,
         })
@@ -210,14 +231,23 @@ pub(super) fn specialize_nif_depth_descriptor(
             fragment.shader_defs.push("MAY_DISCARD".into());
         }
     }
-    if let Some([source, destination]) = state.blend_factors
-        && let Some(color) = blend_component(source, destination)
-        && let Some(fragment) = descriptor.fragment.as_mut()
-    {
-        for target in fragment.targets.iter_mut().flatten() {
-            // Keep Bevy's alpha equation. A separate retail alpha equation is unverified.
-            let alpha = target.blend.unwrap_or(BlendState::ALPHA_BLENDING).alpha;
-            target.blend = Some(BlendState { color, alpha });
+    if let Some(fragment) = descriptor.fragment.as_mut() {
+        if let Some(mode) = state.retail_blend_mode
+            && !state.first_stage
+        {
+            if color_pass && mode != 0 {
+                fragment.shader_defs.push("SKYRIM_SORTED_ALPHA".into());
+            }
+            // The sorted list uses mask 11 when auxiliary outputs are absent (SPEC-2 §4.3).
+            apply_retail_colour_state(&mut fragment.targets, mode, 11, false);
+        } else if let Some([source, destination]) = state.blend_factors
+            && let Some(color) = blend_component(source, destination)
+        {
+            for target in fragment.targets.iter_mut().flatten() {
+                // STAND-IN(#362): keep Bevy's alpha factors on the non-Skyrim path.
+                let alpha = target.blend.unwrap_or(BlendState::ALPHA_BLENDING).alpha;
+                target.blend = Some(BlendState { color, alpha });
+            }
         }
     }
     if color_pass && let Some(depth) = descriptor.depth_stencil.as_mut() {
@@ -225,23 +255,83 @@ pub(super) fn specialize_nif_depth_descriptor(
     }
 }
 
-/// The factors retail draws a serialized blend pair with (SPEC-2 section 4.2 and SPEC-1 section
-/// 9.2, [near-lighting.md](../../../docs/specs/engine/near-lighting.md)):
-///
-/// | Authored (source, destination) | Retail mode | Drawn as |
-/// |---|---|---|
-/// | (6, 7) | 1 | SrcAlpha, InvSrcAlpha |
-/// | (6, 0), (0, 0), (6, 9) | 2 | SrcAlpha, One |
-/// | (4, 7) | 3 | DestColor, InvSrcAlpha |
-/// | (1, 2), (4, 1) | 4 | DestColor, Zero |
-///
-/// STAND-IN(#362): for any other pair retail keeps the mode of the previous draw, which has no
-/// equivalent here; it draws with SrcAlpha, InvSrcAlpha.
-pub fn retail_blend_factors([source, destination]: [u8; 2]) -> [u8; 2] {
-    match (source, destination) {
-        (6, 0) | (0, 0) | (6, 9) => SOURCE_ALPHA_ADDITIVE,
-        (4, 7) => [4, 7],
-        (1, 2) | (4, 1) => [4, 1],
+/// The retail colour write table (SPEC-2 section 4.1).
+fn apply_retail_colour_state(
+    targets: &mut [Option<ColorTargetState>],
+    mode: u8,
+    mask: u8,
+    multi_target: bool,
+) {
+    use ColorWrites as W;
+    let blend = retail_blend_state(mode);
+    let target_zero = match mask {
+        0 => W::empty(),
+        1 => W::COLOR,
+        3 => W::RED | W::GREEN,
+        4 => W::BLUE | W::ALPHA,
+        5 => W::RED,
+        6 => W::GREEN,
+        7 | 9 => W::BLUE,
+        8 => W::ALPHA,
+        _ => W::ALL,
+    };
+    for (slot, target) in targets.iter_mut().enumerate() {
+        let Some(target) = target else {
+            continue;
+        };
+        if slot == 0 || (multi_target && mask <= 8 && slot <= 2) {
+            target.blend = blend;
+            target.write_mask = target_zero;
+        } else {
+            target.blend = None;
+            target.write_mask = match (mask, slot) {
+                (9, 1) => W::COLOR,
+                (10, 1) | (11, _) | (12, 2..) => W::empty(),
+                _ => W::ALL,
+            };
+        }
+    }
+}
+
+/// The retail framebuffer blend table (SPEC-2 section 4.1).
+fn retail_blend_state(mode: u8) -> Option<BlendState> {
+    use BlendFactor::{Dst, DstAlpha, One, OneMinusSrcAlpha, SrcAlpha, Zero};
+    let (source_rgb, destination_rgb, source_alpha, destination_alpha) = match mode {
+        1 => (SrcAlpha, OneMinusSrcAlpha, SrcAlpha, OneMinusSrcAlpha),
+        2 => (SrcAlpha, One, SrcAlpha, One),
+        3 => (Dst, OneMinusSrcAlpha, DstAlpha, OneMinusSrcAlpha),
+        4 => (Dst, Zero, One, Zero),
+        5 => (One, One, One, One),
+        6 => (One, OneMinusSrcAlpha, One, OneMinusSrcAlpha),
+        _ => return None,
+    };
+    let component = |src_factor, dst_factor| BlendComponent {
+        src_factor,
+        dst_factor,
+        operation: BlendOperation::Add,
+    };
+    Some(BlendState {
+        color: component(source_rgb, destination_rgb),
+        alpha: component(source_alpha, destination_alpha),
+    })
+}
+
+/// Spec-2 section 4.2 maps authored pairs to the framebuffer blend table.
+/// STAND-IN(#362): an unmapped pair uses mode 1 because Bevy pipelines lack inherited blend state.
+fn sorted_blend_mode(pair: [u8; 2]) -> u8 {
+    match pair {
+        [6, 0] | [0, 0] | [6, 9] => 2,
+        [4, 7] => 3,
+        [1, 2] | [4, 1] => 4,
+        _ => 1,
+    }
+}
+
+pub fn retail_blend_factors(pair: [u8; 2]) -> [u8; 2] {
+    match sorted_blend_mode(pair) {
+        2 => SOURCE_ALPHA_ADDITIVE,
+        3 => [4, 7],
+        4 => [4, 1],
         _ => [6, 7],
     }
 }
@@ -675,10 +765,10 @@ mod tests {
     #[test]
     fn retail_blend_pairs_give_the_specification_example() {
         let (destination, source, alpha) = ([0.5_f32, 0.4, 0.3], [0.8_f32, 0.6, 0.2], 0.25_f32);
-        let drawn = |pair| {
-            let component =
-                blend_component(retail_blend_factors(pair)[0], retail_blend_factors(pair)[1])
-                    .unwrap();
+        let drawn = |mode| {
+            let Some(blend) = retail_blend_state(mode) else {
+                return source;
+            };
             let factor = |factor: BlendFactor, channel: usize| match factor {
                 BlendFactor::One => 1.0,
                 BlendFactor::Zero => 0.0,
@@ -688,40 +778,112 @@ mod tests {
                 other => panic!("unexpected factor {other:?}"),
             };
             [0, 1, 2].map(|channel| {
-                source[channel] * factor(component.src_factor, channel)
-                    + destination[channel] * factor(component.dst_factor, channel)
+                source[channel] * factor(blend.color.src_factor, channel)
+                    + destination[channel] * factor(blend.color.dst_factor, channel)
             })
         };
-        for (pairs, expected) in [
-            (&[[6, 7]][..], [0.575, 0.45, 0.275]),
-            (&[[6, 0], [0, 0], [6, 9]][..], [0.70, 0.55, 0.35]),
-            (&[[4, 7]][..], [0.775, 0.54, 0.285]),
-            (&[[1, 2], [4, 1]][..], [0.40, 0.24, 0.06]),
+        for (mode, expected) in [
+            (0, [0.8, 0.6, 0.2]),
+            (1, [0.575, 0.45, 0.275]),
+            (2, [0.70, 0.55, 0.35]),
+            (3, [0.775, 0.54, 0.285]),
+            (4, [0.40, 0.24, 0.06]),
+            (5, [1.3, 1.0, 0.5]),
+            (6, [1.175, 0.90, 0.425]),
         ] {
-            for &pair in pairs {
-                for (actual, expected) in drawn(pair).into_iter().zip(expected) {
-                    assert!(
-                        (actual - expected).abs() < 1.0e-6,
-                        "{pair:?}: {actual} {expected}"
-                    );
-                }
+            for (actual, expected) in drawn(mode).into_iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() < 1.0e-6,
+                    "{mode}: {actual} {expected}"
+                );
             }
+        }
+        for (pair, expected) in [
+            ([6, 7], 1),
+            ([6, 0], 2),
+            ([0, 0], 2),
+            ([6, 9], 2),
+            ([4, 7], 3),
+            ([1, 2], 4),
+            ([4, 1], 4),
+        ] {
+            assert_eq!(sorted_blend_mode(pair), expected);
         }
     }
 
-    /// An additive surface with an ordinary depth state takes the authored blend under `skyrim`
-    /// only; a plain alpha blend keeps its route.
+    /// Checks the mapping of authored sorted blends for the Skyrim profile.
     #[test]
     fn retail_blend_state_covers_a_non_decal_additive_surface() {
         let flags = (DEPTH_TEST, 0);
         let mode = AlphaMode::Blend;
         assert!(NifDepthState::from_material(flags.0, flags.1, mode, Some([6, 0])).is_none());
         let state =
-            NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([0, 0])).unwrap();
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, false, Some([0, 0]))
+                .unwrap();
         assert_eq!(state.blend_factors, Some(SOURCE_ALPHA_ADDITIVE));
         assert!(!state.depth_write && !state.decal);
-        assert!(
-            NifDepthState::retail_from_material(flags.0, flags.1, mode, Some([6, 7])).is_none()
-        );
+        assert!(NifDepthState::from_material(flags.0, flags.1, mode, Some([6, 7])).is_none());
+        let alpha =
+            NifDepthState::retail_from_material(flags.0, flags.1, mode, false, Some([6, 7]))
+                .expect("retail source-alpha draw state");
+        let mut pipeline = descriptor(vec![color_target(), color_target()]);
+        specialize_nif_depth_descriptor(&mut pipeline, alpha);
+        let mut targets = pipeline.fragment.unwrap().targets.into_iter().flatten();
+        assert_eq!(targets.next().unwrap().blend, retail_blend_state(1));
+        let auxiliary = targets.next().unwrap();
+        assert_eq!(auxiliary.blend, None);
+        assert_eq!(auxiliary.write_mask, ColorWrites::empty());
+    }
+
+    #[test]
+    fn skyrim_sorted_draw_preserves_fragment_alpha_only_when_blending() {
+        for alpha in [AlphaMode::Opaque, AlphaMode::Mask(0.5), AlphaMode::Blend] {
+            for (mode, preserve_alpha) in [(None, false), (Some(0), false), (Some(1), true)] {
+                let mut state = NifDepthState::from_flags(0, 0, alpha).unwrap();
+                state.retail_blend_mode = mode;
+                let mut pipeline = descriptor(vec![color_target()]);
+                specialize_nif_depth_descriptor(&mut pipeline, state);
+                let fragment = pipeline.fragment.unwrap();
+                let defines = |name| {
+                    fragment
+                        .shader_defs
+                        .iter()
+                        .any(|def| shader_def_name(def) == name)
+                };
+                assert_eq!(defines("MAY_DISCARD"), matches!(alpha, AlphaMode::Mask(_)));
+                assert_eq!(defines("SKYRIM_SORTED_ALPHA"), preserve_alpha);
+            }
+        }
+    }
+
+    #[test]
+    fn retail_write_masks_cover_each_slot_with_and_without_multi_target_blend() {
+        // Bit order is RGBA, least-significant first.
+        let single = [0, 7, 15, 3, 12, 1, 2, 4, 8, 4, 15, 15, 15];
+        for (mask, target_zero) in (0..=12).zip(single) {
+            for multi in [false, true] {
+                let mut targets = vec![color_target(); 8];
+                apply_retail_colour_state(&mut targets, 3, mask, multi);
+                for (slot, target) in targets.into_iter().flatten().enumerate() {
+                    let copied = slot == 0 || (multi && mask < 9 && slot <= 2);
+                    let expected = if copied {
+                        target_zero
+                    } else {
+                        match mask {
+                            9 if slot == 1 => 7,
+                            10 if slot == 1 => 0,
+                            11 => 0,
+                            12 if slot > 1 => 0,
+                            _ => 15,
+                        }
+                    };
+                    assert_eq!(target.write_mask.bits(), expected, "{mask} {multi} {slot}");
+                    assert_eq!(
+                        target.blend,
+                        if copied { retail_blend_state(3) } else { None }
+                    );
+                }
+            }
+        }
     }
 }

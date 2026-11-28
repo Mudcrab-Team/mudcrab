@@ -817,7 +817,7 @@ jobs:
           NEXTEST_NO_TESTS: warn
 
       # The ignored GPU tests run from the same archive, so they do not rebuild the engine.
-      - name: Test textures and grass scene pipeline on software Vulkan
+      - name: Test textures and scene pipelines on software Vulkan
         if: matrix.partition == 1
         run: >-
           cargo nextest run
@@ -826,9 +826,10 @@ jobs:
           --extract-overwrite
           --workspace-remap "$GITHUB_WORKSPACE"
           --run-ignored only
-          -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots) | test(production_scene_pipeline_shader_uses_real_mesh_bindings)'
+          -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots) | test(production_scene_pipeline_shader_uses_real_mesh_bindings) | test(retail_pixel_spec2_)'
         env:
           WGPU_BACKEND: vulkan
+          MUDCRAB_RETAIL_PIXEL: "1"
 
   security:
     needs: [orchestrate]

@@ -64,6 +64,7 @@ pub mod retail_hdr_chain;
 #[cfg(test)]
 mod retail_hdr_gpu_tests;
 mod retail_hdr_render;
+mod retail_image_space;
 pub mod retail_lighting;
 #[cfg(test)]
 mod retail_lighting_gpu_tests;
