@@ -10,12 +10,14 @@
 //! `meshes/actors/character/composed/default/{sex}/body.glb` when that file exists and falls back
 //! to the catalog's authored `body` part otherwise.
 
+use super::actor_scale::{ActorHeightQuery, read_npc_heights};
 use crate::actor_skin_tone::ActorSkinTone;
 use crate::actors::{
     Actor, ActorHead, ActorHeadSource, ActorOutfit, ActorPart, ActorParts, ActorResolution,
     ActorSex, ActorSlot, ActorSpawnDiagnostic, ActorSpawnSkip, composed_body_scene,
 };
 use bevy::prelude::*;
+use retail_rules::scale::NpcHeights;
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,6 +37,11 @@ pub struct ActorModel {
     pub skin_tone: Option<ActorSkinTone>,
     /// `NPC_/NAM7` (`weight`), the 0..100 body weight; absent from older databases.
     pub weight: Option<f32>,
+    /// The race heights for the actor's sex and `NPC_/NAM6`, from the `records` table, already
+    /// guarded (see `world::actor_scale`). Placement passes them to
+    /// `retail_rules::scale::placed_reference_scale`. The default has a factor of 1.0, which is
+    /// what a database without such records gives.
+    pub heights: NpcHeights,
 }
 
 impl ActorModel {
@@ -261,6 +268,7 @@ impl ActorCatalog {
                     parts: Vec::new(),
                     skin_tone,
                     weight,
+                    heights: NpcHeights::default(),
                 }))
             }) {
                 Ok(rows) => {
@@ -324,6 +332,21 @@ impl ActorCatalog {
 
         for model in models.values_mut() {
             model.parts.sort_by_key(|part| part.slot.index());
+        }
+
+        let queries: Vec<_> = models
+            .values()
+            .map(|model| ActorHeightQuery {
+                npc_id: model.base_form_id,
+                race_id: model.race_id,
+                female: model.sex == ActorSex::Female,
+            })
+            .collect();
+        let heights = read_npc_heights(connection, &queries);
+        for model in models.values_mut() {
+            if let Some(heights) = heights.get(&model.base_form_id) {
+                model.heights = *heights;
+            }
         }
 
         Self {

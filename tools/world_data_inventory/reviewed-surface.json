@@ -97,6 +97,8 @@
     "crates/engine/src/world/actor_catalog.rs::prepare::b7739f53c1246c7c::1": null,
     "crates/engine/src/world/actor_catalog.rs::prepare::db741a616bcea57b::1": "e28a6d30f042287f",
     "crates/engine/src/world/actor_catalog.rs::query_row::82e20e9fd11f6a91::1": "c508126dd462e791",
+    "crates/engine/src/world/actor_scale.rs::prepare::411eb7dd4f06606d::1": "84876fa98b896b78",
+    "crates/engine/src/world/actor_scale.rs::query_row::5765c9ca20be4b06::1": "80a2be444c6f122f",
     "crates/engine/src/world/database.rs::prepare::1516ce42dfe0e549::1": null,
     "crates/engine/src/world/database.rs::prepare::1e19934b55b151ef::1": "4dc9f45c19fb5b9b",
     "crates/engine/src/world/database.rs::prepare::80017797a91d6515::1": "875ad8b2bd7a4036",
