@@ -46,7 +46,7 @@ const EXTENSION_ALPHA_LINKS: [(&str, &str); 2] = [
 /// The links of the retail Lighting path (`RetailSurface`): the file and the code it must hold.
 /// Every link has to hold. A lost link draws the surface with Bevy's light model, whose picture
 /// looks plausible, so only this check fails.
-const RETAIL_SURFACE_LINKS: [(&str, &str); 32] = [
+const RETAIL_SURFACE_LINKS: [(&str, &str); 34] = [
     (
         "src/pbr_material.rs",
         "#[texture(31, dimension = \"cube\")] #[dependency] pub retail_environment_cube: Option<Handle<Image>>,",
