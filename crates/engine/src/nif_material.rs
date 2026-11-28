@@ -34,6 +34,7 @@ use std::{
 /// The retail inputs of a lighting material under `skyrim`.
 mod retail;
 mod retail_environment;
+pub(crate) use retail_environment::is_flat_image;
 pub(crate) mod technique;
 pub(crate) use retail::{EMPTY_BASE_TEXEL, EMPTY_HEIGHT_TEXEL, texel_image};
 use technique::{Technique, technique};

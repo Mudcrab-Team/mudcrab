@@ -544,11 +544,26 @@ fn bind_swapped<M: SwappedMaterial>(
             // A parallax surface reads the new height map, and an empty slot is black.
             // `retail_environment` makes the view read the stored bytes.
             if standard.retail_surface.is_some() && standard.depth_map.is_some() {
-                standard.depth_map = Some(image(paths.retail.height).unwrap_or_else(|| {
-                    images.add(crate::nif_material::texel_image(
-                        crate::nif_material::EMPTY_HEIGHT_TEXEL,
-                    ))
-                }));
+                match image(paths.retail.height) {
+                    None => {
+                        standard.depth_map = Some(images.add(crate::nif_material::texel_image(
+                            crate::nif_material::EMPTY_HEIGHT_TEXEL,
+                        )));
+                    }
+                    Some(height)
+                        if images
+                            .get(&height)
+                            .is_some_and(crate::nif_material::is_flat_image) =>
+                    {
+                        standard.depth_map = Some(height);
+                    }
+                    // A 2D binding cannot take another shape: the model's height map stays.
+                    Some(height) => warn!(
+                        "a swapped height map is not a flat 2D image; the surface keeps its \
+                         model's height map: {:?}",
+                        height.path()
+                    ),
+                }
             }
             standard.retail_environment_cube = None;
             standard.retail_environment_mask = None;

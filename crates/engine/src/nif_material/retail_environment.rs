@@ -69,6 +69,18 @@ enum Prepared {
     Unusable(&'static str),
 }
 
+/// Whether a 2D binding, such as a mask or a height map, can take `image`: one 2D layer with no
+/// other view. A bind group with another shape is invalid.
+pub(crate) fn is_flat_image(image: &Image) -> bool {
+    let view = image
+        .texture_view_descriptor
+        .as_ref()
+        .and_then(|view| view.dimension);
+    image.texture_descriptor.dimension == TextureDimension::D2
+        && image.texture_descriptor.size.depth_or_array_layers == 1
+        && view.is_none_or(|view| view == TextureViewDimension::D2)
+}
+
 /// Checks the shape of a loaded image for `role` and makes its view read the stored bytes.
 fn prepare(images: &mut Assets<Image>, handle: &Handle<Image>, role: Role) -> Prepared {
     let Some(image) = images.get(handle) else {
@@ -79,16 +91,15 @@ fn prepare(images: &mut Assets<Image>, handle: &Handle<Image>, role: Role) -> Pr
         .texture_view_descriptor
         .as_ref()
         .and_then(|view| view.dimension);
-    let layers = descriptor.size.depth_or_array_layers;
-    let fits = descriptor.dimension == TextureDimension::D2
-        && match role {
-            Role::Cube => {
-                layers == 6
-                    && descriptor.size.width == descriptor.size.height
-                    && view == Some(TextureViewDimension::Cube)
-            }
-            Role::Mask => layers == 1 && view.is_none_or(|view| view == TextureViewDimension::D2),
-        };
+    let fits = match role {
+        Role::Cube => {
+            descriptor.dimension == TextureDimension::D2
+                && descriptor.size.depth_or_array_layers == 6
+                && descriptor.size.width == descriptor.size.height
+                && view == Some(TextureViewDimension::Cube)
+        }
+        Role::Mask => is_flat_image(image),
+    };
     if !fits {
         return Prepared::Unusable(match role {
             Role::Cube => "the environment cube slot does not hold a cube map",
@@ -182,6 +193,22 @@ fn raw_height<M: EnvironmentSurface>(
         else {
             return false;
         };
+        // A height map of another shape must not reach the bind group.
+        if images
+            .get(&height)
+            .is_some_and(|image| !is_flat_image(image))
+        {
+            warn!(
+                "parallax surface drawn without its height map: {} is not a flat 2D image",
+                height
+                    .path()
+                    .map_or_else(|| "an image".to_owned(), ToString::to_string)
+            );
+            if let Some(mut material) = materials.get_mut(*id) {
+                material.surface_mut().depth_map = None;
+            }
+            return false;
+        }
         let decoded = images
             .get(&height)
             .is_some_and(|image| image.texture_descriptor.format.is_srgb());
@@ -330,6 +357,29 @@ mod tests {
         let format = |handle| images.get(handle).unwrap().texture_descriptor.format;
         assert_eq!(format(&height), TextureFormat::Rgba8Unorm);
         assert_eq!(format(&plain), TextureFormat::Rgba8UnormSrgb);
+    }
+
+    /// A cube or array image in the height slot leaves the surface without a height map.
+    #[test]
+    fn a_height_map_that_is_not_flat_is_unbound() {
+        let mut app = app();
+        let flat = add(&mut app, image(1, false, TextureFormat::Rgba8Unorm));
+        let array = add(&mut app, image(6, false, TextureFormat::Rgba8Unorm));
+        let cube = add(&mut app, image(6, true, TextureFormat::Rgba8Unorm));
+        let materials = [flat.clone(), array, cube].map(|map| {
+            app.world_mut()
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial {
+                    depth_map: Some(map),
+                    retail_surface: Some(bevy::pbr::RetailSurface::MATTE),
+                    ..default()
+                })
+        });
+        app.update();
+        app.update();
+        let assets = app.world().resource::<Assets<StandardMaterial>>();
+        let bound = materials.map(|material| assets.get(&material).unwrap().depth_map.clone());
+        assert_eq!(bound, [Some(flat), None, None]);
     }
 
     #[test]

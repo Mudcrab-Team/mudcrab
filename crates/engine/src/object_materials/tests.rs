@@ -1219,6 +1219,66 @@ fn a_swap_requests_only_the_slots_its_surface_reads() {
     }
 }
 
+/// A swapped height map that is a cube cannot take the 2D binding: the surface keeps the
+/// model's height map and the rest of the swap applies.
+#[test]
+fn a_swapped_height_map_that_is_not_flat_is_not_bound() {
+    for (height, flat) in [("red.dds", true), ("cube.dds", false)] {
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path());
+        let (conn, mut records) = database();
+        records.insert(
+            101,
+            record(
+                101,
+                b"TXST",
+                &[
+                    (b"TX00", b"blue.dds\0".to_vec()),
+                    (b"TX04", format!("{height}\0").into_bytes()),
+                ],
+            ),
+        );
+        export_to_db(&conn, &records).unwrap();
+        let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+        let mut app = object_app(directory.path());
+        app.insert_resource(crate::visual_profile::VisualProfile::Skyrim);
+        let scene = load_scene(&mut app, "shared.glb");
+        let model =
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(crate::nif_material::texel_image(
+                    crate::nif_material::EMPTY_HEIGHT_TEXEL,
+                ));
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let models: Vec<_> = materials.ids().collect();
+        for id in models {
+            let mut material = materials.get_mut(id).unwrap();
+            material.retail_surface = Some(bevy::pbr::RetailSurface::MATTE);
+            material.depth_map = Some(model.clone());
+        }
+        let root = spawn(&mut app, &scene, catalog.get(1));
+        settle(&mut app, &[root]);
+        assert_eq!(
+            app.world().get::<ObjectTextureSwapState>(root),
+            Some(&ObjectTextureSwapState::Applied {
+                textured: 1,
+                hidden: 0
+            }),
+            "{height}"
+        );
+        let material = material_of(&app, &surface(&app, root).1);
+        let bound = material.depth_map.as_ref().expect("a height map");
+        if flat {
+            assert_eq!(
+                bound.path().map(ToString::to_string).as_deref(),
+                Some("textures/red.ktx2")
+            );
+        } else {
+            assert_eq!(bound, &model);
+        }
+    }
+}
+
 #[test]
 fn projection_rows_resolve_texture_sets_and_keep_other_txst_consumers() {
     let (conn, mut records) = database();

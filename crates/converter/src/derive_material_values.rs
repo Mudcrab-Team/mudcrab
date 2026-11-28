@@ -7,9 +7,10 @@
 //!
 //! A NIF is used only when its bytes have the SHA-256 the pack's conversion manifest records for
 //! that mesh (the first part of a skinned mesh's `<mesh>:<skeleton>` hash), whether it comes from a loose file or a `.bsa` archive of the Skyrim `Data` folder.
-//! A loose file is read by its spelling on disk. A copy in an archive that does not decompress
-//! is reported, and the other archives are still searched. A mesh whose source is not found or
-//! does not parse is counted and left out; nothing is filled in.
+//! A loose file is read by its spelling on disk. A copy that cannot be read, in the folder or
+//! in an archive, is reported, and the search goes on; so is a path below the data folder that
+//! cannot be walked, such as a broken symbolic link. A mesh whose source is not found or does
+//! not parse is counted and left out; nothing is filled in.
 //!
 //! The command refuses an output inside the pack it reads or inside a registered pack, and an
 //! output that exists. The sidecar gets its name only after its bytes are written and synced.
@@ -59,11 +60,18 @@ pub struct DeriveMaterialValuesReport {
     pub environment_materials: usize,
     /// Meshes whose recorded source bytes were not found.
     pub missing_sources: Vec<String>,
-    /// Archive copies of a listed mesh that did not decompress (`<archive>: <mesh>`), with the
-    /// reason. Another copy may still have supplied the mesh.
-    pub failed_copies: Vec<(String, String)>,
+    /// What could not be read, with the reason: a path below the data folder, or an archive copy
+    /// of a listed mesh (`<archive>: <mesh>`). Another copy may still have supplied the mesh.
+    pub read_failures: Vec<(String, String)>,
     /// Meshes whose source did not parse, with the reason.
     pub unreadable: Vec<(String, String)>,
+}
+
+impl DeriveMaterialValuesReport {
+    fn read_failed(&mut self, path: String, reason: &dyn std::fmt::Display) {
+        log::warn!("cannot read {path}: {reason}");
+        self.read_failures.push((path, reason.to_string()));
+    }
 }
 
 /// One mesh the manifest lists: where it was published and the hash of its source.
@@ -120,12 +128,14 @@ pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValues
     let mut file = MaterialValuesFile::new();
 
     // Loose files first, then every archive. The hash decides which copy the pack was made from.
-    for (source, path) in loose_sources(&options.data, &wanted)? {
+    for (source, path) in loose_sources(&options.data, &wanted, &mut report)? {
         if !wanted.contains_key(&source) {
             continue;
         }
-        let bytes = fs::read(&path).wrap_err_with(|| format!("cannot read {}", path.display()))?;
-        take(&source, &bytes, &mut wanted, &mut file, &mut report);
+        match fs::read(&path) {
+            Ok(bytes) => take(&source, &bytes, &mut wanted, &mut file, &mut report),
+            Err(error) => report.read_failed(path.display().to_string(), &error),
+        }
     }
     let mut archives = Vec::new();
     for entry in fs::read_dir(&options.data).wrap_err_with(|| {
@@ -154,12 +164,10 @@ pub fn run(options: &DeriveMaterialValuesOptions) -> Result<DeriveMaterialValues
             }
             match decompress() {
                 Ok(bytes) => take(&source, &bytes, &mut wanted, &mut file, &mut report),
-                Err(error) => {
-                    let copy = format!("{}: {source}", path.display());
-                    let reason = format!("{error:#}");
-                    log::warn!("cannot decompress {copy}: {reason}");
-                    report.failed_copies.push((copy, reason));
-                }
+                Err(error) => report.read_failed(
+                    format!("{}: {source}", path.display()),
+                    &format!("{error:#}"),
+                ),
             }
             Ok(())
         })
@@ -203,15 +211,31 @@ fn folder_of(path: &Path) -> &Path {
 
 /// The loose files of `data` that name a wanted mesh, as `(key, path as spelled on disk)`. A
 /// manifest key is lower case, so joining it to `data` misses `Meshes/A.NIF` on a
-/// case-sensitive volume. Every spelling is returned.
-fn loose_sources(data: &Path, wanted: &BTreeMap<String, Wanted>) -> Result<Vec<(String, PathBuf)>> {
+/// case-sensitive volume. Every spelling is returned. A path that cannot be walked goes to the
+/// report; only a data folder that cannot be opened is an error.
+fn loose_sources(
+    data: &Path,
+    wanted: &BTreeMap<String, Wanted>,
+    report: &mut DeriveMaterialValuesReport,
+) -> Result<Vec<(String, PathBuf)>> {
     let mut sources = Vec::new();
     for entry in walkdir::WalkDir::new(data)
         .follow_links(true)
         .sort_by_file_name()
     {
-        let entry = entry
-            .wrap_err_with(|| format!("cannot read the game data folder {}", data.display()))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if error.depth() == 0 => {
+                return Err(error).wrap_err_with(|| {
+                    format!("cannot read the game data folder {}", data.display())
+                });
+            }
+            Err(error) => {
+                let path = error.path().unwrap_or(data).display().to_string();
+                report.read_failed(path, &error);
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -454,8 +478,9 @@ mod tests {
         )]);
         // The path keeps the spelling: the lower case key would not open on a case-sensitive
         // volume.
+        let mut walked = DeriveMaterialValuesReport::default();
         assert_eq!(
-            loose_sources(&options.data, &wanted).unwrap(),
+            loose_sources(&options.data, &wanted, &mut walked).unwrap(),
             [(
                 "meshes/a.nif".to_owned(),
                 options.data.join("Meshes").join("A.NIF")
@@ -504,8 +529,43 @@ mod tests {
         assert!(report.missing_sources.is_empty(), "{report:?}");
         // The good copy reached the parser, which reports that these bytes are not a NIF.
         assert_eq!(report.unreadable.len(), 1);
-        assert_eq!(report.failed_copies.len(), 1);
-        assert!(report.failed_copies[0].0.contains("a.bsa: meshes/a.nif"));
+        assert_eq!(report.read_failures.len(), 1);
+        assert!(report.read_failures[0].0.contains("a.bsa: meshes/a.nif"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_link_below_the_data_folder_does_not_stop_the_run() {
+        let root = tempfile::tempdir().unwrap();
+        let options = one_mesh_pack(root.path());
+        let textures = options.data.join("textures");
+        fs::create_dir_all(&textures).unwrap();
+        std::os::unix::fs::symlink(root.path().join("absent"), textures.join("broken")).unwrap();
+        // A link to its own folder is a loop, another traversal error.
+        std::os::unix::fs::symlink(&textures, textures.join("loop")).unwrap();
+        fs::create_dir_all(options.data.join("meshes")).unwrap();
+        fs::write(options.data.join("meshes/a.nif"), b"recorded").unwrap();
+        let report = run(&options).unwrap();
+        assert!(report.missing_sources.is_empty(), "{report:?}");
+        let mut failed: Vec<_> = report
+            .read_failures
+            .iter()
+            .map(|(path, _)| path.rsplit('/').next().unwrap())
+            .collect();
+        failed.sort_unstable();
+        assert_eq!(failed, ["broken", "loop"], "{report:?}");
+        assert!(options.output.exists());
+        // A data folder that cannot be opened is still an error.
+        let absent = DeriveMaterialValuesOptions {
+            data: root.path().join("absent"),
+            output: root.path().join("other.json"),
+            ..options
+        };
+        let error = run(&absent).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("game data folder"),
+            "{error:#}"
+        );
     }
 
     #[test]
