@@ -71001,7 +71001,7 @@
         },
         {
           "path": "crates/engine/src/object_materials.rs",
-          "anchor": "standard.depth_map = Some(image(paths.retail.height).unwrap_or_else(|| {"
+          "anchor": "match image(paths.retail.height) {"
         }
       ],
       "spec": "SPEC-1 2.1-b, 9.2-d, 9.2-f"
