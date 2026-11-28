@@ -12011,6 +12011,7 @@ mod tests {
             base_flags,
         };
         let mut inaccessible = lit_reference(0x130, None, None);
+        inaccessible.model_path = Some("Architecture/Riften/RiftenDoor01.nif".to_owned());
         inaccessible.door = Some(link(Some(0x500), Some(0)));
         let mut auto_hidden = lit_reference(0x131, None, None);
         auto_hidden.door = Some(link(Some(0x400), Some(0x06)));
@@ -12027,7 +12028,20 @@ mod tests {
                 .get::<crate::doors::LoadDoor>()
                 .cloned()
         };
-        assert!(door(0x130).is_none());
+        let inaccessible_entity = app.world().entity(reference_entity(&app, 0x130));
+        assert!(
+            inaccessible_entity
+                .get::<crate::doors::LoadDoor>()
+                .is_none()
+        );
+        assert_eq!(
+            inaccessible_entity
+                .get::<MeshHandle>()
+                .map(|handle| handle.0.as_str()),
+            Some("meshes/architecture/riften/riftendoor01.glb"),
+            "an inaccessible door still spawns its visual mesh"
+        );
+        assert!(inaccessible_entity.get::<PendingModel>().is_some());
         let auto_hidden = door(0x131).expect("an accessible automatic hidden door loads");
         assert_eq!(auto_hidden.flags, Some(crate::doors::DoorFlags(0x06)));
         assert!(auto_hidden.is_automatic() && auto_hidden.is_hidden());

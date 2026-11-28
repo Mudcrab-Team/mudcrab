@@ -1618,11 +1618,18 @@ fn door_flags_from_record(record: &[u8]) -> Option<u8> {
             return None;
         }
     };
-    record
+    let fnam = record
         .subrecords
         .iter()
-        .find(|subrecord| subrecord.tag == DOOR_FNAM_TAG)
-        .and_then(|subrecord| subrecord.data.first().copied())
+        .find(|subrecord| subrecord.tag == DOOR_FNAM_TAG)?;
+    if fnam.data.len() != 1 {
+        bevy::log::warn!(
+            len = fnam.data.len(),
+            "DOOR.FNAM subrecord has unexpected byte length (expected 1); door flags omitted"
+        );
+        return None;
+    }
+    Some(fnam.data[0])
 }
 
 /// The `lights` row of the reference's base record, in the order [`map_reference`] reads them.
@@ -5061,6 +5068,14 @@ mod tests {
         assert_eq!(door_flags_from_record(&record), Some(0x02));
         assert_eq!(door_flags_from_record(&[]), None);
         assert_eq!(door_flags_from_record(&water_record(vec![])), None);
+        assert_eq!(
+            door_flags_from_record(&water_record(vec![(*b"FNAM", vec![])])),
+            None
+        );
+        assert_eq!(
+            door_flags_from_record(&water_record(vec![(*b"FNAM", vec![0x02, 0x00])])),
+            None
+        );
     }
 
     #[test]
