@@ -1096,7 +1096,7 @@ mod tests {
         time.advance_by(std::time::Duration::from_millis(16));
         let mut virtual_time = Time::<Virtual>::default();
         virtual_time.pause();
-        let block = HdrBlock::IMGS_CONSTRUCTOR_DEFAULT;
+        let block = HdrBlock::MANAGER_CONSTRUCTOR_DEFAULT;
         let camera = app
             .insert_resource(time)
             .insert_resource(virtual_time)
@@ -1675,7 +1675,7 @@ mod tests {
                 .iter()
                 .map(|member| member.offset)
                 .collect::<Vec<_>>(),
-            [0, 16, 32, 48, 64, 80, 96]
+            [0, 16, 32, 48, 64, 80, 96, 336]
         );
     }
 

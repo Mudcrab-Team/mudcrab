@@ -121,11 +121,12 @@ fn known_gap(authored: &Authored, retail: &Pass) -> Option<(Gap, Pass)> {
     let decal = authored.flags_1 & (DECAL | DYNAMIC_DECAL) != 0;
     let zwrite = authored.flags_2 & DEPTH_WRITE != 0;
     if retail.alpha_test && (decal || zwrite) {
+        // SPEC-2 §4.2 applies the sorted blend state while the base material keeps its cutout.
         let pass = Pass {
-            stage: Stage::First,
+            stage: Stage::Sorted,
             shade: Shade::Cutout,
             alpha_test: true,
-            depth_write: true,
+            depth_write: decal && zwrite,
             blend: None,
         };
         return Some((Gap::CutoutWithBlend, pass));

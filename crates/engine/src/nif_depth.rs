@@ -111,7 +111,14 @@ impl NifDepthState {
         unpaired_blend: bool,
         blend_factors: Option<[u8; 2]>,
     ) -> Option<Self> {
-        let mode = blend_factors.map_or_else(|| u8::from(unpaired_blend), sorted_blend_mode);
+        let first_stage_decal = flags_1 & DEPTH_TEST != 0
+            && flags_1 & (DECAL | DYNAMIC_DECAL) != 0
+            && !matches!(alpha_mode, AlphaMode::Blend);
+        // SPEC-2 §4.2 selects a state for sorted draws. Unblended first-stage decals stay there.
+        let mode = blend_factors.map_or_else(
+            || u8::from(unpaired_blend && !first_stage_decal),
+            sorted_blend_mode,
+        );
         let blend_factors = blend_factors.map(retail_blend_factors);
         if let Some(mut state) = Self::from_material(flags_1, flags_2, alpha_mode, blend_factors) {
             state.retail_blend_mode = Some(mode);
