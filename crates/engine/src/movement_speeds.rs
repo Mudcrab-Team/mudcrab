@@ -9,29 +9,36 @@
 //!   give an actor's walk speed and run speed. This split is the engine rule that the player
 //!   already used; see `docs/player-movement-record-map.md`.
 //! - `NPC_.ACBS` bytes 14..16 hold the speed multiplier, a percentage of the base speed. UESP
-//!   "Skyrim Mod:Mod File Format/NPC_" lists it in the ACBS table, and xEdit
-//!   (`wbDefinitionsTES5.pas`, NPC_ ACBS) names it "Speed Multiplier".
+//!   "Skyrim Mod:Mod File Format/NPC_" lists it in the ACBS table, xEdit
+//!   (`wbDefinitionsTES5.pas`, NPC_ ACBS) names it "Speed Multiplier", and CommonLibSSE-NG
+//!   (`TESActorBaseData.h`) exposes it as `speedMult`. When `ACBS` template flag bit 1
+//!   (`Use Stats`, `0x0002`) is set, the speed multiplier comes from the `TPLT` chain
+//!   (`docs/research/retail/q10-npc-templates.md`).
 //!
 //! This module reads those records and nothing else. A value that no record supplies is not
 //! invented here: the actor gets no [`ActorMovementSpeeds`], and the caller keeps its labelled
 //! stand-in. What the records do not establish is listed in `docs/player-sprint-research.md`: the
 //! sprint equation, the column used in each actor state, and the order of the actor modifiers.
 
-use crate::physics::{
-    DefaultObjects, FORWARD_RUN, FORWARD_WALK, jump_input_record, load_race_movement_type,
-};
+use crate::physics::{DefaultObjects, FORWARD_RUN, FORWARD_WALK, load_race_movement_type};
 use bevy::prelude::*;
 use color_eyre::{
     Result,
     eyre::{ensure, eyre},
 };
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::{BTreeMap, HashMap};
+use shared::records::ArchivedRecordData;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Size of the `NPC_.ACBS` payload; source: <https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/NPC_>.
 pub const ACBS_SIZE: usize = 24;
 /// Offset of the `u16` speed multiplier in `NPC_.ACBS` (UESP NPC_ ACBS table).
 const SPEED_MULTIPLIER_OFFSET: usize = 14;
+/// Offset of the `u16` template flags in `NPC_.ACBS` (`docs/research/retail/q10-npc-templates.md`).
+pub const ACBS_TEMPLATE_FLAGS_OFFSET: usize = 18;
+/// `NPC_.ACBS` template flag bit 1 ("Use Stats"), which copies `speedMult` from `TPLT`
+/// (`docs/research/retail/q10-npc-templates.md`).
+pub const TEMPLATE_USE_STATS: u16 = 0x0002;
 
 /// `NPC_.ACBS` speed multiplier. The stored value is a percentage: 100 leaves the speed as the
 /// movement type authored it, 150 moves the actor one and a half times as fast.
@@ -92,6 +99,168 @@ impl ActorMovementSpeeds {
     }
 }
 
+/// The fields of one `NPC_` record that speed-multiplier resolution needs.
+#[derive(Debug, Clone)]
+struct NpcSpeedSource {
+    multiplier: std::result::Result<SpeedMultiplier, String>,
+    uses_stats: bool,
+    template: std::result::Result<Option<u32>, String>,
+}
+
+impl NpcSpeedSource {
+    fn from_record(form_id: u32, record: &ArchivedRecordData) -> Self {
+        let mut acbs: Option<&[u8]> = None;
+        let mut duplicate_acbs = false;
+        let mut tplt: Option<&[u8]> = None;
+        let mut duplicate_tplt = false;
+        for field in &record.subrecords {
+            match &field.tag {
+                b"ACBS" => {
+                    if acbs.is_some() {
+                        duplicate_acbs = true;
+                    } else {
+                        acbs = Some(field.data.as_slice());
+                    }
+                }
+                b"TPLT" => {
+                    if tplt.is_some() {
+                        duplicate_tplt = true;
+                    } else {
+                        tplt = Some(field.data.as_slice());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (multiplier, uses_stats) = if duplicate_acbs {
+            (
+                Err(format!("record {form_id:08X} has duplicate ACBS fields")),
+                false,
+            )
+        } else if let Some(bytes) = acbs {
+            match SpeedMultiplier::from_acbs(bytes) {
+                Ok(mult) => {
+                    let flags = u16::from_le_bytes([
+                        bytes[ACBS_TEMPLATE_FLAGS_OFFSET],
+                        bytes[ACBS_TEMPLATE_FLAGS_OFFSET + 1],
+                    ]);
+                    (Ok(mult), flags & TEMPLATE_USE_STATS != 0)
+                }
+                Err(error) => (Err(format!("record {form_id:08X} {error}")), false),
+            }
+        } else {
+            (Err(format!("record {form_id:08X} lacks ACBS")), false)
+        };
+        let template = if duplicate_tplt {
+            Err(format!("record {form_id:08X} has duplicate TPLT fields"))
+        } else if let Some(bytes) = tplt {
+            match <[u8; 4]>::try_from(bytes) {
+                Ok(raw) => {
+                    let id = u32::from_le_bytes(raw);
+                    Ok((id != 0).then_some(id))
+                }
+                Err(_) => Err(format!(
+                    "record {form_id:08X} TPLT length {} is unsupported; expected 4",
+                    bytes.len()
+                )),
+            }
+        } else {
+            Ok(None)
+        };
+        Self {
+            multiplier,
+            uses_stats,
+            template,
+        }
+    }
+}
+
+/// Batch-loaded `NPC_` speed-multiplier inputs from `records`, supporting `Use Stats` (`0x0002`)
+/// template resolution across `NPC_` chains (`docs/research/retail/q10-npc-templates.md`).
+#[derive(Debug, Default)]
+struct NpcSpeedTable {
+    entries: HashMap<u32, std::result::Result<NpcSpeedSource, String>>,
+}
+
+impl NpcSpeedTable {
+    fn read(connection: &Connection) -> Result<Self> {
+        let mut statement =
+            connection.prepare("SELECT form_id, data FROM records WHERE record_type='NPC_'")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, u32>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut entries = HashMap::new();
+        let mut aligned = rkyv::util::AlignedVec::<16>::new();
+        for row in rows {
+            let (form_id, bytes) = match row {
+                Ok(row) => row,
+                Err(error) => {
+                    warn!(
+                        "actors: failed reading NPC_ row for movement speeds ({error}); skipping"
+                    );
+                    continue;
+                }
+            };
+            aligned.clear();
+            aligned.extend_from_slice(&bytes);
+            let parsed = match rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&aligned)
+            {
+                Ok(record) => Ok(NpcSpeedSource::from_record(form_id, &record)),
+                Err(error) => Err(format!(
+                    "invalid canonical archive for NPC_ {form_id:08X}: {error}"
+                )),
+            };
+            entries.insert(form_id, parsed);
+        }
+        Ok(Self { entries })
+    }
+
+    /// Resolves one `NPC_`'s speed multiplier, following `Use Stats` (`TPLT`) chains across `NPC_`
+    /// records. A missing record, broken/zero/cyclic `TPLT`, or non-`NPC_` (`LVLN`) target returns
+    /// an error instead of inventing a value.
+    fn resolve_speed_multiplier(&self, npc: u32) -> std::result::Result<SpeedMultiplier, String> {
+        let mut current_id = npc;
+        let mut visited = HashSet::from([npc]);
+        loop {
+            let entry = self
+                .entries
+                .get(&current_id)
+                .ok_or_else(|| format!("missing canonical NPC_ {current_id:08X}"))?;
+            let source = entry.as_ref().map_err(Clone::clone)?;
+            if !source.uses_stats {
+                return source.multiplier.clone();
+            }
+            let template_id = source
+                .template
+                .as_ref()
+                .map_err(Clone::clone)?
+                .ok_or_else(|| {
+                    format!("NPC_ {current_id:08X} sets Use Stats but has no nonzero TPLT")
+                })?;
+            if !visited.insert(template_id) {
+                return Err(format!(
+                    "NPC_ {npc:08X} Use Stats template chain has a cycle at {template_id:08X}"
+                ));
+            }
+            if !self.entries.contains_key(&template_id) {
+                return Err(format!(
+                    "NPC_ {current_id:08X} Use Stats target {template_id:08X} is not an NPC_ record"
+                ));
+            }
+            current_id = template_id;
+        }
+    }
+}
+
+/// The resolved walk and run forward speeds of one race, plus any startup diagnostics.
+#[derive(Debug, Clone)]
+struct ResolvedRaceSpeeds {
+    walk: f32,
+    run: f32,
+    default_objects_absent: bool,
+    warnings: Vec<String>,
+}
+
 /// The record speeds of every actor base the world database lists, keyed by `NPC_` FormID.
 #[derive(Debug, Clone, Default)]
 pub struct ActorMovementCatalog {
@@ -105,8 +274,8 @@ impl ActorMovementCatalog {
     ///
     /// A database without the movement tables, the `records` table, or the default objects
     /// gives an empty catalog. A race whose movement type is missing from `movement_types`, and
-    /// an `NPC_` whose `ACBS` is unreadable, leave those actors unresolved and count in the one
-    /// warning that this call logs.
+    /// an `NPC_` whose `ACBS` or `Use Stats` template chain is unreadable, leave those actors
+    /// unresolved and count in the one warning that this call logs.
     pub fn read(connection: &Connection, actors: impl IntoIterator<Item = (u32, u32)>) -> Self {
         let actors: Vec<(u32, u32)> = actors.into_iter().collect();
         let mut catalog = Self::default();
@@ -114,13 +283,17 @@ impl ActorMovementCatalog {
             return catalog;
         }
         let has = |table: &str| -> bool {
-            connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                    [table],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false)
+            match connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            ) {
+                Ok(exists) => exists,
+                Err(error) => {
+                    warn!("actors: cannot check `{table}` table ({error}); treating as absent");
+                    false
+                }
+            }
         };
         if !(has("movement_types") && has("race_movement_links") && has("records")) {
             info!(
@@ -135,18 +308,46 @@ impl ActorMovementCatalog {
                 return catalog;
             }
         };
-        let mut races: HashMap<u32, std::result::Result<(f32, f32), String>> = HashMap::new();
+        let npcs = match NpcSpeedTable::read(connection) {
+            Ok(npcs) => npcs,
+            Err(error) => {
+                warn!(
+                    "actors: cannot read NPC_ records for movement speeds ({error:#}); no record speeds"
+                );
+                return catalog;
+            }
+        };
+        let mut races: HashMap<u32, std::result::Result<ResolvedRaceSpeeds, String>> =
+            HashMap::new();
+        let mut default_objects_absent = false;
         for (base, race) in &actors {
             let race_speeds = races
                 .entry(*race)
                 .or_insert_with(|| {
-                    race_walk_run(connection, *race, &defaults).map_err(|e| format!("{e:#}"))
+                    let result =
+                        race_walk_run(connection, *race, &defaults).map_err(|e| format!("{e:#}"));
+                    if let Ok(resolved) = &result {
+                        if resolved.default_objects_absent {
+                            default_objects_absent = true;
+                        }
+                        for warning in &resolved.warnings {
+                            warn!(race_id = format_args!("{race:08X}"), "actors: {warning}");
+                        }
+                    }
+                    result
                 })
                 .clone();
-            let resolved = race_speeds.and_then(|(walk, run)| {
-                npc_speed_multiplier(connection, *base)
-                    .map(|multiplier| ActorMovementSpeeds::new(walk, run, multiplier))
-                    .map_err(|e| format!("{e:#}"))
+            let resolved = race_speeds.and_then(|race_speeds| {
+                npcs.resolve_speed_multiplier(*base).map(|multiplier| {
+                    if multiplier.percent() == 0 {
+                        warn!(
+                            npc_id = format_args!("{base:08X}"),
+                            race_id = format_args!("{race:08X}"),
+                            "actors: NPC_ ACBS speed multiplier is 0%; actor speeds scale to 0"
+                        );
+                    }
+                    ActorMovementSpeeds::new(race_speeds.walk, race_speeds.run, multiplier)
+                })
             });
             match resolved {
                 Ok(speeds) => {
@@ -154,6 +355,11 @@ impl ActorMovementCatalog {
                 }
                 Err(reason) => *catalog.unresolved.entry(reason).or_default() += 1,
             }
+        }
+        if default_objects_absent {
+            warn!(
+                "actors: package has no default_objects table (converted before default movement types were exported): unset actor WKMV or RNMV slots use NPC_Default_MT 0003580D by the earlier project rule. Run a metadata rebuild (--reuse-assets) to publish the table"
+            );
         }
         if let Some((reason, _)) = catalog.unresolved.iter().next() {
             warn!(
@@ -191,7 +397,7 @@ fn race_walk_run(
     connection: &Connection,
     race: u32,
     defaults: &DefaultObjects,
-) -> Result<(f32, f32)> {
+) -> Result<ResolvedRaceSpeeds> {
     let (walk_link, run_link): (Option<u32>, Option<u32>) = connection
         .query_row(
             "SELECT walk_movt_id, run_movt_id FROM race_movement_links WHERE id=?1",
@@ -202,20 +408,14 @@ fn race_walk_run(
         .ok_or_else(|| eyre!("RACE {race:08X} has no race_movement_links row"))?;
     let walk = load_race_movement_type(connection, walk_link, "WKMV", defaults, FORWARD_WALK)?;
     let run = load_race_movement_type(connection, run_link, "RNMV", defaults, FORWARD_RUN)?;
-    Ok((
-        walk.profile.values[FORWARD_WALK],
-        run.profile.values[FORWARD_RUN],
-    ))
-}
-
-/// The speed multiplier of one `NPC_`, read from its own `ACBS`.
-///
-/// STAND-IN(#1065): a templated actor may inherit stats from its `TPLT`. No template is followed
-/// here, so a templated actor uses its own `ACBS` value, which keeps the earlier 100 percent
-/// whenever the authored value is 100.
-fn npc_speed_multiplier(connection: &Connection, npc: u32) -> Result<SpeedMultiplier> {
-    let record = jump_input_record(connection, npc, "NPC_")?;
-    SpeedMultiplier::from_acbs(record.required(b"ACBS", ACBS_SIZE)?)
+    let mut warnings = walk.warnings;
+    warnings.extend(run.warnings);
+    Ok(ResolvedRaceSpeeds {
+        walk: walk.profile.values[FORWARD_WALK],
+        run: run.profile.values[FORWARD_RUN],
+        default_objects_absent: walk.legacy_rule || run.legacy_rule,
+        warnings,
+    })
 }
 
 #[cfg(test)]
@@ -244,9 +444,15 @@ mod tests {
     }
 
     fn acbs(percent: u16) -> Vec<u8> {
+        acbs_with_flags(percent, 0)
+    }
+
+    fn acbs_with_flags(percent: u16, template_flags: u16) -> Vec<u8> {
         let mut bytes = vec![0; ACBS_SIZE];
         bytes[SPEED_MULTIPLIER_OFFSET..SPEED_MULTIPLIER_OFFSET + 2]
             .copy_from_slice(&percent.to_le_bytes());
+        bytes[ACBS_TEMPLATE_FLAGS_OFFSET..ACBS_TEMPLATE_FLAGS_OFFSET + 2]
+            .copy_from_slice(&template_flags.to_le_bytes());
         bytes
     }
 
@@ -367,6 +573,90 @@ mod tests {
     }
 
     #[test]
+    fn use_stats_template_chains_inherit_root_speed_multiplier_and_reject_broken_chains() {
+        let conn = database();
+        // Root NPC with 150% speed multiplier.
+        add_npc(&conn, 0x200, archive(&[(*b"ACBS", acbs(150))]));
+        // Middle NPC inherits Use Stats from 0x200 (its own ACBS says 100%).
+        add_npc(
+            &conn,
+            0x201,
+            archive(&[
+                (*b"ACBS", acbs_with_flags(100, TEMPLATE_USE_STATS)),
+                (*b"TPLT", 0x200_u32.to_le_bytes().to_vec()),
+            ]),
+        );
+        // Leaf NPC inherits Use Stats from 0x201 (two-hop chain -> 150%).
+        add_npc(
+            &conn,
+            0x202,
+            archive(&[
+                (*b"ACBS", acbs_with_flags(80, TEMPLATE_USE_STATS)),
+                (*b"TPLT", 0x201_u32.to_le_bytes().to_vec()),
+            ]),
+        );
+        // NPC with TPLT pointing to 0x200 but Use Stats clear keeps its own 75%.
+        add_npc(
+            &conn,
+            0x203,
+            archive(&[
+                (*b"ACBS", acbs_with_flags(75, 0x0001)),
+                (*b"TPLT", 0x200_u32.to_le_bytes().to_vec()),
+            ]),
+        );
+        // Broken Use Stats: missing TPLT, non-NPC (LVLN) target, and a 2-node cycle.
+        add_npc(
+            &conn,
+            0x204,
+            archive(&[(*b"ACBS", acbs_with_flags(100, TEMPLATE_USE_STATS))]),
+        );
+        add_npc(
+            &conn,
+            0x205,
+            archive(&[
+                (*b"ACBS", acbs_with_flags(100, TEMPLATE_USE_STATS)),
+                (*b"TPLT", 0x9999_u32.to_le_bytes().to_vec()),
+            ]),
+        );
+        add_npc(
+            &conn,
+            0x206,
+            archive(&[
+                (*b"ACBS", acbs_with_flags(100, TEMPLATE_USE_STATS)),
+                (*b"TPLT", 0x207_u32.to_le_bytes().to_vec()),
+            ]),
+        );
+        add_npc(
+            &conn,
+            0x207,
+            archive(&[
+                (*b"ACBS", acbs_with_flags(100, TEMPLATE_USE_STATS)),
+                (*b"TPLT", 0x206_u32.to_le_bytes().to_vec()),
+            ]),
+        );
+        let catalog = ActorMovementCatalog::read(
+            &conn,
+            [
+                (0x201, NORD),
+                (0x202, NORD),
+                (0x203, NORD),
+                (0x204, NORD),
+                (0x205, NORD),
+                (0x206, NORD),
+            ],
+        );
+        assert_eq!(catalog.get(0x201).unwrap().multiplier.percent(), 150);
+        assert_eq!(catalog.get(0x202).unwrap().multiplier.percent(), 150);
+        assert_eq!(catalog.get(0x202).unwrap().run, 555.0);
+        assert_eq!(catalog.get(0x203).unwrap().multiplier.percent(), 75);
+        for broken in [0x204, 0x205, 0x206] {
+            assert!(catalog.get(broken).is_none(), "{broken:x}");
+        }
+        assert_eq!(catalog.resolved_count(), 3);
+        assert_eq!(catalog.unresolved_count(), 3);
+    }
+
+    #[test]
     fn an_actor_with_no_record_speeds_stays_unresolved_for_every_cause() {
         let conn = database();
         add_npc(&conn, 0x100, archive(&[(*b"ACBS", acbs(100))]));
@@ -420,9 +710,15 @@ mod tests {
         let conn = database();
         conn.execute("DELETE FROM default_objects", []).unwrap();
         add_npc(&conn, 0x100, archive(&[(*b"ACBS", acbs(100))]));
+        add_npc(&conn, 0x101, archive(&[(*b"ACBS", acbs(100))]));
         let catalog = ActorMovementCatalog::read(&conn, [(0x100, NORD), (0x101, HORSE_RACE)]);
         assert!(catalog.get(0x100).is_none());
-        assert_eq!(catalog.unresolved_count(), 2);
+        let horse = catalog
+            .get(0x101)
+            .expect("explicit race links still resolve without default_objects rows");
+        assert!((horse.walk - 125.11).abs() < 1e-3 && horse.run == 450.0);
+        assert_eq!(catalog.resolved_count(), 1);
+        assert_eq!(catalog.unresolved_count(), 1);
     }
 
     /// Opt-in receipt over a real world database:
@@ -449,10 +745,11 @@ mod tests {
         for (reason, count) in catalog.unresolved_reasons() {
             println!("unresolved_reason count={count} {reason}");
         }
+        let table = NpcSpeedTable::read(&conn).unwrap();
         let mut multipliers: BTreeMap<u16, usize> = BTreeMap::new();
         let mut unreadable = 0_usize;
         for (id, _) in &actors {
-            match npc_speed_multiplier(&conn, *id) {
+            match table.resolve_speed_multiplier(*id) {
                 Ok(multiplier) => *multipliers.entry(multiplier.percent()).or_default() += 1,
                 Err(_) => unreadable += 1,
             }

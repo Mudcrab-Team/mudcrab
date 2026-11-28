@@ -2078,14 +2078,14 @@ fn spawn_cell(
                         (1.0 - weight / 100.0).clamp(0.0, 1.0),
                     ));
                 }
+                if let Some(speeds) = plan.movement {
+                    entity.insert(speeds);
+                }
                 if plan.uses_composed_body() {
                     entity.insert((
                         crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
                         crate::actor_drive::ActorDrive::default(),
                     ));
-                    if let Some(speeds) = plan.movement {
-                        entity.insert(speeds);
-                    }
                 } else if reference.starts_dead {
                     // No death pose or ragdoll exists yet. A placed corpse keeps its bind
                     // pose; a standing idle loop would make it look alive.
@@ -12307,6 +12307,133 @@ mod tests {
             .expect("the worn outfit component");
         assert_eq!(worn.0.len(), 1);
         assert_eq!(worn.0[0].scene, "meshes/clothes/blacksmith/m/torso_1.glb");
+    }
+
+    #[test]
+    fn spawn_cell_attaches_record_movement_speeds_to_composed_and_custom_body_actors() {
+        use shared::records::{ArchivedRecordData, ArchivedSubRecord};
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+
+        let connection = actor_catalog_connection();
+        connection
+            .execute_batch(
+                "CREATE TABLE records (form_id INTEGER PRIMARY KEY, record_type TEXT NOT NULL,
+                    cell_id INTEGER, worldspace_id INTEGER, load_order INTEGER NOT NULL DEFAULT 0, data BLOB NOT NULL);
+                 CREATE TABLE plugins (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                    priority INTEGER NOT NULL, checksum BLOB NOT NULL);
+                 CREATE TABLE movement_types (id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
+                    left_walk REAL NOT NULL, left_run REAL NOT NULL, right_walk REAL NOT NULL,
+                    right_run REAL NOT NULL, forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
+                    back_walk REAL NOT NULL, back_run REAL NOT NULL, load_order INTEGER NOT NULL);
+                 CREATE TABLE race_movement_links (id INTEGER PRIMARY KEY, walk_movt_id INTEGER,
+                    run_movt_id INTEGER, load_order INTEGER NOT NULL);
+                 CREATE TABLE default_objects (key TEXT PRIMARY KEY, form_id INTEGER NOT NULL);
+                 INSERT INTO movement_types VALUES (500,'NPC_Default_MT',80,370,80,370,80,370,70,200,0);
+                 INSERT INTO movement_types VALUES (501,'Horse_Default_MT',120,450,120,450,120,450,100,200,0);
+                 INSERT INTO default_objects VALUES ('DMWL', 500), ('DMRN', 500);
+                 INSERT INTO race_movement_links VALUES (79686, NULL, NULL, 0);
+                 INSERT INTO race_movement_links VALUES (0x131FD, 501, 501, 0);",
+            )
+            .unwrap();
+        let write_npc = |id: u32, percent: u16| {
+            let mut acbs = vec![0_u8; 24];
+            acbs[14..16].copy_from_slice(&percent.to_le_bytes());
+            let record = ArchivedRecordData {
+                subrecords: vec![ArchivedSubRecord {
+                    tag: *b"ACBS",
+                    data: acbs,
+                }],
+            };
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&record).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO records(form_id,record_type,data) VALUES (?1,'NPC_',?2)",
+                    rusqlite::params![id, bytes.as_slice()],
+                )
+                .unwrap();
+        };
+        // 0x13475: composed humanoid body (Alvor) with 150% ACBS multiplier.
+        insert_alvor(&connection);
+        write_npc(0x13475, 150);
+        // 0x20001: custom-body creature (Horse) with 100% ACBS multiplier.
+        connection
+            .execute(
+                "INSERT INTO actor_models(id,race_id,sex,skin_armo_id,head_model,head_source,resolution)
+                 VALUES(0x20001,0x131FD,'male',NULL,NULL,NULL,'body')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO actor_model_parts(npc_id,slot,model_path)
+                 VALUES(0x20001,'body','Actors\\Horse\\Character Assets\\Horse.nif')",
+                [],
+            )
+            .unwrap();
+        write_npc(0x20001, 100);
+        // 0x20002: composed humanoid body with no NPC_ record -> no movement speeds.
+        connection
+            .execute(
+                "INSERT INTO actor_models(id,race_id,sex,skin_armo_id,head_model,head_source,resolution)
+                 VALUES(0x20002,79686,'male',NULL,NULL,NULL,'body')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO actor_model_parts(npc_id,slot,model_path)
+                 VALUES(0x20002,'body','Meshes\\Actors\\Character\\Character Assets\\MaleBody_1.NIF')",
+                [],
+            )
+            .unwrap();
+
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let mut refs = Vec::new();
+        for id in [0x13475_u32, 0x20001, 0x20002] {
+            let mut r = lit_reference(id, None, None);
+            r.base_form_id = id;
+            refs.push(r);
+        }
+        let app = spawn_reference_cell_app_with_catalog(refs, false, catalog);
+
+        let composed_entity = app.world().entity(reference_entity(&app, 0x13475));
+        assert!(
+            composed_entity
+                .get::<crate::actor_drive::ActorDrive>()
+                .is_some()
+        );
+        let composed_speeds = composed_entity
+            .get::<crate::movement_speeds::ActorMovementSpeeds>()
+            .expect("composed actor receives record movement speeds");
+        assert_eq!((composed_speeds.walk, composed_speeds.run), (120.0, 555.0));
+
+        let creature_entity = app.world().entity(reference_entity(&app, 0x20001));
+        assert!(
+            creature_entity
+                .get::<crate::actor_drive::ActorDrive>()
+                .is_none()
+        );
+        let creature_speeds = creature_entity
+            .get::<crate::movement_speeds::ActorMovementSpeeds>()
+            .expect("custom-body actor receives record movement speeds");
+        assert_eq!((creature_speeds.walk, creature_speeds.run), (120.0, 450.0));
+
+        let unresolved_entity = app.world().entity(reference_entity(&app, 0x20002));
+        assert!(
+            unresolved_entity
+                .get::<crate::actor_drive::ActorDrive>()
+                .is_some()
+        );
+        assert!(
+            unresolved_entity
+                .get::<crate::movement_speeds::ActorMovementSpeeds>()
+                .is_none()
+        );
     }
 
     /// Before a composed body is published, the same spawn draws the catalog's authored body part.

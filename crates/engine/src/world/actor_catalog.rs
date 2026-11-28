@@ -359,6 +359,7 @@ impl ActorCatalog {
             connection,
             models
                 .values()
+                .filter(|model| model.resolution.is_resolved())
                 .map(|model| (model.base_form_id, model.race_id)),
         );
 
@@ -631,6 +632,7 @@ mod tests {
             .unwrap();
         insert_actor(&connection, 77, 13, "male", "body", None, None);
         insert_actor(&connection, 78, 13, "male", "body", None, None);
+        insert_actor(&connection, 79, 0, "male", "unresolved", None, None);
         insert_part(&connection, 77, "body", "Actors/Custom/body.nif");
         insert_part(&connection, 78, "body", "Actors/Custom/body.nif");
         let catalog = ActorCatalog::from_connection(&connection);
@@ -641,6 +643,19 @@ mod tests {
         // An actor with no NPC_ record keeps no speeds and still spawns.
         let other = catalog.spawn_plan(catalog.get(78).unwrap()).unwrap();
         assert!(other.movement.is_none());
+        // Unresolved actor_models rows (e.g. LVLN placeholders with race_id=0) are excluded
+        // from the movement catalog so they do not inflate its unresolved warning count.
+        assert_eq!(catalog.movement.resolved_count(), 1);
+        assert_eq!(catalog.movement.unresolved_count(), 1);
+        assert!(
+            catalog
+                .movement
+                .unresolved_reasons()
+                .keys()
+                .all(|reason| !reason.contains("RACE 00000000")),
+            "{:?}",
+            catalog.movement.unresolved_reasons()
+        );
     }
 
     #[test]

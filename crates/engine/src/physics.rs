@@ -1,7 +1,9 @@
 //! Player movement physics: one controller for Riverwood and the regression fixture.
 //! All units are Creation units.
 
-use crate::movement_speeds::{ACBS_SIZE, SpeedMultiplier};
+use crate::movement_speeds::{
+    ACBS_SIZE, ACBS_TEMPLATE_FLAGS_OFFSET, SpeedMultiplier, TEMPLATE_USE_STATS,
+};
 use bevy::{
     ecs::system::{SystemId, SystemParam},
     input::mouse::MouseMotion,
@@ -296,7 +298,7 @@ pub(crate) fn load_race_movement_type(
     let mut warnings = Vec::new();
     if profile.values[forward] == 0.0 {
         warnings.push(format!(
-            "{slot} movement type {} ({id:08X}) has forward {} speed 0, so the player cannot move forward at that gait",
+            "{slot} movement type {} ({id:08X}) has forward {} speed 0, so actors using it cannot move forward at that gait",
             profile.editor_id,
             if forward == FORWARD_WALK { "walk" } else { "run" }
         ));
@@ -326,10 +328,18 @@ impl MovementTuning {
             [], |row| row.get(0),
         )?;
         if !has_table {
+            let speed_multiplier = legacy_player_speed_multiplier(&conn)?;
+            if speed_multiplier.percent() == 0 {
+                warn!(
+                    npc_id = "00000007",
+                    "WALK movement records: Player NPC_ 00000007 ACBS speed multiplier is 0%; movement speeds scale to 0"
+                );
+            }
             return Ok(Self {
                 jump_height: JumpHeight::synthetic(
                     "legacy package without movement_types; synthetic unit actor; fJumpHeightMin=76; runtime reference scale=1 policy",
                 ),
+                speed_multiplier,
                 ..Self::default()
             });
         }
@@ -371,6 +381,12 @@ impl MovementTuning {
             .wrap_err("record-backed jump inputs are incomplete or unsupported")?;
         let speed_multiplier = player_speed_multiplier(&conn)
             .wrap_err("Player NPC_ 00000007 ACBS speed multiplier is unreadable")?;
+        if speed_multiplier.percent() == 0 {
+            warnings.push(
+                "Player NPC_ 00000007 ACBS speed multiplier is 0%; movement speeds scale to 0"
+                    .to_owned(),
+            );
+        }
         Ok(Self {
             jump_height,
             walk_speed: walk.profile.values[FORWARD_WALK],
@@ -521,11 +537,55 @@ impl JumpInputRecord {
     }
 }
 
+/// The player's own `NPC_.ACBS` speed multiplier on a legacy database without `movement_types`.
+/// When `records` holds Player `NPC_ 00000007`, its multiplier applies to the stand-in speeds; a
+/// package without a player archive keeps the neutral multiplier.
+fn legacy_player_speed_multiplier(conn: &Connection) -> Result<SpeedMultiplier> {
+    let has_records: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='records')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_records {
+        return Ok(SpeedMultiplier::NEUTRAL);
+    }
+    let has_player: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM records WHERE form_id=7 AND record_type='NPC_'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if has_player.is_none() {
+        return Ok(SpeedMultiplier::NEUTRAL);
+    }
+    player_speed_multiplier(conn)
+        .wrap_err("Player NPC_ 00000007 ACBS speed multiplier is unreadable")
+}
+
 /// The player's own `NPC_.ACBS` speed multiplier. The player record is read as authored, as the
-/// jump height does; a template that supplies speed for the player is not followed.
+/// jump height does; a `Use Stats` template (`0x0002`, `docs/research/retail/q10-npc-templates.md`)
+/// is rejected instead of ignored.
 fn player_speed_multiplier(conn: &Connection) -> Result<SpeedMultiplier> {
     let player = jump_input_record(conn, 7, "NPC_")?;
-    SpeedMultiplier::from_acbs(player.required(b"ACBS", ACBS_SIZE)?)
+    let acbs = player.required(b"ACBS", ACBS_SIZE)?;
+    let template_flags = u16::from_le_bytes(
+        acbs[ACBS_TEMPLATE_FLAGS_OFFSET..ACBS_TEMPLATE_FLAGS_OFFSET + 2].try_into()?,
+    );
+    let template = player
+        .field(b"TPLT")?
+        .map(|bytes| bytes.try_into().map(u32::from_le_bytes))
+        .transpose()
+        .wrap_err("Player NPC_ TPLT must be four bytes")?;
+    if template_flags & TEMPLATE_USE_STATS != 0 {
+        let template = template.filter(|id| *id != 0).ok_or_else(|| {
+            color_eyre::eyre::eyre!("Player NPC_ sets Use Stats but has no nonzero TPLT")
+        })?;
+        bail!(
+            "Player NPC_ inherits stats from TPLT {template:08X}; inherited speed multiplier is unsupported"
+        );
+    }
+    SpeedMultiplier::from_acbs(acbs)
 }
 
 fn load_player_jump_height(conn: &Connection, race_id: u32) -> Result<JumpHeight> {
@@ -1531,6 +1591,79 @@ mod tests {
                 .truncate(16);
         });
         assert!(MovementTuning::from_world_database(&path).is_err());
+    }
+
+    #[test]
+    fn legacy_database_without_movement_types_still_loads_player_acbs_multiplier() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        rewrite_jump_record(&conn, 7, |record| {
+            record
+                .subrecords
+                .iter_mut()
+                .find(|field| field.tag == *b"ACBS")
+                .unwrap()
+                .data[14..16]
+                .copy_from_slice(&150_u16.to_le_bytes());
+        });
+        conn.execute("DROP TABLE movement_types", []).unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert!(tuning.record_speeds.is_none());
+        assert_eq!(tuning.speed_multiplier.percent(), 150);
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), true, false),
+            240.0
+        );
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), false, false),
+            450.0
+        );
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), false, true),
+            675.0
+        );
+    }
+
+    #[test]
+    fn player_speed_multiplier_rejects_use_stats_templates() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        for (flags, template, expected_error) in [
+            (0x0100_u16, Some(99_u32), None),
+            (TEMPLATE_USE_STATS, None, Some("has no nonzero TPLT")),
+            (TEMPLATE_USE_STATS, Some(0), Some("has no nonzero TPLT")),
+            (
+                TEMPLATE_USE_STATS,
+                Some(99),
+                Some("inherits stats from TPLT 00000063"),
+            ),
+        ] {
+            rewrite_jump_record(&conn, 7, |record| {
+                let acbs = record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"ACBS")
+                    .unwrap();
+                acbs.data[ACBS_TEMPLATE_FLAGS_OFFSET..ACBS_TEMPLATE_FLAGS_OFFSET + 2]
+                    .copy_from_slice(&flags.to_le_bytes());
+                record.subrecords.retain(|field| field.tag != *b"TPLT");
+                if let Some(id) = template {
+                    record.subrecords.push(shared::records::ArchivedSubRecord {
+                        tag: *b"TPLT",
+                        data: id.to_le_bytes().to_vec(),
+                    });
+                }
+            });
+            let result = MovementTuning::from_world_database(&path);
+            if let Some(message) = expected_error {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(error.contains(message), "{error}");
+            } else {
+                assert_eq!(result.unwrap().speed_multiplier.percent(), 100);
+            }
+        }
     }
 
     #[test]

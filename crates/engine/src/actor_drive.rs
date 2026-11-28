@@ -13,6 +13,7 @@
 //! and [`ActorDrive::running`] take their speed from it, and the run clip starts at the actor's
 //! own run speed. An actor without those records keeps the stand-in [`MovementTuning`].
 
+use crate::actors::Actor;
 use crate::movement_speeds::ActorMovementSpeeds;
 use crate::streaming::PendingAssetProfile;
 use bevy::{
@@ -22,7 +23,7 @@ use bevy::{
     },
     prelude::*,
 };
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 /// The gait an actor plays, in ascending speed order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,6 +161,8 @@ pub struct ActorGait(pub Gait);
 pub const GAIT_TRANSITION: Duration = Duration::from_millis(200);
 
 type ActorGaitComponents<'a> = (
+    Entity,
+    Option<&'a Actor>,
     &'a ActorDrive,
     Option<&'a ActorMovementSpeeds>,
     &'a mut ActorGait,
@@ -172,10 +175,41 @@ type ActorGaitComponents<'a> = (
 ///
 /// Selecting the gait the actor already plays is a no-op, so equal-speed frames never restart the
 /// clip.
-fn select_actor_gait(tuning: Res<MovementTuning>, mut actors: Query<ActorGaitComponents<'_>>) {
-    for (drive, record_speeds, mut gait, nodes, mut player, mut transitions) in &mut actors {
+fn select_actor_gait(
+    tuning: Res<MovementTuning>,
+    mut logged_zero_run: Local<HashSet<Entity>>,
+    mut actors: Query<ActorGaitComponents<'_>>,
+) {
+    for (entity, actor, drive, record_speeds, mut gait, nodes, mut player, mut transitions) in
+        &mut actors
+    {
         let wanted = match record_speeds {
-            Some(speeds) => gait_for_actor(drive.speed, speeds),
+            Some(speeds) => {
+                if drive.speed.is_finite()
+                    && drive.speed > 0.0
+                    && speeds.run <= 0.0
+                    && logged_zero_run.insert(entity)
+                {
+                    if let Some(actor) = actor {
+                        warn!(
+                            entity = ?entity,
+                            base_form_id = format_args!("{:08X}", actor.base_form_id),
+                            race_id = format_args!("{:08X}", actor.race_id),
+                            speed = drive.speed,
+                            run_speed = speeds.run,
+                            "actor driven with non-positive record run speed; keeping walk gait"
+                        );
+                    } else {
+                        warn!(
+                            entity = ?entity,
+                            speed = drive.speed,
+                            run_speed = speeds.run,
+                            "actor driven with non-positive record run speed; keeping walk gait"
+                        );
+                    }
+                }
+                gait_for_actor(drive.speed, speeds)
+            }
             None => gait_for(drive.speed, &tuning),
         };
         if gait.0 == wanted {

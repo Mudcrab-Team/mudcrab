@@ -46558,7 +46558,7 @@
     "NPC_.ACBS.speed_multiplier": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "NPC_/ACBS bytes 14..16 are read as a percentage (UESP NPC_ ACBS table; xEdit NPC_ ACBS Speed Multiplier). The player's value scales every gait of MovementTuning::target_speed, and each actor base's value scales its walk and run speed in ActorMovementSpeeds. A templated actor uses its own ACBS value (STAND-IN(#1065) in npc_speed_multiplier).",
+      "reason": "NPC_/ACBS bytes 14..16 are read as a percentage (UESP NPC_ ACBS table; xEdit NPC_ ACBS Speed Multiplier; CommonLibSSE-NG TESActorBaseData::speedMult). The player's value scales every gait of MovementTuning::target_speed (including legacy databases when records holds Player NPC_ 00000007), and each resolved actor base follows TPLT Use Stats (0x0002) chains in NpcSpeedTable to scale walk and run speeds in ActorMovementSpeeds attached on spawn.",
       "evidence": [
         {
           "path": "crates/engine/src/movement_speeds.rs",
@@ -46566,7 +46566,7 @@
         },
         {
           "path": "crates/engine/src/movement_speeds.rs",
-          "anchor": "fn npc_speed_multiplier(connection: &Connection, npc: u32) -> Result<SpeedMultiplier> {"
+          "anchor": "fn resolve_speed_multiplier(&self, npc: u32) -> std::result::Result<SpeedMultiplier, String> {"
         },
         {
           "path": "crates/engine/src/physics.rs",
@@ -46575,6 +46575,10 @@
         {
           "path": "crates/engine/src/physics.rs",
           "anchor": "self.unscaled_target_speed(strafe, slow, sprint) * self.speed_multiplier.factor()"
+        },
+        {
+          "path": "crates/engine/src/streaming.rs",
+          "anchor": "if let Some(speeds) = plan.movement {"
         }
       ]
     },
@@ -61523,7 +61527,7 @@
     "RACE.RNMV.base_movement_default_run": {
       "disposition": "respected",
       "owner": "Mudcrab maintainers",
-      "reason": "Remapped and exported to race_movement_links for all RACE records. The player's race and every actor base's race resolve the RNMV slot (an unset slot takes its default object) in physics.rs and movement_speeds.rs, and the actor's run speed and run-clip threshold come from it.",
+      "reason": "Remapped and exported to race_movement_links for all RACE records. The player's race and every resolved actor base's race resolve the RNMV slot (an unset slot takes its default object) in physics.rs and movement_speeds.rs. Spawned actors carry ActorMovementSpeeds, and the actor's run speed and run-clip threshold come from it.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -61730,9 +61734,9 @@
       ]
     },
     "RACE.WKMV.base_movement_default_walk": {
-      "disposition": "respected",
+      "disposition": "partial",
       "owner": "Mudcrab maintainers",
-      "reason": "Remapped and exported to race_movement_links for all RACE records. The player's race and every actor base's race resolve the WKMV slot (an unset slot takes its default object) in physics.rs and movement_speeds.rs, and the actor's walk speed and run-clip threshold come from it.",
+      "reason": "Remapped and exported to race_movement_links for all RACE records. The player's race resolves the WKMV slot (an unset slot takes DMWL) for player walking in physics.rs, and movement_speeds.rs resolves ActorMovementSpeeds::walk for every resolved actor base and attaches it on spawn. The run-clip threshold comes from RNMV instead, and no runtime AI drives NPCs with ActorDrive::walking yet.",
       "evidence": [
         {
           "path": "crates/converter/src/esm/mod.rs",
@@ -61756,9 +61760,10 @@
         },
         {
           "path": "crates/engine/src/actor_drive.rs",
-          "anchor": "pub fn gait_for_actor(speed: f32, speeds: &ActorMovementSpeeds) -> Gait {"
+          "anchor": "pub fn walking(speeds: &ActorMovementSpeeds) -> Self {"
         }
-      ]
+      ],
+      "issue": "#1066"
     },
     "RACE.WNAM.skin": {
       "disposition": "respected",
