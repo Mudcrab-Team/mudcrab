@@ -23,6 +23,40 @@ on its base record (`scripts`, `script_properties`, `script_property_values`). B
 first and the reference's override them. A script attaches only if its name is in the allowlist
 (`SLICE_SCRIPTS`) and its class extends `ObjectReference`. Each attach logs one `info` line.
 
+**Property rows.** `script_properties.status` holds the VMAD property flag, which xEdit names
+1 (Edited) and 3 (Removed). The host seeds an Edited row. A Removed row sets nothing (#1052). When
+two Edited rows name one property, the later one runs. The earlier one runs only if the later value
+cannot be built or the script's setter rejects it, and the host logs that. Each type needs its own
+value column.
+These make a property unreadable: a NULL or out-of-range column, a value count that does not match,
+a `value_index` that does not run from 0 with no gap, or an undefined status or type. The host logs
+it and does not set it (#1095). A Removed row's values are checked the same way and damage is logged.
+Row damage is logged when the rows are read, so a script that cannot attach reports it too.
+A `scripts` row that cannot be read is logged too. A stored 0, empty string or false is a value.
+`crates/engine/tests/sqlite_null_guard.rs` rejects a new NULL-to-literal coercion in the engine's
+SQLite readers.
+
+**Quest aliases.** An object value with an alias id other than `0xFFFF` names a quest alias (#1051).
+A property typed `ReferenceAlias`, `LocationAlias` or `Alias` holds that alias. Properties with
+compatible types share one object: the same type, or `Alias` with one of its subtypes. The object
+then has the subtype's class. `GetReference` reads the current fill. Nothing fills aliases yet.
+
+These alias bindings give `None` and a `warn` line:
+
+- the property's type is a derived alias script (the database has no alias script data);
+- the property's type is not an alias type;
+- the script declares no type for `::<name>_var`;
+- the form the value names is not a quest in the world database;
+- the alias already has an unrelated class (`ReferenceAlias` and `LocationAlias`). The first
+  binding that runs fixes the class. A replaced row does not run.
+
+The class change from `Alias` to a subtype assumes that no alias class sets instance fields. A
+converted alias class that sets one gives `None` and an `error` line. A script that freezes a shared
+alias object (`table.freeze`) blocks the change in the same way.
+
+In an alias array, an element that cannot bind is `None`, and the array length can then be short
+(#1107).
+
 **Allowlist.** Four scripts: `defaultDisableSelfOnActivate`, `defaultUnlockOnLoad`,
 `dunDeadMensRotatingDoor` and `dunPOIDragonNoteScript`. Every other converted script stays detached
 until its natives exist.
@@ -46,7 +80,7 @@ entry into script code is a coroutine, so a wait suspends one script and nothing
 | ObjectReference | `PlayAnimation` | returns false and logs once: no animation graph yet |
 | ObjectReference | `AddToMap` | records the marker; no map yet |
 | Actor | `IsInFaction`, `SetFactionRank` | ranks scripts set; base-record factions are not read |
-| ReferenceAlias | `GetReference` | the reference bound to the alias, if any |
+| ReferenceAlias | `GetReference` | the current alias fill, or `None`; nothing in the engine fills aliases yet |
 | Quest | `Start`, `IsRunning`, `IsStageDone`, `GetCurrentStageID`, `SetCurrentStageID` | in-memory quest state |
 | Form, Alias, ActiveMagicEffect | `RegisterForUpdate`, `RegisterForSingleUpdate`, `UnregisterForUpdate` | the scheduler |
 | Utility | `Wait`, `WaitMenuMode` | suspend the calling script |
@@ -80,7 +114,10 @@ These points are unverified: the repository holds no captured source that record
 - Retail logs a script error and drops the stack. Mudcrab logs and continues with `None` for the
   faults in section 3.
 - Not in the slice: trigger volumes, death and combat events, an animation graph, a lock system, a
-  map, and alias-bound properties.
+  map, quest alias filling, and quest alias scripts.
+- When a reference removes a property that its base record sets, Mudcrab keeps the base value. In
+  the vanilla pack, 13 of the 18 Removed rows have a base value for the same property.
+- The database has no VMAD script status, so a removed script still attaches (#1050).
 - Several scripts on one form all attach and run their own events, but a native or another script
   that looks the form up gets only the first script object.
 - One E press goes to the nearest scripted reference the ray hits, and a load door or a carryable
@@ -97,6 +134,8 @@ These points are unverified: the repository holds no captured source that record
 
 Headless tests (`cargo test -p engine --lib papyrus`) drive each allowlisted script through the host
 with a fake world, and press E in a Bevy test app. Setting `MUDCRAB_PAPYRUS_SCRIPTS` to a pack's
-`scripts` folder runs the same assertions on the real converted scripts. In a live run, look for
+`scripts` folder runs the same assertions on the real converted scripts. Setting
+`MUDCRAB_PAPYRUS_PACK` to a pack folder reads every script property in its database and checks the
+alias and removed-property rules on the records that #1051 and #1052 name. In a live run, look for
 `scripts on: attaching ...`, one `attached ... to <form id>` line per scripted reference, and
 `script disabled <form id>` after pressing E.
